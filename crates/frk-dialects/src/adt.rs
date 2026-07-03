@@ -2,11 +2,14 @@
 //! pure value ops (SPEC §4.1 as amended by D-031). The dialect namespace
 //! is `frk_adt`; SPEC prose writes "frk.adt" for the same thing.
 //!
-//! Ops:
-//! - `make_sum(fields...) {variant} -> !frk_adt.sum<...>`
+//! Ops (packed surface, D-036 — no variadics: IRDL unifies every
+//! element of a variadic group to one type, so heterogeneous payloads
+//! flow through explicit product chains):
+//! - `product_new() -> !frk_adt.product<[]>`
+//! - `product_snoc(product, value) -> product-with-one-more-field`
+//! - `make_sum(payload product) {variant} -> !frk_adt.sum<...>`
 //! - `tag_of(sum) -> i64`
 //! - `extract(sum) {variant, field} -> <field type>`
-//! - `make_product(fields...) -> !frk_adt.product<...>`
 //! - `get(product) {field} -> <field type>`
 //!
 //! Type parameter encoding: a sum's single parameter is an array of
@@ -35,7 +38,7 @@
 //!   (`@frk_adt::@sum`).
 
 use melior::Context;
-use melior::ir::attribute::{AttributeLike, IntegerAttribute, TypeAttribute};
+use melior::ir::attribute::{IntegerAttribute, TypeAttribute};
 use melior::ir::operation::OperationLike;
 use melior::ir::{Attribute, OperationRef, Type, ValueLike};
 
@@ -52,11 +55,22 @@ irdl.dialect @frk_adt {
     %fields = irdl.any
     irdl.parameters(fields: %fields)
   }
-  irdl.operation @make_sum {
+  irdl.operation @product_new {
+    %prod = irdl.base @frk_adt::@product
+    irdl.results(product: %prod)
+  }
+  irdl.operation @product_snoc {
+    %prod_in = irdl.base @frk_adt::@product
     %any = irdl.any
+    %prod_out = irdl.base @frk_adt::@product
+    irdl.operands(product: %prod_in, value: %any)
+    irdl.results(grown: %prod_out)
+  }
+  irdl.operation @make_sum {
+    %payload = irdl.base @frk_adt::@product
     %sum = irdl.base @frk_adt::@sum
     %idx = irdl.base "#builtin.integer"
-    irdl.operands(fields: variadic %any)
+    irdl.operands(payload: %payload)
     irdl.results(sum: %sum)
     irdl.attributes { "variant" = %idx }
   }
@@ -74,12 +88,6 @@ irdl.dialect @frk_adt {
     irdl.operands(sum: %sum)
     irdl.results(value: %any)
     irdl.attributes { "variant" = %vidx, "field" = %fidx }
-  }
-  irdl.operation @make_product {
-    %any = irdl.any
-    %prod = irdl.base @frk_adt::@product
-    irdl.operands(fields: variadic %any)
-    irdl.results(product: %prod)
   }
   irdl.operation @get {
     %prod = irdl.base @frk_adt::@product
@@ -102,6 +110,44 @@ pub(crate) fn verify_op<'c>(
     op: OperationRef<'c, '_>,
 ) -> Result<(), String> {
     match name {
+        "product_new" => {
+            let fields = decode_product(context, result_type(op)?)?;
+            if fields.is_empty() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "product_new must yield an empty product, result declares {} field(s)",
+                    fields.len()
+                ))
+            }
+        }
+        "product_snoc" => {
+            let old_fields = decode_product(context, operand_type(op, 0)?)?;
+            let appended = operand_type(op, 1)?;
+            let new_fields = decode_product(context, result_type(op)?)?;
+            if new_fields.len() != old_fields.len() + 1 {
+                return Err(format!(
+                    "snoc result declares {} field(s); operand has {} + 1 appended",
+                    new_fields.len(),
+                    old_fields.len()
+                ));
+            }
+            for (index, old) in old_fields.iter().enumerate() {
+                if new_fields[index] != *old {
+                    return Err(format!(
+                        "snoc result field {index} is {}, operand field {index} is {old}",
+                        new_fields[index]
+                    ));
+                }
+            }
+            let last = new_fields[old_fields.len()];
+            if last != appended {
+                return Err(format!(
+                    "snoc appends a {appended}, result declares {last}"
+                ));
+            }
+            Ok(())
+        }
         "make_sum" => {
             let variants = decode_sum(context, result_type(op)?)?;
             let variant = index_attr(op, "variant")?;
@@ -111,7 +157,23 @@ pub(crate) fn verify_op<'c>(
                     variants.len()
                 )
             })?;
-            expect_field_types(op, fields)
+            let payload = decode_product(context, operand_type(op, 0)?)?;
+            if payload.len() != fields.len() {
+                return Err(format!(
+                    "payload has {} field(s), variant {variant} needs {}",
+                    payload.len(),
+                    fields.len()
+                ));
+            }
+            for (index, field) in fields.iter().enumerate() {
+                if payload[index] != *field {
+                    return Err(format!(
+                        "payload field {index} is {}, variant {variant} field {index} is {field}",
+                        payload[index]
+                    ));
+                }
+            }
+            Ok(())
         }
         "extract" => {
             let variants = decode_sum(context, operand_type(op, 0)?)?;
@@ -137,10 +199,6 @@ pub(crate) fn verify_op<'c>(
                     "extract result type {result} != variant {variant} field {field} type {field_type}"
                 ))
             }
-        }
-        "make_product" => {
-            let fields = decode_product(context, result_type(op)?)?;
-            expect_field_types(op, &fields)
         }
         "get" => {
             let fields = decode_product(context, operand_type(op, 0)?)?;
@@ -174,8 +232,8 @@ pub(crate) fn decode_sum<'c>(
     context: &'c Context,
     r#type: Type<'c>,
 ) -> Result<Vec<Vec<Type<'c>>>, String> {
-    let params = type_params(context, r#type, "!frk_adt.sum<")?;
-    let variants = array_elements(params).map_err(|attribute| {
+    let params = crate::attr_util::type_params(context, r#type, "!frk_adt.sum<", false)?;
+    let variants = crate::attr_util::array_elements(params).map_err(|attribute| {
         format!("sum parameter must be an array of variants, got {attribute}")
     })?;
     variants
@@ -190,15 +248,15 @@ pub(crate) fn decode_product<'c>(
     context: &'c Context,
     r#type: Type<'c>,
 ) -> Result<Vec<Type<'c>>, String> {
-    let fields = type_params(context, r#type, "!frk_adt.product<")?;
+    let fields = crate::attr_util::type_params(context, r#type, "!frk_adt.product<", false)?;
     decode_field_list(fields, "product")
 }
 
-fn decode_field_list<'c>(
+pub(crate) fn decode_field_list<'c>(
     fields: Attribute<'c>,
     what: &str,
 ) -> Result<Vec<Type<'c>>, String> {
-    let fields = array_elements(fields).map_err(|attribute| {
+    let fields = crate::attr_util::array_elements(fields).map_err(|attribute| {
         format!("{what} must be an array of field types, got {attribute}")
     })?;
     fields
@@ -210,38 +268,6 @@ fn decode_field_list<'c>(
                 .map_err(|_| format!("{what} field {index} must be a type, got {field}"))
         })
         .collect()
-}
-
-/// Walks a builtin ArrayAttr through the C API. melior 0.27.2's
-/// `ArrayAttribute::try_from` is miswired to `is_dense_i64_array`
-/// (melior src/ir/attribute/array.rs:54) and so rejects every genuine
-/// array — pinned in docs/LANDSCAPE.md. Delete this shim when the fix
-/// lands upstream.
-fn array_elements<'c>(attribute: Attribute<'c>) -> Result<Vec<Attribute<'c>>, Attribute<'c>> {
-    if !attribute.is_array() {
-        return Err(attribute);
-    }
-    let raw = attribute.to_raw();
-    let count = unsafe { mlir_sys::mlirArrayAttrGetNumElements(raw) };
-    Ok((0..count)
-        .map(|index| unsafe {
-            Attribute::from_raw(mlir_sys::mlirArrayAttrGetElement(raw, index))
-        })
-        .collect())
-}
-
-fn type_params<'c>(
-    context: &'c Context,
-    r#type: Type<'c>,
-    prefix: &str,
-) -> Result<Attribute<'c>, String> {
-    let printed = r#type.to_string();
-    let inner = printed
-        .strip_prefix(prefix)
-        .and_then(|rest| rest.strip_suffix('>'))
-        .ok_or_else(|| format!("expected {prefix}...>, got {printed}"))?;
-    Attribute::parse(context, inner)
-        .ok_or_else(|| format!("unparsable type parameters: {inner}"))
 }
 
 pub(crate) fn index_attr(op: OperationRef<'_, '_>, name: &str) -> Result<usize, String> {
@@ -268,21 +294,3 @@ fn operand_type<'c>(op: OperationRef<'c, '_>, index: usize) -> Result<Type<'c>, 
         .r#type())
 }
 
-fn expect_field_types(op: OperationRef<'_, '_>, fields: &[Type<'_>]) -> Result<(), String> {
-    if op.operand_count() != fields.len() {
-        return Err(format!(
-            "{} operand(s) for {} field(s)",
-            op.operand_count(),
-            fields.len()
-        ));
-    }
-    for (index, field_type) in fields.iter().enumerate() {
-        let actual = operand_type(op, index)?;
-        if actual != *field_type {
-            return Err(format!(
-                "operand {index} has type {actual}, field expects {field_type}"
-            ));
-        }
-    }
-    Ok(())
-}

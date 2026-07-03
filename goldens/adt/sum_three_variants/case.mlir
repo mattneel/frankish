@@ -1,10 +1,13 @@
 //
-// Three variants, the chosen one carrying two fields. Dispatch picks
-// variant 2, extracts (40, 2): 40 + 2 = 42, plus tag*100 = 242.
+// Three variants, the chosen one carrying two fields (packed, D-036).
+// Dispatch picks variant 2, extracts (40, 2): 40 + 2 = 42, +tag*100 = 242.
 func.func @main() -> i64 attributes {llvm.emit_c_interface} {
   %a = arith.constant 40 : i64
   %b = arith.constant 2 : i64
-  %s = "frk_adt.make_sum"(%a, %b) {variant = 2 : i64} : (i64, i64) -> !frk_adt.sum<[[], [i64], [i64, i64]]>
+  %e = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
+  %p1 = "frk_adt.product_snoc"(%e, %a) : (!frk_adt.product<[]>, i64) -> !frk_adt.product<[i64]>
+  %p = "frk_adt.product_snoc"(%p1, %b) : (!frk_adt.product<[i64]>, i64) -> !frk_adt.product<[i64, i64]>
+  %s = "frk_adt.make_sum"(%p) {variant = 2 : i64} : (!frk_adt.product<[i64, i64]>) -> !frk_adt.sum<[[], [i64], [i64, i64]]>
   %tag = "frk_adt.tag_of"(%s) : (!frk_adt.sum<[[], [i64], [i64, i64]]>) -> i64
   cf.switch %tag : i64, [
     default: ^other,

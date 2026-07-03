@@ -1,7 +1,6 @@
-//! K3 verifiers for the frk.adt lowering (law L1: landed with the
-//! pass). Structural properties checked here; *semantic* equivalence is
-//! enforced corpus-wide by the differential law the moment the adt
-//! goldens run under both interp and jit.
+//! K3 verifiers for the frk.adt lowering (packed surface, D-036; law
+//! L1). Structural checks here; semantic equivalence is the corpus's
+//! job under the differential law.
 
 use melior::Context;
 use melior::ir::Module;
@@ -27,6 +26,8 @@ fn lower(context: &Context, source: &str) -> Result<String, ()> {
 }
 
 const OPTION_I64: &str = "!frk_adt.sum<[[], [i64]]>";
+const P_EMPTY: &str = "!frk_adt.product<[]>";
+const P_I64: &str = "!frk_adt.product<[i64]>";
 
 #[test]
 fn lowering_eliminates_frk_ops_and_types() {
@@ -36,7 +37,9 @@ fn lowering_eliminates_frk_ops_and_types() {
         &format!(
             r#"func.func @main() -> i64 {{
                 %x = arith.constant 41 : i64
-                %s = "frk_adt.make_sum"(%x) {{variant = 1 : i64}} : (i64) -> {OPTION_I64}
+                %e = "frk_adt.product_new"() : () -> {P_EMPTY}
+                %p = "frk_adt.product_snoc"(%e, %x) : ({P_EMPTY}, i64) -> {P_I64}
+                %s = "frk_adt.make_sum"(%p) {{variant = 1 : i64}} : ({P_I64}) -> {OPTION_I64}
                 %t = "frk_adt.tag_of"(%s) : ({OPTION_I64}) -> i64
                 %v = "frk_adt.extract"(%s) {{variant = 1 : i64, field = 0 : i64}} : ({OPTION_I64}) -> i64
                 %r = arith.addi %t, %v : i64
@@ -54,20 +57,18 @@ fn lowering_eliminates_frk_ops_and_types() {
 #[test]
 fn narrow_fields_widen_into_slots_and_back() {
     let context = adt_context();
-    let sum = "!frk_adt.sum<[[i1]]>";
     let lowered = lower(
         &context,
-        &format!(
-            r#"func.func @main() -> i64 {{
-                %b = arith.constant true
-                %s = "frk_adt.make_sum"(%b) {{variant = 0 : i64}} : (i1) -> {sum}
-                %v = "frk_adt.extract"(%s) {{variant = 0 : i64, field = 0 : i64}} : ({sum}) -> i1
-                %one = arith.constant 1 : i64
-                %zero = arith.constant 0 : i64
-                %r = arith.select %v, %one, %zero : i64
-                return %r : i64
-            }}"#
-        ),
+        r#"func.func @main() -> i64 {
+            %b = arith.constant true
+            %e = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
+            %p = "frk_adt.product_snoc"(%e, %b) : (!frk_adt.product<[]>, i1) -> !frk_adt.product<[i1]>
+            %v = "frk_adt.get"(%p) {field = 0 : i64} : (!frk_adt.product<[i1]>) -> i1
+            %one = arith.constant 1 : i64
+            %zero = arith.constant 0 : i64
+            %r = arith.select %v, %one, %zero : i64
+            return %r : i64
+        }"#,
     )
     .expect("lowering must succeed");
     assert!(lowered.contains("arith.extui"), "{lowered}");
@@ -94,7 +95,9 @@ fn signatures_and_block_arguments_convert() {
             }}
             func.func @main() -> i64 {{
                 %x = arith.constant 42 : i64
-                %some = "frk_adt.make_sum"(%x) {{variant = 1 : i64}} : (i64) -> {OPTION_I64}
+                %e = "frk_adt.product_new"() : () -> {P_EMPTY}
+                %p = "frk_adt.product_snoc"(%e, %x) : ({P_EMPTY}, i64) -> {P_I64}
+                %some = "frk_adt.make_sum"(%p) {{variant = 1 : i64}} : ({P_I64}) -> {OPTION_I64}
                 %r = func.call @through(%some) : ({OPTION_I64}) -> i64
                 return %r : i64
             }}"#
@@ -105,15 +108,16 @@ fn signatures_and_block_arguments_convert() {
 }
 
 #[test]
-fn nested_adt_fields_fail_the_pass_loudly() {
+fn non_integer_fields_fail_the_pass_loudly() {
     let context = adt_context();
-    let nested = "!frk_adt.sum<[[!frk_adt.product<[i64]>]]>";
+    // A product field of sum type — fenced in v0 (D-032).
     let result = lower(
         &context,
         &format!(
-            r#"func.func @main(%p: !frk_adt.product<[i64]>) -> {nested} {{
-                %s = "frk_adt.make_sum"(%p) {{variant = 0 : i64}} : (!frk_adt.product<[i64]>) -> {nested}
-                return %s : {nested}
+            r#"func.func @main(%s: {OPTION_I64}) -> !frk_adt.product<[{OPTION_I64}]> {{
+                %e = "frk_adt.product_new"() : () -> {P_EMPTY}
+                %p = "frk_adt.product_snoc"(%e, %s) : ({P_EMPTY}, {OPTION_I64}) -> !frk_adt.product<[{OPTION_I64}]>
+                return %p : !frk_adt.product<[{OPTION_I64}]>
             }}"#
         ),
     );

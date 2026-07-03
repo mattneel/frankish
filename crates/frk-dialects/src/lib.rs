@@ -11,6 +11,8 @@ pub mod adt;
 pub mod adt_dtree;
 mod adt_eval;
 mod adt_lower;
+mod attr_util;
+pub mod closure;
 pub mod verify;
 
 pub use adt_eval::register_eval;
@@ -48,7 +50,11 @@ impl std::error::Error for RegisterError {}
 /// Precondition: the upstream `irdl` dialect is loaded in `context` —
 /// `frk_core::context()` qualifies (it loads all available dialects).
 pub fn register(context: &Context) -> Result<(), RegisterError> {
-    register_one(context, adt::IRDL, "frk_adt")
+    // One combined module: frk_closure's IRDL references
+    // @frk_adt::@product, and IRDL symbol refs resolve only within the
+    // module being loaded.
+    let combined = format!("{}\n{}", adt::IRDL, closure::IRDL);
+    register_one(context, &combined, "frk kernel dialects")
 }
 
 fn register_one(

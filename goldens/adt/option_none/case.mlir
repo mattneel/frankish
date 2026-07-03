@@ -1,8 +1,9 @@
 //
-// The None arm of the same match shape: no payload, dispatch lands on
-// the tag-0 successor. None → 0.
+// The None arm of the same match shape: empty payload product, dispatch
+// lands on the tag-0 successor. None → 0.
 func.func @main() -> i64 attributes {llvm.emit_c_interface} {
-  %s = "frk_adt.make_sum"() {variant = 0 : i64} : () -> !frk_adt.sum<[[], [i64]]>
+  %e = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
+  %s = "frk_adt.make_sum"(%e) {variant = 0 : i64} : (!frk_adt.product<[]>) -> !frk_adt.sum<[[], [i64]]>
   %tag = "frk_adt.tag_of"(%s) : (!frk_adt.sum<[[], [i64]]>) -> i64
   cf.switch %tag : i64, [
     default: ^unreachable,

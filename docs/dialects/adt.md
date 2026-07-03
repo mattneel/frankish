@@ -12,13 +12,20 @@ de-regioned match), D-032 (lowering), D-034 (dtree pass scope).
 Parameters are nested type-array attributes. IRDL constrains kinds and
 bases; deep shape invariants live in the frk verification pass.
 
-## Ops (all pure value ops — no regions, no terminators; D-031)
+## Ops (pure value ops — no regions, no terminators, no variadics;
+## D-031 + D-036)
 
-    %s = "frk_adt.make_sum"(%f...) {variant = V : i64} : (...) -> sum
+    %e = "frk_adt.product_new"()                       : () -> product<[]>
+    %p = "frk_adt.product_snoc"(%e, %v)                : (product, T) -> product+T
+    %s = "frk_adt.make_sum"(%p) {variant = V : i64}    : (payload product) -> sum
     %t = "frk_adt.tag_of"(%s)                          : (sum) -> i64
     %v = "frk_adt.extract"(%s) {variant, field}        : (sum) -> <field type>
-    %p = "frk_adt.make_product"(%f...)                 : (...) -> product
     %v = "frk_adt.get"(%p) {field}                     : (product) -> <field type>
+
+Heterogeneous payloads flow through explicit product chains — IRDL-22
+unifies every element of a variadic group to one type, so variadic op
+surfaces cannot carry mixed-type fields at all (D-036; proven by
+make_sum(i64, i1) being parse-rejected under the original design).
 
 There is deliberately no `match` op: dispatch is `tag_of` +
 `cf.switch` + per-arm tag-guarded `extract`, produced from a pattern

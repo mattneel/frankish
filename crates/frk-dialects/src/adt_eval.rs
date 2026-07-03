@@ -16,15 +16,45 @@ use melior::ir::operation::OperationLike;
 /// Registers the frk.adt evaluators into an interpreter. Harness runners
 /// call this right after `Interp::new`.
 pub fn register_eval(interp: &mut Interp<'_, '_>) {
+    interp.register_eval("frk_adt.product_new", Box::new(ProductNew));
+    interp.register_eval("frk_adt.product_snoc", Box::new(ProductSnoc));
     interp.register_eval("frk_adt.make_sum", Box::new(MakeSum));
     interp.register_eval("frk_adt.tag_of", Box::new(TagOf));
     interp.register_eval("frk_adt.extract", Box::new(Extract));
-    interp.register_eval("frk_adt.make_product", Box::new(MakeProduct));
     interp.register_eval("frk_adt.get", Box::new(Get));
 }
 
 fn index_attr(op: OperationRef<'_, '_>, name: &str) -> Result<usize, EvalError> {
     crate::adt::index_attr(op, name).map_err(EvalError::Malformed)
+}
+
+struct ProductNew;
+impl Eval for ProductNew {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        continue_with_result(frame, op, Value::adt(0, Vec::new()))
+    }
+}
+
+struct ProductSnoc;
+impl Eval for ProductSnoc {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let mut values = operand_values(frame, op, 0, 2)?;
+        let appended = values.pop().expect("two operands");
+        let (_, fields) = values[0].as_adt()?;
+        let mut fields = fields.to_vec();
+        fields.push(appended);
+        continue_with_result(frame, op, Value::adt(0, fields))
+    }
 }
 
 struct MakeSum;
@@ -36,8 +66,11 @@ impl Eval for MakeSum {
         op: OperationRef<'c, 'a>,
     ) -> Result<Step<'c, 'a>, EvalError> {
         let variant = index_attr(op, "variant")?;
-        let fields = operand_values(frame, op, 0, op.operand_count())?;
-        continue_with_result(frame, op, Value::adt(variant, fields))
+        let payload = frame.get(op.operand(0).map_err(|_| {
+            EvalError::Malformed("frk_adt.make_sum without a payload".into())
+        })?)?;
+        let (_, fields) = payload.as_adt()?;
+        continue_with_result(frame, op, Value::adt(variant, fields.to_vec()))
     }
 }
 
@@ -83,19 +116,6 @@ impl Eval for Extract {
             ))
         })?;
         continue_with_result(frame, op, field_value.clone())
-    }
-}
-
-struct MakeProduct;
-impl Eval for MakeProduct {
-    fn eval<'c, 'a>(
-        &self,
-        _interp: &Interp<'c, 'a>,
-        frame: &mut Frame,
-        op: OperationRef<'c, 'a>,
-    ) -> Result<Step<'c, 'a>, EvalError> {
-        let fields = operand_values(frame, op, 0, op.operand_count())?;
-        continue_with_result(frame, op, Value::adt(0, fields))
     }
 }
 

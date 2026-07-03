@@ -65,11 +65,13 @@ pub fn lower_adt_pass() -> Pass {
 }
 
 enum Planned<'c, 'a> {
+    /// make_sum: tag slot + verbatim copy of the payload product's
+    /// (already-widened) slots.
     MakeSum {
         op: OperationRef<'c, 'a>,
         tag: i64,
         container: Type<'c>,
-        widths: Vec<u32>,
+        payload_slots: usize,
     },
     TagOf {
         op: OperationRef<'c, 'a>,
@@ -79,10 +81,16 @@ enum Planned<'c, 'a> {
         slot: i64,
         width: u32,
     },
-    MakeProduct {
+    ProductNew {
         op: OperationRef<'c, 'a>,
         container: Type<'c>,
-        widths: Vec<u32>,
+    },
+    /// product_snoc: copy old slots verbatim, widen and append one.
+    ProductSnoc {
+        op: OperationRef<'c, 'a>,
+        container: Type<'c>,
+        old_slots: usize,
+        width: u32,
     },
 }
 
@@ -182,19 +190,39 @@ fn plan_op<'c, 'a>(
     };
 
     match suffix {
+        "product_new" => Ok(Planned::ProductNew {
+            op,
+            container: map_type(context, result_type()?)?,
+        }),
+        "product_snoc" => {
+            let old_fields = decode_product(context, operand_type()?)?;
+            field_widths(&old_fields)?;
+            let appended = op
+                .operand(1)
+                .map_err(|_| "snoc without a value operand".to_string())?
+                .r#type();
+            let width = field_widths(&[appended])?[0];
+            Ok(Planned::ProductSnoc {
+                op,
+                container: map_type(context, result_type()?)?,
+                old_slots: old_fields.len(),
+                width,
+            })
+        }
         "make_sum" => {
             let variants = decode_sum(context, result_type()?)?;
             let tag = index("variant")? as i64;
-            let widths = field_widths(
+            field_widths(
                 variants
                     .get(tag as usize)
                     .ok_or_else(|| format!("variant {tag} out of range"))?,
             )?;
+            let payload = decode_product(context, operand_type()?)?;
             Ok(Planned::MakeSum {
                 op,
                 tag,
                 container: map_type(context, result_type()?)?,
-                widths,
+                payload_slots: payload.len(),
             })
         }
         "tag_of" => Ok(Planned::TagOf { op }),
@@ -216,14 +244,7 @@ fn plan_op<'c, 'a>(
                 width,
             })
         }
-        "make_product" => {
-            let fields = decode_product(context, result_type()?)?;
-            Ok(Planned::MakeProduct {
-                op,
-                container: map_type(context, result_type()?)?,
-                widths: field_widths(&fields)?,
-            })
-        }
+
         "get" => {
             let fields = decode_product(context, operand_type()?)?;
             let field = index("field")?;
@@ -386,7 +407,7 @@ fn apply<'c>(
             op,
             tag,
             container,
-            widths,
+            payload_slots,
         } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
@@ -406,36 +427,68 @@ fn apply<'c>(
                 location,
             )))?;
 
-            for (index, width) in widths.iter().enumerate() {
-                let field = widened(context, rewriter, operand(op, index)?, *width, location)?;
+            // Payload slots are already widened i64s — copy verbatim.
+            let payload = operand(op, 0)?;
+            for index in 0..payload_slots {
+                let slot = result_value(rewriter.insert(llvm::extract_value(
+                    context,
+                    payload,
+                    DenseI64ArrayAttribute::new(context, &[index as i64]),
+                    i64_type,
+                    location,
+                )))?;
                 acc = result_value(rewriter.insert(llvm::insert_value(
                     context,
                     acc,
                     DenseI64ArrayAttribute::new(context, &[1 + index as i64]),
-                    field,
+                    slot,
                     location,
                 )))?;
             }
             finish(rewriter, op, acc)
         }
-        Planned::MakeProduct {
+        Planned::ProductNew { op, container } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let acc = result_value(rewriter.insert(llvm::undef(container, location)))?;
+            finish(rewriter, op, acc)
+        }
+        Planned::ProductSnoc {
             op,
             container,
-            widths,
+            old_slots,
+            width,
         } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
             let mut acc = result_value(rewriter.insert(llvm::undef(container, location)))?;
-            for (index, width) in widths.iter().enumerate() {
-                let field = widened(context, rewriter, operand(op, index)?, *width, location)?;
+
+            let old = operand(op, 0)?;
+            for index in 0..old_slots {
+                let slot = result_value(rewriter.insert(llvm::extract_value(
+                    context,
+                    old,
+                    DenseI64ArrayAttribute::new(context, &[index as i64]),
+                    i64_type,
+                    location,
+                )))?;
                 acc = result_value(rewriter.insert(llvm::insert_value(
                     context,
                     acc,
                     DenseI64ArrayAttribute::new(context, &[index as i64]),
-                    field,
+                    slot,
                     location,
                 )))?;
             }
+            let appended = widened(context, rewriter, operand(op, 1)?, width, location)?;
+            acc = result_value(rewriter.insert(llvm::insert_value(
+                context,
+                acc,
+                DenseI64ArrayAttribute::new(context, &[old_slots as i64]),
+                appended,
+                location,
+            )))?;
             finish(rewriter, op, acc)
         }
     }

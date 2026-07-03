@@ -1,15 +1,14 @@
-//! K1 smoke for frk.adt (M3 step 1; law L1: these verifiers land with
-//! the dialect definition itself). IRDL-enforceable shape properties are
-//! proven here — positive round-trip, targeted negatives, type
-//! round-trip, builder construction. Semantic invariants beyond IRDL
-//! (index ranges, extract result = field type) belong to the frk
-//! verification pass, arriving as K1's second half.
+//! K1 smoke for frk.adt (packed surface, D-036; law L1). IRDL-enforceable
+//! shape properties — positive round-trip (including MIXED-TYPE fields,
+//! the case that forced D-036), targeted negatives, type round-trip,
+//! builder construction. Semantic invariants beyond IRDL live in the frk
+//! verification pass (tests/adt_verify.rs).
 
 use melior::Context;
-use melior::ir::attribute::{IntegerAttribute, StringAttribute, TypeAttribute};
+use melior::ir::attribute::{StringAttribute, TypeAttribute};
 use melior::ir::operation::{OperationBuilder, OperationLike};
-use melior::ir::r#type::{FunctionType, IntegerType};
-use melior::ir::{Block, BlockLike, Identifier, Location, Module, Region, RegionLike, Type};
+use melior::ir::r#type::FunctionType;
+use melior::ir::{Block, BlockLike, Location, Module, Region, RegionLike, Type};
 
 fn adt_context() -> Context {
     let context = frk_core::context();
@@ -17,19 +16,20 @@ fn adt_context() -> Context {
     context
 }
 
-/// Option<i64>-shaped sum plus a pair product, exercised end to end.
-/// Note extract's variant=1/field=0: independently-valued attributes —
-/// the regression surface for IRDL's value-unifying constraint vars.
+/// Mixed-type fields end to end — inexpressible under the old variadic
+/// surface (IRDL unifies variadic elements; D-036), fine when packed.
 const WELL_TYPED: &str = r#"
-func.func @main(%x: i64) -> i64 {
-  %some = "frk_adt.make_sum"(%x) {variant = 1 : i64} : (i64) -> !frk_adt.sum<[[], [i64]]>
-  %none = "frk_adt.make_sum"() {variant = 0 : i64} : () -> !frk_adt.sum<[[], [i64]]>
-  %tag = "frk_adt.tag_of"(%some) : (!frk_adt.sum<[[], [i64]]>) -> i64
-  %val = "frk_adt.extract"(%some) {variant = 1 : i64, field = 0 : i64} : (!frk_adt.sum<[[], [i64]]>) -> i64
-  %pair = "frk_adt.make_product"(%tag, %val) : (i64, i64) -> !frk_adt.product<[i64, i64]>
-  %fst = "frk_adt.get"(%pair) {field = 0 : i64} : (!frk_adt.product<[i64, i64]>) -> i64
-  %sum = arith.addi %fst, %val : i64
-  return %sum : i64
+func.func @main(%x: i64, %b: i1) -> i64 {
+  %e = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
+  %p1 = "frk_adt.product_snoc"(%e, %x) : (!frk_adt.product<[]>, i64) -> !frk_adt.product<[i64]>
+  %p2 = "frk_adt.product_snoc"(%p1, %b) : (!frk_adt.product<[i64]>, i1) -> !frk_adt.product<[i64, i1]>
+  %s = "frk_adt.make_sum"(%p2) {variant = 0 : i64} : (!frk_adt.product<[i64, i1]>) -> !frk_adt.sum<[[i64, i1]]>
+  %tag = "frk_adt.tag_of"(%s) : (!frk_adt.sum<[[i64, i1]]>) -> i64
+  %val = "frk_adt.extract"(%s) {variant = 0 : i64, field = 0 : i64} : (!frk_adt.sum<[[i64, i1]]>) -> i64
+  %fst = "frk_adt.get"(%p2) {field = 0 : i64} : (!frk_adt.product<[i64, i1]>) -> i64
+  %sum = arith.addi %tag, %val : i64
+  %out = arith.addi %sum, %fst : i64
+  return %out : i64
 }
 "#;
 
@@ -47,7 +47,7 @@ fn registration_succeeds_on_a_frk_context() {
 }
 
 #[test]
-fn well_typed_adt_program_parses_and_verifies() {
+fn well_typed_mixed_field_program_parses_and_verifies() {
     let context = adt_context();
     let module = Module::parse(&context, WELL_TYPED).expect("well-typed program must parse");
     assert!(module.as_operation().verify());
@@ -58,8 +58,7 @@ fn tag_of_result_must_be_i64() {
     let context = adt_context();
     rejects(
         &context,
-        r#"func.func @main(%x: i64) -> i32 {
-            %s = "frk_adt.make_sum"(%x) {variant = 0 : i64} : (i64) -> !frk_adt.sum<[[i64]]>
+        r#"func.func @main(%s: !frk_adt.sum<[[i64]]>) -> i32 {
             %t = "frk_adt.tag_of"(%s) : (!frk_adt.sum<[[i64]]>) -> i32
             return %t : i32
         }"#,
@@ -80,8 +79,7 @@ fn sum_ops_reject_non_sum_operands() {
     );
     rejects(
         &context,
-        r#"func.func @main(%x: i64) -> i64 {
-            %p = "frk_adt.make_product"(%x) : (i64) -> !frk_adt.product<[i64]>
+        r#"func.func @main(%p: !frk_adt.product<[i64]>) -> i64 {
             %t = "frk_adt.tag_of"(%p) : (!frk_adt.product<[i64]>) -> i64
             return %t : i64
         }"#,
@@ -90,16 +88,23 @@ fn sum_ops_reject_non_sum_operands() {
 }
 
 #[test]
-fn make_sum_requires_the_variant_attribute() {
+fn make_sum_requires_the_variant_attribute_and_a_product_payload() {
     let context = adt_context();
     rejects(
         &context,
-        r#"func.func @main(%x: i64) -> i64 {
-            %s = "frk_adt.make_sum"(%x) : (i64) -> !frk_adt.sum<[[i64]]>
-            %t = "frk_adt.tag_of"(%s) : (!frk_adt.sum<[[i64]]>) -> i64
-            return %t : i64
+        r#"func.func @main(%p: !frk_adt.product<[i64]>) -> !frk_adt.sum<[[i64]]> {
+            %s = "frk_adt.make_sum"(%p) : (!frk_adt.product<[i64]>) -> !frk_adt.sum<[[i64]]>
+            return %s : !frk_adt.sum<[[i64]]>
         }"#,
         "make_sum without {variant}",
+    );
+    rejects(
+        &context,
+        r#"func.func @main(%x: i64) -> !frk_adt.sum<[[i64]]> {
+            %s = "frk_adt.make_sum"(%x) {variant = 0 : i64} : (i64) -> !frk_adt.sum<[[i64]]>
+            return %s : !frk_adt.sum<[[i64]]>
+        }"#,
+        "make_sum over a bare integer payload",
     );
 }
 
@@ -110,6 +115,7 @@ fn adt_types_round_trip_through_print_and_parse() {
         "!frk_adt.sum<[[], [i64]]>",
         "!frk_adt.sum<[[i64, i1], [i64]]>",
         "!frk_adt.product<[i64, i64]>",
+        "!frk_adt.product<[]>",
     ] {
         let parsed = Type::parse(&context, spelling).expect("type must parse");
         assert_eq!(parsed.to_string(), spelling);
@@ -117,31 +123,24 @@ fn adt_types_round_trip_through_print_and_parse() {
 }
 
 #[test]
-fn make_sum_is_constructible_with_the_builder_api() {
+fn the_packed_chain_is_constructible_with_the_builder_api() {
     let context = adt_context();
     let location = Location::unknown(&context);
 
-    let i64_type: Type = IntegerType::new(&context, 64).into();
-    let sum_type = Type::parse(&context, "!frk_adt.sum<[[], [i64]]>").unwrap();
+    let empty = Type::parse(&context, "!frk_adt.product<[]>").unwrap();
 
-    let block = Block::new(&[(i64_type, location)]);
-    let make = OperationBuilder::new("frk_adt.make_sum", location)
-        .add_operands(&[block.argument(0).unwrap().into()])
-        .add_attributes(&[(
-            Identifier::new(&context, "variant"),
-            IntegerAttribute::new(i64_type, 1).into(),
-        )])
-        .add_results(&[sum_type])
-        .build()
-        .expect("builder must construct make_sum");
-    let make = block.append_operation(make);
-    assert!(make.verify(), "built make_sum must pass the IRDL verifier");
+    let block = Block::new(&[]);
+    let new = block.append_operation(
+        OperationBuilder::new("frk_adt.product_new", location)
+            .add_results(&[empty])
+            .build()
+            .expect("builder must construct product_new"),
+    );
+    assert!(new.verify(), "built product_new must pass the IRDL verifier");
 
-    // Wrap it in a printable function so the whole construction path is
-    // exercised the way emission will use it.
     block.append_operation(
         OperationBuilder::new("func.return", location)
-            .add_operands(&[make.result(0).unwrap().into()])
+            .add_operands(&[new.result(0).unwrap().into()])
             .build()
             .unwrap(),
     );
@@ -150,7 +149,7 @@ fn make_sum_is_constructible_with_the_builder_api() {
     let function = melior::dialect::func::func(
         &context,
         StringAttribute::new(&context, "build_smoke"),
-        TypeAttribute::new(FunctionType::new(&context, &[i64_type], &[sum_type]).into()),
+        TypeAttribute::new(FunctionType::new(&context, &[], &[empty]).into()),
         region,
         &[],
         location,
@@ -159,7 +158,10 @@ fn make_sum_is_constructible_with_the_builder_api() {
     module.body().append_operation(function);
     assert!(module.as_operation().verify());
     assert!(
-        module.as_operation().to_string().contains("frk_adt.make_sum"),
+        module
+            .as_operation()
+            .to_string()
+            .contains("frk_adt.product_new"),
         "dialect ops must print under their own namespace"
     );
 }

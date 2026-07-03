@@ -173,6 +173,45 @@ veto-ledger pattern and most deserve their review.
   guards). IR emission from trees lands with its first consumer
   (ml_core, M5), never speculatively. Revisit: both deferrals at the
   M5 manifest freeze.
+- D-036 [dialects] **No variadic operand/result groups in kernel
+  dialects** — hardening D-031 with a newly proven ceiling: LLVM-22
+  IRDL constraint variables bind once per op instance, so every
+  element of a variadic group unifies to ONE type; heterogeneous
+  variadics are inexpressible (proof: make_sum(i64, i1) is rejected at
+  parse — "expected 'i64' but got 'i1'" — meaning M3's variadic op
+  surface never supported mixed-type fields; the corpus passed only
+  because it was uniformly typed. Filed as a first-rank finding).
+  Response: explicit packing. frk_adt: make_product is replaced by
+  product_new() + product_snoc(product, value) chains; make_sum takes
+  ONE payload operand of the variant's product type. frk_closure:
+  make(env product) {callee}; apply(closure, args product) yields
+  exactly one result (multi-result closures deferred — every v1
+  specimen is single-valued). Deep typing stays in the frk semantic
+  pass (unchanged in strength). Rationale: ≤2 operands and ≤1 result
+  per op means every IRDL variable sits in one position — sound by
+  construction; packing chains are honest ANF-style kernel IR that
+  frontends/emission produce mechanically. Revisit: if upstream IRDL
+  gains per-element fresh variables, variadic surfaces may return
+  (goldens re-blessed under L2).
+- D-035 [closure] v0 strategy rulings, made ahead of code. (1) The
+  lowering is SPEC §4.2's primary env-struct + function pointer:
+  closure value = !llvm.struct<(ptr thunk, ptr env)>; envs come from
+  frk-rt's first real component, frk_rt_alloc (documented C ABI; v0
+  implementation = leaking bump allocator — the arena/rc discipline
+  replaces the implementation behind the same symbol at M7); one
+  synthesized thunk per make-site loads captures and calls the lifted
+  callee. Rationale: church encoding requires upward escape, which
+  kills stack envs; and same-signature closure capture makes flat
+  defunctionalization statically unbounded — heap indirection is
+  forced, so K4 activates now instead of M7. (2) Defunctionalization
+  (the no-heap whole-program strategy) is deferred until a Tier-0
+  profile demands it. (3) Captures are by-value; capture *analysis*
+  (by-val vs by-ref) becomes meaningful when frk.mem introduces
+  locations. (4) Boundary fence: closure signature types and capture
+  types are builtin integers ≤64 and closure types; adt captures wait
+  for a shared layout oracle (the closure×adt matrix cell is costed
+  and deferred). Calling convention: the lifted callee takes captures
+  first, then params. Revisit: every clause at M7 (frk.mem).
 - D-033 [harness] Golden cases may declare runner applicability
   (`// frk-case: runners=a,b`; default all) per SPEC §7.2 "all
   applicable runners" — for op sets ahead of some execution path.

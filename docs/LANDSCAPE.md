@@ -36,7 +36,13 @@ quarter before depending on it, and update this file when you do.
   declarations: dynamic ops cannot be terminators ("block with no
   terminator"), cannot carry successors ("successors in
   non-terminator"), cannot relax block-terminator rules on their
-  regions. Kernel dialects are therefore designed trait-free — no
+  regions. ALSO: constraint variables bind once per op instance, so
+  every element of a `variadic` group unifies to one type —
+  heterogeneous variadic operands/results are inexpressible (proven:
+  make_sum(i64, i1) parse-rejected). Kernel dialects therefore use
+  explicit product packing instead of variadics (D-036). FlatSymbolRef
+  has no registered name of its own — `irdl.base
+  "#builtin.symbol_ref"` is the spelling. Kernel dialects are therefore designed trait-free — no
   region ops with custom terminators (D-031; the C++-shim alternative,
   D-030, was struck by the human). Proof lives in
   crates/frk-dialects/tests/registration.rs. For the record: apt's
