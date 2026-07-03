@@ -15,10 +15,11 @@ route would have spelled it.
 Start here: `AGENTS.md` (law) → `docs/SPEC.md` (design) →
 `docs/DECISIONS.md` (ledger) → `STATE.md` (now).
 
-Status: M3 done — the first kernel dialect is real. frk.adt (sums,
-products, tag dispatch — no match op, by design) is IRDL-registered,
-semantically verified, interpreted, and compiled through its own MLIR
-lowering pass, with the interpreter and JIT byte-equal on a 12-case
-corpus at every `make test`. Pattern matching compiles via a Maranget
-decision-tree pass with byte-exact tree goldens. Green from a clean
-clone: `make setup && make build && make test`.
+Status: M4 done — two kernel dialects are real. frk.adt (sums,
+products, tag dispatch) and frk.closure (first-class functions with
+heap environments from frk-rt, church encoding included) are
+IRDL-registered, semantically verified, interpreted, and compiled
+through one kernel lowering pass — interpreter and JIT byte-equal on a
+15-case corpus at every `make test`. Pattern matching compiles via a
+Maranget decision-tree pass with byte-exact tree goldens. Green from a
+clean clone: `make setup && make build && make test`.

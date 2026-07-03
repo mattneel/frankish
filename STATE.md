@@ -1,56 +1,74 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-02 (M0..M3 sessions)
-Phase: M3 complete (tag m3-done); M4 not started.
+Updated: 2026-07-03 (M0..M4 sessions)
+Phase: M4 complete (tag m4-done); M5 not started.
 Tree: green — `make test` passes; clean-clone scripts/ci.sh verified
-(exit 0, 22 green blocks); `make diff`: 12 cases, interp vs jit, 0
+(exit 0, 24 green blocks); `make diff`: 15 cases, interp vs jit, 0
 divergent.
 
 ## Next action
-M4 frk.closure, in flight. DONE so far: D-035 (strategy: env-struct +
-fn ptr on frk-rt heap — church's upward escape kills stack envs and
-same-signature capture kills flat defunc, so K4 activates now;
-defunc + by-ref captures deferred to M7; boundary fence = integers +
-closure types) and D-036 (the variadic ceiling discovery → packed op
-surfaces for BOTH dialects; adt redesigned to product_new/product_snoc
-/make_sum(payload); closure K1 packed from birth: make(env product)
-{callee} / apply(closure, args product) -> one result; combined IRDL
-module load; symbol-table-aware verify driver; corpus at 13 incl.
-mixed_fields, 0 divergent). Remaining, in order:
-1. K2: Value::Closure { callee, captures } in frk-interp; closure
-   Eval impls in frk-dialects (make snapshots env fields; apply
-   re-enters eval_function with captures ++ unpacked args); interp
-   tests incl. the church shape end to end (expect 42).
-2. K4: frk_rt_alloc in frk-rt — #[no_mangle] extern "C",
-   v0 = leaking bump (documented); unit test; K4 doc note.
-3. K3: closure lowering pass ("lower-frk-closure", pipeline slot
-   AFTER lower-frk-adt so captures/args arrive as lowered structs):
-   fn type → !llvm.struct<(ptr, ptr)>; make → frk_rt_alloc(env bytes)
-   + stores + addressof thunk; apply → extractvalue ×2 + indirect
-   llvm.call with unpacked args; synthesized thunk per make-site
-   (loads env slots, calls lifted callee). JIT runner registers the
-   frk_rt_alloc symbol via ExecutionEngine::register_symbol.
-4. K5: goldens/closure — church (apply(two_outer(inc-closure), 40) =
-   42, upward escape) + counter_fold (scf.for applying +3 four times
-   from 30 = 42; the STATEFUL counter waits for frk.mem — note it);
-   runners=interp first, delete after K3 (D-033 choreography).
-5. K6 page + K7 sweep + m4-done.
-Exit: church-encoding + counter goldens green under diff.
+M5 ml_core v0 per docs/SPEC.md §13 (read SPEC §6, §8 and
+specimens/ml_core/MANIFEST.md first — session protocol step 5 now
+applies for real): parser scaffold (tree-sitter or hand-rolled per
+D-019's scaffolding allowance), HM via the type kit (ena
+unification), lowering to kernel dialects (adt + closure are ready
+and battle-tested; the decision-tree pass awaits its first consumer —
+emission from trees is the D-034 deferred piece that M5 must build),
+vendored conformance corpus, ocaml as the third oracle
+(LANDSCAPE: ocaml executable + min-caml sources as readable spec),
+dashboard row. Big new surfaces: frk-front comes alive (readers,
+binder, type kit), the harness gains per-specimen oracle runners
+(canon §5: LC_ALL=C + same filter), and the corpus gains a specimen
+suite. Watch the D-035/D-032 fences: ml_core programs whose adt
+values cross closure boundaries will hit the layout-oracle gap —
+schedule the widening or fence ml_core's subset accordingly in its
+MANIFEST. Exit: ≥90% manifest conformance; extraction report written.
 
 ## In flight
 Nothing.
 
 ## For the human
 - Review ⚑ D-005 (host stack ruling) in docs/DECISIONS.md — made on your
-  behalf. Evidence through M2 supports it: melior 0.27.2 builds, JITs,
-  walks IR generically (interpreter), runs pass pipelines, and prints IR
-  against LLVM/MLIR 22.1.8 with no binding gap encountered.
+  behalf. Evidence through M4 supports it strongly: melior 0.27.2 has
+  now built two IRDL dialects, an interpreter, two type-changing
+  lowering passes with synthesized functions, external MLIR passes, and
+  JIT symbol registration — one library bug found and shimmed
+  (ArrayAttribute::try_from, LANDSCAPE), zero blocking gaps.
 - RESOLVED 2026-07-02: you struck D-030 → D-031 appended (pure IRDL,
   no C++ shim, trait-free dialect designs; match de-regioned; SPEC §3
   K1 + §4.1 amended). Nothing further needed unless you also want the
   amended §4.1 wording itself adjusted.
 
 ## Milestone log
+m4-done — Shipped: frk.closure, the second kernel dialect, K1–K7
+under D-031/D-035/D-036/D-037 — and the discovery-driven redesign of
+frk.adt that made it possible. First-rank finding: IRDL-22 unifies
+constraint variables across ALL positions including within variadic
+groups → heterogeneous variadics inexpressible → D-036 packed
+surfaces (product_new/product_snoc/make_sum(payload); closure
+make(env)/apply(closure, args) → one result); mixed_fields golden
+proves the previously-inexpressible case both ways. Closure K1: IRDL
+with cross-dialect product refs (combined-module load), deep verifier
+resolving callees through a module symbol table. K2: Value::Closure;
+apply re-enters eval_function (D-029 guard verified through closure
+re-entry); church two(inc)(40)=42 in the interpreter. K4 LIVE:
+frk_rt_alloc in frk-rt (extern C, 8-aligned, leaks by design v0;
+same-symbol replacement at M7). K3 (D-037): ONE lower-frk-kernel pass
+(mutual value nesting forces the merge); slot model int=1/closure=2
+(ptrtoint/inttoptr); make → heap env + slot stores + synthesized
+thunk (address via func.constant + unrealized cast — addressof can't
+name func.func; FuncToLLVM+reconcile fold it); apply → indirect
+llvm.call with exact generic attrs (validated against mlir-opt before
+writing). Church + counter_fold green under BOTH runners: 15 cases 0
+divergent, first contact. K6: docs/dialects/closure.md (incl. the
+honest Tier-0-with-asterisk portability note). Learned: mlir-opt
+--mlir-print-op-generic is the oracle for builder-emitted attribute
+sets; "#builtin.symbol_ref" is FlatSymbolRef's base name; by-value
+capture can't tie a recursive knot (that's a feature until frk.mem).
+Cheats awaiting promotion: none; deferrals all ledgered (defunc,
+by-ref captures, adt-at-closure-boundaries layout oracle, multi-
+result closures — every one gated on M7 or a demanding profile).
+
 m3-done — Shipped: frk.adt, the first kernel dialect, full K1–K7
 under D-031 (pure IRDL, trait-free, no match op). K1: IRDL definition
 (sum/product parametric types; make_sum/tag_of/extract/make_product/
@@ -150,6 +168,30 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (eighth entry)
+    Milestone/step: M4 complete, tagged m4-done
+    Green? yes — make test 24 blocks; clean-clone ci.sh exit 0;
+    make diff 15 cases 0 divergent; runners= rot check clean
+    Did:
+    - K2: Value::Closure + closure evaluators; church 42 in interp;
+      depth guard proven through closure re-entry
+    - K4 live: frk_rt_alloc (leaks by design v0, D-035)
+    - K3 (D-037): merged lower-frk-kernel pass — slot model
+      int=1/closure=2, heap envs, synthesized thunks, func.constant+
+      cast for addresses, exact-attr indirect llvm.call; JIT registers
+      frk_rt_alloc; church + counter_fold flipped and green BOTH ways
+    - K6 page docs/dialects/closure.md; D-037 ledgered
+    Next: M5 ml_core per the Next-action block — READ
+    specimens/ml_core/MANIFEST.md first (protocol step 5 is now real)
+    Landmines:
+    - the closure {ptr,ptr} inside adt slots is ptrtoint'd — any
+      future pass reordering around lower-frk-kernel must keep that
+      pass FIRST in the table
+    - mlir-opt --mlir-print-op-generic before hand-building ANY llvm
+      op with attributes; the attr sets are non-obvious and versioned
+    - thunk names __frk_thunk_N are reserved; frontends must not emit
+      colliding symbols
 
     Session end: 2026-07-02 (seventh entry this session)
     Milestone/step: M4 in flight — D-035/D-036 ruled; K1 done for
