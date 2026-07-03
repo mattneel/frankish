@@ -101,3 +101,10 @@ Néron/Tolmach/Visser et al., scope graphs (binder). Fehr et al., *IRDL* (PLDI
 enforestation (enforest reader). Siek & Taha, gradual typing + blame
 (dyn×contract cell). Go internals: itab dispatch (frk.dyn). Tiger Style
 (frk.contract's soul).
+
+- **melior 0.27.2 StringAttribute::value() is UB on the empty
+  string** (M11): the raw StringRef is null for "", and value() calls
+  slice::from_raw_parts on it — aborted by the runtime UB check the
+  first time a Lua `#""` golden ran. All frankish text-attribute
+  reads go through `attr_util::string_attr_bytes` (printed-form
+  unescape) instead. Watch: melior fix upstream.

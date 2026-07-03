@@ -1,8 +1,12 @@
 # frk.dyn — uniform dynamic values (v0: contract only)
 
-Status: K1/K2 shipped at M10 (D-051 — the SPEC §4.5 tagging fork,
-ruled); K3+ scheduled with the femto_lua implementation milestone.
-Until then dyn goldens ride `runners=interp`.
+Status: COMPLETE as of M11 — K3 landed (fat-value lowering; scalars
+adapt in place, multi-word payloads heap-box via the strategy
+allocator, tag checks are straight-line rt aborts), the interp fence
+lifted, and the RAW TABLE surface joined (D-056): table_new /
+raw_get / raw_set / table_len / set_meta / get_meta + payload_word
+(identity comparisons). The metatable protocol is synthesized IR in
+the frontends, not kernel ops — see the femto_lua emitter.
 
 ## The ruling (D-051)
 

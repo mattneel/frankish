@@ -1,41 +1,29 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M11 sessions)
-Phase: M11 in flight (D-054 — the human picked femto_lua + GC ladder,
-"Do it"). Bars 1–2 of 4 DONE: dyn K3 (fence lifted) and GC step 1
-(releases fire). Bars 3–4 remain: the Lua frontend + %.14g canon.
-Tree: green — `make test` 34 blocks; diff 54 cases 0 divergent (6
-runners); native grid 49/49 both strategies.
+Phase: M11 complete (tag m11-done). Three languages ride the kernel,
+each against its own upstream oracle.
+Tree: green — `make test` 35 blocks; diff 64 cases 0 divergent
+(SEVEN runners: interp, jit, jit-rc, ocaml, node, lua, repl); grid
+59/59 × 4 triples × 2 strategies; canary s390x 59/59 × 2; dashboard
+10 suites × 7 runners, 100% everywhere applicable.
 
 ## Next action
-M11 bars 3–4: the femto_lua frontend (D-052 manifest, D-054 fences).
-DONE this arc: dyn K3 (fat-value lowering — scalars adapt in place,
-multi-word payloads heap-box via the strategy allocator; native tag
-check = straight-line frk_rt_dyn_check abort, proven interp-level
-(located traps), AOT-level (subprocess abort test); fence lifted,
-boxed-closure golden); GC step 1 (block-local releases + counters +
-THE LEAK CANARY: 3 allocated, 3 released at runtime under rc).
-Remaining, in order:
-1. Lua canon fence (bar 4 first — printing precedes goldens): %.14g
-   three ways: Rust twin emulation (integer fast path + 14-sig-digit
-   positional inside the TS-0-style value fence), C twin native
-   %.14g, lua5.1 oracle. canon.md §7 + rt fns frk_rt_print_lua_*
-   (num/str/bool/nil per D-052 print scope).
-2. frk-front lua module: lexer/parser (hand-rolled, D-054), all
-   values dyn (fat), emission: arithmetic = unwrap-num→op→wrap;
-   locals = boxes of dyn; functions fixed-arity fn<[dyn×n],[dyn]>
-   in tag-5 wraps; if/while/numeric-for as cf; .. and # via
-   frk_str?? NO — Lua strings are BYTE strings (D-052): needs the
-   byte-string surface FIRST (sibling ops or frk_str widening —
-   D-052 deferred this to implementation: DECIDE via D-entry;
-   recommendation: frk_str gains a parallel byte face is WRONG
-   (two semantics one dialect); new frk_bstr micro-dialect (lit/
-   concat/eq/len/intern) with rt intern table is honest).
-3. Tables (frk_dyn.table_* per the M10 thinking — get does the
-   __index walk), LuaOracle runner (kind Lua, ext .lua), corpus
-   ≥90% vs lua5.1, grid, dashboard row, m11-done.
-Sequencing note: 1 → 2(scalars first, no strings) → bstr → 2(full)
-→ 3. Commit per green step as ever.
+M11 is closed. The remaining unscheduled queue (the human's next
+pick, or an L4-logged choice among peers):
+1. The GC ladder's remaining rungs (D-053/D-055 sequencing): sized
+   releases → THE LAYOUT-DESCRIPTOR RUNG (named, designed-not-
+   discovered) → candidate buffer + trial deletion → thresholds.
+   Tables/closures now exist to collect; the counters are live.
+2. femto_lua v0.2 (fence lifts by admission rule: multiple returns,
+   varargs, nil-fill arity, repeat/break, generic for + pairs/
+   ipairs — needs multi-value call plumbing; string library slice).
+3. scheme/ctl track (r7rs_core; tail calls as law).
+4. Effects lowering (D-012); frk.stage; TS-1..4; gpu axis.
+D-045's effects trigger is now ARMED IN PRINCIPLE: the shell cannot
+yet load .lua, but the interp output buffer + Lua IO exist — the
+moment the REPL grows a Lua mode, D-043's replay model must be
+revisited FIRST (the ledger says so; do not let it be discovered).
 
 ## In flight
 Nothing.
@@ -56,6 +44,49 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m11-done — Shipped: femto_lua v0.1 + the GC ladder's first rung —
+the track the human picked ("Do it"), all four D-054 bars.
+(1) dyn K3: fat-value lowering, boxed multi-word payloads through
+the strategy allocator, straight-line rt tag checks proven at
+interp (located traps) + AOT (subprocess abort); fence lifted.
+(2) GC step 1: block-local liveness releases + release counters in
+both twins + THE LEAK CANARY (3 allocated, 3 released, at runtime).
+(3) The frontend: hand-rolled 5.1 lexer/parser; all-dyn emission;
+locals as boxes (upvalue sharing = box identity; local-function
+recursion through the box); lambda lifting with (_G, boxes, params);
+the Lua protocols as SYNTHESIZED IR (truthiness with truthy-0,
+tostring, print, tag-pair eq, concat coercion, length, __index with
+BOTH forms — function form through frk_closure.apply); floor-mod
+from trunc+fixup; value-returning and/or. Kernel prerequisites built
+en route: frk_bstr (interned byte strings — eq is an inline pointer
+compare, len an inline header load; intern tables in both twins) and
+the frk_dyn raw-table surface (pure-hash dyn-keyed maps with
+tombstones + border probe, out-pointer ABI, inline meta slot,
+payload_word for identity). (4) canon §7: %.14g with the rounding
+contract — cross-twin parity rig on deliberate half-even ties, and
+the corpus tie case printing 12345678901234 through THREE printers.
+RESULTS: 8/8 vs lua5.1 (bar ≥90%); diff 64 cases 0 divergent across
+SEVEN runners; grid 59/59 × 5 architectures × 2 strategies;
+dashboard 10 suites 100% everywhere applicable.
+Verifier finds: melior's StringAttribute::value() is UB on ""
+(LANDSCAPE-pinned; all text reads now via printed-form unescape);
+the missing-setmetatable bug announced itself with a SOURCE LOCATION
+(§6.5 paying rent live: "dyn tag mismatch at case.lua:2:29").
+
+M11 EXTRACTION REPORT: femto_lua forced (a) frk_bstr — the second
+rt-value dialect, and the interning representation that turns eq
+into pointer arithmetic; (b) the raw-table surface + the
+SYNTHESIZED-PROTOCOL pattern (D-056.2) — the deepest design win of
+the milestone: metatable dispatch is ordinary IR, so it rode interp/
+jit/aot/all-five-triples with ZERO per-runner work, and the pattern
+generalizes (TS-1 narrowing checks, scheme dispatch); (c)
+payload_word (identity comparison); (d) the empty-string UB find;
+(e) NOTHING in adt/closure/mem — three specimens in, the M3-M7
+kernel carries dynamic Lua unmodified. Private ops: zero, again.
+Cheats: the fn-eq structural-vs-identity divergence (fenced), table
+internals malloc-domain (owed to the layout rung), aggregates
+retain-invisible under rc (owed to the same rung).
+
 m10-done — Shipped: the gate milestone, exactly as scoped. GC gate:
 docs/gc-spike.md (the written comparison SPEC demands) + D-053 —
 rc+cycles wins on the two-twin runtime and the five-triple grid;
@@ -342,6 +373,24 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (nineteenth entry)
+    Milestone/step: M11 complete, tagged m11-done
+    Green? yes — 35 blocks; 64 cases 0 divergent (7 runners); grid
+    59/59 × 5 × 2; lua 8/8 vs lua5.1
+    Did:
+    - canon §7 + parity rig (D-055 executed); frk_bstr; raw tables;
+      payload_word; lua frontend + synthesized protocols; LuaOracle;
+      8-case corpus; melior empty-string UB pinned + dodged
+    Next: unscheduled queue (human pick) per Next-action
+    Landmines:
+    - StringAttribute::value() is UB on "" — ALWAYS read text attrs
+      via attr_util::string_attr_bytes
+    - lua stdlib globals are SEEDED (print/tostring/setmetatable/
+      getmetatable); an unseeded global read is nil → tag-mismatch
+      trap AT THE CALL SITE (correct but puzzling if you forget)
+    - the lua REPL mode is BLOCKED on D-045 revisit (replay model)
+      before any implementation
 
     Session end: 2026-07-03 (eighteenth entry)
     Milestone/step: M11 bars 1–2 (dyn K3 + GC step 1)

@@ -15,7 +15,13 @@ route would have spelled it.
 Start here: `AGENTS.md` (law) → `docs/SPEC.md` (design) →
 `docs/DECISIONS.md` (ledger) → `STATE.md` (now).
 
-Status: M10 done — the scheduled program (M0–M10) is complete. The
+Status: M11 done — THREE languages ride the kernel, each held
+byte-identical to its own upstream: core ML against ocaml,
+TypeScript against node/V8, and now Lua 5.1 against PUC-Rio —
+closures, metatables, interned strings, %.14g and all — across the
+interpreter, two memory strategies, and five architectures
+(64 cases, 7 runners, 0 divergent; grid 59/59 × 5 × 2). The
+scheduled program (M0–M10) closed one milestone earlier: The
 runtime dragon's cage is built and the door is open: frk.dyn's
 contract is live (fat values, located traps), femto_lua's manifest
 is ratified against the installed 5.1.5 oracle, and the GC gate is

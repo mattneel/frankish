@@ -39,6 +39,11 @@ canon fence at implementation (Lua spells %.14g — the TS-0 §6
 precedent applies).
 
 ## Status
-RATIFIED 2026-07-03 (D-052). Implementation not started — M10 is
-the gate milestone (dyn contract underway, GC decision logged);
-the implementation milestone follows.
+v0.1 SHIPPED (2026-07-03, M11/D-054): the full ratified scope —
+locals, functions/closures/upvalues, tables, __index (both forms),
+strings, control flow, print/tostring/setmetatable/getmetatable —
+compiles through frk_dyn/frk_bstr/frk_mem/frk_closure and runs
+byte-identical to lua5.1 across interp, jit×{arena,rc}, and the
+five-architecture grid. Corpus: 8 idiom cases, 100% (bar: ≥90%),
+including the D-055 %.14g tie case three ways. Fences live: D-052 +
+D-054 (exact arity, no coercing arithmetic, in-fence corpus).
