@@ -58,12 +58,23 @@ pub fn parse(source: &str) -> Result<Program, String> {
     let data = read(source)?;
     let mut program = Vec::new();
     for datum in &data {
+        // `(import …)` is required by the chibi oracle (`(scheme base)`
+        // supplies call/cc et al.) but carries no v0 semantics — the
+        // whole subset is always in scope. Skip it.
+        if is_import(datum) {
+            continue;
+        }
         program.push(parse_top(datum)?);
     }
     if program.is_empty() {
         return Err("empty program".to_string());
     }
     Ok(program)
+}
+
+fn is_import(datum: &Datum) -> bool {
+    matches!(datum, Datum::List(items, _)
+        if matches!(items.first(), Some(Datum::Symbol(head, _)) if head == "import"))
 }
 
 fn parse_top(datum: &Datum) -> Result<Top, String> {
@@ -228,5 +239,13 @@ mod tests {
     #[test]
     fn nested_define_is_fenced() {
         assert!(parse("(define (f) (define y 1) y)").is_err());
+    }
+
+    #[test]
+    fn import_is_a_noop() {
+        let program =
+            parse("(import (scheme base) (scheme write))\n(display 1)").unwrap();
+        assert_eq!(program.len(), 1);
+        assert!(matches!(&program[0], Top::Expr(Expr::App(..))));
     }
 }
