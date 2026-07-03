@@ -19,7 +19,7 @@ export TABLEGEN_220_PREFIX ?= $(MLIR_PREFIX)
 CARGO ?= cargo
 CARGOFLAGS ?=
 
-.PHONY: setup build test ci clean
+.PHONY: setup build test bless diff ci clean
 
 # Verify the pinned toolchain is present; names anything missing. Never
 # mutates the system.
@@ -32,6 +32,16 @@ build:
 test:
 	sh scripts/check-pins.sh
 	$(CARGO) test --workspace $(CARGOFLAGS)
+
+# Rewrite golden expectations from the reference runner. Law L2: the
+# commit blessing new bytes must say WHY the output changed; never bless
+# a diff you don't understand.
+bless:
+	$(CARGO) run -q -p frnksh $(CARGOFLAGS) -- bless
+
+# Runner-agreement matrix over the golden corpus (SPEC §7.2; law L3).
+diff:
+	$(CARGO) run -q -p frnksh $(CARGOFLAGS) -- diff
 
 # Exactly what CI runs; plain shell all the way down.
 ci:

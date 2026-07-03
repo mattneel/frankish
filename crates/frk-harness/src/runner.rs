@@ -52,6 +52,13 @@ pub fn default_runners() -> Vec<Box<dyn Runner>> {
     vec![Box::new(JitRunner)]
 }
 
+/// The runner blessing writes goldens from. jit for now; the moment the
+/// derived interpreter exists it takes this role — it *is* the reference
+/// semantics (D-008), everything else must agree with it (L3).
+pub fn reference_runner() -> Box<dyn Runner> {
+    Box::new(JitRunner)
+}
+
 /// The ORC JIT runner: parse → verify → shared lowering pipeline →
 /// ExecutionEngine → render the entry's return per docs/canon.md §2.
 pub struct JitRunner;
