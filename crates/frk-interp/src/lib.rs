@@ -10,7 +10,7 @@ mod upstream;
 mod value;
 
 pub use error::EvalError;
-pub use interp::{Builtin, Eval, Frame, Interp, MAX_CALL_DEPTH, STACK_SIZE, Step};
+pub use interp::{Builtin, CfgOutcome, Eval, Frame, Interp, MAX_CALL_DEPTH, STACK_SIZE, Step};
 pub use value::{TableData, Value};
 
 /// Helpers for writing [`Eval`] implementations outside this crate —

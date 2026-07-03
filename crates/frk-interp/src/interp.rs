@@ -38,6 +38,17 @@ pub enum Step<'c, 'a> {
     Branch(BlockRef<'c, 'a>, Vec<Value>),
     /// Structured-region exit (scf.yield).
     Yield(Vec<Value>),
+    /// A call in TAIL POSITION (its sole result feeds the immediately
+    /// following func.return): the frame is REPLACED, not stacked —
+    /// proper tail calls as law (D-029's exemption, cashed at M14).
+    TailCall(String, Vec<Value>),
+}
+
+/// How a CFG region concluded (D-059): a value return, or a tail call
+/// for the caller's trampoline to continue.
+pub enum CfgOutcome {
+    Return(Vec<Value>),
+    TailCall(String, Vec<Value>),
 }
 
 /// K2 (SPEC §3): one op's executable semantics. Upstream dialects get
@@ -147,43 +158,104 @@ impl<'c, 'a> Interp<'c, 'a> {
     /// Calls `name(args)` and returns its results. This is both the public
     /// entry and the path `func.call` re-enters.
     pub fn eval_function(&self, name: &str, args: &[Value]) -> Result<Vec<Value>, EvalError> {
-        // Host builtins shadow nothing: they answer only for symbols
-        // that are absent or BODYLESS in the module (external
-        // declarations — the module indexes them for its symbol table,
-        // but they have nothing to run).
-        let bodyless = match self.functions.get(name) {
-            None => true,
-            Some(function) => function
-                .region(0)
-                .map(|region| region.first_block().is_none())
-                .unwrap_or(true),
+        // The trampoline (D-059): tail calls REPLACE the frame — the
+        // loop below runs successive tail callees at ONE depth unit.
+        let mut name = name.to_string();
+        let mut args = args.to_vec();
+        let mut counted = false;
+        let result = loop {
+            // Host builtins answer only for absent/bodyless symbols.
+            let bodyless = match self.functions.get(&name) {
+                None => true,
+                Some(function) => function
+                    .region(0)
+                    .map(|region| region.first_block().is_none())
+                    .unwrap_or(true),
+            };
+            if bodyless {
+                if let Some(result) = self.call_builtin(&name, &args) {
+                    break result;
+                }
+            }
+            let function = match self.functions.get(&name) {
+                Some(function) => *function,
+                None => break Err(EvalError::CalleeNotFound(name.clone())),
+            };
+            if !counted {
+                if self.depth.get() >= MAX_CALL_DEPTH {
+                    return Err(EvalError::Trap(format!(
+                        "call depth exceeded {MAX_CALL_DEPTH} frames (D-029)"
+                    )));
+                }
+                self.depth.set(self.depth.get() + 1);
+                counted = true;
+            }
+            match self.run_body(function, &args) {
+                Ok(CfgOutcome::Return(values)) => break Ok(values),
+                Ok(CfgOutcome::TailCall(next, next_args)) => {
+                    name = next;
+                    args = next_args;
+                }
+                Err(error) => break Err(error),
+            }
         };
-        if bodyless {
-            if let Some(result) = self.call_builtin(name, args) {
-                return result;
+        if counted {
+            self.depth.set(self.depth.get() - 1);
+        }
+        result
+    }
+
+    /// Detects the tail shape at `call`: its results are EXACTLY the
+    /// operands of the immediately following func.return.
+    fn tail_shape(
+        &self,
+        frame: &Frame,
+        call: OperationRef<'c, 'a>,
+    ) -> Result<Option<Step<'c, 'a>>, EvalError> {
+        let Some(following) = call.next_in_block() else {
+            return Ok(None);
+        };
+        if op_name(following)? != "func.return" {
+            return Ok(None);
+        }
+        if call.result_count() != following.operand_count() {
+            return Ok(None);
+        }
+        for index in 0..call.result_count() {
+            let result = call.result(index).map_err(|_| {
+                EvalError::Malformed("call result vanished".into())
+            })?;
+            let operand = following.operand(index).map_err(|_| {
+                EvalError::Malformed("return operand vanished".into())
+            })?;
+            if result.to_raw().ptr != operand.to_raw().ptr {
+                return Ok(None);
             }
         }
-        let function = *self
-            .functions
-            .get(name)
-            .ok_or_else(|| EvalError::CalleeNotFound(name.to_string()))?;
-
-        if self.depth.get() >= MAX_CALL_DEPTH {
-            return Err(EvalError::Trap(format!(
-                "call depth exceeded {MAX_CALL_DEPTH} frames (D-029)"
-            )));
+        let callee = call
+            .attribute("callee")
+            .ok()
+            .and_then(|attribute| {
+                melior::ir::attribute::FlatSymbolRefAttribute::try_from(attribute).ok()
+            })
+            .ok_or_else(|| EvalError::Malformed("func.call without callee".into()))?
+            .value()
+            .to_string();
+        let mut args = Vec::with_capacity(call.operand_count());
+        for index in 0..call.operand_count() {
+            let operand = call.operand(index).map_err(|_| {
+                EvalError::Malformed("call operand vanished".into())
+            })?;
+            args.push(frame.get(operand)?);
         }
-        self.depth.set(self.depth.get() + 1);
-        let result = self.run_body(function, args);
-        self.depth.set(self.depth.get() - 1);
-        result
+        Ok(Some(Step::TailCall(callee, args)))
     }
 
     fn run_body(
         &self,
         function: OperationRef<'c, 'a>,
         args: &[Value],
-    ) -> Result<Vec<Value>, EvalError> {
+    ) -> Result<CfgOutcome, EvalError> {
         let region = function
             .region(0)
             .map_err(|_| EvalError::Malformed("func.func without a region".into()))?;
@@ -200,12 +272,15 @@ impl<'c, 'a> Interp<'c, 'a> {
         frame: &mut Frame,
         entry: BlockRef<'c, 'a>,
         mut incoming: Vec<Value>,
-    ) -> Result<Vec<Value>, EvalError> {
+    ) -> Result<CfgOutcome, EvalError> {
         let mut block = entry;
         loop {
             bind_block_args(frame, block, &incoming)?;
             match self.exec_block(frame, block)? {
-                Step::Return(values) => return Ok(values),
+                Step::Return(values) => return Ok(CfgOutcome::Return(values)),
+                Step::TailCall(name, args) => {
+                    return Ok(CfgOutcome::TailCall(name, args));
+                }
                 Step::Branch(next, args) => {
                     block = next;
                     incoming = args;
@@ -235,6 +310,9 @@ impl<'c, 'a> Interp<'c, 'a> {
         bind_block_args(frame, block, &args)?;
         match self.exec_block(frame, block)? {
             Step::Yield(values) => Ok(values),
+            Step::TailCall(..) => Err(EvalError::Malformed(
+                "tail call escaped a structured region".into(),
+            )),
             Step::Return(_) => Err(EvalError::Malformed(
                 "return inside a structured region".into(),
             )),
@@ -255,6 +333,14 @@ impl<'c, 'a> Interp<'c, 'a> {
         let mut next = block.first_operation();
         while let Some(op) = next {
             let name = op_name(op)?;
+            // Tail-shape interception (D-059): a func.call whose
+            // results feed the immediately following func.return runs
+            // as a frame REPLACEMENT, not a recursion.
+            if name == "func.call" {
+                if let Some(step) = self.tail_shape(frame, op)? {
+                    return Ok(step);
+                }
+            }
             let evaluator = self
                 .registry
                 .get(name.as_str())

@@ -22,11 +22,13 @@ pub mod dyn_dialect;
 mod dyn_eval;
 pub mod str_dialect;
 mod str_eval;
+pub mod tail_calls;
 pub mod verify;
 
 mod kernel_lower;
 
 pub use kernel_lower::{Strategy, lower_kernel_pass};
+pub use tail_calls::tail_calls_pass;
 pub use verify::{Finding, VerifyErrors, verify};
 
 /// Registers every kernel dialect's evaluators into an interpreter —

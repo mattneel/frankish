@@ -127,6 +127,7 @@ mod tests {
                 "02-convert-scf-to-cf.mlir",
                 "03-convert-to-llvm.mlir",
                 "04-reconcile-unrealized-casts.mlir",
+                "05-frk-tail-calls.mlir",
             ]
         );
 

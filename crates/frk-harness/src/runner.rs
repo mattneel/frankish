@@ -764,8 +764,14 @@ impl Runner for AotRunner {
             // IR → object with the PINNED LLVM's clang (the IR may be
             // newer than zig's bundled LLVM); zig links with its libc.
             let obj_path = work.join("case.o");
-            let compile = Command::new(format!("{}/bin/clang", mlir_prefix()))
-                .args(["-target", self.triple.target(), "-O1", "-c"])
+            let mut compile_cmd = Command::new(format!("{}/bin/clang", mlir_prefix()));
+            compile_cmd.args(["-target", self.triple.target(), "-O1", "-c"]);
+            if self.triple == Triple::Wasm32Wasi {
+                // musttail needs the wasm tail-call feature (D-059);
+                // wasmtime 46 has the proposal on by default.
+                compile_cmd.arg("-mtail-call");
+            }
+            let compile = compile_cmd
                 .arg(&ll_path)
                 .args(["-o"])
                 .arg(&obj_path)

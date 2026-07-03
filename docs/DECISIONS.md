@@ -193,6 +193,38 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-059 [m14/ctl] Tail calls as law, first rung ("Keep going" ⇒
+  queue order; r7rs is queue-top but its OWN stub gates ratification
+  on the ctl effects design, and SPEC §4.4 anchors that design to
+  the human's Rocq handler calculus — an artifact only the human can
+  supply. ESCALATED per the constitution; see For-the-human. The
+  stub's hardest obligation is payable independently NOW, and is
+  ALREADY OWED: Lua 5.1 mandates proper tail calls and our
+  `return f(x)` still stacks.)
+  M14 scope: (1) REFERENCE SEMANTICS — the interpreter trampolines
+  every tail-shaped call (a func.call whose single result feeds the
+  immediately following func.return): Step::TailCall threads to
+  eval_function's loop, replacing recursion; the D-029 depth cap
+  counts non-tail entries only, exactly as its exemption clause
+  promised. Full generality: direct, indirect-through-thunks, any
+  frontend. (2) NATIVE — a post-conversion pass (frk-tail-calls)
+  rewrites llvm.call TailCallKind to musttail where the tail SHAPE
+  holds AND the callee is a DIRECT call whose LLVM function type is
+  IDENTICAL to the caller's (self-recursion always qualifies; equal-
+  signature mutual recursion qualifies; ccc both). Indirect and
+  cross-signature tails are the LEDGERED GAP: guaranteeing them
+  needs the uniform-signature convention (every function one LLVM
+  type — the pack convention's logical completion, designed as the
+  r7rs prerequisite, implemented when the Rocq anchor unblocks the
+  track). wasm32 needs -mtail-call at compile; wasmtime 46 has the
+  tail-call proposal on. (3) THE LAW'S VERIFIER: fixed-stack deep
+  recursion goldens — 10^6 self-tail and 10^6 equal-signature
+  mutual — which FAIL without each rung (the interp depth cap trips;
+  the native stack overflows ~48MB into an 8MB limit). Corpus law:
+  lua/scheme deep tail recursion beyond the native gap stays
+  interp-fenced until the uniform convention lands. Revisit: the
+  uniform convention at r7rs open; s390x musttail behavior is the
+  canary's to report.
 - D-058 [m13/lua] femto_lua v0.2 ("Continue" ⇒ queue order, L4).
   THE CONVENTION CHANGE: every Lua function adopts the uniform PACK
   convention — fn<[arr<dyn>], [arr<dyn>]> — one argument pack in,

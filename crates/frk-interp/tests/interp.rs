@@ -244,10 +244,17 @@ fn runaway_recursion_traps_at_the_depth_ceiling() {
     let error = std::thread::Builder::new()
         .stack_size(frk_interp::STACK_SIZE)
         .spawn(|| {
+            // NON-tail runaway: the result is USED after the call, so
+            // the D-059 trampoline does not apply and the D-029 depth
+            // cap must trap. (A TAIL-shaped `return f()` is now a
+            // legitimate infinite loop, like `while true` — the law
+            // this test guarded moved to the tailcall goldens.)
             interpret_i64(
                 r#"func.func @forever() -> i64 {
                     %r = func.call @forever() : () -> i64
-                    return %r : i64
+                    %one = arith.constant 1 : i64
+                    %x = arith.addi %r, %one : i64
+                    return %x : i64
                 }
                 func.func @main() -> i64 {
                     %r = func.call @forever() : () -> i64

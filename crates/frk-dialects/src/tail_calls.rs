@@ -1,0 +1,190 @@
+//! frk-tail-calls (M14, D-059 rung 2): the native half of the tail-
+//! call law. Runs LAST in the pipeline, over final LLVM-dialect form:
+//! any DIRECT `llvm.call` in tail shape — its results are exactly the
+//! operands of the immediately following `llvm.return` — whose callee
+//! has an LLVM function type IDENTICAL to its caller's gets
+//! `TailCallKind = musttail`, which LLVM guarantees to lower as a
+//! frame-replacing jump.
+//!
+//! The identical-signature gate is D-059's deliberate v1 frontier:
+//! self-recursion always qualifies, equal-signature mutual recursion
+//! qualifies; indirect and cross-signature tails wait for the
+//! uniform-signature convention (the r7rs prerequisite). The
+//! interpreter's trampoline covers ALL shapes meanwhile — reference
+//! semantics leads, native follows.
+
+use std::collections::HashMap;
+
+use melior::ir::attribute::{Attribute, FlatSymbolRefAttribute, StringAttribute, TypeAttribute};
+use melior::ir::operation::{OperationLike, OperationMutLike};
+use melior::ir::r#type::TypeId;
+use melior::ir::{BlockLike, OperationRef, RegionLike, ValueLike};
+use melior::pass::{ExternalPass, Pass, create_external};
+
+#[repr(align(8))]
+struct PassId;
+static TAIL_CALLS_PASS_ID: PassId = PassId;
+
+pub fn tail_calls_pass() -> Pass {
+    create_external(
+        |operation: OperationRef, pass: ExternalPass| {
+            if let Err(message) = mark_tail_calls(operation) {
+                eprintln!("frk-tail-calls: {message}");
+                pass.signal_failure();
+            }
+        },
+        TypeId::create(&TAIL_CALLS_PASS_ID),
+        "frk-tail-calls",
+        "frk-tail-calls",
+        "rewrite identical-signature direct tail calls to musttail (D-059)",
+        "",
+        &[],
+    )
+}
+
+fn attr_string(op: OperationRef<'_, '_>, name: &str) -> Option<String> {
+    op.attribute(name)
+        .ok()
+        .and_then(|attribute| StringAttribute::try_from(attribute).ok())
+        .map(|attribute| attribute.value().to_string())
+}
+
+fn mark_tail_calls(module: OperationRef<'_, '_>) -> Result<(), String> {
+    let context = unsafe { module.context().to_ref() };
+
+    // Pass 1: llvm.func symbol → printed function type.
+    let mut signatures: HashMap<String, String> = HashMap::new();
+    let body = module
+        .region(0)
+        .map_err(|e| e.to_string())?
+        .first_block()
+        .ok_or_else(|| "module without a body".to_string())?;
+    let mut next = body.first_operation();
+    while let Some(op) = next {
+        if op
+            .name()
+            .as_string_ref()
+            .as_str()
+            .is_ok_and(|name| name == "llvm.func")
+        {
+            if let (Some(symbol), Ok(ty)) = (attr_string(op, "sym_name"), op.attribute("function_type")) {
+                if let Ok(type_attr) = TypeAttribute::try_from(ty) {
+                    signatures.insert(symbol, type_attr.value().to_string());
+                }
+            }
+        }
+        next = op.next_in_block();
+    }
+
+    let musttail = Attribute::parse(context, "#llvm.tailcallkind<musttail>")
+        .ok_or_else(|| "unparsable musttail kind".to_string())?;
+
+    // Pass 2 (read-only): collect qualifying call ops by raw pointer.
+    let mut qualifying: Vec<usize> = Vec::new();
+    let mut next_fn = body.first_operation();
+    while let Some(function) = next_fn {
+        let is_func = function
+            .name()
+            .as_string_ref()
+            .as_str()
+            .is_ok_and(|name| name == "llvm.func");
+        if is_func {
+            let caller_type = function
+                .attribute("function_type")
+                .ok()
+                .and_then(|a| TypeAttribute::try_from(a).ok())
+                .map(|a| a.value().to_string());
+            if let (Some(caller_type), Ok(region)) = (caller_type, function.region(0)) {
+                let mut block = region.first_block();
+                while let Some(current) = block {
+                    let mut next_op = current.first_operation();
+                    while let Some(op) = next_op {
+                        if qualifies(op, &caller_type, &signatures) {
+                            qualifying.push(op.to_raw().ptr as usize);
+                        }
+                        next_op = op.next_in_block();
+                    }
+                    block = current.next_in_region();
+                }
+            }
+        }
+        next_fn = function.next_in_block();
+    }
+
+    // Pass 3 (mutating): set musttail on the collected ops.
+    let qualifying: std::collections::HashSet<usize> = qualifying.into_iter().collect();
+    let mut next_fn = body.first_operation_mut();
+    while let Some(function) = next_fn {
+        let following_fn = function.next_in_block_mut();
+        if let Ok(region) = function.region(0) {
+            let mut block = region.first_block();
+            while let Some(current) = block {
+                let next_block = current.next_in_region();
+                let mut next_op = current.first_operation_mut();
+                while let Some(mut op) = next_op {
+                    let following = op.next_in_block_mut();
+                    if qualifying.contains(&(op.to_raw().ptr as usize)) {
+                        op.set_attribute("TailCallKind", musttail);
+                    }
+                    next_op = following;
+                }
+                block = next_block;
+            }
+        }
+        next_fn = following_fn;
+    }
+    Ok(())
+}
+
+/// Tail shape + direct callee + identical caller/callee LLVM type.
+fn qualifies(
+    op: OperationRef<'_, '_>,
+    caller_type: &str,
+    signatures: &HashMap<String, String>,
+) -> bool {
+    let is_call = op
+        .name()
+        .as_string_ref()
+        .as_str()
+        .is_ok_and(|name| name == "llvm.call");
+    if !is_call {
+        return false;
+    }
+    // Direct call: a flat-symbol callee that resolves to an llvm.func.
+    let Some(callee) = op
+        .attribute("callee")
+        .ok()
+        .and_then(|attribute| FlatSymbolRefAttribute::try_from(attribute).ok())
+        .map(|attribute| attribute.value().to_string())
+    else {
+        return false;
+    };
+    let Some(callee_type) = signatures.get(&callee) else {
+        return false;
+    };
+    if callee_type != caller_type {
+        return false;
+    }
+    // Tail shape: immediately followed by llvm.return of exactly the
+    // call's results.
+    let Some(following) = op.next_in_block() else {
+        return false;
+    };
+    let is_return = following
+        .name()
+        .as_string_ref()
+        .as_str()
+        .is_ok_and(|name| name == "llvm.return");
+    if !is_return || op.result_count() != following.operand_count() {
+        return false;
+    }
+    for index in 0..op.result_count() {
+        let (Ok(result), Ok(operand)) = (op.result(index), following.operand(index)) else {
+            return false;
+        };
+        if result.to_raw().ptr != operand.to_raw().ptr {
+            return false;
+        }
+    }
+    true
+}

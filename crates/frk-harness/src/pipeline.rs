@@ -22,6 +22,9 @@ pub fn stages(strategy: Strategy) -> Vec<(&'static str, Pass)> {
             "reconcile-unrealized-casts",
             pass::conversion::create_reconcile_unrealized_casts(),
         ),
+        // The tail-call law's native rung (M14, D-059): runs last,
+        // over final LLVM form.
+        ("frk-tail-calls", frk_dialects::tail_calls_pass()),
     ]
 }
 
