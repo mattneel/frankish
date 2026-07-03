@@ -210,6 +210,69 @@ pub unsafe extern "C" fn frk_rt_print_str(s: *const u8) {
     println!("{text}");
 }
 
+// ---- Lua printing (M11 bar 4; D-052/D-055): %.14g semantics. ----
+
+/// C's %.14g inside the canon fence (positional values: 0 or |v| in
+/// [1e-4, 1e14), finite, and clear of the round-to-1e14 boundary).
+/// %.14g ROUNDS — 14 significant digits, half-to-even — unlike the
+/// TS-0 printers' shortest-round-trip (D-055.2). Rust's fixed-
+/// precision formatting is correctly rounded with the same tie rule,
+/// so parity with the C twin is exact; the cross-twin rig proves it.
+pub fn format_lua_num(value: f64) -> String {
+    if value == 0.0 {
+        return if value.is_sign_negative() { "-0".into() } else { "0".into() };
+    }
+    let sci = format!("{value:.13e}"); // 14 significant digits
+    let (mantissa, exponent) = sci.split_once('e').expect("sci form");
+    let exponent: i32 = exponent.parse().expect("exponent");
+    let negative = mantissa.starts_with('-');
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    debug_assert_eq!(digits.len(), 14);
+
+    let point = exponent + 1; // digit count before the decimal point
+    let mut out = String::new();
+    if negative {
+        out.push('-');
+    }
+    if point <= 0 {
+        // 0.000ddd — %g strips trailing zeros.
+        out.push_str("0.");
+        for _ in 0..(-point) {
+            out.push('0');
+        }
+        out.push_str(digits.trim_end_matches('0'));
+    } else if point as usize >= digits.len() {
+        out.push_str(&digits);
+        for _ in 0..(point as usize - digits.len()) {
+            out.push('0');
+        }
+    } else {
+        let (integer, fraction) = digits.split_at(point as usize);
+        out.push_str(integer);
+        let fraction = fraction.trim_end_matches('0');
+        if !fraction.is_empty() {
+            out.push('.');
+            out.push_str(fraction);
+        }
+    }
+    out
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_print_lua_num(value: f64) {
+    println!("{}", format_lua_num(value));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_print_lua_bool(value: u8) {
+    println!("{}", if value != 0 { "true" } else { "false" });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_print_lua_nil() {
+    println!("nil");
+}
+
 /// Test/introspection helper (not part of the lowering ABI).
 pub fn rc_count(payload: *mut u8) -> i64 {
     unsafe { *(payload.sub(8) as *const i64) }
@@ -262,6 +325,22 @@ mod tests {
             (p as *mut i64).write(42);
             assert_eq!((p as *const i64).read(), 42);
         }
+    }
+
+    #[test]
+    fn lua_formatting_is_percent_14g_with_half_even_ties() {
+        assert_eq!(format_lua_num(42.0), "42");
+        assert_eq!(format_lua_num(-0.0), "-0");
+        assert_eq!(format_lua_num(0.1), "0.1");
+        assert_eq!(format_lua_num(1.0 / 3.0), "0.33333333333333");
+        assert_eq!(format_lua_num(0.0001), "0.0001");
+        assert_eq!(format_lua_num(2.5), "2.5");
+        // THE TIE PAIR (D-055.2): binary-exact values whose 15th
+        // significant digit is exactly 5, nothing after — round half
+        // to even at digit 14. ...34.5 stays (4 even), ...33.5 goes
+        // up (to 4).
+        assert_eq!(format_lua_num(12345678901234.5), "12345678901234");
+        assert_eq!(format_lua_num(12345678901233.5), "12345678901234");
     }
 
     #[test]

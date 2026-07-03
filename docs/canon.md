@@ -63,3 +63,23 @@ agree byte-exactly within the fence: printed values are 0 or
 switches to exponent spellings ("1e+21", "1e-7", "Infinity") that the
 frankish printers do not reproduce yet — widening the fence is a
 canon change and takes a D-entry (TS-1 candidate).
+
+## §7 Lua number printing (M11; D-052/D-055)
+
+Lua output compares across three printers: the Rust twin's %.14g
+emulation (interp builtins, JIT capture), the C twin's native
+`printf("%.14g")` (AOT, all triples), and the lua5.1 oracle itself.
+Unlike canon §6's shortest-round-trip printers, **%.14g rounds** — 14
+significant digits, half-to-even — so parity is a rounding contract,
+not just a digits contract; the cross-twin rig
+(crates/frk-harness/tests/lua_print_parity.rs) proves it on
+deliberate tie values (15th significant digit exactly 5,
+binary-exact), and a corpus tie case rides the first frontend
+goldens.
+
+The fence: printed Lua numbers are 0 or |v| ∈ [1e-4, 1e14), finite —
+note the upper bound is one decade TIGHTER than §6's (%g switches to
+exponent form at exp ≥ precision = 14) — and clear of the
+round-to-1e14 boundary (a value whose 14-digit rounding carries into
+1e14 flips C to exponent form while the emulation stays positional).
+Widening the fence is a canon change and takes a D-entry.

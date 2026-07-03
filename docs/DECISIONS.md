@@ -193,6 +193,33 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-055 [gc/canon] Third review integration (2026-07-03): the M10
+  rulings endorsed; two directives executed.
+  (1) THE LAYOUT-DESCRIPTOR RUNG IS NAMED (gc-spike sequencing
+  amended): Bacon–Rajan trial deletion traverses the object graph,
+  so the collector must know which slots of a table/closure/box hold
+  managed pointers AT RUNTIME — knowledge that today lives only in
+  the compiler (D-049's managed/unmanaged SlotKind split). Between
+  "sized releases" and "candidate buffer" the ladder now has an
+  explicit bar: runtime-visible layout descriptors in BOTH twins
+  (type maps in headers or side tables, inside the
+  few-hundred-lines-of-portable-C budget) — designed, not discovered
+  mid-scan.
+  (2) THE %.14g ROUNDING CONTRACT (bar 4 steer): %.14g ROUNDS — 14
+  significant digits, lossy, unlike the TS-0 printers' shortest
+  round-trip — so the Rust twin must reproduce C's rounding at the
+  14th digit INCLUDING half-even ties, plus %g's positional/exponent
+  switchover (exponent form when exp < −4 or ≥ 14 — note: the Lua
+  fence upper bound is therefore 1e14, one decade TIGHTER than
+  TS-0's 1e15). Both printers are correctly-rounding with
+  round-half-to-even, so byte parity is achievable and is VERIFIED
+  by a cross-twin test compiling the C twin via zigcc and diffing
+  against the Rust emulation on deliberate tie values (15th
+  significant digit exactly 5, binary-exact). A corpus tie case
+  joins the first frontend goldens. Integral-prints-bare rides the
+  TS-0 fence precedent. Also recorded: the tag-space widening for
+  TS-1 unions remains the named D-051 revisit — "unions are coming
+  for those tags."
 - D-054 [m11] The human picked the recommended track (2026-07-03,
   "Do it"): femto_lua implementation INTERLEAVED with the GC ladder,
   named M11. Exit bars (L4-defined, this entry): (1) dyn K3 — the

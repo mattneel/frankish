@@ -87,9 +87,15 @@ slot in SPEC §4.3 with named revisit conditions: a specimen with
 MEASURED GC-bound throughput (the counter hooks exist to measure), or
 MMTk-on-wasm maturing, or the grid deliberately dropping reach.
 
-**Sequencing** (implementation milestones, not M10): first the D-041
-liveness/release pass against `frk_rt_alloc_count` (the leak-canary
-golden becomes writable that day); then sized releases; then the
-candidate buffer + trial deletion; then threshold tuning against the
-femto_lua corpus. Strings stay outside (rt-owned, D-049) until the
-tracer exists, then join as leaf objects.
+**Sequencing** (implementation milestones, not M10; amended per
+D-055.1): first the D-041 liveness/release pass against
+`frk_rt_alloc_count` (DONE — M11 step 1, the leak canary passes);
+then sized releases; then **the layout-descriptor rung** — trial
+deletion traverses the object graph, so the managed/unmanaged slot
+knowledge (D-049) that today lives only in the compiler becomes a
+runtime-visible layout descriptor in BOTH twins (type maps in
+headers or side tables, within the portable-C budget) — a named bar
+so it is designed, not discovered mid-scan; then the candidate
+buffer + trial deletion; then threshold tuning against the femto_lua
+corpus. Strings stay outside (rt-owned, D-049) until the tracer
+exists, then join as leaf objects.

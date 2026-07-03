@@ -85,6 +85,13 @@ void frk_rt_dyn_check(int64_t actual, int64_t expected) {
     }
 }
 
+/* ---- Lua printing (M11 bar 4; D-052/D-055): native %.14g. ---- */
+void frk_rt_print_lua_num(double value) { printf("%.14g\n", value); }
+void frk_rt_print_lua_bool(unsigned char value) {
+    printf("%s\n", value ? "true" : "false");
+}
+void frk_rt_print_lua_nil(void) { printf("nil\n"); }
+
 /* ---- strings (M9, D-049): {u64 len; u16 units[]}; plain malloc,
  * strategy-independent. UTF-16 code-unit semantics throughout. ---- */
 
