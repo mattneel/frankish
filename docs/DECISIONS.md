@@ -193,6 +193,22 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-037 [dialects] The kernel lowering is ONE pass ("lower-frk-kernel",
+  superseding D-032's per-dialect packaging; representation and fences
+  unchanged): adt products carry closure-typed fields and closure
+  envs/args are adt products, so the type mapping must be solved
+  together. Slot model: integer field ≤64 = one i64 slot (extui/
+  trunci); closure field = TWO slots, its {thunk, env} pointers
+  ptrtoint'd in and inttoptr'd out; nested adt fields stay fenced
+  (M7). Closure mechanics: fn type → !llvm.struct<(ptr, ptr)>; make
+  heap-allocates the env via frk_rt_alloc (llvm.func declared once per
+  module; JIT registers the symbol, AOT links frk-rt), stores the env
+  product's slots, and takes the per-make-site synthesized thunk's
+  address as func.constant + one unrealized_conversion_cast to ptr
+  (llvm.mlir.addressof cannot reference func.func; FuncToLLVM +
+  reconcile fold the cast away — verified end to end); apply extracts
+  {thunk, env}, unpacks the arg product per slot kinds, and calls
+  indirectly. Revisit: with D-032's clauses at frk.mem (M7).
 - D-035 [closure] v0 strategy rulings, made ahead of code. (1) The
   lowering is SPEC §4.2's primary env-struct + function pointer:
   closure value = !llvm.struct<(ptr thunk, ptr env)>; envs come from

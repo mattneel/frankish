@@ -120,7 +120,7 @@ mod tests {
             names,
             [
                 "00-parsed.mlir",
-                "01-lower-frk-adt.mlir",
+                "01-lower-frk-kernel.mlir",
                 "02-convert-scf-to-cf.mlir",
                 "03-convert-to-llvm.mlir",
                 "04-reconcile-unrealized-casts.mlir",

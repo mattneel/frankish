@@ -1,5 +1,3 @@
-// frk-case: runners=interp
-// (flips to all runners when the K3 closure lowering lands, M4)
 //
 // Church encoding, the M4 exit witness: two = λf.λx. f (f x), built
 // from packed closures (D-035/D-036), applied to inc and 40 → 42.

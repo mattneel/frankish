@@ -10,13 +10,14 @@
 pub mod adt;
 pub mod adt_dtree;
 mod adt_eval;
-mod adt_lower;
 mod attr_util;
 pub mod closure;
 mod closure_eval;
 pub mod verify;
 
-pub use adt_lower::lower_adt_pass;
+mod kernel_lower;
+
+pub use kernel_lower::lower_kernel_pass;
 pub use verify::{Finding, VerifyErrors, verify};
 
 /// Registers every kernel dialect's evaluators into an interpreter —

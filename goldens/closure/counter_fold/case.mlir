@@ -1,5 +1,3 @@
-// frk-case: runners=interp
-// (flips to all runners when the K3 closure lowering lands, M4)
 //
 // The counter shape available without mutable state: fold a +3 closure
 // four times from 30 through scf.for iter_args → 42. The STATEFUL

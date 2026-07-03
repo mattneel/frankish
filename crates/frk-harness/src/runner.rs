@@ -171,6 +171,12 @@ impl Runner for JitRunner {
         // Entry functions carry llvm.emit_c_interface (goldens/README.md);
         // invoke_packed resolves the _mlir_ciface_ wrapper by entry name.
         let engine = ExecutionEngine::new(&module, 2, &[], false, false);
+        // The kernel lowering calls frk_rt_alloc for closure envs
+        // (D-035); the harness process hosts frk-rt, so hand the JIT the
+        // symbol directly. AOT (M7) links the staticlib instead.
+        unsafe {
+            engine.register_symbol("frk_rt_alloc", frk_rt::frk_rt_alloc as *mut ());
+        }
         match case.result {
             ResultKind::I64 => {
                 let mut result: i64 = 0;

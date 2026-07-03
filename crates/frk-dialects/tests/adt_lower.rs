@@ -19,7 +19,7 @@ fn lower(context: &Context, source: &str) -> Result<String, ()> {
     frk_dialects::verify(context, &module).expect("input must pass the frk verifier");
 
     let manager = PassManager::new(context);
-    manager.add_pass(frk_dialects::lower_adt_pass());
+    manager.add_pass(frk_dialects::lower_kernel_pass());
     manager.run(&mut module).map_err(|_| ())?;
     assert!(module.as_operation().verify(), "lowered module must verify");
     Ok(module.as_operation().to_string())
