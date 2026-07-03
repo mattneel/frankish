@@ -193,6 +193,29 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-060 [m15/ctl] The Rocq-anchor delegation, resolved by the human:
+  "Why do I need to provide the calculus? You can do it just fine."
+  §4.4's anchor is satisfied IN-REPO: docs/ctl-calculus.md (κ_frk) is
+  the ctl effects design, promoted from atli (~/src/atli) — the
+  human's own graded handler calculus, whose Rocq development is the
+  mechanization κ_frk leans on. atli, inscription, and flexlang are
+  IN-HOUSE prior art (the human's toylangs, on GitHub; frankish
+  exists because their patterns kept being rewritten) — no
+  attribution ceremony, promotion is the whole point; recorded in
+  LANDSCAPE. κ_frk takes: effect rows, innermost-dynamic dispatch,
+  the drop/resume clause taxonomy, deep one-shot continuations as
+  KEYSTONE (multi-shot call/cc stays a §14 non-goal), both traps
+  (one-shot violation, escape past extent), and the licenses→gates
+  method. Leaves in atli: β frame-sizing, q uniqueness, ρ regions
+  (revisit conditions in the doc). v0 op surface: prompt/abort with
+  first-class prompt tokens (the drop-clause subset = escape
+  continuations = r7rs call/ec); v1: handle/perform/resume. Native
+  default: result-passing (D-011) — tagged returns threaded to the
+  prompt; fence: aborts don't cross frk_entry or twin callbacks.
+  WITH THIS, the r7rs_core stub's gate ("do not ratify before the
+  ctl effects design lands") is SATISFIED; the manifest is ratified
+  in the same commit, oracle chibi-scheme 0.9.1 (installed, pinned).
+  dynamic-wind: OPEN, D-entry due when the specimen forces it.
 - D-059 [m14/ctl] Tail calls as law, first rung ("Keep going" ⇒
   queue order; r7rs is queue-top but its OWN stub gates ratification
   on the ctl effects design, and SPEC §4.4 anchors that design to

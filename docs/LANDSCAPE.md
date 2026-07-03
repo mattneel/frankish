@@ -108,3 +108,31 @@ enforestation (enforest reader). Siek & Taha, gradual typing + blame
   first time a Lua `#""` golden ran. All frankish text-attribute
   reads go through `attr_util::string_attr_bytes` (printed-form
   unescape) instead. Watch: melior fix upstream.
+
+## In-house prior art (the human's toylangs; all on GitHub)
+
+The reason frankish exists: these three kept re-implementing the
+same patterns (reference-interpreter-as-oracle, MLIR/LLVM-22
+backend, effects, memory discipline, deterministic tooling). Mine
+them first; promotion beats reinvention. Local checkouts under
+~/src/ (not vendored — L6 forbids machine-path dependence in
+build/test; these are DESIGN sources only).
+
+- **atli** — graded coeffectful handler calculus (ε effects, q
+  uniqueness, β frame-boundedness AS the allocation size, ρ
+  regions); one-shot continuations as keystone; grades are codegen
+  licenses with empirical gates; Rocq scaffold with an
+  admitted-count ledger. κ_frk (docs/ctl-calculus.md) is its
+  handler core, promoted (D-060). Still unmined: β-certified frame
+  sizing (if stack-switching coroutines land), the ε×β handler
+  fixpoint, task/region trees, the wedge-rejection test pattern.
+- **inscription** — deterministic prose-punctuation systems
+  language on MLIR/LLVM 22. Still unmined: diagnostic-code catalog
+  + `explain` (a frnksh UX rung), deterministic release
+  archives/checksums, source index/LSP determinism discipline.
+- **flexlang** — F#/Elm-flavored functional systems language;
+  explicit Result + explicit effects; region allocation; hygienic
+  comptime macros; pure-Python interpreter as reference next to
+  MLIR native. Still unmined: hygienic macro expander (the r7rs
+  sets-of-scopes rung), comptime evaluation (frk.stage precedent),
+  trait/generic dictionary passing (TS-1+ may want it).

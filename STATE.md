@@ -1,43 +1,41 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M14 complete (tag m14-done). Tail calls are law — trampoline
-in the reference semantics, musttail natively; 500k-frame fixed-
-stack goldens hold on all five architectures.
+Phase: M15 OPEN — gate half landed (M10 pattern). The Rocq-anchor
+block is RESOLVED by delegation ("You can do it just fine"): κ_frk
+(docs/ctl-calculus.md) is the ctl effects design, promoted from
+atli; r7rs_core RATIFIED (D-060); chibi-scheme 0.9.1 installed and
+pinned. atli/inscription/flexlang recorded in LANDSCAPE as in-house
+prior art. Implementation half next: ctl-calculus.md §5 lists the
+exit bars.
 Tree: green — `make test` 37 blocks; diff 70 cases 0 divergent (7
 runners); grid 65/65 × 4 triples × 2 strategies + s390x canary.
 
 ## Next action
-M14 closed. THE QUEUE IS NOW BLOCKED-BY-DESIGN AT ITS TOP: r7rs_core
-ratification is gated by its own stub on the ctl effects design, and
-SPEC §4.4 anchors that design to the human's Rocq handler calculus —
-see For-the-human. Work available WITHOUT the anchor:
-1. The uniform-signature convention (D-059's ledgered gap): every
-   function one LLVM type ⇒ musttail for indirect and cross-
-   signature tails — completes the tail-call law natively for
-   lua-level `return f(x)` chains, and is the r7rs prerequisite
-   engineering that can proceed independent of the effects design.
-2. femto_lua v0.3; TS-1 (narrowing verifier — the research slice;
-   D-051 tag widening fires); effects lowering BLOCKED (anchor);
-   frk.stage; gpu axis.
-3. GC thresholds — still waiting for a program that needs them.
+M15 implementation half (exit bars in docs/ctl-calculus.md §5):
+1. frk_ctl dialect v0: prompt/abort ops (packed, token-passing) +
+   IRDL + verifier + interp eval (prompt stack, both traps worded
+   per κ_frk §2). Verifier first (L1): trap goldens land with or
+   before the ops.
+2. Result-passing lowering (D-011): tagged returns threaded to the
+   prompt; alloc-counter gate green in BOTH twins (D-041 counters).
+3. Scheme frontend v0 per the ratified manifest (lex/parse/emit;
+   tail-call-only loops; call/ec + error on frk.ctl).
+4. Corpus + seven-runner diff with chibi as oracle; grid; then the
+   milestone note, m15-done.
+After M15: femto_lua v0.3; uniform-signature convention (musttail
+for indirect/cross-sig tails — lua `return f(x)` chains); TS-1;
+effects v1 (handle/perform/resume); GC thresholds when needed.
 
 ## In flight
 Nothing.
 
 ## For the human
-- THE ROCQ ANCHOR (M14 escalation, blocking r7rs): the r7rs_core
-  stub forbids its own ratification "before the ctl effects design
-  lands", and SPEC §4.4 names YOUR Rocq handler calculus as that
-  design's semantic anchor — "its typing/charge discipline becomes
-  this dialect's verifier obligations." Only you can supply it.
-  Options: (a) provide the calculus (or its typing/charge rules in
-  any written form) and the effects design proceeds; (b) amend §4.4
-  to unanchor the design (a D-entry striking the dependency); or
-  (c) leave r7rs gated and keep working the unblocked queue (the
-  uniform-signature convention is real prerequisite work available
-  now). Tail calls — the stub's hardest lowering obligation — are
-  already law as of m14-done and do not wait on this.
+- RESOLVED (2026-07-03): the Rocq anchor — delegated back ("Atli is
+  my code… you don't need attribution"); κ_frk authored in-repo,
+  D-060. inscription + flexlang also registered as minable in-house
+  art. If any κ_frk ruling misreads atli's intent (esp. the
+  keystone: multi-shot call/cc stays fenced), strike via D-entry.
 - SEQUENCING: M0–M10 are done — the scheduled program is complete.
   The beyond-M10 tracks (femto_lua implementation, the GC ladder,
   scheme/ctl, effects, stage/TS-1..4/gpu) are peers; picking the
