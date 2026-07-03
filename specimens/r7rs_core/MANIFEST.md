@@ -1,4 +1,10 @@
-# specimen: r7rs_core — RATIFIED v0 (D-060)
+# specimen: r7rs_core — v0 SHIPPED (D-060/D-061; m15-done)
+
+Status: v0 shipped. 6-case corpus byte-identical across interp,
+jit×{arena,rc}, the AOT grid (x86_64/aarch64/riscv64/wasm32 + s390x
+canary, both strategies), and chibi-scheme 0.9.1. call/ec + tail
+calls proven load-bearing; frk.ctl forced into existence.
+
 
 Pin: R7RS-small, core sublanguage. Oracle: **chibi-scheme 0.9.1**
 (`chibi-scheme -q`, versions.env `CHIBI_VERSION_TESTED`); chez

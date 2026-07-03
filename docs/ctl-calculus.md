@@ -157,7 +157,14 @@ therefore already correct) and native codegen.
   separate extraction — flexlang's hygienic comptime macros are the
   in-house precedent to mine.
 
-## 5. Implementation obligations (the next milestone's exit bars)
+## 5. Implementation obligations — MET at m15-done
+
+All bars below are green: interp reference semantics (6 K2 verifiers),
+result-passing native lowering (kernel-lowered ops + frontend-explicit
+guards), the r7rs_core frontend, and the 6-case differential with
+chibi-scheme across all 8 runners + the grid. The original bar list
+follows as the historical record.
+
 
 1. Interp: prompt stack + the five rules above; both traps worded
    exactly as §2.

@@ -1,31 +1,29 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M15 OPEN — gate half landed (M10 pattern). The Rocq-anchor
-block is RESOLVED by delegation ("You can do it just fine"): κ_frk
-(docs/ctl-calculus.md) is the ctl effects design, promoted from
-atli; r7rs_core RATIFIED (D-060); chibi-scheme 0.9.1 installed and
-pinned. atli/inscription/flexlang recorded in LANDSCAPE as in-house
-prior art. Implementation half next: ctl-calculus.md §5 lists the
-exit bars.
-Tree: green — `make test` 37 blocks; diff 70 cases 0 divergent (7
-runners); grid 65/65 × 4 triples × 2 strategies + s390x canary.
+Phase: M15 complete (tag m15-done). frk.ctl v0 — escape continuations
+(prompt/abort, κ_frk/D-060/D-061) — and the r7rs_core specimen that
+forced them. call/ec + proper tail calls load-bearing; the reference
+interpreter unwinds for real, native uses result-passing through a
+runtime pending-cell, and they agree byte-for-byte against chibi.
+Tree: green — `make test` 38 blocks; diff 77 cases 0 divergent (8
+runners incl. scheme); scheme grid 6/6 × 4 triples × 2 + s390x
+canary.
 
 ## Next action
-M15 implementation half (exit bars in docs/ctl-calculus.md §5):
-1. frk_ctl dialect v0: prompt/abort ops (packed, token-passing) +
-   IRDL + verifier + interp eval (prompt stack, both traps worded
-   per κ_frk §2). Verifier first (L1): trap goldens land with or
-   before the ops.
-2. Result-passing lowering (D-011): tagged returns threaded to the
-   prompt; alloc-counter gate green in BOTH twins (D-041 counters).
-3. Scheme frontend v0 per the ratified manifest (lex/parse/emit;
-   tail-call-only loops; call/ec + error on frk.ctl).
-4. Corpus + seven-runner diff with chibi as oracle; grid; then the
-   milestone note, m15-done.
-After M15: femto_lua v0.3; uniform-signature convention (musttail
-for indirect/cross-sig tails — lua `return f(x)` chains); TS-1;
-effects v1 (handle/perform/resume); GC thresholds when needed.
+M15 closed. The queue returns to the user. Available next:
+1. femto_lua v0.3 (varargs, iterator triples, __newindex) — queued.
+2. The uniform-signature convention (D-059 gap): musttail for
+   indirect/cross-signature tails, unfencing deep scheme/lua tail
+   recursion through closure-applies (v0 scheme TCO covers direct
+   func.call chains only — the interp trampoline does not yet cover
+   closure-apply tails, so a MILLION-deep scheme loop is interp-
+   fenced; the corpus stays shallow by design).
+3. r7rs_core v0.1: pairs/lists (frk_adt/bstr carriers), then
+   dynamic-wind (OPEN κ_frk ruling), then hygienic macros (the
+   sets-of-scopes expander — flexlang precedent).
+4. effects v1 (handle/perform/resume — the resume clause + one-shot
+   violation trap); TS-1; frk.stage; GC thresholds.
 
 ## In flight
 Nothing.
@@ -51,6 +49,41 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m15-done — Shipped: frk.ctl v0 (escape continuations) + the
+r7rs_core specimen, closing the Rocq-anchor escalation by delegation
+(the human: "you can do it just fine" — atli IS his handler calculus;
+D-060 promotes its core as κ_frk, D-061 records the native lowering
+chosen after a 3-designer+judge panel). The dialect: prompt/abort/
+pending. Reference semantics REALLY unwind (EvalError::Abort threads
+up; monotonic tokens, LIFO prompt stack, both traps) — 6 K2
+verifiers incl. a 1000-deep tail-chain abort and both nested-prompt
+targetings. Native is result-passing (D-011, no unwinder → Tier-0/
+wasm): the ctl ops kernel-lower to a runtime pending-cell (both
+twins), and the FRONTEND emits the guards (pending-check + early-
+return after every NON-tail call; tail calls unguarded so they stay
+musttail and propagate for free — the tail-call/guard law). The
+r7rs_core frontend lambda-lifts procedures to direct func.func calls
+(real M14 tail calls, the manifest's headline) and lowers call/cc to
+a prompt over an escape-closure; escape continuations are apply-only
+in v0. 6-case corpus byte-identical across ALL 8 runners + the AOT
+grid (6/6 × 4 triples × 2 + s390x). A grid-found wasm signature bug
+(display_bool u8 vs i64 call) reprised the u64-everywhere lesson.
+
+M15 EXTRACTION: the interp trampoline (M14) and the ctl reference
+semantics compose for free — a deep tail-recursive abort threads up
+through frame replacement with no special case. The pack-vs-lift
+fork resolved toward lambda-lifting for scheme (direct calls, real
+TCO, no per-call allocation) — the OPPOSITE of femto_lua's pack
+choice, because scheme leads with tail-recursion where lua led with
+arity. Promotable: the escape-closure pattern (a closure capturing a
+prompt token, its body aborting) is exactly what a general one-shot
+`resume` will generalize at effects-v1; the frontend-explicit guard
+discipline is the thing to revisit (a backstop pass, per the design
+panel's judge, if a second ctl frontend arrives). Fenced honestly:
+closure-apply tail calls are NOT yet TCO'd in the interp, so deep
+scheme recursion beyond direct func.call chains is interp-capped
+(corpus stays shallow); the uniform-signature convention lifts it.
+
 m14-done — Shipped: tail calls as law, first rung (D-059). The
 interpreter trampolines every tail-shaped call (frame REPLACEMENT
 threading Step::TailCall to eval_function's loop; the D-029 depth
@@ -468,6 +501,30 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (twenty-third entry)
+    Milestone/step: M15 complete, tagged m15-done
+    Green? yes — 38 blocks; 77/0 (8 runners); scheme grid 6/6 × 5 × 2
+    Did:
+    - D-060 κ_frk (promoted from atli) + D-061 native lowering
+      (3-designer+judge panel); frk_ctl dialect + interp (6 verifiers)
+      + both twins (pending cell) + kernel lowering (prompt/abort/
+      pending); r7rs_core frontend (reader/ast/emit, lambda-lifting,
+      call/cc→prompt, frontend-explicit guards); chibi oracle; 6-case
+      corpus green everywhere; wasm display_bool i64 fix
+    Next: queue to the user (femto_lua v0.3 / uniform-sig convention /
+    r7rs v0.1 / effects-v1)
+    Landmines:
+    - scheme closure-apply tail calls NOT interp-TCO'd — deep scheme
+      recursion beyond direct func.call is interp-capped (corpus
+      shallow by design); uniform-signature convention lifts it
+    - frk_ctl.pending returns 0 in the interp BY DESIGN (real unwind
+      happens first); the emitted guard's ^propagate is interp-dead —
+      do not "fix" this divergence, it is the correctness argument
+    - escape continuations are APPLY-ONLY in v0 (k in operator
+      position); k-as-value is fenced (needs real reified continuations)
+    - wasm enforces exact import signatures: every runtime arg is i64
+      (the display_bool bug); never declare a twin fn with u8/char
 
     Session end: 2026-07-03 (twenty-second entry)
     Milestone/step: M14 complete, tagged m14-done
