@@ -5,6 +5,12 @@
 # it names anything missing.
 set -eu
 cd "$(dirname "$0")/.."
+
+# The loanword producer's pinned deps (M9): npm ci is deterministic
+# against the committed package-lock; the setup doctor only CHECKS
+# for them (it never mutates the system), so CI installs first.
+(cd tools/loanword-ts && npm ci --no-audit --no-fund)
+
 make setup
 make build CARGOFLAGS=--locked
 make test CARGOFLAGS=--locked
