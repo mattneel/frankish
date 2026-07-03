@@ -150,6 +150,7 @@ name = "frk-dialects"
 version = "0.0.1"
 dependencies = [
  "frk-core",
+ "frk-interp",
  "melior",
  "mlir-sys",
 ]

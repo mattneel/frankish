@@ -8,8 +8,10 @@
 //! contexts by calling [`register`] right after `frk_core::context()`.
 
 pub mod adt;
+mod adt_eval;
 pub mod verify;
 
+pub use adt_eval::register_eval;
 pub use verify::{Finding, VerifyErrors, verify};
 
 use std::fmt;

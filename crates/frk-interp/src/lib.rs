@@ -13,6 +13,14 @@ pub use error::EvalError;
 pub use interp::{Eval, Frame, Interp, MAX_CALL_DEPTH, STACK_SIZE, Step};
 pub use value::Value;
 
+/// Helpers for writing [`Eval`] implementations outside this crate —
+/// the K2 authoring kit kernel dialects use (SPEC §3).
+pub mod eval_util {
+    pub use crate::upstream::{
+        binary_operands, continue_with_result, continue_with_results, operand_values,
+    };
+}
+
 use melior::ir::Module;
 
 /// One-shot convenience: interpret `entry(args)` inside `module` and

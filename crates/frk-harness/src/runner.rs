@@ -121,7 +121,11 @@ fn interpret_case(case: &Case) -> Result<String, RunError> {
     let (context, source) = frk_context(case)?;
     let module = parse_and_verify(&context, &source, case)?;
 
-    let results = frk_interp::interpret_entry(&module, &case.entry, &[])
+    let mut interp =
+        frk_interp::Interp::new(&module).map_err(|e| RunError::Invoke(e.to_string()))?;
+    frk_dialects::register_eval(&mut interp);
+    let results = interp
+        .eval_function(&case.entry, &[])
         .map_err(|e| RunError::Invoke(e.to_string()))?;
     match case.result {
         ResultKind::I64 => {
@@ -131,13 +135,19 @@ fn interpret_case(case: &Case) -> Result<String, RunError> {
                     results.len()
                 )));
             };
-            if value.width() != 64 {
-                return Err(RunError::Invoke(format!(
-                    "entry returned i{}, protocol expects i64",
-                    value.width()
-                )));
+            match value.width() {
+                Ok(64) => Ok(canon::render_i64(
+                    value
+                        .as_signed()
+                        .map_err(|e| RunError::Invoke(e.to_string()))?,
+                )),
+                Ok(other) => Err(RunError::Invoke(format!(
+                    "entry returned i{other}, protocol expects i64"
+                ))),
+                Err(_) => Err(RunError::Invoke(
+                    "entry returned a non-scalar value; the protocol expects i64".into(),
+                )),
             }
-            Ok(canon::render_i64(value.as_signed()))
         }
     }
 }

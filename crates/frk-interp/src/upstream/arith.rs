@@ -71,8 +71,8 @@ macro_rules! wrapping_binary {
                 op: OperationRef<'c, 'a>,
             ) -> Result<Step<'c, 'a>, EvalError> {
                 let (lhs, rhs) = binary_operands(frame, op)?;
-                let bits = lhs.as_unsigned().$method(rhs.as_unsigned());
-                continue_with_result(frame, op, Value::int(bits, lhs.width())?)
+                let bits = lhs.as_unsigned()?.$method(rhs.as_unsigned()?);
+                continue_with_result(frame, op, Value::int(bits, lhs.width()?)?)
             }
         }
     };
@@ -91,14 +91,15 @@ impl Eval for DivSI {
         op: OperationRef<'c, 'a>,
     ) -> Result<Step<'c, 'a>, EvalError> {
         let (lhs, rhs) = binary_operands(frame, op)?;
-        let (dividend, divisor) = (lhs.as_signed(), rhs.as_signed());
+        let (dividend, divisor) = (lhs.as_signed()?, rhs.as_signed()?);
         if divisor == 0 {
             return Err(EvalError::Trap("arith.divsi: division by zero".into()));
         }
-        if divisor == -1 && dividend == min_signed(lhs.width()) {
+        let width = lhs.width()?;
+        if divisor == -1 && dividend == min_signed(width) {
             return Err(EvalError::Trap("arith.divsi: signed overflow".into()));
         }
-        continue_with_result(frame, op, Value::from_signed(dividend / divisor, lhs.width())?)
+        continue_with_result(frame, op, Value::from_signed(dividend / divisor, width)?)
     }
 }
 
@@ -120,16 +121,16 @@ impl Eval for CmpI {
 
         // Predicate numbering is MLIR's arith::CmpIPredicate.
         let outcome = match predicate {
-            0 => lhs.as_unsigned() == rhs.as_unsigned(),
-            1 => lhs.as_unsigned() != rhs.as_unsigned(),
-            2 => lhs.as_signed() < rhs.as_signed(),
-            3 => lhs.as_signed() <= rhs.as_signed(),
-            4 => lhs.as_signed() > rhs.as_signed(),
-            5 => lhs.as_signed() >= rhs.as_signed(),
-            6 => lhs.as_unsigned() < rhs.as_unsigned(),
-            7 => lhs.as_unsigned() <= rhs.as_unsigned(),
-            8 => lhs.as_unsigned() > rhs.as_unsigned(),
-            9 => lhs.as_unsigned() >= rhs.as_unsigned(),
+            0 => lhs.as_unsigned()? == rhs.as_unsigned()?,
+            1 => lhs.as_unsigned()? != rhs.as_unsigned()?,
+            2 => lhs.as_signed()? < rhs.as_signed()?,
+            3 => lhs.as_signed()? <= rhs.as_signed()?,
+            4 => lhs.as_signed()? > rhs.as_signed()?,
+            5 => lhs.as_signed()? >= rhs.as_signed()?,
+            6 => lhs.as_unsigned()? < rhs.as_unsigned()?,
+            7 => lhs.as_unsigned()? <= rhs.as_unsigned()?,
+            8 => lhs.as_unsigned()? > rhs.as_unsigned()?,
+            9 => lhs.as_unsigned()? >= rhs.as_unsigned()?,
             other => {
                 return Err(EvalError::Unsupported(format!(
                     "cmpi predicate {other}"
@@ -148,8 +149,11 @@ impl Eval for Select {
         frame: &mut Frame,
         op: OperationRef<'c, 'a>,
     ) -> Result<Step<'c, 'a>, EvalError> {
-        let values = operand_values(frame, op, 0, 3)?;
-        let chosen = if values[0].as_bool()? { values[1] } else { values[2] };
+        let mut values = operand_values(frame, op, 0, 3)?;
+        let on_false = values.pop().expect("three operands");
+        let on_true = values.pop().expect("three operands");
+        let condition = values.pop().expect("three operands");
+        let chosen = if condition.as_bool()? { on_true } else { on_false };
         continue_with_result(frame, op, chosen)
     }
 }

@@ -1,15 +1,19 @@
 //! The interpreter's runtime value domain. v0: two's-complement integers
-//! up to 64 bits — exactly what the upstream corpus and the early kernel
-//! dialects need. Widening this enum is a docs/canon.md §2 event, because
-//! it widens what goldens can print.
+//! up to 64 bits, plus structured ADT values (M3). Adt is internal to
+//! interpretation — the entry protocol still renders scalars only
+//! (docs/canon.md §2); widening what goldens can *print* is a canon
+//! event, widening what they can *compute with* is not.
 
 use crate::error::EvalError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Value {
     /// An integer of `width` bits (1..=64), stored sign-agnostically in
     /// the low bits of `bits`; bits above `width` are always zero.
     Int { bits: u64, width: u32 },
+    /// A structured value: which variant (`tag`) plus its field values.
+    /// Products are single-variant sums at runtime: tag 0.
+    Adt { tag: usize, fields: Vec<Value> },
 }
 
 fn mask(width: u32) -> u64 {
@@ -32,33 +36,51 @@ impl Value {
         Self::Int { bits: value as u64, width: 1 }
     }
 
-    pub fn width(&self) -> u32 {
-        let Self::Int { width, .. } = self;
-        *width
+    pub fn adt(tag: usize, fields: Vec<Value>) -> Self {
+        Self::Adt { tag, fields }
+    }
+
+    fn int_parts(&self) -> Result<(u64, u32), EvalError> {
+        match self {
+            Self::Int { bits, width } => Ok((*bits, *width)),
+            Self::Adt { .. } => Err(EvalError::TypeMismatch(
+                "expected an integer, got an adt value".into(),
+            )),
+        }
+    }
+
+    pub fn width(&self) -> Result<u32, EvalError> {
+        Ok(self.int_parts()?.1)
     }
 
     /// The unsigned reading: the masked bits.
-    pub fn as_unsigned(&self) -> u64 {
-        let Self::Int { bits, .. } = self;
-        *bits
+    pub fn as_unsigned(&self) -> Result<u64, EvalError> {
+        Ok(self.int_parts()?.0)
     }
 
     /// The signed reading: sign-extended to i64.
-    pub fn as_signed(&self) -> i64 {
-        let Self::Int { bits, width } = *self;
-        if width >= 64 {
+    pub fn as_signed(&self) -> Result<i64, EvalError> {
+        let (bits, width) = self.int_parts()?;
+        Ok(if width >= 64 {
             bits as i64
         } else {
             let shift = 64 - width;
             ((bits << shift) as i64) >> shift
-        }
+        })
     }
 
     pub fn as_bool(&self) -> Result<bool, EvalError> {
-        match *self {
-            Self::Int { bits, width: 1 } => Ok(bits != 0),
-            other => Err(EvalError::TypeMismatch(format!(
-                "expected i1, got {other:?}"
+        match self.int_parts()? {
+            (bits, 1) => Ok(bits != 0),
+            (_, width) => Err(EvalError::TypeMismatch(format!("expected i1, got i{width}"))),
+        }
+    }
+
+    pub fn as_adt(&self) -> Result<(usize, &[Value]), EvalError> {
+        match self {
+            Self::Adt { tag, fields } => Ok((*tag, fields)),
+            Self::Int { width, .. } => Err(EvalError::TypeMismatch(format!(
+                "expected an adt value, got i{width}"
             ))),
         }
     }
@@ -75,8 +97,11 @@ mod tests {
 
     #[test]
     fn construction_masks_to_width() {
-        assert_eq!(Value::int(0x1ff, 8).unwrap().as_unsigned(), 0xff);
-        assert_eq!(Value::int(u64::MAX, 64).unwrap().as_unsigned(), u64::MAX);
+        assert_eq!(Value::int(0x1ff, 8).unwrap().as_unsigned().unwrap(), 0xff);
+        assert_eq!(
+            Value::int(u64::MAX, 64).unwrap().as_unsigned().unwrap(),
+            u64::MAX
+        );
     }
 
     #[test]
@@ -87,11 +112,11 @@ mod tests {
 
     #[test]
     fn signed_reading_sign_extends() {
-        assert_eq!(Value::int(0xff, 8).unwrap().as_signed(), -1);
-        assert_eq!(Value::int(0x7f, 8).unwrap().as_signed(), 127);
-        assert_eq!(Value::from_signed(-1, 64).unwrap().as_signed(), -1);
+        assert_eq!(Value::int(0xff, 8).unwrap().as_signed().unwrap(), -1);
+        assert_eq!(Value::int(0x7f, 8).unwrap().as_signed().unwrap(), 127);
+        assert_eq!(Value::from_signed(-1, 64).unwrap().as_signed().unwrap(), -1);
         // i1 reads as 0 / -1 signed — MLIR semantics, surprising but law.
-        assert_eq!(Value::bool(true).as_signed(), -1);
+        assert_eq!(Value::bool(true).as_signed().unwrap(), -1);
     }
 
     #[test]
@@ -99,6 +124,26 @@ mod tests {
         assert!(Value::bool(true).as_bool().unwrap());
         assert!(!Value::bool(false).as_bool().unwrap());
         assert!(Value::int(1, 64).unwrap().as_bool().is_err());
+    }
+
+    #[test]
+    fn adt_values_nest_and_read_back() {
+        let inner = Value::adt(0, vec![Value::bool(true)]);
+        let outer = Value::adt(3, vec![inner.clone(), Value::int(9, 64).unwrap()]);
+        let (tag, fields) = outer.as_adt().unwrap();
+        assert_eq!(tag, 3);
+        assert_eq!(fields[0], inner);
+        assert_eq!(fields[1].as_signed().unwrap(), 9);
+    }
+
+    #[test]
+    fn integer_readers_reject_adt_values_loudly() {
+        let value = Value::adt(0, vec![]);
+        assert!(value.as_signed().is_err());
+        assert!(value.as_unsigned().is_err());
+        assert!(value.as_bool().is_err());
+        assert!(value.width().is_err());
+        assert!(Value::bool(true).as_adt().is_err());
     }
 
     #[test]

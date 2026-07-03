@@ -244,7 +244,7 @@ fn type_params<'c>(
         .ok_or_else(|| format!("unparsable type parameters: {inner}"))
 }
 
-fn index_attr(op: OperationRef<'_, '_>, name: &str) -> Result<usize, String> {
+pub(crate) fn index_attr(op: OperationRef<'_, '_>, name: &str) -> Result<usize, String> {
     let value = op
         .attribute(name)
         .ok()

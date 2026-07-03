@@ -30,7 +30,7 @@ use melior::ir::OperationRef;
 use melior::ir::operation::OperationLike;
 
 /// Reads operands `[from, from+count)` out of the frame.
-pub(crate) fn operand_values(
+pub fn operand_values(
     frame: &Frame,
     op: OperationRef<'_, '_>,
     from: usize,
@@ -46,8 +46,9 @@ pub(crate) fn operand_values(
         .collect()
 }
 
-/// Reads the two operands of a binary op, insisting on matching widths.
-pub(crate) fn binary_operands(
+/// Reads the two operands of a binary integer op, insisting on matching
+/// widths.
+pub fn binary_operands(
     frame: &Frame,
     op: OperationRef<'_, '_>,
 ) -> Result<(Value, Value), EvalError> {
@@ -57,20 +58,20 @@ pub(crate) fn binary_operands(
             op.operand_count()
         )));
     }
-    let values = operand_values(frame, op, 0, 2)?;
-    let (lhs, rhs) = (values[0], values[1]);
-    if lhs.width() != rhs.width() {
+    let mut values = operand_values(frame, op, 0, 2)?;
+    let rhs = values.pop().expect("two operands");
+    let lhs = values.pop().expect("two operands");
+    let (lhs_width, rhs_width) = (lhs.width()?, rhs.width()?);
+    if lhs_width != rhs_width {
         return Err(EvalError::TypeMismatch(format!(
-            "i{} vs i{}",
-            lhs.width(),
-            rhs.width()
+            "i{lhs_width} vs i{rhs_width}"
         )));
     }
     Ok((lhs, rhs))
 }
 
 /// Binds a single-result op's value and continues.
-pub(crate) fn continue_with_result<'c, 'a>(
+pub fn continue_with_result<'c, 'a>(
     frame: &mut Frame,
     op: OperationRef<'c, 'a>,
     value: Value,
@@ -83,7 +84,7 @@ pub(crate) fn continue_with_result<'c, 'a>(
 }
 
 /// Binds an N-result op's values and continues.
-pub(crate) fn continue_with_results<'c, 'a>(
+pub fn continue_with_results<'c, 'a>(
     frame: &mut Frame,
     op: OperationRef<'c, 'a>,
     values: &[Value],
@@ -99,7 +100,7 @@ pub(crate) fn continue_with_results<'c, 'a>(
         let result = op
             .result(index)
             .map_err(|_| EvalError::Malformed("result out of range".into()))?;
-        frame.set(result.into(), *value);
+        frame.set(result.into(), value.clone());
     }
     Ok(Step::Continue)
 }

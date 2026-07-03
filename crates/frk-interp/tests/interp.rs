@@ -19,8 +19,8 @@ fn interpret(source: &str, entry: &str) -> Result<Vec<Value>, EvalError> {
 fn interpret_i64(source: &str) -> Result<i64, EvalError> {
     let values = interpret(source, "main")?;
     assert_eq!(values.len(), 1, "entry returned {values:?}");
-    assert_eq!(values[0].width(), 64, "entry returned {values:?}");
-    Ok(values[0].as_signed())
+    assert_eq!(values[0].width().unwrap(), 64, "entry returned {values:?}");
+    values[0].as_signed()
 }
 
 #[test]
@@ -274,8 +274,62 @@ fn multiple_return_values_come_back_in_order() {
     )
     .unwrap();
     assert_eq!(values.len(), 2);
-    assert_eq!(values[0].as_signed(), 1);
-    assert_eq!(values[1].as_signed(), 2);
+    assert_eq!(values[0].as_signed().unwrap(), 1);
+    assert_eq!(values[1].as_signed().unwrap(), 2);
+}
+
+#[test]
+fn cf_switch_hits_cases_and_default() {
+    // i32 flag; the default edge carries a block argument.
+    let source = |flag: i64| {
+        format!(
+            r#"func.func @main() -> i64 {{
+                %flag = arith.constant {flag} : i32
+                %d = arith.constant 10 : i64
+                cf.switch %flag : i32, [
+                    default: ^exit(%d : i64),
+                    0: ^zero,
+                    1: ^one
+                ]
+            ^zero:
+                %z = arith.constant 100 : i64
+                cf.br ^exit(%z : i64)
+            ^one:
+                %o = arith.constant 200 : i64
+                cf.br ^exit(%o : i64)
+            ^exit(%r: i64):
+                return %r : i64
+            }}"#
+        )
+    };
+    assert_eq!(interpret_i64(&source(0)).unwrap(), 100);
+    assert_eq!(interpret_i64(&source(1)).unwrap(), 200);
+    assert_eq!(interpret_i64(&source(7)).unwrap(), 10);
+}
+
+#[test]
+fn cf_switch_works_on_i64_flags() {
+    let result = interpret_i64(
+        r#"func.func @main() -> i64 {
+            %flag = arith.constant 43 : i64
+            %d = arith.constant -1 : i64
+            cf.switch %flag : i64, [
+                default: ^exit(%d : i64),
+                42: ^a,
+                43: ^b
+            ]
+        ^a:
+            %x = arith.constant 1 : i64
+            cf.br ^exit(%x : i64)
+        ^b:
+            %y = arith.constant 2 : i64
+            cf.br ^exit(%y : i64)
+        ^exit(%r: i64):
+            return %r : i64
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(result, 2);
 }
 
 #[test]

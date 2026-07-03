@@ -66,7 +66,7 @@ fn slot_key(value: IrValue) -> usize {
 
 impl Frame {
     pub fn get(&self, value: IrValue) -> Result<Value, EvalError> {
-        self.slots.get(&slot_key(value)).copied().ok_or_else(|| {
+        self.slots.get(&slot_key(value)).cloned().ok_or_else(|| {
             EvalError::Malformed(format!("use of unbound SSA value: {value}"))
         })
     }
@@ -106,6 +106,13 @@ impl<'c, 'a> Interp<'c, 'a> {
             functions,
             depth: Cell::new(0),
         })
+    }
+
+    /// Registers (or overrides) the evaluator for one op — the K2 hook
+    /// kernel dialects use to plug their semantics in (frk-dialects
+    /// exposes a `register_eval` that calls this for each of its ops).
+    pub fn register_eval(&mut self, op: &'static str, evaluator: Box<dyn Eval>) {
+        self.registry.insert(op, evaluator);
     }
 
     /// Calls `name(args)` and returns its results. This is both the public
@@ -234,7 +241,7 @@ fn bind_block_args(
         let argument = block
             .argument(index)
             .map_err(|_| EvalError::Malformed("block argument out of range".into()))?;
-        frame.set(argument.into(), *value);
+        frame.set(argument.into(), value.clone());
     }
     Ok(())
 }

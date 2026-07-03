@@ -41,9 +41,9 @@ impl Eval for For {
             return Err(EvalError::Malformed("scf.for needs lb, ub, step".into()));
         }
         let bounds = operand_values(frame, op, 0, 3)?;
-        let (lb, ub, step) = (bounds[0], bounds[1], bounds[2]);
-        let width = lb.width();
-        let step_value = step.as_signed();
+        let width = bounds[0].width()?;
+        let upper = bounds[1].as_signed()?;
+        let step_value = bounds[2].as_signed()?;
         if step_value <= 0 {
             return Err(EvalError::Trap(format!(
                 "scf.for: non-positive step {step_value}"
@@ -54,11 +54,11 @@ impl Eval for For {
             .ok_or_else(|| EvalError::Malformed("scf.for without a body block".into()))?;
 
         let mut carried = operand_values(frame, op, 3, op.operand_count() - 3)?;
-        let mut induction = lb.as_signed();
-        while induction < ub.as_signed() {
+        let mut induction = bounds[0].as_signed()?;
+        while induction < upper {
             let mut args = Vec::with_capacity(1 + carried.len());
             args.push(Value::from_signed(induction, width)?);
-            args.extend(carried.iter().copied());
+            args.extend(carried.iter().cloned());
             carried = interp.run_structured_block(frame, body, args)?;
             // Wrapping induction would mean ub was unreachable; the ub
             // comparison bounds it first, so plain addition is safe here.
