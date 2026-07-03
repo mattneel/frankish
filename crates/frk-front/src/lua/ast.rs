@@ -52,6 +52,14 @@ pub enum UnOp {
 #[derive(Clone, Debug)]
 pub enum Stat {
     Local(String, Expr, usize),
+    /// `local a, b, c = f()` — names beyond the pack nil-fill (D-058).
+    LocalMulti(Vec<String>, Expr, usize),
+    /// `a, b = f()` — existing locals/globals only, names only.
+    AssignMulti(Vec<String>, Expr, usize),
+    Repeat(Block, Expr, usize),
+    Break(usize),
+    /// `for n1, n2 in e do` — e is the iterator-producing expression.
+    GenFor(Vec<String>, Expr, Block, usize),
     LocalFunction(String, Vec<String>, Block, usize),
     AssignName(String, Expr, usize),
     AssignIndex(Expr, Expr, Expr, usize),
@@ -59,7 +67,7 @@ pub enum Stat {
     If(Vec<(Expr, Block)>, Option<Block>, usize),
     While(Expr, Block, usize),
     NumFor(String, Expr, Expr, Option<Expr>, Block, usize),
-    Return(Option<Expr>, usize),
+    Return(Vec<Expr>, usize),
     Do(Block, usize),
     /// `function name(...)` — a global function declaration.
     GlobalFunction(String, Vec<String>, Block, usize),
@@ -156,19 +164,27 @@ impl Parser {
                 Some(Token::Return) => {
                     let span = self.span();
                     self.position += 1;
-                    let value = match self.peek() {
+                    let mut values = Vec::new();
+                    match self.peek() {
                         None
                         | Some(Token::End)
                         | Some(Token::Else)
                         | Some(Token::Elseif)
                         | Some(Token::Until)
-                        | Some(Token::Semi) => None,
-                        _ => Some(self.expression()?),
-                    };
+                        | Some(Token::Semi) => {}
+                        _ => loop {
+                            values.push(self.expression()?);
+                            if self.peek() == Some(&Token::Comma) {
+                                self.position += 1;
+                            } else {
+                                break;
+                            }
+                        },
+                    }
                     if self.peek() == Some(&Token::Semi) {
                         self.position += 1;
                     }
-                    statements.push(Stat::Return(value, span));
+                    statements.push(Stat::Return(values, span));
                     break; // return ends the block
                 }
                 _ => statements.push(self.statement()?),
@@ -190,9 +206,23 @@ impl Parser {
                 }
                 let name = self.name()?;
                 if self.peek() == Some(&Token::Comma) {
-                    return Err(self.error("multi-name local is fenced in v0.1 (D-052)"));
+                    // Multi-name local (D-058): RHS is one expression;
+                    // a call's pack destructures with nil-fill.
+                    let mut names = vec![name];
+                    while self.peek() == Some(&Token::Comma) {
+                        self.position += 1;
+                        names.push(self.name()?);
+                    }
+                    self.expect(Token::Assign, "=")?;
+                    let value = self.expression()?;
+                    if self.peek() == Some(&Token::Comma) {
+                        return Err(self.error(
+                            "multi-expression RHS is fenced in v0.2 (D-058)",
+                        ));
+                    }
+                    return Ok(Stat::LocalMulti(names, value, span));
                 }
-                self.expect(Token::Assign, "= (v0.1 locals require an initializer)")?;
+                self.expect(Token::Assign, "= (locals require an initializer)")?;
                 let value = self.expression()?;
                 Ok(Stat::Local(name, value, span))
             }
@@ -263,7 +293,26 @@ impl Parser {
                         self.expect(Token::End, "end")?;
                         Ok(Stat::NumFor(variable, from, to, step, body, span))
                     }
-                    _ => Err(self.error("generic for is fenced in v0.1 (D-052)")),
+                    Some(Token::Comma) | Some(Token::In) => {
+                        // Generic for (D-058): for n1[, n2] in expr do
+                        let mut names = vec![variable];
+                        while self.peek() == Some(&Token::Comma) {
+                            self.position += 1;
+                            names.push(self.name()?);
+                        }
+                        self.expect(Token::In, "in")?;
+                        let iterator = self.expression()?;
+                        if self.peek() == Some(&Token::Comma) {
+                            return Err(self.error(
+                                "explicit iterator triples are fenced in v0.2 (D-058)",
+                            ));
+                        }
+                        self.expect(Token::Do, "do")?;
+                        let body = self.block()?;
+                        self.expect(Token::End, "end")?;
+                        Ok(Stat::GenFor(names, iterator, body, span))
+                    }
+                    _ => Err(self.error("malformed for")),
                 }
             }
             Some(Token::Do) => {
@@ -272,13 +321,35 @@ impl Parser {
                 self.expect(Token::End, "end")?;
                 Ok(Stat::Do(body, span))
             }
-            Some(Token::Repeat) | Some(Token::Break) => {
-                Err(self.error("repeat/break are fenced in v0.1 (D-052)"))
+            Some(Token::Repeat) => {
+                self.position += 1;
+                let body = self.block()?;
+                self.expect(Token::Until, "until")?;
+                let condition = self.expression()?;
+                Ok(Stat::Repeat(body, condition, span))
+            }
+            Some(Token::Break) => {
+                self.position += 1;
+                Ok(Stat::Break(span))
             }
             _ => {
                 // Expression statement: a call, or the start of an
                 // assignment through a name/index prefix.
                 let prefix = self.prefix_expression()?;
+                if self.peek() == Some(&Token::Comma) {
+                    // a, b = expr (names only, D-058).
+                    let Expr::Name(first, _) = prefix else {
+                        return Err(self.error("multi-assignment targets are names only"));
+                    };
+                    let mut names = vec![first];
+                    while self.peek() == Some(&Token::Comma) {
+                        self.position += 1;
+                        names.push(self.name()?);
+                    }
+                    self.expect(Token::Assign, "=")?;
+                    let value = self.expression()?;
+                    return Ok(Stat::AssignMulti(names, value, span));
+                }
                 if self.peek() == Some(&Token::Assign) {
                     self.position += 1;
                     let value = self.expression()?;

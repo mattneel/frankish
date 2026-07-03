@@ -1,0 +1,10 @@
+local s = "frankish"
+print(string.sub(s, 1, 5))
+print(string.sub(s, 6))
+print(string.sub(s, -4))
+print(string.sub(s, 2, -2))
+print(string.sub(s, 5, 2))
+print(#string.sub(s, 5, 2))
+print(string.rep("ab", 3))
+print(string.rep("x", 0) .. "|")
+print(string.rep(string.sub(s, 1, 2), 2))

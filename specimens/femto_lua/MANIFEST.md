@@ -39,7 +39,19 @@ canon fence at implementation (Lua spells %.14g — the TS-0 §6
 precedent applies).
 
 ## Status
-v0.1 SHIPPED (2026-07-03, M11/D-054): the full ratified scope —
+v0.2 SHIPPED (2026-07-03, M13/D-058): the pack calling convention —
+fn<[arr<dyn>], [arr<dyn>]>, one fn type for every function — brings
+multiple return values (return explists, destructuring locals and
+assignments, tail-position pack forwarding) and DISSOLVES the exact-
+arity fence (nil-fill/drop is the callee prologue). Also lifted:
+repeat/until, break, generic for with pairs/ipairs/next (iteration
+order is implementation-defined — canon: corpus aggregates or uses
+ipairs), and string.sub/string.rep as a seeded module. Still fenced
+(v0.3+): varargs, mid-explist spreads, explicit iterator triples,
+multi-expression RHS. Corpus: 12 cases, 100% vs lua5.1, all runners,
+all five triples.
+
+Previously — v0.1 (M11/D-054): the full ratified scope —
 locals, functions/closures/upvalues, tables, __index (both forms),
 strings, control flow, print/tostring/setmetatable/getmetatable —
 compiles through frk_dyn/frk_bstr/frk_mem/frk_closure and runs

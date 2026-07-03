@@ -103,6 +103,8 @@ struct Fcx<'c, 'r> {
     /// The _G table (a dyn), threaded everywhere.
     globals: Value<'c, 'r>,
     terminated: bool,
+    /// Enclosing loop exits, innermost last (`break`, D-058).
+    break_targets: Vec<BlockRef<'c, 'r>>,
 }
 
 impl<'c> Emitter<'c> {
@@ -728,6 +730,175 @@ impl<'c> Emitter<'c> {
             self.func(module, name, &[self.pack_ty()], &[self.pack_ty()], region, false);
         }
 
+        // __lua_next_v: the pairs iterator (D-058) — table_next over
+        // slot order; the canon rule keeps corpus output
+        // order-independent.
+        {
+            let region = Region::new();
+            let entry = region.append_block(Block::new(&[(self.pack_ty(), location)]));
+            let pack = block_arg(entry, 0)?;
+            let table = self.pack_get(entry, pack, 0, location)?;
+            let key = self.pack_get(entry, pack, 1, location)?;
+            let tt = self.tag_of(entry, table, location)?;
+            let four = self.const_i64(entry, 4, location)?;
+            let is_table = self.cmpi(entry, 0, tt, four, location)?;
+            let bok = region.append_block(Block::new(&[]));
+            let berr = region.append_block(Block::new(&[]));
+            self.cond_br(entry, is_table, bok, berr, location)?;
+            let five = self.const_i64(berr, 5, location)?;
+            self.call(berr, "frk_rt_lua_error", &[five], &[], location)?;
+            let nil = self.nil_dyn(berr, location)?;
+            let out = self.make_pack(berr, &[nil], location)?;
+            ret(berr, &[out], location)?;
+
+            let next = OperationBuilder::new("frk_dyn.table_next", location)
+                .add_operands(&[table, key])
+                .add_results(&[self.dyn_ty(), self.dyn_ty()])
+                .build()
+                .map_err(|e| e.to_string())?;
+            let inserted = bok.append_operation(next);
+            let next_key = unsafe {
+                Value::from_raw(inserted.result(0).map_err(|e| e.to_string())?.to_raw())
+            };
+            let next_value = unsafe {
+                Value::from_raw(inserted.result(1).map_err(|e| e.to_string())?.to_raw())
+            };
+            let out = self.make_pack(bok, &[next_key, next_value], location)?;
+            ret(bok, &[out], location)?;
+            self.func(module, "__lua_next_v", &[self.pack_ty()], &[self.pack_ty()], region, false);
+        }
+
+        // __lua_pairs_v: returns (next, t, nil).
+        {
+            let region = Region::new();
+            let entry = region.append_block(Block::new(&[(self.pack_ty(), location)]));
+            let pack = block_arg(entry, 0)?;
+            let table = self.pack_get(entry, pack, 0, location)?;
+            let next_fun = self.helper_fun(entry, "__lua_next_v", location)?;
+            let nil = self.nil_dyn(entry, location)?;
+            let out = self.make_pack(entry, &[next_fun, table, nil], location)?;
+            ret(entry, &[out], location)?;
+            self.func(module, "__lua_pairs_v", &[self.pack_ty()], &[self.pack_ty()], region, false);
+        }
+
+        // __lua_ipairs_iter_v(t, i) -> (i+1, t[i+1]) | (nil).
+        {
+            let region = Region::new();
+            let entry = region.append_block(Block::new(&[(self.pack_ty(), location)]));
+            let pack = block_arg(entry, 0)?;
+            let table = self.pack_get(entry, pack, 0, location)?;
+            let index = self.pack_get(entry, pack, 1, location)?;
+            let n = self.unwrap(entry, TAG_NUM, self.f64_ty(), index, location)?;
+            let one = self.const_f64(entry, 1.0, location)?;
+            let next_n = self.build(entry, "arith.addf", &[n, one], &[self.f64_ty()], &[], location)?;
+            let next_dyn = self.wrap(entry, TAG_NUM, next_n, location)?;
+            let value = self.build(
+                entry,
+                "frk_dyn.raw_get",
+                &[table, next_dyn],
+                &[self.dyn_ty()],
+                &[],
+                location,
+            )?;
+            let tag = self.tag_of(entry, value, location)?;
+            let zero = self.const_i64(entry, 0, location)?;
+            let is_nil = self.cmpi(entry, 0, tag, zero, location)?;
+            let bend = region.append_block(Block::new(&[]));
+            let bnext = region.append_block(Block::new(&[]));
+            self.cond_br(entry, is_nil, bend, bnext, location)?;
+            let nil = self.nil_dyn(bend, location)?;
+            let out = self.make_pack(bend, &[nil], location)?;
+            ret(bend, &[out], location)?;
+            let out = self.make_pack(bnext, &[next_dyn, value], location)?;
+            ret(bnext, &[out], location)?;
+            self.func(
+                module,
+                "__lua_ipairs_iter_v",
+                &[self.pack_ty()],
+                &[self.pack_ty()],
+                region,
+                false,
+            );
+        }
+
+        // __lua_ipairs_v: returns (iter, t, 0).
+        {
+            let region = Region::new();
+            let entry = region.append_block(Block::new(&[(self.pack_ty(), location)]));
+            let pack = block_arg(entry, 0)?;
+            let table = self.pack_get(entry, pack, 0, location)?;
+            let iter = self.helper_fun(entry, "__lua_ipairs_iter_v", location)?;
+            let zero = self.const_f64(entry, 0.0, location)?;
+            let zero_dyn = self.wrap(entry, TAG_NUM, zero, location)?;
+            let out = self.make_pack(entry, &[iter, table, zero_dyn], location)?;
+            ret(entry, &[out], location)?;
+            self.func(module, "__lua_ipairs_v", &[self.pack_ty()], &[self.pack_ty()], region, false);
+        }
+
+        // string.sub / string.rep (D-058): 1-based negative-tolerant
+        // sub with a defaulted j; rep by count.
+        {
+            let region = Region::new();
+            let entry = region.append_block(Block::new(&[(self.pack_ty(), location)]));
+            let pack = block_arg(entry, 0)?;
+            let s = self.pack_get(entry, pack, 0, location)?;
+            let raw = self.unwrap(entry, TAG_STR, self.bstr_ty(), s, location)?;
+            let i_dyn = self.pack_get(entry, pack, 1, location)?;
+            let i_num = self.unwrap(entry, TAG_NUM, self.f64_ty(), i_dyn, location)?;
+            let i = self.build(entry, "arith.fptosi", &[i_num], &[self.i64_ty()], &[], location)?;
+            let j_dyn = self.pack_get(entry, pack, 2, location)?;
+            let jt = self.tag_of(entry, j_dyn, location)?;
+            let zero = self.const_i64(entry, 0, location)?;
+            let j_missing = self.cmpi(entry, 0, jt, zero, location)?;
+            let bdefault = region.append_block(Block::new(&[]));
+            let bgiven = region.append_block(Block::new(&[]));
+            let join = region.append_block(Block::new(&[(self.i64_ty(), location)]));
+            self.cond_br(entry, j_missing, bdefault, bgiven, location)?;
+            let minus_one = self.const_i64(bdefault, -1, location)?;
+            self.br(bdefault, join, &[minus_one], location)?;
+            let j_num = self.unwrap(bgiven, TAG_NUM, self.f64_ty(), j_dyn, location)?;
+            let j_given =
+                self.build(bgiven, "arith.fptosi", &[j_num], &[self.i64_ty()], &[], location)?;
+            self.br(bgiven, join, &[j_given], location)?;
+            let j = block_arg(join, 0)?;
+            let sliced =
+                self.build(join, "frk_bstr.sub", &[raw, i, j], &[self.bstr_ty()], &[], location)?;
+            let wrapped = self.wrap(join, TAG_STR, sliced, location)?;
+            let out = self.make_pack(join, &[wrapped], location)?;
+            ret(join, &[out], location)?;
+            self.func(
+                module,
+                "__lua_string_sub_v",
+                &[self.pack_ty()],
+                &[self.pack_ty()],
+                region,
+                false,
+            );
+        }
+        {
+            let region = Region::new();
+            let entry = region.append_block(Block::new(&[(self.pack_ty(), location)]));
+            let pack = block_arg(entry, 0)?;
+            let s = self.pack_get(entry, pack, 0, location)?;
+            let raw = self.unwrap(entry, TAG_STR, self.bstr_ty(), s, location)?;
+            let n_dyn = self.pack_get(entry, pack, 1, location)?;
+            let n_num = self.unwrap(entry, TAG_NUM, self.f64_ty(), n_dyn, location)?;
+            let n = self.build(entry, "arith.fptosi", &[n_num], &[self.i64_ty()], &[], location)?;
+            let repeated =
+                self.build(entry, "frk_bstr.rep", &[raw, n], &[self.bstr_ty()], &[], location)?;
+            let wrapped = self.wrap(entry, TAG_STR, repeated, location)?;
+            let out = self.make_pack(entry, &[wrapped], location)?;
+            ret(entry, &[out], location)?;
+            self.func(
+                module,
+                "__lua_string_rep_v",
+                &[self.pack_ty()],
+                &[self.pack_ty()],
+                region,
+                false,
+            );
+        }
+
         // __lua_index(t, k) -> dyn: rawget + the __index chain
         // (table recursion; function form via frk_closure.apply).
         {
@@ -976,6 +1147,9 @@ impl<'c> Emitter<'c> {
             ("tostring", "__lua_tostring_v"),
             ("setmetatable", "__lua_setmetatable_v"),
             ("getmetatable", "__lua_getmetatable_v"),
+            ("next", "__lua_next_v"),
+            ("pairs", "__lua_pairs_v"),
+            ("ipairs", "__lua_ipairs_v"),
         ] {
             let wrapped = self.helper_fun(entry, helper, location)?;
             let key_lit = self.str_lit(entry, name, location)?;
@@ -989,12 +1163,36 @@ impl<'c> Emitter<'c> {
             )?;
         }
 
+        // The string module (D-058): a table of pack-convention funs.
+        {
+            let string_table =
+                self.build(entry, "frk_dyn.table_new", &[], &[self.dyn_ty()], &[], location)?;
+            for (field, helper) in
+                [("sub", "__lua_string_sub_v"), ("rep", "__lua_string_rep_v")]
+            {
+                let fun = self.helper_fun(entry, helper, location)?;
+                let key_lit = self.str_lit(entry, field, location)?;
+                let key = self.wrap(entry, TAG_STR, key_lit, location)?;
+                self.build0(entry, "frk_dyn.raw_set", &[string_table, key, fun], &[], location)?;
+            }
+            let key_lit = self.str_lit(entry, "string", location)?;
+            let key = self.wrap(entry, TAG_STR, key_lit, location)?;
+            self.build0(
+                entry,
+                "frk_dyn.raw_set",
+                &[globals, key, string_table],
+                &[],
+                location,
+            )?;
+        }
+
         let mut fcx = Fcx {
             region: &region,
             block: entry,
             env: HashMap::new(),
             globals,
             terminated: false,
+            break_targets: Vec::new(),
         };
         self.emit_block(&mut fcx, chunk)?;
         if !fcx.terminated {
@@ -1040,7 +1238,14 @@ impl<'c> Emitter<'c> {
             env.insert(name.clone(), boxed);
         }
 
-        let mut fcx = Fcx { region: &region, block: entry, env, globals, terminated: false };
+        let mut fcx = Fcx {
+            region: &region,
+            block: entry,
+            env,
+            globals,
+            terminated: false,
+            break_targets: Vec::new(),
+        };
         self.emit_block(&mut fcx, &job.body)?;
         if !fcx.terminated {
             // Fall-off returns NO values (an empty pack).
@@ -1207,20 +1412,185 @@ impl<'c> Emitter<'c> {
                 Ok(())
             }
             Stat::Do(body, _) => self.emit_block(fcx, body),
-            Stat::Return(value, span) => {
+            Stat::Break(span) => {
+                let location = self.loc_at(*span);
+                let target = *fcx
+                    .break_targets
+                    .last()
+                    .ok_or_else(|| "break outside a loop".to_string())?;
+                self.br(fcx.block, target, &[], location)?;
+                fcx.terminated = true;
+                Ok(())
+            }
+            Stat::Repeat(body, condition, span) => {
+                let location = self.loc_at(*span);
+                let head = fcx.region.append_block(Block::new(&[]));
+                let done = fcx.region.append_block(Block::new(&[]));
+                self.br(fcx.block, head, &[], location)?;
+                fcx.block = head;
+                fcx.terminated = false;
+                // Lua scoping: `until` sees the body's locals — the
+                // env restores AFTER the condition.
+                let saved = fcx.env.clone();
+                fcx.break_targets.push(done);
+                for statement in body {
+                    if fcx.terminated {
+                        break;
+                    }
+                    self.emit_stat(fcx, statement)?;
+                }
+                fcx.break_targets.pop();
+                if !fcx.terminated {
+                    let condition_value = self.emit_expr(fcx, condition)?;
+                    let truthy = self
+                        .call(fcx.block, "__lua_truthy", &[condition_value], &[self.i1_ty()], location)?
+                        .expect("result");
+                    self.cond_br(fcx.block, truthy, done, head, location)?;
+                }
+                fcx.env = saved;
+                fcx.block = done;
+                fcx.terminated = false;
+                Ok(())
+            }
+            Stat::LocalMulti(names, value, span) => {
                 let location = self.loc_at(*span);
                 let pack = match value {
-                    Some(expression) => {
-                        // A bare call in return position forwards its
-                        // whole pack (Lua tail-position multi).
-                        if let Expr::Call(callee, arguments, _) = expression {
-                            self.emit_call_pack(fcx, callee, arguments, location)?
-                        } else {
-                            let value = self.emit_expr(fcx, expression)?;
-                            self.make_pack(fcx.block, &[value], location)?
+                    Expr::Call(callee, arguments, _) => {
+                        self.emit_call_pack(fcx, callee, arguments, location)?
+                    }
+                    other => {
+                        let single = self.emit_expr(fcx, other)?;
+                        self.make_pack(fcx.block, &[single], location)?
+                    }
+                };
+                for (index, name) in names.iter().enumerate() {
+                    let value = self.pack_get(fcx.block, pack, index as i64, location)?;
+                    let boxed = self.build(
+                        fcx.block,
+                        "frk_mem.box_new",
+                        &[value],
+                        &[self.box_ty()],
+                        &[],
+                        location,
+                    )?;
+                    fcx.env.insert(name.clone(), boxed);
+                }
+                Ok(())
+            }
+            Stat::AssignMulti(names, value, span) => {
+                let location = self.loc_at(*span);
+                let pack = match value {
+                    Expr::Call(callee, arguments, _) => {
+                        self.emit_call_pack(fcx, callee, arguments, location)?
+                    }
+                    other => {
+                        let single = self.emit_expr(fcx, other)?;
+                        self.make_pack(fcx.block, &[single], location)?
+                    }
+                };
+                for (index, name) in names.iter().enumerate() {
+                    let value = self.pack_get(fcx.block, pack, index as i64, location)?;
+                    match fcx.env.get(name) {
+                        Some(boxed) => {
+                            let boxed = *boxed;
+                            self.build0(
+                                fcx.block,
+                                "frk_mem.box_set",
+                                &[boxed, value],
+                                &[],
+                                location,
+                            )?;
+                        }
+                        None => {
+                            let key_lit = self.str_lit(fcx.block, name, location)?;
+                            let key = self.wrap(fcx.block, TAG_STR, key_lit, location)?;
+                            let globals = fcx.globals;
+                            self.build0(
+                                fcx.block,
+                                "frk_dyn.raw_set",
+                                &[globals, key, value],
+                                &[],
+                                location,
+                            )?;
                         }
                     }
-                    None => self.make_pack(fcx.block, &[], location)?,
+                }
+                Ok(())
+            }
+            Stat::GenFor(names, iterator, body, span) => {
+                let location = self.loc_at(*span);
+                // for n1, n2 in EXPR do: EXPR yields (f, s, ctrl).
+                let triple = match iterator {
+                    Expr::Call(callee, arguments, _) => {
+                        self.emit_call_pack(fcx, callee, arguments, location)?
+                    }
+                    other => {
+                        let single = self.emit_expr(fcx, other)?;
+                        self.make_pack(fcx.block, &[single], location)?
+                    }
+                };
+                let iter_fn = self.pack_get(fcx.block, triple, 0, location)?;
+                let state = self.pack_get(fcx.block, triple, 1, location)?;
+                let control0 = self.pack_get(fcx.block, triple, 2, location)?;
+
+                let head = fcx
+                    .region
+                    .append_block(Block::new(&[(self.dyn_ty(), location)]));
+                let bbody = fcx.region.append_block(Block::new(&[]));
+                let done = fcx.region.append_block(Block::new(&[]));
+                self.br(fcx.block, head, &[control0], location)?;
+
+                let control = block_arg(head, 0)?;
+                fcx.block = head;
+                let rpack = self.call_lua(fcx.block, iter_fn, &[state, control], location)?;
+                let next_control = self.pack_get(fcx.block, rpack, 0, location)?;
+                let tag = self.tag_of(fcx.block, next_control, location)?;
+                let zero = self.const_i64(fcx.block, 0, location)?;
+                let is_nil = self.cmpi(fcx.block, 0, tag, zero, location)?;
+                self.cond_br(fcx.block, is_nil, done, bbody, location)?;
+
+                fcx.block = bbody;
+                fcx.terminated = false;
+                let saved = fcx.env.clone();
+                for (index, name) in names.iter().enumerate() {
+                    let value = self.pack_get(fcx.block, rpack, index as i64, location)?;
+                    let boxed = self.build(
+                        fcx.block,
+                        "frk_mem.box_new",
+                        &[value],
+                        &[self.box_ty()],
+                        &[],
+                        location,
+                    )?;
+                    fcx.env.insert(name.clone(), boxed);
+                }
+                fcx.break_targets.push(done);
+                self.emit_block(fcx, body)?;
+                fcx.break_targets.pop();
+                fcx.env = saved;
+                if !fcx.terminated {
+                    self.br(fcx.block, head, &[next_control], location)?;
+                }
+                fcx.block = done;
+                fcx.terminated = false;
+                Ok(())
+            }
+            Stat::Return(values, span) => {
+                let location = self.loc_at(*span);
+                let pack = match values.as_slice() {
+                    [] => self.make_pack(fcx.block, &[], location)?,
+                    // A single bare call forwards its whole pack
+                    // (Lua tail-position multi).
+                    [Expr::Call(callee, arguments, _)] => {
+                        self.emit_call_pack(fcx, callee, arguments, location)?
+                    }
+                    many => {
+                        let mut emitted = Vec::new();
+                        for expression in many {
+                            emitted.push(self.emit_expr(fcx, expression)?);
+                        }
+                        self.make_pack(fcx.block, &emitted, location)?
+                    }
                 };
                 ret(fcx.block, &[pack], location)?;
                 fcx.terminated = true;
@@ -1270,7 +1640,9 @@ impl<'c> Emitter<'c> {
                 self.cond_br(fcx.block, truthy, bbody, done, location)?;
                 fcx.block = bbody;
                 fcx.terminated = false;
+                fcx.break_targets.push(done);
                 self.emit_block(fcx, body)?;
+                fcx.break_targets.pop();
                 if !fcx.terminated {
                     self.br(fcx.block, head, &[], location)?;
                 }
@@ -1330,7 +1702,9 @@ impl<'c> Emitter<'c> {
                 )?;
                 let saved = fcx.env.clone();
                 fcx.env.insert(variable.clone(), boxed);
+                fcx.break_targets.push(done);
                 self.emit_block(fcx, body)?;
+                fcx.break_targets.pop();
                 fcx.env = saved;
                 if !fcx.terminated {
                     let next = self.build(
@@ -1696,10 +2070,40 @@ fn free_names_stat(statement: &Stat, bound: &mut HashSet<String>, out: &mut BTre
             free_names_expr(key, bound, out);
             free_names_expr(value, bound, out);
         }
-        Stat::Call(expression, _) | Stat::Return(Some(expression), _) => {
-            free_names_expr(expression, bound, out);
+        Stat::Call(expression, _) => free_names_expr(expression, bound, out),
+        Stat::Return(values, _) => {
+            for expression in values {
+                free_names_expr(expression, bound, out);
+            }
         }
-        Stat::Return(None, _) => {}
+        Stat::Break(_) => {}
+        Stat::Repeat(body, condition, _) => {
+            let mut inner = bound.clone();
+            for statement in body {
+                free_names_stat(statement, &mut inner, out);
+            }
+            free_names_expr(condition, &inner, out);
+        }
+        Stat::LocalMulti(names, value, _) => {
+            free_names_expr(value, bound, out);
+            for name in names {
+                bound.insert(name.clone());
+            }
+        }
+        Stat::AssignMulti(names, value, _) => {
+            free_names_expr(value, bound, out);
+            for name in names {
+                if !bound.contains(name) {
+                    out.insert(name.clone());
+                }
+            }
+        }
+        Stat::GenFor(names, iterator, body, _) => {
+            free_names_expr(iterator, bound, out);
+            let mut inner = bound.clone();
+            inner.extend(names.iter().cloned());
+            free_names_block(body, &mut inner, out);
+        }
         Stat::Do(body, _) => free_names_block(body, &mut bound.clone(), out),
         Stat::If(arms, otherwise, _) => {
             for (condition, body) in arms {
