@@ -11,7 +11,7 @@ mod value;
 
 pub use error::EvalError;
 pub use interp::{Builtin, Eval, Frame, Interp, MAX_CALL_DEPTH, STACK_SIZE, Step};
-pub use value::Value;
+pub use value::{TableData, Value};
 
 /// Helpers for writing [`Eval`] implementations outside this crate —
 /// the K2 authoring kit kernel dialects use (SPEC §3).

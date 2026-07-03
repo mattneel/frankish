@@ -36,6 +36,34 @@ irdl.dialect @frk_dyn {
     irdl.operands(value: %d)
     irdl.results(tag: %n)
   }
+  irdl.operation @table_new {
+    %d = irdl.base @frk_dyn::@dyn
+    irdl.results(table: %d)
+  }
+  irdl.operation @raw_get {
+    %d = irdl.base @frk_dyn::@dyn
+    irdl.operands(table: %d, key: %d)
+    irdl.results(value: %d)
+  }
+  irdl.operation @raw_set {
+    %d = irdl.base @frk_dyn::@dyn
+    irdl.operands(table: %d, key: %d, value: %d)
+  }
+  irdl.operation @table_len {
+    %d = irdl.base @frk_dyn::@dyn
+    %n = irdl.is i64
+    irdl.operands(table: %d)
+    irdl.results(len: %n)
+  }
+  irdl.operation @set_meta {
+    %d = irdl.base @frk_dyn::@dyn
+    irdl.operands(table: %d, meta: %d)
+  }
+  irdl.operation @get_meta {
+    %d = irdl.base @frk_dyn::@dyn
+    irdl.operands(table: %d)
+    irdl.results(meta: %d)
+  }
 }
 "#;
 
@@ -72,7 +100,8 @@ pub(crate) fn verify_op<'c>(
             tag_attr(op)?;
             Ok(())
         }
-        "tag_of" => Ok(()),
+        "tag_of" | "table_new" | "raw_get" | "raw_set" | "table_len" | "set_meta"
+        | "get_meta" => Ok(()),
         other => Err(format!("no semantic verifier for frk_dyn.{other}")),
     }
 }

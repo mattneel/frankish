@@ -210,6 +210,166 @@ pub unsafe extern "C" fn frk_rt_print_str(s: *const u8) {
     println!("{text}");
 }
 
+// ---- tables (M11 bar 3; D-056): pure-hash dyn-keyed maps. The
+// 4-word object shell [cap, count, slots, meta] is STRATEGY-allocated
+// by the lowering (rc headers work); slots are rt-malloc'd until the
+// layout-descriptor rung adds destructors. All-i64 ABI; dyn results
+// return through a caller-provided out pointer (D-056.3). ----
+
+const TABLE_EMPTY: i64 = 0;
+const TABLE_FULL: i64 = 1;
+const TABLE_TOMB: i64 = 2;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct TableSlot {
+    state: i64,
+    ktag: i64,
+    kpay: i64,
+    vtag: i64,
+    vpay: i64,
+}
+
+unsafe fn table_fields<'a>(shell: i64) -> &'a mut [i64; 4] {
+    unsafe { &mut *(shell as usize as *mut [i64; 4]) }
+}
+
+unsafe fn table_slots<'a>(fields: &[i64; 4]) -> &'a mut [TableSlot] {
+    unsafe {
+        std::slice::from_raw_parts_mut(fields[2] as usize as *mut TableSlot, fields[0] as usize)
+    }
+}
+
+fn table_hash(ktag: i64, kpay: i64) -> u64 {
+    // splitmix-style scramble over both words.
+    let mut h = (ktag as u64).wrapping_mul(0x9E3779B97F4A7C15) ^ (kpay as u64);
+    h ^= h >> 30;
+    h = h.wrapping_mul(0xBF58476D1CE4E5B9);
+    h ^= h >> 27;
+    h
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_table_init(shell: i64) {
+    unsafe {
+        *table_fields(shell) = [0, 0, 0, 0];
+    }
+}
+
+unsafe fn table_grow(shell: i64) {
+    unsafe {
+        let fields = table_fields(shell);
+        let old_cap = fields[0] as usize;
+        let old_slots_ptr = fields[2];
+        let new_cap = if old_cap == 0 { 8 } else { old_cap * 2 };
+        let new_bytes = new_cap * std::mem::size_of::<TableSlot>();
+        let new_ptr = raw_alloc(new_bytes as u64);
+        std::ptr::write_bytes(new_ptr, 0, new_bytes);
+        let old_fields = *fields;
+        fields[0] = new_cap as i64;
+        fields[1] = 0;
+        fields[2] = new_ptr as i64;
+        if old_cap > 0 {
+            let old =
+                std::slice::from_raw_parts(old_slots_ptr as usize as *const TableSlot, old_cap);
+            for slot in old {
+                if slot.state == TABLE_FULL {
+                    frk_rt_table_raw_set(shell, slot.ktag, slot.kpay, slot.vtag, slot.vpay);
+                }
+            }
+        }
+        let _ = old_fields;
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_table_raw_set(shell: i64, ktag: i64, kpay: i64, vtag: i64, vpay: i64) {
+    unsafe {
+        let fields = table_fields(shell);
+        if fields[0] == 0 || fields[1] * 10 >= fields[0] * 7 {
+            table_grow(shell);
+        }
+        let fields = table_fields(shell);
+        let cap = fields[0] as u64;
+        let slots = table_slots(fields);
+        let mask = cap - 1;
+        let mut index = (table_hash(ktag, kpay) & mask) as usize;
+        let mut first_tomb: Option<usize> = None;
+        loop {
+            let slot = slots[index];
+            match slot.state {
+                s if s == TABLE_FULL && slot.ktag == ktag && slot.kpay == kpay => {
+                    if vtag == 0 {
+                        slots[index].state = TABLE_TOMB; // nil deletes
+                    } else {
+                        slots[index].vtag = vtag;
+                        slots[index].vpay = vpay;
+                    }
+                    return;
+                }
+                s if s == TABLE_TOMB => {
+                    if first_tomb.is_none() {
+                        first_tomb = Some(index);
+                    }
+                }
+                s if s == TABLE_EMPTY => {
+                    if vtag == 0 {
+                        return; // deleting an absent key: no-op
+                    }
+                    let target = first_tomb.unwrap_or(index);
+                    slots[target] = TableSlot { state: TABLE_FULL, ktag, kpay, vtag, vpay };
+                    fields[1] += 1;
+                    return;
+                }
+                _ => {}
+            }
+            index = (index + 1) & mask as usize;
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_table_raw_get(shell: i64, ktag: i64, kpay: i64, out: *mut i64) {
+    unsafe {
+        let fields = table_fields(shell);
+        if fields[0] != 0 {
+            let cap = fields[0] as u64;
+            let slots = table_slots(fields);
+            let mask = cap - 1;
+            let mut index = (table_hash(ktag, kpay) & mask) as usize;
+            loop {
+                let slot = slots[index];
+                if slot.state == TABLE_EMPTY {
+                    break;
+                }
+                if slot.state == TABLE_FULL && slot.ktag == ktag && slot.kpay == kpay {
+                    out.write(slot.vtag);
+                    out.add(1).write(slot.vpay);
+                    return;
+                }
+                index = (index + 1) & mask as usize;
+            }
+        }
+        out.write(0); // nil
+        out.add(1).write(0);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_table_len(shell: i64) -> i64 {
+    // The border probe (D-056): # = largest n with t[1..n] present.
+    let mut out = [0i64; 2];
+    let mut length: i64 = 0;
+    loop {
+        let probe = ((length + 1) as f64).to_bits() as i64;
+        frk_rt_table_raw_get(shell, 2, probe, out.as_mut_ptr());
+        if out[0] == 0 {
+            return length;
+        }
+        length += 1;
+    }
+}
+
 // ---- byte strings (M11 bar 3; D-052/D-056): interned, identity-
 // equal. Layout {u64 len, bytes}; the intern table owns canonical
 // pointers for the process lifetime (strings are rt values, outside
@@ -402,6 +562,41 @@ mod tests {
             (p as *mut i64).write(42);
             assert_eq!((p as *const i64).read(), 42);
         }
+    }
+
+    #[test]
+    fn tables_upsert_delete_probe_and_border() {
+        // A shell on the heap, as the lowering would allocate it.
+        let shell_ptr = frk_rt_arena_alloc(32) as i64;
+        frk_rt_table_init(shell_ptr);
+        let mut out = [0i64; 2];
+        let key = |n: f64| (2i64, n.to_bits() as i64);
+
+        // Missing → nil.
+        let (kt, kp) = key(1.0);
+        frk_rt_table_raw_get(shell_ptr, kt, kp, out.as_mut_ptr());
+        assert_eq!(out[0], 0);
+
+        // 1..=3 present → border 3; delete 2 → border 1.
+        for n in 1..=3 {
+            let (kt, kp) = key(n as f64);
+            frk_rt_table_raw_set(shell_ptr, kt, kp, 2, (n as f64 * 10.0).to_bits() as i64);
+        }
+        assert_eq!(frk_rt_table_len(shell_ptr), 3);
+        let (kt, kp) = key(2.0);
+        frk_rt_table_raw_get(shell_ptr, kt, kp, out.as_mut_ptr());
+        assert_eq!(f64::from_bits(out[1] as u64), 20.0);
+        frk_rt_table_raw_set(shell_ptr, kt, kp, 0, 0); // nil deletes
+        frk_rt_table_raw_get(shell_ptr, kt, kp, out.as_mut_ptr());
+        assert_eq!(out[0], 0);
+        assert_eq!(frk_rt_table_len(shell_ptr), 1);
+
+        // Growth: 100 string-ish keys (tag 3, fake ptrs) survive.
+        for i in 0..100i64 {
+            frk_rt_table_raw_set(shell_ptr, 3, 0x1000 + i, 1, 1);
+        }
+        frk_rt_table_raw_get(shell_ptr, 3, 0x1050, out.as_mut_ptr());
+        assert_eq!(out[0], 1);
     }
 
     #[test]

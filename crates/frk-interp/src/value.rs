@@ -36,6 +36,19 @@ pub enum Value {
     /// A frk_bstr byte string (D-056): content equality here is
     /// observably identical to the native path's interned identity.
     Bytes(Rc<Vec<u8>>),
+    /// A frk_dyn table (D-056): association list + metatable slot,
+    /// identity equality — Lua reference semantics. Linear lookup is
+    /// deliberate at corpus scale (reference semantics, not speed).
+    Table(Rc<RefCell<TableData>>),
+}
+
+#[derive(Debug, Default)]
+pub struct TableData {
+    /// Insertion-ordered (key, value) pairs; keys compare by the dyn
+    /// key rule (Value equality — bit-eq nums, content-eq bytes,
+    /// identity tables). -0.0 and NaN keys are fenced (D-056).
+    pub entries: Vec<(Value, Value)>,
+    pub meta: Option<Value>,
 }
 
 impl PartialEq for Value {
@@ -57,6 +70,7 @@ impl PartialEq for Value {
             (Self::Str(a), Self::Str(b)) => a == b,
             (Self::Dyn(ta, pa), Self::Dyn(tb, pb)) => ta == tb && pa == pb,
             (Self::Bytes(a), Self::Bytes(b)) => a == b,
+            (Self::Table(a), Self::Table(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -140,6 +154,19 @@ impl Value {
             Self::Bytes(data) => Ok(data),
             other => Err(EvalError::TypeMismatch(format!(
                 "expected a byte string, got {other:?}"
+            ))),
+        }
+    }
+
+    pub fn table() -> Self {
+        Self::Table(Rc::new(RefCell::new(TableData::default())))
+    }
+
+    pub fn as_table(&self) -> Result<&Rc<RefCell<TableData>>, EvalError> {
+        match self {
+            Self::Table(data) => Ok(data),
+            other => Err(EvalError::TypeMismatch(format!(
+                "expected a table, got {other:?}"
             ))),
         }
     }

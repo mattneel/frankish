@@ -370,6 +370,16 @@ impl Runner for JitRunner {
                 "frk_rt_bstr_from_num",
                 frk_rt::frk_rt_bstr_from_num as *mut (),
             );
+            engine.register_symbol("frk_rt_table_init", frk_rt::frk_rt_table_init as *mut ());
+            engine.register_symbol(
+                "frk_rt_table_raw_get",
+                frk_rt::frk_rt_table_raw_get as *mut (),
+            );
+            engine.register_symbol(
+                "frk_rt_table_raw_set",
+                frk_rt::frk_rt_table_raw_set as *mut (),
+            );
+            engine.register_symbol("frk_rt_table_len", frk_rt::frk_rt_table_len as *mut ());
             engine.register_symbol(
                 frk_front::loanword::PRINT_STR,
                 capture_print_str as *mut (),

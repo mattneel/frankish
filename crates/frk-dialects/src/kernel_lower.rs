@@ -291,6 +291,25 @@ enum Planned<'c, 'a> {
     BstrLen {
         op: OperationRef<'c, 'a>,
     },
+    TableNew {
+        op: OperationRef<'c, 'a>,
+    },
+    TableRawGet {
+        op: OperationRef<'c, 'a>,
+    },
+    TableRawSet {
+        op: OperationRef<'c, 'a>,
+    },
+    TableLen {
+        op: OperationRef<'c, 'a>,
+    },
+    /// Meta is shell word 3 — set/get lower INLINE (D-056).
+    TableSetMeta {
+        op: OperationRef<'c, 'a>,
+    },
+    TableGetMeta {
+        op: OperationRef<'c, 'a>,
+    },
 }
 
 /// Lowers every kernel op and type under `module` (the pipeline anchors
@@ -387,7 +406,7 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
         ) || matches!(
             plan,
             Planned::DynWrap { payload_kind: SlotKind::Closure | SlotKind::Words { .. }, .. }
-        )
+        ) || matches!(plan, Planned::TableNew { .. })
     });
     if needs_allocator {
         declare_runtime(context, module, strategy)?;
@@ -762,6 +781,12 @@ fn plan_dyn<'c, 'a>(
             })
         }
         "tag_of" => Ok(Planned::DynTagOf { op }),
+        "table_new" => Ok(Planned::TableNew { op }),
+        "raw_get" => Ok(Planned::TableRawGet { op }),
+        "raw_set" => Ok(Planned::TableRawSet { op }),
+        "table_len" => Ok(Planned::TableLen { op }),
+        "set_meta" => Ok(Planned::TableSetMeta { op }),
+        "get_meta" => Ok(Planned::TableGetMeta { op }),
         other => Err(format!("no lowering for frk_dyn.{other}")),
     }
 }
@@ -933,6 +958,10 @@ fn declare_str_runtime(
             Planned::DynUnwrap { .. } => needed.push(("frk_rt_dyn_check", false)),
             Planned::BstrLit { .. } => needed.push(("frk_rt_bstr_intern", true)),
             Planned::BstrConcat { .. } => needed.push(("frk_rt_bstr_concat", true)),
+            Planned::TableNew { .. } => needed.push(("frk_rt_table_init", false)),
+            Planned::TableRawGet { .. } => needed.push(("frk_rt_table_raw_get", false)),
+            Planned::TableRawSet { .. } => needed.push(("frk_rt_table_raw_set", false)),
+            Planned::TableLen { .. } => needed.push(("frk_rt_table_len", false)),
             _ => {}
         }
     }
@@ -961,6 +990,20 @@ fn declare_str_runtime(
             }
             "frk_rt_bstr_intern" => llvm::r#type::function(ptr, &[ptr, i64_type], false),
             "frk_rt_bstr_concat" => llvm::r#type::function(ptr, &[ptr, ptr], false),
+            "frk_rt_table_init" => {
+                llvm::r#type::function(llvm::r#type::void(context), &[i64_type], false)
+            }
+            "frk_rt_table_raw_get" => llvm::r#type::function(
+                llvm::r#type::void(context),
+                &[i64_type, i64_type, i64_type, ptr],
+                false,
+            ),
+            "frk_rt_table_raw_set" => llvm::r#type::function(
+                llvm::r#type::void(context),
+                &[i64_type; 5],
+                false,
+            ),
+            "frk_rt_table_len" => llvm::r#type::function(i64_type, &[i64_type], false),
             other => return Err(format!("unknown str runtime symbol {other}")),
         };
         let declaration = OperationBuilder::new("llvm.func", location)
@@ -1549,6 +1592,180 @@ fn apply<'c, 'a>(
             rewriter.insert(store_op(context, slot, addr, location)?);
             rewriter.erase_op(op);
             Ok(())
+        }
+        Planned::TableNew { op } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
+            let size = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, 32).into(),
+                location,
+            )))?;
+            let shell = result_value(rewriter.insert(direct_call(
+                context,
+                strategy.alloc_symbol(),
+                &[size],
+                ptr,
+                location,
+            )?))?;
+            let shell_word =
+                result_value(rewriter.insert(cast_op("llvm.ptrtoint", shell, i64_type, location)?))?;
+            rewriter.insert(direct_call_void(
+                context,
+                "frk_rt_table_init",
+                &[shell_word],
+                location,
+            )?);
+            let value = build_dyn(context, rewriter, 4, shell_word, location)?;
+            finish(rewriter, op, value)
+        }
+        Planned::TableRawGet { op } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
+            let table_pay = dyn_field(context, rewriter, operand(op, 0)?, 1, location)?;
+            let key_tag = dyn_field(context, rewriter, operand(op, 1)?, 0, location)?;
+            let key_pay = dyn_field(context, rewriter, operand(op, 1)?, 1, location)?;
+            let two = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, 2).into(),
+                location,
+            )))?;
+            let out = result_value(rewriter.insert(
+                OperationBuilder::new("llvm.alloca", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "elem_type"),
+                        TypeAttribute::new(i64_type).into(),
+                    )])
+                    .add_operands(&[two])
+                    .add_results(&[ptr])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            rewriter.insert(direct_call_void(
+                context,
+                "frk_rt_table_raw_get",
+                &[table_pay, key_tag, key_pay, out],
+                location,
+            )?);
+            let out_tag = load_slot_at(context, rewriter, out, 0, location)?;
+            let out_pay = load_slot_at(context, rewriter, out, 1, location)?;
+            let value = build_dyn_words(context, rewriter, out_tag, out_pay, location)?;
+            finish(rewriter, op, value)
+        }
+        Planned::TableRawSet { op } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let table_pay = dyn_field(context, rewriter, operand(op, 0)?, 1, location)?;
+            let key_tag = dyn_field(context, rewriter, operand(op, 1)?, 0, location)?;
+            let key_pay = dyn_field(context, rewriter, operand(op, 1)?, 1, location)?;
+            let value_tag = dyn_field(context, rewriter, operand(op, 2)?, 0, location)?;
+            let value_pay = dyn_field(context, rewriter, operand(op, 2)?, 1, location)?;
+            rewriter.insert(direct_call_void(
+                context,
+                "frk_rt_table_raw_set",
+                &[table_pay, key_tag, key_pay, value_tag, value_pay],
+                location,
+            )?);
+            rewriter.erase_op(op);
+            Ok(())
+        }
+        Planned::TableLen { op } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let table_pay = dyn_field(context, rewriter, operand(op, 0)?, 1, location)?;
+            let len = result_value(rewriter.insert(direct_call(
+                context,
+                "frk_rt_table_len",
+                &[table_pay],
+                i64_type,
+                location,
+            )?))?;
+            finish(rewriter, op, len)
+        }
+        Planned::TableSetMeta { op } => {
+            // Meta = shell word 3, stored inline (D-056): nil's payload
+            // is 0, so nil-meta and no-meta coincide by construction.
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
+            let table_pay = dyn_field(context, rewriter, operand(op, 0)?, 1, location)?;
+            let meta_pay = dyn_field(context, rewriter, operand(op, 1)?, 1, location)?;
+            let offset = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, 24).into(),
+                location,
+            )))?;
+            let addr_word = result_value(rewriter.insert(
+                OperationBuilder::new("arith.addi", location)
+                    .add_operands(&[table_pay, offset])
+                    .add_results(&[i64_type])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            let addr =
+                result_value(rewriter.insert(cast_op("llvm.inttoptr", addr_word, ptr, location)?))?;
+            rewriter.insert(store_op(context, meta_pay, addr, location)?);
+            rewriter.erase_op(op);
+            Ok(())
+        }
+        Planned::TableGetMeta { op } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
+            let table_pay = dyn_field(context, rewriter, operand(op, 0)?, 1, location)?;
+            let offset = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, 24).into(),
+                location,
+            )))?;
+            let addr_word = result_value(rewriter.insert(
+                OperationBuilder::new("arith.addi", location)
+                    .add_operands(&[table_pay, offset])
+                    .add_results(&[i64_type])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            let addr =
+                result_value(rewriter.insert(cast_op("llvm.inttoptr", addr_word, ptr, location)?))?;
+            let word = load_slot_at(context, rewriter, addr, 0, location)?;
+            // tag = word == 0 ? nil : table.
+            let zero = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, 0).into(),
+                location,
+            )))?;
+            let four = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, 4).into(),
+                location,
+            )))?;
+            let is_zero = result_value(rewriter.insert(
+                OperationBuilder::new("arith.cmpi", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "predicate"),
+                        IntegerAttribute::new(i64_type, 0).into(),
+                    )])
+                    .add_operands(&[word, zero])
+                    .add_results(&[IntegerType::new(context, 1).into()])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            let tag = result_value(rewriter.insert(
+                OperationBuilder::new("arith.select", location)
+                    .add_operands(&[is_zero, zero, four])
+                    .add_results(&[i64_type])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            let value = build_dyn_words(context, rewriter, tag, word, location)?;
+            finish(rewriter, op, value)
         }
         Planned::BstrLit { op, text, symbol } => {
             rewriter.set_insertion_point_before(op);
@@ -2344,6 +2561,111 @@ fn maybe_retain<'c>(
             .map_err(|e| e.to_string())?,
     );
     Ok(())
+}
+
+/// One field (0 = tag, 1 = payload) of a lowered dyn struct value.
+fn dyn_field<'c>(
+    context: &'c Context,
+    rewriter: &RewriterBase<'c, '_>,
+    value: Value<'c, '_>,
+    index: i64,
+    location: Location<'c>,
+) -> Result<Value<'c, 'c>, String> {
+    let i64_type: Type = IntegerType::new(context, 64).into();
+    result_value(rewriter.insert(llvm::extract_value(
+        context,
+        value,
+        DenseI64ArrayAttribute::new(context, &[index]),
+        i64_type,
+        location,
+    )))
+}
+
+/// Builds a dyn struct from a constant tag + payload word.
+fn build_dyn<'c>(
+    context: &'c Context,
+    rewriter: &RewriterBase<'c, '_>,
+    tag: i64,
+    payload: Value<'c, '_>,
+    location: Location<'c>,
+) -> Result<Value<'c, 'c>, String> {
+    let i64_type: Type = IntegerType::new(context, 64).into();
+    let tag_value = result_value(rewriter.insert(melior::dialect::arith::constant(
+        context,
+        IntegerAttribute::new(i64_type, tag).into(),
+        location,
+    )))?;
+    build_dyn_words(context, rewriter, tag_value, unsafe {
+        Value::from_raw(payload.to_raw())
+    }, location)
+}
+
+/// Builds a dyn struct from tag + payload SSA words.
+fn build_dyn_words<'c>(
+    context: &'c Context,
+    rewriter: &RewriterBase<'c, '_>,
+    tag: Value<'c, '_>,
+    payload: Value<'c, '_>,
+    location: Location<'c>,
+) -> Result<Value<'c, 'c>, String> {
+    let dyn_struct = slots_struct(context, 2);
+    let mut acc = result_value(rewriter.insert(llvm::undef(dyn_struct, location)))?;
+    acc = result_value(rewriter.insert(llvm::insert_value(
+        context,
+        acc,
+        DenseI64ArrayAttribute::new(context, &[0]),
+        unsafe { Value::from_raw(tag.to_raw()) },
+        location,
+    )))?;
+    result_value(rewriter.insert(llvm::insert_value(
+        context,
+        acc,
+        DenseI64ArrayAttribute::new(context, &[1]),
+        unsafe { Value::from_raw(payload.to_raw()) },
+        location,
+    )))
+}
+
+/// Loads slot `index` (i64) from a base pointer.
+fn load_slot_at<'c>(
+    context: &'c Context,
+    rewriter: &RewriterBase<'c, '_>,
+    base: Value<'c, '_>,
+    index: usize,
+    location: Location<'c>,
+) -> Result<Value<'c, 'c>, String> {
+    let i64_type: Type = IntegerType::new(context, 64).into();
+    let ptr = llvm::r#type::pointer(context, 0);
+    let address = if index == 0 {
+        unsafe { Value::from_raw(base.to_raw()) }
+    } else {
+        let base_word =
+            result_value(rewriter.insert(cast_op("llvm.ptrtoint", base, i64_type, location)?))?;
+        let offset = result_value(rewriter.insert(melior::dialect::arith::constant(
+            context,
+            IntegerAttribute::new(i64_type, (index * 8) as i64).into(),
+            location,
+        )))?;
+        let sum = result_value(rewriter.insert(
+            OperationBuilder::new("arith.addi", location)
+                .add_operands(&[base_word, offset])
+                .add_results(&[i64_type])
+                .build()
+                .map_err(|e| e.to_string())?,
+        ))?;
+        result_value(rewriter.insert(cast_op("llvm.inttoptr", sum, ptr, location)?))?
+    };
+    result_value(rewriter.insert(
+        OperationBuilder::new("llvm.load", location)
+            .add_attributes(&[(
+                melior::ir::Identifier::new(context, "ordering"),
+                Attribute::parse(context, "0 : i64").ok_or("ordering")?,
+            )])
+            .add_operands(&[address])
+            .add_results(&[i64_type])
+            .build()
+            .map_err(|e| e.to_string())?,
+    ))
 }
 
 /// Void direct llvm.call by symbol.

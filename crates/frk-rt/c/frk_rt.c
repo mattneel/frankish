@@ -85,6 +85,107 @@ void frk_rt_dyn_check(int64_t actual, int64_t expected) {
     }
 }
 
+/* ---- tables (M11 bar 3; D-056): pure-hash dyn-keyed maps, mirror
+ * of the Rust twin. Shell [cap,count,slots,meta] strategy-allocated
+ * by the lowering; slots malloc'd. All-i64 ABI, out-pointer returns. */
+
+typedef struct {
+    int64_t state; /* 0 empty, 1 full, 2 tombstone */
+    int64_t ktag, kpay, vtag, vpay;
+} frk_table_slot;
+
+static uint64_t frk_table_hash(int64_t ktag, int64_t kpay) {
+    uint64_t h = (uint64_t)ktag * 0x9E3779B97F4A7C15ULL ^ (uint64_t)kpay;
+    h ^= h >> 30;
+    h *= 0xBF58476D1CE4E5B9ULL;
+    h ^= h >> 27;
+    return h;
+}
+
+void frk_rt_table_init(int64_t shell) {
+    int64_t *f = (int64_t *)(intptr_t)shell;
+    f[0] = f[1] = f[2] = f[3] = 0;
+}
+
+void frk_rt_table_raw_set(int64_t shell, int64_t ktag, int64_t kpay,
+                          int64_t vtag, int64_t vpay);
+
+static void frk_table_grow(int64_t shell) {
+    int64_t *f = (int64_t *)(intptr_t)shell;
+    int64_t old_cap = f[0];
+    frk_table_slot *old = (frk_table_slot *)(intptr_t)f[2];
+    int64_t new_cap = old_cap ? old_cap * 2 : 8;
+    f[0] = new_cap;
+    f[1] = 0;
+    f[2] = (int64_t)(intptr_t)calloc((size_t)new_cap, sizeof(frk_table_slot));
+    for (int64_t i = 0; i < old_cap; i++)
+        if (old && old[i].state == 1)
+            frk_rt_table_raw_set(shell, old[i].ktag, old[i].kpay, old[i].vtag,
+                                 old[i].vpay);
+    free(old);
+}
+
+void frk_rt_table_raw_set(int64_t shell, int64_t ktag, int64_t kpay,
+                          int64_t vtag, int64_t vpay) {
+    int64_t *f = (int64_t *)(intptr_t)shell;
+    if (f[0] == 0 || f[1] * 10 >= f[0] * 7) frk_table_grow(shell);
+    f = (int64_t *)(intptr_t)shell;
+    frk_table_slot *slots = (frk_table_slot *)(intptr_t)f[2];
+    uint64_t mask = (uint64_t)f[0] - 1;
+    uint64_t i = frk_table_hash(ktag, kpay) & mask;
+    int64_t first_tomb = -1;
+    for (;;) {
+        frk_table_slot *s = &slots[i];
+        if (s->state == 1 && s->ktag == ktag && s->kpay == kpay) {
+            if (vtag == 0) s->state = 2; /* nil deletes */
+            else { s->vtag = vtag; s->vpay = vpay; }
+            return;
+        }
+        if (s->state == 2 && first_tomb < 0) first_tomb = (int64_t)i;
+        if (s->state == 0) {
+            if (vtag == 0) return; /* deleting absent: no-op */
+            frk_table_slot *t = first_tomb >= 0 ? &slots[first_tomb] : s;
+            t->state = 1; t->ktag = ktag; t->kpay = kpay;
+            t->vtag = vtag; t->vpay = vpay;
+            f[1] += 1;
+            return;
+        }
+        i = (i + 1) & mask;
+    }
+}
+
+void frk_rt_table_raw_get(int64_t shell, int64_t ktag, int64_t kpay,
+                          int64_t *out) {
+    int64_t *f = (int64_t *)(intptr_t)shell;
+    if (f[0] != 0) {
+        frk_table_slot *slots = (frk_table_slot *)(intptr_t)f[2];
+        uint64_t mask = (uint64_t)f[0] - 1;
+        uint64_t i = frk_table_hash(ktag, kpay) & mask;
+        for (;;) {
+            frk_table_slot *s = &slots[i];
+            if (s->state == 0) break;
+            if (s->state == 1 && s->ktag == ktag && s->kpay == kpay) {
+                out[0] = s->vtag; out[1] = s->vpay;
+                return;
+            }
+            i = (i + 1) & mask;
+        }
+    }
+    out[0] = 0; out[1] = 0; /* nil */
+}
+
+int64_t frk_rt_table_len(int64_t shell) {
+    int64_t out[2];
+    int64_t n = 0;
+    for (;;) {
+        double probe = (double)(n + 1);
+        int64_t bits; memcpy(&bits, &probe, 8);
+        frk_rt_table_raw_get(shell, 2, bits, out);
+        if (out[0] == 0) return n;
+        n++;
+    }
+}
+
 /* ---- byte strings (M11 bar 3; D-052/D-056): interned, identity-
  * equal. Layout {u64 len, bytes}. FNV-1a open addressing; canonical
  * pointers live for the process (rt values, outside the strategy
