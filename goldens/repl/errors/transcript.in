@@ -1,0 +1,6 @@
+let x = 1
+let y = x + true
+y
+nope
+1 / 0
+x

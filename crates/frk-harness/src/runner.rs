@@ -80,6 +80,12 @@ fn parse_and_verify<'c>(
         SourceKind::Ml => frk_front::compile_ml(context, source).map_err(|e| {
             RunError::Parse(format!("{}: {e}", case.source_path.display()))
         })?,
+        SourceKind::Transcript => {
+            return Err(RunError::Parse(format!(
+                "{}: transcripts run only under the repl runner",
+                case.source_path.display()
+            )));
+        }
     };
     if !module.as_operation().verify() {
         return Err(RunError::Verify(format!(
@@ -102,7 +108,29 @@ pub fn default_runners() -> Vec<Box<dyn Runner>> {
         Box::new(JitRunner { strategy: frk_dialects::Strategy::Arena }),
         Box::new(JitRunner { strategy: frk_dialects::Strategy::Rc }),
         Box::new(OcamlOracle),
+        Box::new(ReplRunner),
     ]
+}
+
+/// The scripted-transcript runner (M8 exit bar): drives the EXACT
+/// library engine the interactive shell runs, over transcript.in,
+/// with :load resolved against the case directory.
+pub struct ReplRunner;
+
+impl Runner for ReplRunner {
+    fn name(&self) -> &'static str {
+        "repl"
+    }
+
+    fn applicable(&self, case: &Case) -> bool {
+        case.kind == SourceKind::Transcript
+    }
+
+    fn run(&self, case: &Case) -> Result<String, RunError> {
+        let input = fs::read_to_string(&case.source_path)
+            .map_err(|e| RunError::Io(format!("{}: {e}", case.source_path.display())))?;
+        Ok(frk_repl::run_transcript(&input, case.dir.clone()))
+    }
 }
 
 /// The runner blessing writes goldens from: the derived interpreter,
@@ -121,6 +149,10 @@ pub struct InterpRunner;
 impl Runner for InterpRunner {
     fn name(&self) -> &'static str {
         "interp"
+    }
+
+    fn applicable(&self, case: &Case) -> bool {
+        case.kind != SourceKind::Transcript
     }
 
     fn run(&self, case: &Case) -> Result<String, RunError> {
@@ -184,6 +216,10 @@ impl Runner for JitRunner {
             frk_dialects::Strategy::Arena => "jit",
             frk_dialects::Strategy::Rc => "jit-rc",
         }
+    }
+
+    fn applicable(&self, case: &Case) -> bool {
+        case.kind != SourceKind::Transcript
     }
 
     fn run(&self, case: &Case) -> Result<String, RunError> {
@@ -400,6 +436,10 @@ impl AotRunner {
 impl Runner for AotRunner {
     fn name(&self) -> &'static str {
         self.name
+    }
+
+    fn applicable(&self, case: &Case) -> bool {
+        case.kind != SourceKind::Transcript
     }
 
     fn run(&self, case: &Case) -> Result<String, RunError> {

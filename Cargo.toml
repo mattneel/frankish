@@ -9,6 +9,7 @@ members = [
     "crates/frk-interp",
     "crates/frk-front",
     "crates/frk-harness",
+    "crates/frk-repl",
     "crates/frk-rt",
 ]
 
@@ -32,6 +33,7 @@ ena = "0.14"
 frk-core = { path = "crates/frk-core" }
 frk-dialects = { path = "crates/frk-dialects" }
 frk-interp = { path = "crates/frk-interp" }
+frk-repl = { path = "crates/frk-repl" }
 frk-front = { path = "crates/frk-front" }
 frk-harness = { path = "crates/frk-harness" }
 frk-rt = { path = "crates/frk-rt" }

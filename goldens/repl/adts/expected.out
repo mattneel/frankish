@@ -1,0 +1,16 @@
+frk[arena]> type shape = Circle of int | Rect of int * int | Point
+type defined
+frk[arena]> Circle 3
+- : shape = Circle 3
+frk[arena]> Rect (2, 5)
+- : shape = Rect (2, 5)
+frk[arena]> Point
+- : shape = Point
+frk[arena]> let area s = match s with Circle r -> 3 * r * r | Rect (w, h) -> w * h | Point -> 0
+val area : (shape -> int)
+frk[arena]> area (Rect (6, 7))
+- : int = 42
+frk[arena]> let rec fact n = if n = 0 then 1 else n * fact (n - 1)
+val fact : (int -> int)
+frk[arena]> fact 5
+- : int = 120

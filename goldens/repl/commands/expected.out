@@ -1,0 +1,16 @@
+frk[arena]> let id x = x
+val id : ('a -> 'a)
+frk[arena]> :type id
+- : ('a -> 'a)
+frk[arena]> :type 1 + 2
+- : int
+frk[arena]> :profile
+profile: Arena; evaluation: interp (reference, D-008)
+frk[arena]> :profile rc
+profile: Rc
+frk[rc]> :profile arena
+profile: Arena
+frk[arena]> :help
+commands: :type EXPR | :load FILE | :emit | :profile [arena|rc] | :q
+frk[arena]> :bogus
+error: unknown command :bogus (:help lists them)

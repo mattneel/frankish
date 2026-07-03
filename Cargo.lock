@@ -183,6 +183,7 @@ dependencies = [
  "frk-dialects",
  "frk-front",
  "frk-interp",
+ "frk-repl",
  "frk-rt",
  "melior",
 ]
@@ -196,6 +197,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "frk-repl"
+version = "0.0.1"
+dependencies = [
+ "frk-core",
+ "frk-dialects",
+ "frk-front",
+ "frk-interp",
+ "melior",
+]
+
+[[package]]
 name = "frk-rt"
 version = "0.0.1"
 
@@ -203,8 +215,13 @@ version = "0.0.1"
 name = "frnksh"
 version = "0.0.1"
 dependencies = [
+ "frk-core",
  "frk-dialects",
+ "frk-front",
  "frk-harness",
+ "frk-interp",
+ "frk-repl",
+ "melior",
 ]
 
 [[package]]

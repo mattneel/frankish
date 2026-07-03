@@ -1,0 +1,16 @@
+frk[arena]> let x = 1
+val x : int
+frk[arena]> let y = x + true
+error: type: cannot unify bool with int
+  at: let y = x + true
+frk[arena]> y
+error: type: unbound variable y
+  at: y
+frk[arena]> nope
+error: type: unbound variable nope
+  at: nope
+frk[arena]> 1 / 0
+error: trap: arith.divsi: division by zero
+  at: 1 / 0
+frk[arena]> x
+- : int = 1

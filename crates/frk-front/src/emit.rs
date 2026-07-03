@@ -49,9 +49,11 @@ pub fn emit<'c>(context: &'c Context, program: &TypedProgram) -> Result<Module<'
         lifted_done: HashSet::new(),
     };
 
-    // @main() -> i64: top-level decls behave as a let-chain, then the
-    // `main` closure is applied to unit.
+    // @main() -> lowered(τ): top-level decls behave as a let-chain,
+    // then the `main` closure is applied to unit. τ = int for batch
+    // compilation; the REPL path allows any concrete τ (D-043).
     {
+        let result_ty = program.main_result.clone().unwrap_or(Ty::Int);
         let region = Region::new();
         let entry = region.append_block(Block::new(&[]));
         let mut fcx = FnCtx { region: &region, block: entry, env: HashMap::new() };
@@ -70,7 +72,7 @@ pub fn emit<'c>(context: &'c Context, program: &TypedProgram) -> Result<Module<'
             main_closure,
             unit,
             &Ty::Unit,
-            &Ty::Int,
+            &result_ty,
         )?;
         fcx.block.append_operation(
             OperationBuilder::new("func.return", location)
@@ -79,12 +81,11 @@ pub fn emit<'c>(context: &'c Context, program: &TypedProgram) -> Result<Module<'
                 .map_err(|e| e.to_string())?,
         );
 
+        let mlir_result = emitter.mlir_type(&result_ty)?;
         let function = melior::dialect::func::func(
             context,
             StringAttribute::new(context, "main"),
-            TypeAttribute::new(
-                FunctionType::new(context, &[], &[IntegerType::new(context, 64).into()]).into(),
-            ),
+            TypeAttribute::new(FunctionType::new(context, &[], &[mlir_result]).into()),
             region,
             &[(
                 Identifier::new(context, "llvm.emit_c_interface"),

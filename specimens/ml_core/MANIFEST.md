@@ -13,7 +13,7 @@ by design — abstraction risk first (D-009).
 
 ## Scope grammar (v0.1)
 unit, bool, int (63-bit ok: match OCaml's boxed/unboxed story is FENCED —
-we use i64 and note divergence in canon filter), float; tuples; algebraic
+we use i64 and note divergence in canon filter); tuples; algebraic
 datatypes (non-polymorphic constructors v0, polymorphic at v0.2);
 `let`/`let rec`/`fun`/application; `match` with nested patterns, guards
 FENCED; `if`; arithmetic/comparison; arrays FENCED to v0.2; strings FENCED;
@@ -31,6 +31,11 @@ documented as a canon rule, revisited at v0.2.
 ## Exit bars
 M5: ≥90% corpus conformance, dashboard row live, extraction report written.
 M6: re-based thin (zero private ops), conformance not worse.
+
+## Amendments
+- 2026-07-03: ", float" struck from the scope grammar per D-044.2
+  (ratifying D-038.1 — the admission rule applied to the manifest's
+  own text).
 
 ## Status
 M5 SHIPPED (2026-07-03): frontend (lex/parse/HM-with-let-poly/emit

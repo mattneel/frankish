@@ -1,0 +1,6 @@
+frk[arena]> :load lib.ml
+loaded lib.ml
+frk[arena]> double 15 + triple 4
+- : int = 42
+frk[arena]> :load missing.ml
+error: missing.ml: No such file or directory (os error 2)

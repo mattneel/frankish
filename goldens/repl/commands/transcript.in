@@ -1,0 +1,8 @@
+let id x = x
+:type id
+:type 1 + 2
+:profile
+:profile rc
+:profile arena
+:help
+:bogus

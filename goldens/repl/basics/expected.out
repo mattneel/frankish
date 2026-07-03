@@ -1,0 +1,14 @@
+frk[arena]> let x = 40
+val x : int
+frk[arena]> let add a b = a + b
+val add : (int -> (int -> int))
+frk[arena]> add x 2
+- : int = 42
+frk[arena]> let x = true
+val x : bool
+frk[arena]> x
+- : bool = true
+frk[arena]> (1, (x, 3))
+- : (int * (bool * int)) = (1, (true, 3))
+frk[arena]> fun n -> n * 2
+- : (int -> int) = <fun>

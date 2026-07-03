@@ -4,6 +4,18 @@
 //! demands it — the ABI won't change.
 
 use std::alloc::{Layout, alloc, dealloc};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Total allocations across both strategies — the measurable target
+/// the M10 release/liveness pass will be held against (requested at
+/// the D-041 ratification; the leak-canary golden becomes writable
+/// the day releases land).
+static ALLOCS: AtomicU64 = AtomicU64::new(0);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_alloc_count() -> u64 {
+    ALLOCS.load(Ordering::Relaxed)
+}
 
 fn raw_alloc(bytes: u64) -> *mut u8 {
     let layout = match Layout::from_size_align((bytes.max(1)) as usize, 8) {
@@ -21,6 +33,7 @@ fn raw_alloc(bytes: u64) -> *mut u8 {
 /// signatures; the c mirror matches).
 #[unsafe(no_mangle)]
 pub extern "C" fn frk_rt_arena_alloc(bytes: u64) -> *mut u8 {
+    ALLOCS.fetch_add(1, Ordering::Relaxed);
     raw_alloc(bytes)
 }
 
@@ -28,6 +41,7 @@ pub extern "C" fn frk_rt_arena_alloc(bytes: u64) -> *mut u8 {
 /// returned pointer addresses the payload. The count starts at 1.
 #[unsafe(no_mangle)]
 pub extern "C" fn frk_rt_rc_alloc(payload_bytes: u64) -> *mut u8 {
+    ALLOCS.fetch_add(1, Ordering::Relaxed);
     let total = payload_bytes.max(1).checked_add(8);
     let Some(total) = total else {
         return std::ptr::null_mut();
@@ -127,6 +141,14 @@ mod tests {
             (p as *mut i64).write(42);
             assert_eq!((p as *const i64).read(), 42);
         }
+    }
+
+    #[test]
+    fn the_allocation_counter_counts_both_strategies() {
+        let before = frk_rt_alloc_count();
+        let _ = frk_rt_arena_alloc(8);
+        let _ = frk_rt_rc_alloc(8);
+        assert!(frk_rt_alloc_count() >= before + 2);
     }
 
     #[test]

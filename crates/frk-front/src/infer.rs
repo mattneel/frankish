@@ -81,8 +81,21 @@ pub struct TBinding {
 pub struct TypedProgram {
     pub adts: HashMap<String, AdtInfo>,
     pub ctors: HashMap<String, CtorInfo>,
-    /// Top-level declarations, typed. `main : unit -> int` is enforced.
+    /// Top-level declarations, typed. Under [`MainPolicy::RequiredInt`]
+    /// `main : unit -> int` is enforced; under `OptionalAny`, main (if
+    /// present) must take unit and may return any concrete type.
     pub decls: Vec<(bool, Vec<TBinding>)>,
+    /// main's zonked RESULT type when a main exists.
+    pub main_result: Option<Ty>,
+}
+
+/// The entry protocol to enforce (M8: the REPL relaxes it, D-043).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MainPolicy {
+    /// Batch compilation: `main : unit -> int` required (SPEC §6/§7).
+    RequiredInt,
+    /// REPL: main optional; if present, `unit -> τ` for any concrete τ.
+    OptionalAny,
 }
 
 #[derive(Clone)]
@@ -92,12 +105,17 @@ struct Scheme {
 }
 
 pub fn infer(program: &Program) -> Result<TypedProgram, TypeError> {
+    infer_with(program, MainPolicy::RequiredInt)
+}
+
+pub fn infer_with(program: &Program, policy: MainPolicy) -> Result<TypedProgram, TypeError> {
     let mut cx = Cx {
         table: InPlaceUnificationTable::new(),
         adts: HashMap::new(),
         ctors: HashMap::new(),
         instantiations: HashMap::new(),
         generalized: HashMap::new(),
+        lenient_zonk: policy == MainPolicy::OptionalAny,
     };
     cx.declare_adts(&program.typedefs)?;
 
@@ -108,17 +126,28 @@ pub fn infer(program: &Program) -> Result<TypedProgram, TypeError> {
         decls.push((*recursive, typed));
     }
 
-    // Entry protocol: main : unit -> int.
-    let main = env
-        .get("main")
-        .ok_or_else(|| TypeError("no `main` declaration (expected `let main () = ...`)".into()))?
-        .clone();
-    let main_ty = cx.instantiate(&main);
-    cx.unify(
-        &main_ty,
-        &Ty::Fun(Box::new(Ty::Unit), Box::new(Ty::Int)),
-    )
-    .map_err(|e| TypeError(format!("main must have type unit -> int: {}", e.0)))?;
+    // Entry protocol, per policy.
+    let mut main_result = None;
+    match (policy, env.get("main").cloned()) {
+        (MainPolicy::RequiredInt, None) => {
+            return Err(TypeError(
+                "no `main` declaration (expected `let main () = ...`)".into(),
+            ));
+        }
+        (MainPolicy::OptionalAny, None) => {}
+        (policy, Some(main)) => {
+            let main_ty = cx.instantiate(&main);
+            let result = match policy {
+                MainPolicy::RequiredInt => Ty::Int,
+                MainPolicy::OptionalAny => cx.fresh(),
+            };
+            cx.unify(&main_ty, &Ty::Fun(Box::new(Ty::Unit), Box::new(result.clone())))
+                .map_err(|e| {
+                    TypeError(format!("main must have type unit -> ...: {}", e.0))
+                })?;
+            main_result = Some(result);
+        }
+    }
 
     // Concretize single-instantiation generalized bindings; error on
     // several; mark unused ones dead (D-038).
@@ -170,10 +199,15 @@ pub fn infer(program: &Program) -> Result<TypedProgram, TypeError> {
         zonked.push((recursive, bindings));
     }
 
+    // Deep-resolved, non-failing: the REPL renders leftover vars as
+    // scheme variables ('a); emission independently rejects them.
+    let main_result = main_result.map(|ty| cx.resolve(&ty));
+
     Ok(TypedProgram {
         adts: cx.adts,
         ctors: cx.ctors,
         decls: zonked,
+        main_result,
     })
 }
 
@@ -181,6 +215,9 @@ struct Cx {
     table: InPlaceUnificationTable<TyVid>,
     adts: HashMap<String, AdtInfo>,
     ctors: HashMap<String, CtorInfo>,
+    /// REPL policy: unresolved variables survive zonking as vars (the
+    /// shell renders them as scheme variables; emission rejects them).
+    lenient_zonk: bool,
     /// binding id → one entry per use site: the fresh vars that
     /// instantiated the scheme there.
     instantiations: HashMap<NodeId, Vec<Vec<TyVid>>>,
@@ -729,10 +766,15 @@ impl Cx {
     fn zonk_ty(&mut self, ty: &Ty) -> Result<Ty, TypeError> {
         let resolved = self.resolve(ty);
         match &resolved {
-            Ty::Var(vid) => Err(TypeError(format!(
-                "ambiguous type 't{} — add an annotation-free monomorphic use",
-                vid.0
-            ))),
+            Ty::Var(vid) => {
+                if self.lenient_zonk {
+                    return Ok(resolved.clone());
+                }
+                Err(TypeError(format!(
+                    "ambiguous type 't{} — add an annotation-free monomorphic use",
+                    vid.0
+                )))
+            }
             Ty::Tuple(items) => Ok(Ty::Tuple(
                 items.iter().map(|t| self.zonk_ty(t)).collect::<Result<_, _>>()?,
             )),

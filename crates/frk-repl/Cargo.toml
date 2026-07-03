@@ -1,6 +1,6 @@
 [package]
-name = "frk-harness"
-description = "Golden/differential runners, stage dumps, dashboard emit (SPEC §7)"
+name = "frk-repl"
+description = "The frankish shell engine: REPL semantics D-043 (SPEC §9)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,4 @@ frk-core.workspace = true
 frk-dialects.workspace = true
 frk-front.workspace = true
 frk-interp.workspace = true
-frk-repl.workspace = true
-frk-rt.workspace = true
 melior.workspace = true

@@ -8,4 +8,9 @@ publish.workspace = true
 
 [dependencies]
 frk-dialects.workspace = true
+frk-core.workspace = true
+frk-front.workspace = true
+frk-interp.workspace = true
+frk-repl.workspace = true
 frk-harness.workspace = true
+melior.workspace = true

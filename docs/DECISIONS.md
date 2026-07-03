@@ -193,6 +193,55 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-044 [human-review] First ⚑-queue adjudication (2026-07-03), with
+  dispositions from the human, recorded verbatim in effect:
+  (1) D-041 RATIFIED — v0 rc without liveness releases is correct
+  staging ("releases without a liveness pass are either wrong or
+  theater"); rider executed: frk_rt_alloc_count() lands in BOTH
+  runtime twins now, so the M10 release pass has a measurable target
+  and a leak-canary golden becomes writable the day releases land.
+  (2) D-038 RATIFIED, all three flags — float-out is the admission
+  rule applied against the manifest's own text (the manifest scope
+  line is amended by this entry: ", float" struck, per its own
+  amendment rule); redundancy-as-error is stricter-than-oracle in the
+  deterministic direction; the min-caml deferral is what the license
+  law demands, the 18-case hand corpus is a legitimate v0 wall.
+  (3) D-005 RATIFIED WITH PREJUDICE — the stack question is closed by
+  evidence (three IRDL dialects, an interpreter, a merged
+  type-changing lowering, external passes, JIT symbol registration,
+  five-target AOT, against one shimmed library bug); its "if gaps
+  dominate two milestones" revisit clause is retired.
+  (4) M8 EXIT AMENDED — shell errors must at minimum echo the
+  offending source line (a REPL whose trap messages point at nothing
+  ships §6.5's bug-by-law); full Location threading stays at M9 per
+  D-039. Implemented as the `  at: <line>` echo, proven by the
+  division-trap transcript golden. Revisit: none — this entry is a
+  record of rulings, not a fork.
+- D-043 [repl] The shell's semantics (M8; SPEC §9 as amended by
+  D-044.4). Session = an accumulated ml_core declaration prefix,
+  RE-ELABORATED WHOLE each line (no incremental typing state to
+  corrupt; trivially correct at shell scale); evaluation is the
+  reference interpreter, always (D-008) — :profile switches only the
+  :emit strategy. Decl lines: typecheck prefix+line, commit on
+  success, print `val name : τ` (types only — values would force
+  evaluating possibly-dead bindings). Expression lines: compile
+  prefix + `let main () = ( line )` under MainPolicy::OptionalAny
+  (main optional; if present unit → any concrete τ; lenient zonk
+  leaves scheme vars in), interpret, print `- : τ = value` with typed
+  rendering (bools/tuples/constructors by name; functions as <fun>).
+  Polymorphic expressions (necessarily functions, value restriction)
+  print `- : σ = <fun>` WITHOUT emission — there is no concrete type
+  to emit at; σ shows normalized 'a/'b vars. Failing lines leave the
+  session unchanged; every error echoes `  at: <line>` (D-044.4).
+  Classification is by the real parser (decl-parse first, expr-wrap
+  second), never by token sniffing. Transcript goldens: transcript.in
+  scripts the session; output echoes `PROMPT line` then responses;
+  the repl runner drives the EXACT library engine the interactive
+  binary runs. :load errors name the requested file only (resolved
+  paths are cwd-dependent). ORC per-cell redefinition remains the
+  stretch it was scoped as — the re-elaboration model makes it a
+  pure performance upgrade later, not a semantic change. Revisit:
+  re-elaboration cost if sessions grow pathological; ORC at M10+.
 - D-042 [grid] The AOT/cross protocol (M7 second half). (1) AOT flow:
   pre-lowering, the entry func.func is RENAMED to @frk_entry (corpus
   protocol: entry functions are externally-invoked-only, so the rename

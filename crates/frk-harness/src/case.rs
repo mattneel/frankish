@@ -15,11 +15,14 @@ pub enum ResultKind {
 }
 
 /// What language the case's source is in — decided by which file the
-/// case directory holds (`case.mlir` or `case.ml`).
+/// case directory holds (`case.mlir`, `case.ml`, or `transcript.in`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceKind {
     Mlir,
     Ml,
+    /// A scripted REPL session (M8, D-043) — only the repl runner
+    /// speaks these.
+    Transcript,
 }
 
 /// One golden case: a directory holding `case.mlir` + `expected.out`.
@@ -87,6 +90,7 @@ impl std::error::Error for CaseError {}
 
 const MLIR_SOURCE: &str = "case.mlir";
 const ML_SOURCE: &str = "case.ml";
+const TRANSCRIPT_SOURCE: &str = "transcript.in";
 const EXPECTED_FILE: &str = "expected.out";
 
 /// Walks `root` and returns every directory containing a `case.mlir`,
@@ -111,6 +115,11 @@ fn walk(root: &Path, dir: &Path, cases: &mut Vec<Case>) -> Result<(), CaseError>
     let ml_path = dir.join(ML_SOURCE);
     if ml_path.is_file() {
         cases.push(load(root, dir, ml_path, SourceKind::Ml)?);
+        return Ok(());
+    }
+    let transcript_path = dir.join(TRANSCRIPT_SOURCE);
+    if transcript_path.is_file() {
+        cases.push(load(root, dir, transcript_path, SourceKind::Transcript)?);
         return Ok(());
     }
     let entries = fs::read_dir(dir).map_err(|e| CaseError::Io(dir.to_path_buf(), e))?;

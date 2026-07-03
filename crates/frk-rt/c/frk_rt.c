@@ -17,13 +17,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Allocation counter (D-041 ratification rider): the M10 pass's
+ * measurable target. Tier-0 targets run single-threaded; a plain
+ * increment suffices until a threaded target joins the grid. */
+static uint64_t frk_rt_allocs;
+
+uint64_t frk_rt_alloc_count(void) { return frk_rt_allocs; }
+
 void *frk_rt_arena_alloc(uint64_t bytes) {
+    frk_rt_allocs += 1;
     if (bytes == 0) bytes = 1;
     /* malloc alignment is >= 8 on every Tier-0 triple (musl, wasi). */
     return malloc((size_t)bytes);
 }
 
 void *frk_rt_rc_alloc(uint64_t payload_bytes) {
+    frk_rt_allocs += 1;
     if (payload_bytes == 0) payload_bytes = 1;
     unsigned char *base = malloc((size_t)payload_bytes + 8);
     if (!base) return base;

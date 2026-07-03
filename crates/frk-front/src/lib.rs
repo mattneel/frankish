@@ -41,6 +41,32 @@ impl std::error::Error for CompileError {}
 /// Compiles an ml_core program to a kernel-dialect module inside
 /// `context`. Precondition: the kernel dialects are registered
 /// (`frk_dialects::register`).
+/// Typecheck only, REPL policy (main optional, any concrete result).
+/// The REPL validates decl lines and answers `:type` with this.
+pub fn check_ml(source: &str) -> Result<infer::TypedProgram, CompileError> {
+    let program = ast::parse(source).map_err(|e| CompileError::Parse(e.to_string()))?;
+    infer::infer_with(&program, infer::MainPolicy::OptionalAny)
+        .map_err(|e| CompileError::Type(e.0))
+}
+
+/// Compile under the REPL policy; returns the module plus main's
+/// zonked result type for value rendering (D-043). Errors if the
+/// source has no main.
+pub fn compile_ml_any<'c>(
+    context: &'c melior::Context,
+    source: &str,
+) -> Result<(melior::ir::Module<'c>, types::Ty), CompileError> {
+    let program = ast::parse(source).map_err(|e| CompileError::Parse(e.to_string()))?;
+    let typed = infer::infer_with(&program, infer::MainPolicy::OptionalAny)
+        .map_err(|e| CompileError::Type(e.0))?;
+    let result = typed
+        .main_result
+        .clone()
+        .ok_or_else(|| CompileError::Emit("REPL compilation needs a main".into()))?;
+    let module = emit::emit(context, &typed).map_err(CompileError::Emit)?;
+    Ok((module, result))
+}
+
 pub fn compile_ml<'c>(
     context: &'c Context,
     source: &str,

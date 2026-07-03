@@ -22,6 +22,8 @@ use frk_harness::runner::{default_runners, reference_runner};
 use frk_harness::stages::dump_stages;
 
 const USAGE: &str = "usage:
+  frnksh                                 the frankish shell (REPL, D-002)
+  frnksh run FILE                        execute .ml/.mlir on the reference interpreter
   frnksh test  [--goldens DIR]           run the golden corpus (default DIR: goldens)
   frnksh bless [--goldens DIR]           rewrite expected outputs — commit message
                                          must justify the change (AGENTS.md L2)
@@ -36,8 +38,10 @@ const USAGE: &str = "usage:
 
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
-    /// Bare invocation, pre-M8: identify the build, point at the plan.
-    Placeholder,
+    /// Bare invocation = the frankish shell (D-002, M8).
+    Repl,
+    /// Execute a source file end to end on the reference interpreter.
+    Run { source: PathBuf },
     Test { goldens: PathBuf },
     Bless { goldens: PathBuf },
     Diff { goldens: PathBuf },
@@ -49,10 +53,14 @@ enum Command {
 fn parse(args: &[String]) -> Result<Command, String> {
     let mut words = args.iter().map(String::as_str);
     let Some(subcommand) = words.next() else {
-        return Ok(Command::Placeholder);
+        return Ok(Command::Repl);
     };
 
     match subcommand {
+        "run" => match (words.next(), words.next()) {
+            (Some(file), None) => Ok(Command::Run { source: PathBuf::from(file) }),
+            _ => Err("run: expected exactly one FILE (.ml or .mlir)".into()),
+        },
         "grid" => {
             let mut goldens = PathBuf::from("goldens");
             let mut canary = false;
@@ -121,10 +129,95 @@ fn version_line() -> String {
 
 fn run(command: Command) -> ExitCode {
     match command {
-        Command::Placeholder => {
+        Command::Repl => {
+            use std::io::{BufRead, Write};
             println!("{}", version_line());
-            println!("harness subcommands are live: test | bless | diff | emit --stages");
+            println!("the frankish shell — ml_core on the reference interpreter (:help, :q)");
+            let mut engine = frk_repl::Engine::new();
+            if let Ok(cwd) = std::env::current_dir() {
+                engine.load_base = cwd;
+            }
+            let stdin = std::io::stdin();
+            let mut stdout = std::io::stdout();
+            loop {
+                print!("{}", engine.prompt());
+                let _ = stdout.flush();
+                let mut line = String::new();
+                match stdin.lock().read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let response = engine.feed(&line);
+                if !response.is_empty() {
+                    println!("{response}");
+                }
+                if engine.done {
+                    break;
+                }
+            }
             ExitCode::SUCCESS
+        }
+        Command::Run { source } => {
+            // End-to-end on the reference interpreter (D-008): .ml via
+            // the ml_core frontend; .mlir parsed directly.
+            let context = frk_core::context();
+            if let Err(error) = frk_dialects::register(&context) {
+                eprintln!("frnksh run: {error}");
+                return ExitCode::from(2);
+            }
+            let text = match std::fs::read_to_string(&source) {
+                Ok(text) => text,
+                Err(error) => {
+                    eprintln!("frnksh run: {}: {error}", source.display());
+                    return ExitCode::from(2);
+                }
+            };
+            let is_ml = source.extension().is_some_and(|ext| ext == "ml");
+            let module = if is_ml {
+                match frk_front::compile_ml(&context, &text) {
+                    Ok(module) => module,
+                    Err(error) => {
+                        eprintln!("frnksh run: {error}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            } else {
+                match melior::ir::Module::parse(&context, &text) {
+                    Some(module) => module,
+                    None => {
+                        eprintln!("frnksh run: {}: parse failed", source.display());
+                        return ExitCode::FAILURE;
+                    }
+                }
+            };
+            if let Err(error) = frk_dialects::verify(&context, &module) {
+                eprintln!("frnksh run: verify: {error}");
+                return ExitCode::FAILURE;
+            }
+            let mut interp = match frk_interp::Interp::new(&module) {
+                Ok(interp) => interp,
+                Err(error) => {
+                    eprintln!("frnksh run: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            frk_dialects::register_eval(&mut interp);
+            match interp.eval_function("main", &[]) {
+                Ok(values) => match values[0].as_signed() {
+                    Ok(value) => {
+                        println!("{value}");
+                        ExitCode::SUCCESS
+                    }
+                    Err(error) => {
+                        eprintln!("frnksh run: {error}");
+                        ExitCode::FAILURE
+                    }
+                },
+                Err(error) => {
+                    eprintln!("frnksh run: {error}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Command::Test { goldens } => {
             let mut green = true;
@@ -133,6 +226,12 @@ fn run(command: Command) -> ExitCode {
                     Ok(report) => {
                         println!("{report}");
                         green &= report.is_green();
+                    }
+                    // A runner with nothing applicable is normal on
+                    // kind-homogeneous subsets (e.g. goldens/repl);
+                    // the full corpus exercises every runner.
+                    Err(frk_harness::case::CaseError::NothingApplies { .. }) => {
+                        println!("goldens[{}]: nothing applicable, skipped", runner.name());
                     }
                     Err(error) => {
                         eprintln!("frnksh test: {error}");
@@ -293,7 +392,7 @@ mod tests {
 
     #[test]
     fn bare_invocation_is_the_placeholder() {
-        assert_eq!(parse(&[]).unwrap(), Command::Placeholder);
+        assert_eq!(parse(&[]).unwrap(), Command::Repl);
     }
 
     #[test]

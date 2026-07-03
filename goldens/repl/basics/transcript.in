@@ -1,0 +1,7 @@
+let x = 40
+let add a b = a + b
+add x 2
+let x = true
+x
+(1, (x, 3))
+fun n -> n * 2

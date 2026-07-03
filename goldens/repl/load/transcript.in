@@ -1,0 +1,3 @@
+:load lib.ml
+double 15 + triple 4
+:load missing.ml
