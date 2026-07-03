@@ -1,0 +1,7 @@
+[package]
+name = "frk-dialects"
+description = "frankish kernel dialects, one module per dialect (SPEC §4)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true

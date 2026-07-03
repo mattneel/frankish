@@ -1,0 +1,27 @@
+# frankish workspace — layout per SPEC §12 (M0). tools/loanword-ts joins at
+# M9 as a separate (non-cargo) package; sandbox/ never gates CI.
+[workspace]
+resolver = "3"
+members = [
+    "crates/frnksh",
+    "crates/frk-core",
+    "crates/frk-dialects",
+    "crates/frk-interp",
+    "crates/frk-front",
+    "crates/frk-harness",
+    "crates/frk-rt",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+
+[workspace.dependencies]
+frk-core = { path = "crates/frk-core" }
+frk-dialects = { path = "crates/frk-dialects" }
+frk-interp = { path = "crates/frk-interp" }
+frk-front = { path = "crates/frk-front" }
+frk-harness = { path = "crates/frk-harness" }
+frk-rt = { path = "crates/frk-rt" }

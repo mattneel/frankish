@@ -1,0 +1,41 @@
+# frankish — build entry points.
+# Law L6 (AGENTS.md): every workflow runs through make + POSIX-portable
+# scripts; no vendor-specific machinery is load-bearing. Pins: versions.env.
+
+include versions.env
+# Optional, gitignored, machine-local overrides (e.g. MLIR_PREFIX on hosts
+# with unusual LLVM locations).
+-include versions.local.env
+
+# Where LLVM/MLIR lives. Priority: environment / versions.local.env, then
+# llvm-config-$(LLVM_MAJOR) on PATH, then the apt.llvm.org default prefix.
+MLIR_PREFIX ?= $(shell llvm-config-$(LLVM_MAJOR) --prefix 2>/dev/null || echo /usr/lib/llvm-$(LLVM_MAJOR))
+
+# The mlir-sys and tblgen build scripts key off these. Their names derive
+# from LLVM_MAJOR; scripts/check-pins.sh asserts they agree.
+export MLIR_SYS_220_PREFIX ?= $(MLIR_PREFIX)
+export TABLEGEN_220_PREFIX ?= $(MLIR_PREFIX)
+
+CARGO ?= cargo
+CARGOFLAGS ?=
+
+.PHONY: setup build test ci clean
+
+# Verify the pinned toolchain is present; names anything missing. Never
+# mutates the system.
+setup:
+	sh scripts/setup.sh
+
+build:
+	$(CARGO) build --workspace $(CARGOFLAGS)
+
+test:
+	sh scripts/check-pins.sh
+	$(CARGO) test --workspace $(CARGOFLAGS)
+
+# Exactly what CI runs; plain shell all the way down.
+ci:
+	sh scripts/ci.sh
+
+clean:
+	$(CARGO) clean

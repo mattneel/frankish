@@ -1,0 +1,10 @@
+[package]
+name = "frk-rt"
+description = "frankish runtime staticlib, freestanding-first, C ABI (SPEC §10, K4)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["rlib", "staticlib"]

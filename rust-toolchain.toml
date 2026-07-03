@@ -1,0 +1,4 @@
+# Mirrors RUST_TOOLCHAIN in versions.env (asserted by scripts/check-pins.sh).
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
