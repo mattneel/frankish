@@ -85,6 +85,92 @@ void frk_rt_dyn_check(int64_t actual, int64_t expected) {
     }
 }
 
+/* ---- byte strings (M11 bar 3; D-052/D-056): interned, identity-
+ * equal. Layout {u64 len, bytes}. FNV-1a open addressing; canonical
+ * pointers live for the process (rt values, outside the strategy
+ * axis until the tracer). Tier-0 targets are single-threaded. ---- */
+
+static unsigned char **bstr_slots;
+static uint64_t bstr_cap, bstr_count;
+
+static uint64_t bstr_hash(const unsigned char *bytes, uint64_t len) {
+    uint64_t hash = 1469598103934665603ULL;
+    for (uint64_t i = 0; i < len; i++) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static void bstr_grow(void);
+
+static unsigned char *bstr_intern_bytes(const unsigned char *bytes, uint64_t len) {
+    if (bstr_cap == 0 || bstr_count * 10 >= bstr_cap * 7) bstr_grow();
+    uint64_t mask = bstr_cap - 1;
+    uint64_t slot = bstr_hash(bytes, len) & mask;
+    for (;;) {
+        unsigned char *entry = bstr_slots[slot];
+        if (!entry) break;
+        uint64_t entry_len = *(uint64_t *)entry;
+        if (entry_len == len && (len == 0 || memcmp(entry + 8, bytes, (size_t)len) == 0))
+            return entry;
+        slot = (slot + 1) & mask;
+    }
+    unsigned char *base = malloc(8 + (size_t)len);
+    if (!base) return base;
+    *(uint64_t *)base = len;
+    if (len) memcpy(base + 8, bytes, (size_t)len);
+    bstr_slots[slot] = base;
+    bstr_count++;
+    return base;
+}
+
+static void bstr_grow(void) {
+    uint64_t old_cap = bstr_cap;
+    unsigned char **old = bstr_slots;
+    bstr_cap = old_cap ? old_cap * 2 : 64;
+    bstr_slots = calloc((size_t)bstr_cap, sizeof *bstr_slots);
+    bstr_count = 0;
+    for (uint64_t i = 0; i < old_cap; i++) {
+        if (!old || !old[i]) continue;
+        /* Re-slot the existing canonical block (pointer preserved). */
+        uint64_t len = *(uint64_t *)old[i];
+        uint64_t mask = bstr_cap - 1;
+        uint64_t slot = bstr_hash(old[i] + 8, len) & mask;
+        while (bstr_slots[slot]) slot = (slot + 1) & mask;
+        bstr_slots[slot] = old[i];
+        bstr_count++;
+    }
+    free(old);
+}
+
+void *frk_rt_bstr_intern(const unsigned char *bytes, uint64_t len) {
+    return bstr_intern_bytes(bytes, len);
+}
+
+void *frk_rt_bstr_concat(const unsigned char *a, const unsigned char *b) {
+    uint64_t alen = *(const uint64_t *)a, blen = *(const uint64_t *)b;
+    unsigned char *tmp = malloc((size_t)(alen + blen) + 1);
+    if (!tmp) return tmp;
+    memcpy(tmp, a + 8, (size_t)alen);
+    memcpy(tmp + alen, b + 8, (size_t)blen);
+    unsigned char *canonical = bstr_intern_bytes(tmp, alen + blen);
+    free(tmp);
+    return canonical;
+}
+
+void *frk_rt_bstr_from_num(double value) {
+    char buffer[40];
+    int written = snprintf(buffer, sizeof buffer, "%.14g", value);
+    return bstr_intern_bytes((const unsigned char *)buffer, (uint64_t)written);
+}
+
+void frk_rt_print_lua_str(const unsigned char *s) {
+    uint64_t len = *(const uint64_t *)s;
+    fwrite(s + 8, 1, (size_t)len, stdout);
+    putchar('\n');
+}
+
 /* ---- Lua printing (M11 bar 4; D-052/D-055): native %.14g. ---- */
 void frk_rt_print_lua_num(double value) { printf("%.14g\n", value); }
 void frk_rt_print_lua_bool(unsigned char value) {

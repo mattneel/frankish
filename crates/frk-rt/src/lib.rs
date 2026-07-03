@@ -210,6 +210,83 @@ pub unsafe extern "C" fn frk_rt_print_str(s: *const u8) {
     println!("{text}");
 }
 
+// ---- byte strings (M11 bar 3; D-052/D-056): interned, identity-
+// equal. Layout {u64 len, bytes}; the intern table owns canonical
+// pointers for the process lifetime (strings are rt values, outside
+// the strategy axis until the tracer — D-049 precedent). ----
+
+fn intern_table() -> &'static std::sync::Mutex<std::collections::HashMap<Vec<u8>, usize>> {
+    static TABLE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<Vec<u8>, usize>>,
+    > = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn bstr_intern_bytes(bytes: &[u8]) -> *mut u8 {
+    let mut table = intern_table().lock().expect("intern table");
+    if let Some(&canonical) = table.get(bytes) {
+        return canonical as *mut u8;
+    }
+    let base = raw_alloc(8 + bytes.len() as u64);
+    if base.is_null() {
+        return base;
+    }
+    unsafe {
+        (base as *mut u64).write(bytes.len() as u64);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), base.add(8), bytes.len());
+    }
+    table.insert(bytes.to_vec(), base as usize);
+    base
+}
+
+unsafe fn bstr_parts<'a>(s: *const u8) -> &'a [u8] {
+    unsafe {
+        let len = *(s as *const u64) as usize;
+        std::slice::from_raw_parts(s.add(8), len)
+    }
+}
+
+/// # Safety
+/// `bytes` must point at `len` valid bytes (unused when len = 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_bstr_intern(bytes: *const u8, len: u64) -> *mut u8 {
+    let slice = if len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(bytes, len as usize) }
+    };
+    bstr_intern_bytes(slice)
+}
+
+/// # Safety
+/// Both operands must be canonical byte strings from this runtime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_bstr_concat(a: *const u8, b: *const u8) -> *mut u8 {
+    let mut bytes = unsafe { bstr_parts(a).to_vec() };
+    bytes.extend_from_slice(unsafe { bstr_parts(b) });
+    bstr_intern_bytes(&bytes)
+}
+
+/// %.14g into an interned byte string — tostring and ..-coercion ride
+/// the SAME formatter the parity rig proved (D-056).
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_bstr_from_num(value: f64) -> *mut u8 {
+    bstr_intern_bytes(format_lua_num(value).as_bytes())
+}
+
+/// Raw bytes + newline (Lua print of a string; 8-bit clean).
+///
+/// # Safety
+/// The operand must be a canonical byte string from this runtime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_print_lua_str(s: *const u8) {
+    use std::io::Write;
+    let bytes = unsafe { bstr_parts(s) };
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(bytes);
+    let _ = stdout.write_all(b"\n");
+}
+
 // ---- Lua printing (M11 bar 4; D-052/D-055): %.14g semantics. ----
 
 /// C's %.14g inside the canon fence (positional values: 0 or |v| in
@@ -324,6 +401,26 @@ mod tests {
         unsafe {
             (p as *mut i64).write(42);
             assert_eq!((p as *const i64).read(), 42);
+        }
+    }
+
+    #[test]
+    fn byte_strings_intern_to_identical_pointers() {
+        unsafe {
+            let a = frk_rt_bstr_intern(b"hello".as_ptr(), 5);
+            let b = frk_rt_bstr_intern(b"hello".as_ptr(), 5);
+            assert_eq!(a, b, "interning canonicalizes");
+            let c = frk_rt_bstr_concat(
+                frk_rt_bstr_intern(b"hel".as_ptr(), 3),
+                frk_rt_bstr_intern(b"lo".as_ptr(), 2),
+            );
+            assert_eq!(a, c, "concat interns to the same canonical pointer");
+            assert_ne!(a, frk_rt_bstr_intern(b"world".as_ptr(), 5));
+            assert_eq!(*(a as *const u64), 5);
+        }
+        let n = frk_rt_bstr_from_num(42.0);
+        unsafe {
+            assert_eq!(bstr_parts(n), b"42");
         }
     }
 

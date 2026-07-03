@@ -16,6 +16,8 @@ pub mod closure;
 mod closure_eval;
 pub mod mem;
 mod mem_eval;
+pub mod bstr;
+mod bstr_eval;
 pub mod dyn_dialect;
 mod dyn_eval;
 pub mod str_dialect;
@@ -35,6 +37,7 @@ pub fn register_eval(interp: &mut frk_interp::Interp<'_, '_>) {
     mem_eval::register_eval(interp);
     str_eval::register_eval(interp);
     dyn_eval::register_eval(interp);
+    bstr_eval::register_eval(interp);
 }
 
 use std::fmt;
@@ -72,12 +75,13 @@ pub fn register(context: &Context) -> Result<(), RegisterError> {
     // @frk_adt::@product, and IRDL symbol refs resolve only within the
     // module being loaded.
     let combined = format!(
-        "{}\n{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}\n{}",
         adt::IRDL,
         closure::IRDL,
         mem::IRDL,
         str_dialect::IRDL,
-        dyn_dialect::IRDL
+        dyn_dialect::IRDL,
+        bstr::IRDL
     );
     register_one(context, &combined, "frk kernel dialects")
 }

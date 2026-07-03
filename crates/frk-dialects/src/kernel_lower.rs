@@ -128,7 +128,7 @@ fn slot_kind<'c>(context: &'c Context, r#type: Type<'c>) -> Result<SlotKind<'c>,
     if printed.starts_with("!frk_mem.box<") || printed.starts_with("!frk_mem.arr<") {
         return Ok(SlotKind::Ptr { managed: true });
     }
-    if printed == "!frk_str.str" {
+    if printed == "!frk_str.str" || printed == "!frk_bstr.str" {
         return Ok(SlotKind::Ptr { managed: false });
     }
     if printed == "!frk_dyn.dyn" {
@@ -273,6 +273,22 @@ enum Planned<'c, 'a> {
         result_mapped: Type<'c>,
     },
     DynTagOf {
+        op: OperationRef<'c, 'a>,
+    },
+    BstrLit {
+        op: OperationRef<'c, 'a>,
+        text: String,
+        symbol: String,
+    },
+    BstrConcat {
+        op: OperationRef<'c, 'a>,
+    },
+    /// Interned identity: eq is an inline pointer comparison (D-056).
+    BstrEq {
+        op: OperationRef<'c, 'a>,
+    },
+    /// Inline header load (D-056).
+    BstrLen {
         op: OperationRef<'c, 'a>,
     },
 }
@@ -452,6 +468,8 @@ fn collect<'c, 'a>(
         plans.push(plan_str(suffix, op, str_counter)?);
     } else if let Some(suffix) = name.strip_prefix("frk_dyn.") {
         plans.push(plan_dyn(context, suffix, op)?);
+    } else if let Some(suffix) = name.strip_prefix("frk_bstr.") {
+        plans.push(plan_bstr(suffix, op, str_counter)?);
     } else {
         if name == "func.func" {
             if let Some(mapped) = mapped_signature(context, op)? {
@@ -748,6 +766,31 @@ fn plan_dyn<'c, 'a>(
     }
 }
 
+fn plan_bstr<'c, 'a>(
+    suffix: &str,
+    op: OperationRef<'c, 'a>,
+    str_counter: &mut usize,
+) -> Result<Planned<'c, 'a>, String> {
+    match suffix {
+        "lit" => {
+            let text = op
+                .attribute("text")
+                .ok()
+                .and_then(|attribute| StringAttribute::try_from(attribute).ok())
+                .ok_or_else(|| "frk_bstr.lit without text".to_string())?
+                .value()
+                .to_string();
+            let symbol = format!("__frk_bstr_{}", *str_counter);
+            *str_counter += 1;
+            Ok(Planned::BstrLit { op, text, symbol })
+        }
+        "concat" => Ok(Planned::BstrConcat { op }),
+        "eq" => Ok(Planned::BstrEq { op }),
+        "len" => Ok(Planned::BstrLen { op }),
+        other => Err(format!("no lowering for frk_bstr.{other}")),
+    }
+}
+
 fn plan_str<'c, 'a>(
     suffix: &str,
     op: OperationRef<'c, 'a>,
@@ -780,6 +823,7 @@ fn is_kernel_type(r#type: Type<'_>) -> bool {
         || printed.starts_with("!frk_mem.")
         || printed.starts_with("!frk_str.")
         || printed.starts_with("!frk_dyn.")
+        || printed.starts_with("!frk_bstr.")
 }
 
 fn closure_struct(context: &Context) -> Type<'_> {
@@ -809,6 +853,7 @@ fn map_type<'c>(context: &'c Context, r#type: Type<'c>) -> Result<Type<'c>, Stri
     } else if printed.starts_with("!frk_mem.box<")
         || printed.starts_with("!frk_mem.arr<")
         || printed == "!frk_str.str"
+        || printed == "!frk_bstr.str"
     {
         Ok(llvm::r#type::pointer(context, 0))
     } else if printed == "!frk_dyn.dyn" {
@@ -884,8 +929,11 @@ fn declare_str_runtime(
         }
     }
     for plan in plans {
-        if matches!(plan, Planned::DynUnwrap { .. }) {
-            needed.push(("frk_rt_dyn_check", false));
+        match plan {
+            Planned::DynUnwrap { .. } => needed.push(("frk_rt_dyn_check", false)),
+            Planned::BstrLit { .. } => needed.push(("frk_rt_bstr_intern", true)),
+            Planned::BstrConcat { .. } => needed.push(("frk_rt_bstr_concat", true)),
+            _ => {}
         }
     }
     if needed.is_empty() {
@@ -911,6 +959,8 @@ fn declare_str_runtime(
             "frk_rt_dyn_check" => {
                 llvm::r#type::function(llvm::r#type::void(context), &[i64_type, i64_type], false)
             }
+            "frk_rt_bstr_intern" => llvm::r#type::function(ptr, &[ptr, i64_type], false),
+            "frk_rt_bstr_concat" => llvm::r#type::function(ptr, &[ptr, ptr], false),
             other => return Err(format!("unknown str runtime symbol {other}")),
         };
         let declaration = OperationBuilder::new("llvm.func", location)
@@ -1499,6 +1549,156 @@ fn apply<'c, 'a>(
             rewriter.insert(store_op(context, slot, addr, location)?);
             rewriter.erase_op(op);
             Ok(())
+        }
+        Planned::BstrLit { op, text, symbol } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
+            let bytes = text.as_bytes();
+
+            let module = root_module(op)?;
+            let body = module
+                .region(0)
+                .map_err(|e| e.to_string())?
+                .first_block()
+                .ok_or_else(|| "module without a body".to_string())?;
+            let count = bytes.len().max(1);
+            let elements = if bytes.is_empty() {
+                "0".to_string()
+            } else {
+                bytes
+                    .iter()
+                    .map(|byte| byte.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let dense = format!("dense<[{elements}]> : tensor<{count}xi8>");
+            let array_type = Type::parse(context, &format!("!llvm.array<{count} x i8>"))
+                .ok_or("byte array type")?;
+            let global = OperationBuilder::new("llvm.mlir.global", location)
+                .add_attributes(&[
+                    (
+                        melior::ir::Identifier::new(context, "sym_name"),
+                        StringAttribute::new(context, &symbol).into(),
+                    ),
+                    (
+                        melior::ir::Identifier::new(context, "global_type"),
+                        TypeAttribute::new(array_type).into(),
+                    ),
+                    (
+                        melior::ir::Identifier::new(context, "value"),
+                        Attribute::parse(context, &dense)
+                            .ok_or_else(|| format!("unparsable {dense}"))?,
+                    ),
+                    (
+                        melior::ir::Identifier::new(context, "linkage"),
+                        Attribute::parse(context, "#llvm.linkage<internal>").ok_or("linkage")?,
+                    ),
+                    (
+                        melior::ir::Identifier::new(context, "constant"),
+                        Attribute::unit(context),
+                    ),
+                    (
+                        melior::ir::Identifier::new(context, "addr_space"),
+                        Attribute::parse(context, "0 : i32").ok_or("addr_space")?,
+                    ),
+                    (
+                        melior::ir::Identifier::new(context, "visibility_"),
+                        Attribute::parse(context, "0 : i64").ok_or("visibility")?,
+                    ),
+                ])
+                .add_regions([Region::new()])
+                .build()
+                .map_err(|e| e.to_string())?;
+            body.insert_operation(0, global);
+
+            let address = result_value(rewriter.insert(
+                OperationBuilder::new("llvm.mlir.addressof", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "global_name"),
+                        FlatSymbolRefAttribute::new(context, &symbol).into(),
+                    )])
+                    .add_results(&[ptr])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            let len = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, bytes.len() as i64).into(),
+                location,
+            )))?;
+            let value = result_value(rewriter.insert(direct_call(
+                context,
+                "frk_rt_bstr_intern",
+                &[address, len],
+                ptr,
+                location,
+            )?))?;
+            finish(rewriter, op, value)
+        }
+        Planned::BstrConcat { op } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let ptr = llvm::r#type::pointer(context, 0);
+            let lhs = operand(op, 0)?;
+            let rhs = operand(op, 1)?;
+            let value = result_value(rewriter.insert(direct_call(
+                context,
+                "frk_rt_bstr_concat",
+                &[lhs, rhs],
+                ptr,
+                location,
+            )?))?;
+            finish(rewriter, op, value)
+        }
+        Planned::BstrEq { op } => {
+            // Interned identity (D-056): pointer comparison, inline.
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let lhs = result_value(rewriter.insert(cast_op(
+                "llvm.ptrtoint",
+                operand(op, 0)?,
+                i64_type,
+                location,
+            )?))?;
+            let rhs = result_value(rewriter.insert(cast_op(
+                "llvm.ptrtoint",
+                operand(op, 1)?,
+                i64_type,
+                location,
+            )?))?;
+            let equal = result_value(rewriter.insert(
+                OperationBuilder::new("arith.cmpi", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "predicate"),
+                        IntegerAttribute::new(i64_type, 0).into(),
+                    )])
+                    .add_operands(&[lhs, rhs])
+                    .add_results(&[IntegerType::new(context, 1).into()])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            finish(rewriter, op, equal)
+        }
+        Planned::BstrLen { op } => {
+            // Inline header load (D-056).
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let len = result_value(rewriter.insert(
+                OperationBuilder::new("llvm.load", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "ordering"),
+                        Attribute::parse(context, "0 : i64").ok_or("ordering")?,
+                    )])
+                    .add_operands(&[operand(op, 0)?])
+                    .add_results(&[i64_type])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            finish(rewriter, op, len)
         }
         Planned::StrLit { op, text, symbol } => {
             rewriter.set_insertion_point_before(op);

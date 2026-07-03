@@ -33,6 +33,9 @@ pub enum Value {
     Str(Rc<Vec<u16>>),
     /// A frk_dyn fat value (D-051): closed-enum tag + payload.
     Dyn(u64, Rc<Value>),
+    /// A frk_bstr byte string (D-056): content equality here is
+    /// observably identical to the native path's interned identity.
+    Bytes(Rc<Vec<u8>>),
 }
 
 impl PartialEq for Value {
@@ -53,6 +56,7 @@ impl PartialEq for Value {
             (Self::Array(a), Self::Array(b)) => Rc::ptr_eq(a, b),
             (Self::Str(a), Self::Str(b)) => a == b,
             (Self::Dyn(ta, pa), Self::Dyn(tb, pb)) => ta == tb && pa == pb,
+            (Self::Bytes(a), Self::Bytes(b)) => a == b,
             _ => false,
         }
     }
@@ -123,6 +127,19 @@ impl Value {
             Self::Str(units) => Ok(units),
             other => Err(EvalError::TypeMismatch(format!(
                 "expected a string, got {other:?}"
+            ))),
+        }
+    }
+
+    pub fn bytes(data: Vec<u8>) -> Self {
+        Self::Bytes(Rc::new(data))
+    }
+
+    pub fn as_bytes(&self) -> Result<&Rc<Vec<u8>>, EvalError> {
+        match self {
+            Self::Bytes(data) => Ok(data),
+            other => Err(EvalError::TypeMismatch(format!(
+                "expected a byte string, got {other:?}"
             ))),
         }
     }

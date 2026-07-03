@@ -193,6 +193,50 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-056 [bstr/dyn] The femto_lua kernel prerequisites (M11 bar 3
+  design; executes D-052's deferred representation choice).
+  (1) BYTE STRINGS get their own micro-dialect frk_bstr — NOT an
+  overload of frk_str: UTF-16 code-unit semantics is TS's law, byte
+  semantics is Lua's, and one dialect faking both would divert both
+  oracles. Ops: lit {text} / concat / eq / len over !frk_bstr.str.
+  INTERNING IS THE REPRESENTATION (D-052): the rt owns a global
+  intern table; lit and concat both return canonical pointers.
+  Payoff: eq lowers INLINE to pointer comparison (identity ≡ content
+  by construction — no rt call), len lowers inline to a header load;
+  only intern, concat, and from_num are rt calls. The interpreter
+  uses Value::Bytes with CONTENT equality — observably identical to
+  interned identity, no intern table needed in reference semantics
+  (noted, deliberate). String keys hash by canonical pointer.
+  v0.1 literal fence: printable ASCII + standard escapes (the IR
+  attribute carries decoded bytes; arbitrary 8-bit literals need an
+  encoding ruling — Lua VALUES are 8-bit clean via concat/from_num
+  regardless). frk_rt_bstr_from_num formats %.14g into an interned
+  string — tostring and ..-coercion ride the SAME formatter the
+  D-055 parity rig proved.
+  (2) TABLES are frk_dyn ops, RAW only: table_new / raw_get /
+  raw_set / table_len / set_meta / get_meta — all operands/results
+  dyn. THE METATABLE PROTOCOL IS NOT A KERNEL OP: __index (table AND
+  function forms) is a SYNTHESIZED IR HELPER the frontend emits once
+  per module (@__lua_index walks the chain; function-form dispatches
+  through frk_closure.apply) — ordinary IR that runs identically on
+  interp, JIT, and all five AOT triples, zero rt-callback machinery.
+  Same pattern for the other Lua protocols: @__lua_print (tag
+  dispatch to the per-type rt prints), @__lua_truthy (false/nil
+  falsy, everything else truthy — 0 is TRUE), @__lua_eq (tag-pair
+  equality; str eq is pointer eq; table/fun identity), @__lua_concat
+  (.. with number coercion via bstr_from_num).
+  (3) Table rt ABI (both twins): the table OBJECT allocates through
+  the STRATEGY (rc headers work; dying tables release); internal
+  array/hash parts are malloc-domain until the sized-release +
+  layout-descriptor rungs add destructors (the leak is counted
+  honestly by the existing counters). dyn results cross the C ABI by
+  OUT-PARAMETER ({tag,payload} into a caller alloca) — struct-return
+  conventions across five triples are exactly the ABI risk the wasm
+  signature_mismatch taught us to refuse. Number keys hash by f64
+  bits (1.0 and 1 are the same f64 — Lua agrees); NaN keys are
+  fenced (Lua errors; corpus stays clear).
+  Revisit: literal encoding when a non-ASCII corpus case arrives;
+  table internals' domain at the layout-descriptor rung.
 - D-055 [gc/canon] Third review integration (2026-07-03): the M10
   rulings endorsed; two directives executed.
   (1) THE LAYOUT-DESCRIPTOR RUNG IS NAMED (gc-spike sequencing

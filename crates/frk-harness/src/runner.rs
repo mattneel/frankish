@@ -359,6 +359,18 @@ impl Runner for JitRunner {
             engine.register_symbol("frk_rt_str_len", frk_rt::frk_rt_str_len as *mut ());
             engine.register_symbol("frk_rt_dyn_check", frk_rt::frk_rt_dyn_check as *mut ());
             engine.register_symbol(
+                "frk_rt_bstr_intern",
+                frk_rt::frk_rt_bstr_intern as *mut (),
+            );
+            engine.register_symbol(
+                "frk_rt_bstr_concat",
+                frk_rt::frk_rt_bstr_concat as *mut (),
+            );
+            engine.register_symbol(
+                "frk_rt_bstr_from_num",
+                frk_rt::frk_rt_bstr_from_num as *mut (),
+            );
+            engine.register_symbol(
                 frk_front::loanword::PRINT_STR,
                 capture_print_str as *mut (),
             );
