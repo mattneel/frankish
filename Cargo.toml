@@ -19,6 +19,11 @@ rust-version = "1.96"
 publish = false
 
 [workspace.dependencies]
+# Exact pin, mirrored as MELIOR_VERSION in versions.env (checked by
+# scripts/check-pins.sh). melior is alpha: load dialects eagerly
+# (docs/LANDSCAPE.md), bump only deliberately.
+melior = "=0.27.2"
+
 frk-core = { path = "crates/frk-core" }
 frk-dialects = { path = "crates/frk-dialects" }
 frk-interp = { path = "crates/frk-interp" }
