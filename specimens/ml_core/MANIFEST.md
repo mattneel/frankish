@@ -33,4 +33,12 @@ M5: ≥90% corpus conformance, dashboard row live, extraction report written.
 M6: re-based thin (zero private ops), conformance not worse.
 
 ## Status
-Not started. Gated on M3 (adt) + M4 (closure).
+M5 SHIPPED (2026-07-03): frontend (lex/parse/HM-with-let-poly/emit
+through the decision-tree pass) + 18-program hand conformance corpus,
+100% three-way (interp = jit = ocaml 4.14.1), dashboard row live.
+Operative rulings and fences: D-038 (float fenced by the admission
+rule ⚑; recursive ADTs to v0.2/M7; poly emission ≤1 instantiation;
+redundancy = error; min-caml vendoring deferred pending license
+verification — exclusion list empty because nothing is vendored yet).
+Zero private ops — the M3/M4 kernel dialects carried the whole
+specimen; see the M5 extraction report in STATE.md.

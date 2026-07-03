@@ -193,6 +193,28 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-038 [ml_core] ⚑ M5 frontend rulings; items (1),(2),(6) touch the
+  ratified manifest's surface and deserve human review. (1) FLOAT is
+  fenced out of v0.1 by the manifest's own admission rule: it carries
+  no idiom the kernel library lacks (it is upstream arith), and its
+  canon-divergence work (print_float rendering) is not idiom-bearing;
+  the corpus is float-free; revisit at v0.2 alongside the canon rule.
+  (2) RECURSIVE ADTs are rejected at declaration: the structural type
+  encoding cannot spell them; gated on the memory axis + a nominal-
+  type story (M7). (3) Polymorphism: inference has real let-poly
+  (value restriction: fun rhs only); emission is monomorphic — zero
+  instantiations drops a binding, one concretizes it, several is an
+  error; the monomorphization pass is v0.2. (4) match redundancy is a
+  compile ERROR (OCaml merely warns) and non-exhaustiveness errors
+  with a witness — stricter is deterministic. (5) The parser is
+  hand-rolled recursive descent: D-019's scaffolding stance at zero
+  research cost, replaceable wholesale. (6) min-caml test vendoring
+  is DEFERRED pending license verification; the 18-program hand
+  corpus (100%% three-way) is the v0 conformance corpus. (7) Oracle
+  protocol: corpus files define `let main () = <int expr>`; the
+  oracle runner appends `print_int (main ())` and runs ocaml under
+  LC_ALL=C; values stay under 2^62 (the 63-bit rule). Revisit:
+  (1)(2)(3)(6) at the v0.2 manifest freeze.
 - D-037 [dialects] The kernel lowering is ONE pass ("lower-frk-kernel",
   superseding D-032's per-dialect packaging; representation and fences
   unchanged): adt products carry closure-typed fields and closure

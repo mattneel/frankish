@@ -15,11 +15,11 @@ route would have spelled it.
 Start here: `AGENTS.md` (law) → `docs/SPEC.md` (design) →
 `docs/DECISIONS.md` (ledger) → `STATE.md` (now).
 
-Status: M4 done — two kernel dialects are real. frk.adt (sums,
-products, tag dispatch) and frk.closure (first-class functions with
-heap environments from frk-rt, church encoding included) are
-IRDL-registered, semantically verified, interpreted, and compiled
-through one kernel lowering pass — interpreter and JIT byte-equal on a
-15-case corpus at every `make test`. Pattern matching compiles via a
-Maranget decision-tree pass with byte-exact tree goldens. Green from a
-clean clone: `make setup && make build && make test`.
+Status: M5 done — the first specimen compiles. ml_core (a
+MinCaml-shaped core ML: HM inference, let-polymorphism, ADTs, nested
+match, closures, currying, mutual recursion) parses, type-checks, and
+compiles through the kernel dialects; its 18-program corpus runs
+byte-identically under the frankish interpreter, the frankish JIT,
+and upstream OCaml — diff[interp,jit,ocaml]: 33 cases, 0 divergent.
+`make dashboard` renders conformance per suite per runner. Green from
+a clean clone: `make setup && make build && make test`.

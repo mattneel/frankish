@@ -1,50 +1,41 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M5 sessions)
-Phase: M5 in flight — the ml_core frontend is BUILT and interp-green;
-harness integration + oracle + corpus + dashboard remain.
-Tree: green — `make test` 25 blocks; `make diff`: 15 cases, 0
-divergent.
+Phase: M5 complete (tag m5-done); M6 not started.
+Tree: green — `make test` 25 blocks; clean-clone scripts/ci.sh exit 0;
+`make diff`: diff[interp,jit,ocaml] 33 cases, 0 divergent;
+`make dashboard`: ml_core 18 cases, 100% × 3 runners.
 
 ## Next action
-M5 second half. DONE: frk-front end to end (lexer/parser with
-pattern-let desugaring; HM over ena with real let-poly, instantiation
-recording, value restriction; typed-AST emission — match through the
-Maranget dtree into cf dispatch, universal closure calling convention,
-lambda lifting with the rec re-make pattern, bools as two-variant
-sums); kernel_lower gained SlotKind::Words (adt values cross closure
-boundaries as word copies; nested-adt fence LIFTED for finite types —
-fence tests updated); ten e2e batteries green through the reference
-interpreter incl. seven rejection cases. Remaining, in order:
-1. Harness: .ml cases — Case learns source kinds (case.ml vs
-   case.mlir); both runners' front half branches to
-   frk_front::compile_ml for Ml cases (frk-harness += frk-front dep).
-2. OracleRunner "ocaml": temp file = case.ml + "
-let () = print_int
-   (main ())
-"; std::process ocaml with LC_ALL=C; canon over stdout;
-   Runner gains applicable(case) (oracle: Ml only) folded into
-   golden/diff applicability. versions.env: OCAML_VERSION_TESTED=4.14.1
-   + setup.sh ocaml check.
-3. Corpus goldens/ml_core/*: ~15 hand cases (mirror the e2e batteries
-   as .ml files; ocaml-compatible by construction — the SAME file runs
-   under all three runners). Hand-computed expecteds. 63-bit note: keep
-   values ≤2^62 (canon rule, MANIFEST).
-4. Dashboard row: frnksh dashboard + make dashboard — per-suite ×
-   per-runner conformance % from golden reports (SPEC §8 'a number,
-   not a vibe').
-5. D-038 (one entry: float fenced by the admission rule ⚑, recursive
-   ADTs to v0.2/M7, poly emission ≤1 instantiation, redundancy=error,
-   hand-rolled parser as D-019 scaffolding, min-caml vendoring
-   deferred pending license verification — hand corpus is the corpus);
-   MANIFEST status update; extraction report in STATE; ⚑ flags for the
-   human (float + scope clarifications); m5-done when ≥90% of the
-   corpus is green under interp+jit+ocaml.
+M6 Promotion pass #1 per docs/SPEC.md §13: promote M5 cheats, re-base
+ml_core thin, document the type kit as reusable. Exit: no private ops
+in ml_core (ALREADY TRUE — zero private ops existed); conformance not
+worse. The real M6 work, from the extraction report below:
+1. Promote tree→IR emission out of frk-front's emitter into a
+   reusable component next to adt_dtree (any frontend with matches
+   needs it; it is currently entangled with ml-specific typing —
+   design the seam: dtree + occurrence-typing callback → CFG).
+2. Type kit reusability pass: document + de-ml-ify what generalizes
+   (unification wrapper over ena, scheme/instantiate machinery);
+   spans/locations threading (§6.5) is the standing debt to schedule.
+3. Green-tree decision (SPEC §15, due at M5, deliberately deferred
+   with evidence): plain AST sufficed for this subset; rowan-vs-custom
+   gets decided when loanword (M9) or reprinting pressure arrives —
+   confirm or overrule with a D-entry at M6.
+4. D-009's revisit fires: "specimen order — revisit after M6
+   retrospective". Write the retrospective line.
 
 ## In flight
 Nothing.
 
 ## For the human
+- Review ⚑ D-038 (M5 frontend rulings): three items touch the ratified
+  ml_core manifest — float fenced OUT of v0.1 by the admission rule
+  (the manifest listed it in scope; the corpus is float-free), match
+  redundancy is an error where OCaml warns, and min-caml vendoring is
+  deferred pending license verification (the 18-program hand corpus is
+  the v0 conformance corpus). Strike any of these with a superseding
+  entry if you want the manifest read literally instead.
 - Review ⚑ D-005 (host stack ruling) in docs/DECISIONS.md — made on your
   behalf. Evidence through M4 supports it strongly: melior 0.27.2 has
   now built two IRDL dialects, an interpreter, two type-changing
@@ -57,6 +48,40 @@ Nothing.
   amended §4.1 wording itself adjusted.
 
 ## Milestone log
+m5-done — Shipped: the first specimen, end to end. frk-front: lexer +
+recursive-descent parser (pattern-let desugaring, multi-param → nested
+funs), HM over ena with real let-polymorphism (value restriction,
+recorded instantiations, ≤1-instantiation monomorphic emission per
+D-038), typed-AST emission into the kernel dialects — match through
+the Maranget dtree (D-034's emission met its consumer), universal
+closure calling convention, lambda lifting with the rec re-make
+pattern, bools as two-variant sums, pure cf-CFG. Kernel lowering grew
+SlotKind::Words (adt values cross closure boundaries; nested-adt
+fence lifted for finite types). Harness: source kinds (.ml cases,
+OCaml-comment directives), Runner::applicable, the OcamlOracle (same
+file + print_int (main ()), LC_ALL=C, canon-filtered), the dashboard
+(SPEC §8). Corpus: 18 hand OCaml-compatible programs, 100% three-way
+— diff[interp,jit,ocaml]: 33 cases, 0 divergent, FIRST CONTACT.
+Exit bars: ≥90% conformance → 100%; dashboard row live; extraction
+report below. Ledger: D-038 (⚑). Learned: melior cf helpers spell
+pre-MLIR-22 segment attr names (build branches generically);
+single-variant dispatch must not emit cf.switch; ocaml 4.14 runs
+decl+print files with no ;; needed.
+
+M5 EXTRACTION REPORT (specimen discipline): ml_core forced (a)
+SlotKind::Words in the kernel lowering — the adt-at-closure-boundary
+gap D-035 fenced was hit within minutes of real programs, widened
+honestly; (b) tree→IR emission — built INSIDE frk-front, the one
+component that belongs lower (promotion candidate #1 for M6: any
+match-bearing frontend needs it); (c) nothing else — zero private
+ops, zero ad-hoc lowerings: the M3/M4 dialects carried a whole ML
+subset unmodified, which is the thesis doing its job. Cheats awaiting
+promotion: the dtree emission location (above); §6.5 span threading
+(every location is unknown — diagnostics point at nothing); the
+in-emitter bool-as-sum trick could sink into the dtree layer. The
+specimen is already thin; M6 is promotion + documentation, not
+surgery.
+
 m4-done — Shipped: frk.closure, the second kernel dialect, K1–K7
 under D-031/D-035/D-036/D-037 — and the discovery-driven redesign of
 frk.adt that made it possible. First-rank finding: IRDL-22 unifies
@@ -185,6 +210,23 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (tenth entry)
+    Milestone/step: M5 complete, tagged m5-done
+    Green? yes — 25 blocks; clean-clone exit 0; 33 cases 0 divergent
+    three-way; dashboard 100% × 3 for ml_core
+    Did:
+    - harness source kinds + OcamlOracle + Runner::applicable +
+      dashboard; versions.env OCAML pin + setup check
+    - 18-case ml_core corpus; first oracle triangulation green on
+      first contact
+    - D-038 (⚑ ×3), MANIFEST status, extraction report
+    Next: M6 promotion pass per the Next-action block
+    Landmines:
+    - the ocaml oracle appends print_int (main ()) — a corpus file
+      that already prints would double-print; keep corpus files pure
+    - dashboard denominators exclude skips; NothingApplies runners
+      simply lose their column — do not "fix" that into zeros
 
     Session end: 2026-07-03 (ninth entry)
     Milestone/step: M5 first half — frk-front built, interp-green

@@ -11,9 +11,15 @@ Format ruled in D-027; comparison contract in docs/canon.md.
       expected.out    blessed canonical output (committed)
       output.actual   written on mismatch for diffing (gitignored)
 
-A directory is a case iff it contains `case.mlir`. Suites are just
-directories; `upstream/` holds programs over func/arith/scf/cf used to
-prove the harness and, from M2, the interpreter.
+A directory is a case iff it contains `case.mlir` or `case.ml`.
+Suites are just directories; `upstream/` holds MLIR programs over
+func/arith/scf/cf; `adt/` and `closure/` exercise the kernel dialects;
+`ml_core/` holds specimen programs — plain OCaml files that must (a)
+define `let main () = <int expr>` and (b) run verbatim under the
+`ocaml` oracle, which appends `print_int (main ())`. Directives in .ml
+files spell `(* frk-case: ... *)`. Keep integer results under 2^62
+(OCaml's 63-bit ints; the divergence rule lives in the ml_core
+MANIFEST).
 
 ## Case directives
 
