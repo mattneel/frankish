@@ -78,6 +78,13 @@ impl FakeRunner {
             output: Err(message.to_string()),
         }
     }
+
+    pub fn named(name: &'static str, raw: &str) -> Self {
+        Self {
+            name,
+            output: Ok(raw.to_string()),
+        }
+    }
 }
 
 impl Runner for FakeRunner {

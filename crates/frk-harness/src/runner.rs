@@ -44,6 +44,14 @@ impl fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
+/// Every runner applicable to the corpus today. This is the list
+/// `make diff` executes; M2 appends the interpreter (which then becomes
+/// the reference semantics, D-008), M7 the AOT path, specimens their
+/// oracles.
+pub fn default_runners() -> Vec<Box<dyn Runner>> {
+    vec![Box::new(JitRunner)]
+}
+
 /// The ORC JIT runner: parse → verify → shared lowering pipeline →
 /// ExecutionEngine → render the entry's return per docs/canon.md §2.
 pub struct JitRunner;

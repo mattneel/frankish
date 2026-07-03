@@ -5,6 +5,7 @@
 
 pub mod canon;
 pub mod case;
+pub mod diff;
 pub mod golden;
 pub mod pipeline;
 pub mod runner;
