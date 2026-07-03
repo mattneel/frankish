@@ -29,6 +29,13 @@ Nothing.
   behalf. Evidence through M2 supports it: melior 0.27.2 builds, JITs,
   walks IR generically (interpreter), runs pass pipelines, and prints IR
   against LLVM/MLIR 22.1.8 with no binding gap encountered.
+- Review D-030 (dialect registration, two-tier) before M3's shim work
+  starts in earnest: it commits the build to a small C++ ODS library
+  (cmake, compiled once at build time) because LLVM 22 IRDL can't
+  declare traits and region-based match needs a terminator op. The
+  evidence is a standing test; the alternative (redesign match to be
+  successor- or attribute-shaped and stay pure-IRDL) would amend SPEC
+  §4.1 — say so if you'd rather bend the design than the build.
 
 ## Milestone log
 m0-done — Shipped: SPEC §12 workspace skeleton (7 crates + sandbox/);
