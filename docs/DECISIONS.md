@@ -102,3 +102,21 @@ veto-ledger pattern and most deserve their review.
   (D-008) cannot have undefined outcomes. Revisit: depth cap if a
   specimen legitimately exceeds it (scheme tail calls are exempt by
   design — proper TCO is a lowering obligation, not deeper recursion).
+- D-030 [dialects] Kernel dialect registration is two-tier. Tier A:
+  IRDL runtime loading (melior load_irdl_dialects) for ops/types fully
+  expressible as operand/result/attribute/region count+type
+  constraints — verifiers are generated (type variables solve across
+  positions), types are parametric, parse/print/builder all round-trip.
+  Tier B: a small C++ ODS shim compiled once into the framework and
+  registered through the C API — for any op needing traits:
+  terminators, successors, NoTerminator regions, custom semantic
+  verifiers. Evidence: crates/frk-dialects/tests/registration.rs proves
+  Tier A end to end; LLVM 22 IRDL cannot declare traits — dynamic ops
+  are rejected as block terminators ("block with no terminator") and
+  cannot carry successors ("successors in non-terminator") — exactly
+  what frk.adt.match's region arms require, so frk.adt is Tier B's
+  first customer (match + its arm-yield terminator). Rationale: this is
+  the C++/ODS-adjacent cost K1 already prices in, paid once inside the
+  framework, never by users; D-005 and D-006 stand unchanged. Revisit:
+  fold Tier B into Tier A when upstream IRDL grows trait declarations
+  (LANDSCAPE watch item).

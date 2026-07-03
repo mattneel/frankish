@@ -21,6 +21,18 @@ quarter before depending on it, and update this file when you do.
   validated against MLIR 22.1.2; shares IRDL; xdsl-gui/notebooks for
   interactive transform exploration. Our prototyping sidecar.
   https://github.com/xdslproject/xdsl
+- **IRDL expressiveness ceiling** (verified 2026-07-02 on LLVM 22.1.8):
+  irdl.operation covers operands/results/attributes/regions with real
+  constraint solving — type variables unify across positions;
+  `irdl.base "#builtin.integer"` constrains attribute kind (`irdl.is`
+  means attribute-equals, beware) — but there are NO trait
+  declarations: dynamic ops cannot be terminators ("block with no
+  terminator"), cannot carry successors ("successors in
+  non-terminator"), cannot relax block-terminator rules on their
+  regions. Region-bearing kernel ops therefore need the C++ shim
+  (D-030 Tier B). Proof lives in crates/frk-dialects/tests/
+  registration.rs; apt's llvm-22-dev + libmlir-22-dev ship the full
+  C++ headers and MLIRConfig.cmake needed for Tier B.
 
 ## Watch items (time-sensitive)
 
@@ -33,6 +45,9 @@ quarter before depending on it, and update this file when you do.
   Migration to the Corsa API is a planned M9+ follow-up.
 - **MLIR/LLVM major bumps**: melior tracks them with lag; versions.env is
   the single pin point; bump deliberately, never implicitly.
+- **Upstream IRDL trait support**: the moment IRDL can declare traits
+  (terminator et al.), D-030's Tier B (C++ shim) collapses into Tier A
+  (pure IRDL). Check at every LLVM major bump.
 
 ## Peers & oracles (AOT JS/TS lane)
 

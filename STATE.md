@@ -6,14 +6,19 @@ Tree: green — `make test` passes; clean-clone scripts/ci.sh verified
 (exit 0); `make diff`: 8 cases, interp vs jit, 0 divergent.
 
 ## Next action
-M3 frk.adt per docs/SPEC.md §13 (read SPEC §3 + §4.1 first): the first
-kernel dialect, full K1–K7 contract — ops/types/verifier, Eval impls
-(the frk-interp trait is waiting), lowering to LLVM structs + tag +
-switch, Maranget decision-tree pass with its own goldens,
-exhaustiveness via rustc_pattern_analysis behind a trait boundary.
-Open question to settle FIRST (K1): how a custom dialect registers
-through melior/the C API — IRDL runtime loading vs unregistered-op
-discipline vs C++ shim. That choice is a D-entry before code.
+M3 frk.adt, step 0 DONE (registration ruled: D-030 two-tier; evidence
+in crates/frk-dialects/tests/registration.rs). Next: build the Tier-B
+native shim skeleton — a small C++ ODS library (cmake, driven from
+make setup/build via the existing MLIR_PREFIX; cmake+ninja+headers all
+ship with llvm-22-dev/libmlir-22-dev on apt and with brew llvm@22)
+exposing a mlirDialectHandle that frk_core::context() registers.
+Define frk_adt there: match (region arms) + frk_adt.yield (a real
+Terminator-trait op) + make/tag/extract (these three are IRDL-shaped,
+but keep the dialect whole in one place). Smoke first (L1): parse +
+verify a match, positive and negative. Then the §3 ladder: K2 Eval
+impls (frk-interp trait is waiting), K3 decision-tree lowering
+(Maranget, D-025, own goldens), exhaustiveness via
+rustc_pattern_analysis behind a trait boundary.
 Exit: K1–K7 checked; 3-way goldens green.
 
 ## In flight
@@ -96,6 +101,29 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-02 (fourth entry this session)
+    Milestone/step: M3 step 0 — dialect-registration ruling (D-030)
+    Green? yes — make test green (registration spike adds 5 tests)
+    Did:
+    - spiked IRDL end to end via mlir-opt AND melior: definitions,
+      dynamic parametric types, generated verifiers (arity + type
+      variables + attribute kind), builder-path construction — all work
+    - found the ceiling: LLVM 22 IRDL has no trait declarations —
+      dynamic ops can't be terminators or carry successors; that blocks
+      region-based match under pure IRDL
+    - verified the C++ escape hatch is provisioned (headers +
+      MLIRConfig.cmake + cmake/ninja on apt; brew ships same)
+    - ruled D-030 (Tier A IRDL / Tier B C++ shim); pinned the ceiling
+      in LANDSCAPE + a watch item to re-fold B into A
+    Next: Tier-B shim skeleton (cmake lib + frk_adt ODS + handle
+    registration in frk_core::context()), smoke-verified, then K2–K7
+    Landmines:
+    - `irdl.is i64` constrains attribute-EQUALS-type-i64; use
+      `irdl.base "#builtin.integer"` for "an integer attribute"
+    - irdl.parametric needs fully nested refs (@dialect::@type)
+    - the registration spike test doubles as D-030's standing evidence;
+      if an MLIR bump breaks it, revisit the ruling before patching it
 
     Session end: 2026-07-02 (third entry this session)
     Milestone/step: M2 complete, tagged m2-done
