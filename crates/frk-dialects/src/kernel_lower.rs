@@ -220,6 +220,9 @@ enum Planned<'c, 'a> {
         /// The payload's lowered slot kind (drives an rc retain when it
         /// is itself managed).
         payload_kind: SlotKind<'c>,
+        /// GC ladder step 1 (D-053/D-054): when this allocation dies
+        /// block-locally, the terminator to release before.
+        die_at: Option<OperationRef<'c, 'a>>,
     },
     BoxGet {
         op: OperationRef<'c, 'a>,
@@ -231,6 +234,7 @@ enum Planned<'c, 'a> {
     },
     ArrayNew {
         op: OperationRef<'c, 'a>,
+        die_at: Option<OperationRef<'c, 'a>>,
     },
     ArrayGet {
         op: OperationRef<'c, 'a>,
@@ -285,6 +289,8 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
     let mut thunk_counter = 0usize;
     let mut str_counter = 0usize;
     let mut use_counts: HashMap<usize, usize> = HashMap::new();
+    let mut use_sites: HashMap<usize, (Vec<usize>, bool)> = HashMap::new();
+    let mut op_blocks: HashMap<usize, usize> = HashMap::new();
     collect(
         context,
         module,
@@ -294,7 +300,41 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
         &mut thunk_counter,
         &mut str_counter,
         &mut use_counts,
+        &mut use_sites,
+        &mut op_blocks,
     )?;
+
+    // GC ladder step 1 (D-053/D-054, rc only): a box/array allocation
+    // whose every use sits in its own block — none escaping through a
+    // branch, call, or return — dies at that block's end; mark it to
+    // release before the terminator. Cross-block lifetimes leak (the
+    // documented conservative frontier; the cycle collector's ladder
+    // continues from here).
+    if strategy == Strategy::Rc {
+        for plan in &mut plans {
+            let (op, die_at) = match plan {
+                Planned::BoxNew { op, die_at, .. } => (*op, die_at),
+                Planned::ArrayNew { op, die_at } => (*op, die_at),
+                _ => continue,
+            };
+            let Ok(result) = op.result(0) else { continue };
+            let key = result.to_raw().ptr as usize;
+            let def_block = op.block().map(|b| b.to_raw().ptr as usize).unwrap_or(0);
+            let local = match use_sites.get(&key) {
+                // Unused allocations die immediately too.
+                None => true,
+                Some((users, escapes)) => {
+                    !*escapes
+                        && users
+                            .iter()
+                            .all(|user| op_blocks.get(user).copied() == Some(def_block))
+                }
+            };
+            if local {
+                *die_at = block_terminator(op);
+            }
+        }
+    }
 
     for (value, mapped) in &retypes {
         value.set_type(*mapped);
@@ -341,8 +381,20 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
 
     let rewriter = IrRewriter::new(context);
     let rewriter = rewriter.as_rewriter_base();
+    let mut releases: Vec<(OperationRef, Value)> = Vec::new();
     for plan in plans {
-        apply(context, &rewriter, plan, strategy, &retain_shared)?;
+        apply(context, &rewriter, plan, strategy, &retain_shared, &mut releases)?;
+    }
+    // GC step 1: the planned block-end releases. Terminators survive
+    // the rewrite, so the anchors are still valid here.
+    for (terminator, pointer) in releases {
+        rewriter.set_insertion_point_before(terminator);
+        rewriter.insert(direct_call_void(
+            context,
+            "frk_rt_rc_release",
+            &[pointer],
+            terminator.location(),
+        )?);
     }
     Ok(())
 }
@@ -356,7 +408,13 @@ fn collect<'c, 'a>(
     thunk_counter: &mut usize,
     str_counter: &mut usize,
     use_counts: &mut HashMap<usize, usize>,
+    use_sites: &mut HashMap<usize, (Vec<usize>, bool)>,
+    op_blocks: &mut HashMap<usize, usize>,
 ) -> Result<(), String> {
+    op_blocks.insert(
+        op.to_raw().ptr as usize,
+        op.block().map(|b| b.to_raw().ptr as usize).unwrap_or(0),
+    );
     let name = op
         .name()
         .as_string_ref()
@@ -364,10 +422,23 @@ fn collect<'c, 'a>(
         .map_err(|_| "non-UTF-8 op name".to_string())?
         .to_string();
 
-    // SSA use counts feed the rc transfer-elision (D-041).
+    // SSA use counts feed the rc transfer-elision (D-041); use SITES
+    // feed the block-local lifetime analysis (D-053 step 1). A use on
+    // an op with successors (branches) or func.return escapes the
+    // block/function — conservative: such values are never released.
+    let escapes = op.successor_count() > 0
+        || op
+            .name()
+            .as_string_ref()
+            .as_str()
+            .is_ok_and(|n| n == "func.return" || n == "func.call");
     for index in 0..op.operand_count() {
         if let Ok(operand) = op.operand(index) {
-            *use_counts.entry(operand.to_raw().ptr as usize).or_insert(0) += 1;
+            let key = operand.to_raw().ptr as usize;
+            *use_counts.entry(key).or_insert(0) += 1;
+            let entry = use_sites.entry(key).or_insert((Vec::new(), false));
+            entry.0.push(op.to_raw().ptr as usize);
+            entry.1 |= escapes;
         }
     }
 
@@ -411,7 +482,7 @@ fn collect<'c, 'a>(
             while let Some(inner_op) = inner {
                 collect(
                     context, inner_op, plans, retypes, signatures, thunk_counter, str_counter,
-                    use_counts,
+                    use_counts, use_sites, op_blocks,
                 )?;
                 inner = inner_op.next_in_block();
             }
@@ -588,6 +659,7 @@ fn plan_mem<'c, 'a>(
                 op,
                 payload_bytes: (kind.slots().max(1)) * 8,
                 payload_kind: kind,
+                die_at: None,
             })
         }
         "box_get" => {
@@ -608,7 +680,7 @@ fn plan_mem<'c, 'a>(
             )?;
             Ok(Planned::BoxSet { op, payload_kind: slot_kind(context, elem)? })
         }
-        "array_new" => Ok(Planned::ArrayNew { op }),
+        "array_new" => Ok(Planned::ArrayNew { op, die_at: None }),
         "array_get" => {
             let elem = crate::mem::decode_arr(
                 context,
@@ -905,6 +977,10 @@ fn declare_runtime(
             "frk_rt_rc_retain",
             llvm::r#type::function(llvm::r#type::void(context), &[ptr], false),
         )?;
+        declare(
+            "frk_rt_rc_release",
+            llvm::r#type::function(llvm::r#type::void(context), &[ptr], false),
+        )?;
     }
     Ok(())
 }
@@ -1168,12 +1244,13 @@ fn build_pair<'c>(
 
 // ---- the rewriter-driven op replacements ----
 
-fn apply<'c>(
+fn apply<'c, 'a>(
     context: &'c Context,
     rewriter: &RewriterBase<'c, '_>,
-    plan: Planned<'c, '_>,
+    plan: Planned<'c, 'a>,
     strategy: Strategy,
     retain_shared: &HashMap<usize, bool>,
+    releases: &mut Vec<(OperationRef<'c, 'a>, Value<'c, 'c>)>,
 ) -> Result<(), String> {
     match plan {
         Planned::DynWrap { op, tag, payload_kind } => {
@@ -1334,7 +1411,7 @@ fn apply<'c>(
             )))?;
             finish(rewriter, op, tag)
         }
-        Planned::ArrayNew { op } => {
+        Planned::ArrayNew { op, die_at } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
             let i64_type: Type = IntegerType::new(context, 64).into();
@@ -1367,6 +1444,9 @@ fn apply<'c>(
                 location,
             )?))?;
             rewriter.insert(store_op(context, len, base, location)?);
+            if let Some(terminator) = die_at {
+                releases.push((terminator, base));
+            }
             finish(rewriter, op, base)
         }
         Planned::ArrayLen { op } => {
@@ -1533,7 +1613,7 @@ fn apply<'c>(
             };
             finish(rewriter, op, value)
         }
-        Planned::BoxNew { op, payload_bytes, payload_kind } => {
+        Planned::BoxNew { op, payload_bytes, payload_kind, die_at } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
             let i64_type: Type = IntegerType::new(context, 64).into();
@@ -1557,6 +1637,9 @@ fn apply<'c>(
                 .unwrap_or(false);
             maybe_retain(context, rewriter, strategy, &payload_kind, payload, shared, location)?;
             rewriter.insert(store_op(context, payload, payload_ptr, location)?);
+            if let Some(terminator) = die_at {
+                releases.push((terminator, payload_ptr));
+            }
             finish(rewriter, op, payload_ptr)
         }
         Planned::BoxGet { op, result } => {
@@ -1860,6 +1943,20 @@ fn apply<'c>(
                     .map_err(|e| e.to_string())?,
             );
             finish(rewriter, op, result_value(call)?)
+        }
+    }
+}
+
+/// The last operation of `op`'s block — its terminator. Terminators
+/// survive the kernel lowering untouched (they are cf/func ops), so a
+/// reference captured now is a valid insertion anchor after rewriting.
+fn block_terminator<'c, 'a>(op: OperationRef<'c, 'a>) -> Option<OperationRef<'c, 'a>> {
+    let block = op.block()?;
+    let mut current = block.first_operation()?;
+    loop {
+        match current.next_in_block() {
+            Some(next) => current = next,
+            None => return Some(current),
         }
     }
 }

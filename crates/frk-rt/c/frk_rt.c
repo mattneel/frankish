@@ -21,8 +21,10 @@
  * measurable target. Tier-0 targets run single-threaded; a plain
  * increment suffices until a threaded target joins the grid. */
 static uint64_t frk_rt_allocs;
+static uint64_t frk_rt_releases;
 
 uint64_t frk_rt_alloc_count(void) { return frk_rt_allocs; }
+uint64_t frk_rt_rc_release_count(void) { return frk_rt_releases; }
 
 void *frk_rt_arena_alloc(uint64_t bytes) {
     frk_rt_allocs += 1;
@@ -162,6 +164,7 @@ void frk_rt_rc_retain(void *payload) {
 
 void frk_rt_rc_release(void *payload) {
     if (!payload) return;
+    frk_rt_releases += 1;
     int64_t *header = (int64_t *)((unsigned char *)payload - 8);
     *header -= 1;
 }

@@ -17,6 +17,15 @@ pub extern "C" fn frk_rt_alloc_count() -> u64 {
     ALLOCS.load(Ordering::Relaxed)
 }
 
+/// Releases executed (GC ladder step 1, D-053): with alloc_count,
+/// the live-object measure the leak canary asserts against.
+static RELEASES: AtomicU64 = AtomicU64::new(0);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_rc_release_count() -> u64 {
+    RELEASES.load(Ordering::Relaxed)
+}
+
 fn raw_alloc(bytes: u64) -> *mut u8 {
     let layout = match Layout::from_size_align((bytes.max(1)) as usize, 8) {
         Ok(layout) => layout,
@@ -83,6 +92,7 @@ pub unsafe extern "C" fn frk_rt_rc_release(payload: *mut u8) {
     if payload.is_null() {
         return;
     }
+    RELEASES.fetch_add(1, Ordering::Relaxed);
     unsafe {
         let header = payload.sub(8) as *mut i64;
         *header -= 1;

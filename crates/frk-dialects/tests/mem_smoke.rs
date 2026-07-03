@@ -148,3 +148,38 @@ fn rc_retains_shared_stores_and_elides_transfers() {
     let lowered = lower(&context, transfer, Strategy::Rc);
     assert!(!lowered.contains("llvm.call @frk_rt_rc_retain"), "{lowered}");
 }
+
+#[test]
+fn block_local_allocations_release_and_escaping_ones_leak() {
+    // GC ladder step 1 (D-053/D-054): a box whose uses all sit in its
+    // own block is released before the terminator; a box that escapes
+    // (returned) is not — the documented conservative frontier.
+    let context = mem_context();
+    let local = r#"func.func @main() -> i64 {
+        %x = arith.constant 41 : i64
+        %b = "frk_mem.box_new"(%x) : (i64) -> !frk_mem.box<i64>
+        %v = "frk_mem.box_get"(%b) : (!frk_mem.box<i64>) -> i64
+        %one = arith.constant 1 : i64
+        %r = arith.addi %v, %one : i64
+        return %r : i64
+    }"#;
+    let lowered = lower(&context, local, Strategy::Rc);
+    assert!(
+        lowered.contains("llvm.call @frk_rt_rc_release"),
+        "block-local death must release: {lowered}"
+    );
+    // Arena never releases.
+    let arena = lower(&context, local, Strategy::Arena);
+    assert!(!arena.contains("frk_rt_rc_release"), "{arena}");
+
+    let escaping = r#"func.func @main() -> !frk_mem.box<i64> {
+        %x = arith.constant 41 : i64
+        %b = "frk_mem.box_new"(%x) : (i64) -> !frk_mem.box<i64>
+        return %b : !frk_mem.box<i64>
+    }"#;
+    let lowered = lower(&context, escaping, Strategy::Rc);
+    assert!(
+        !lowered.contains("llvm.call @frk_rt_rc_release"),
+        "escaping values leak conservatively: {lowered}"
+    );
+}
