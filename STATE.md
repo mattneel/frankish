@@ -1,25 +1,29 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-03 (M0..M12 sessions)
-Phase: M12 complete (tag m12-done). The rc strategy COLLECTS: sized
-releases, runtime layout descriptors, Bacon–Rajan trial deletion —
-both twins, byte-agreeing.
-Tree: green — `make test` 37 blocks, zero warnings; diff 64 cases 0
-divergent (7 runners); grid 59/59 × 4 triples × 2 strategies + s390x
-canary — with real frees live on every rc leg.
+Updated: 2026-07-03 (M0..M13 sessions)
+Phase: M13 complete (tag m13-done). femto_lua v0.2: the pack
+convention, multiple returns, iterators, string module — arity fence
+dissolved.
+Tree: green — `make test` 37 blocks; diff 68 cases 0 divergent (7
+runners); grid 63/63 × 4 triples × 2 strategies + s390x canary; the
+collector live under all of it.
 
 ## Next action
-M12 closed. The queue (human pick or logged L4 choice):
-1. femto_lua v0.2 (multiple returns/varargs/nil-fill arity — the
-   multi-value plumbing; repeat/break; generic for + pairs/ipairs;
-   string library slice). The collector now backs it.
-2. GC thresholds (D-053's last rung) — DEFERRED BY DESIGN until a
-   corpus program measurably needs them; the counters are live.
-3. scheme/ctl track (r7rs_core; tail calls as law; frk.ctl).
-4. Effects lowering (D-012); frk.stage; TS-1..4; gpu axis.
-Standing tripwires: D-045 (lua REPL mode ⇒ replay revisit FIRST);
-D-051 tag-space widening at TS-1; the Words retain/trace frontier
-widens SYMMETRICALLY or not at all (M12's lesson, now law-shaped).
+M13 closed. The queue (human pick or logged L4 choice — "Continue"
+has meant queue order):
+1. scheme/ctl track (r7rs_core): tail calls AS LAW (a lowering
+   obligation, not deeper recursion — D-029's exemption finally
+   cashes), one-shot continuations, frk.ctl's first ops. The last
+   unopened specimen axis. Read SPEC §4.4 + specimens/r7rs_core
+   before anything; expect the manifest-ratification + gate pattern
+   (M10 precedent) before implementation.
+2. femto_lua v0.3 (varargs, explicit iterator triples, mid-explist
+   spreads, __newindex + more metamethods, io fences).
+3. Effects lowering (D-012, evidence passing); frk.stage; TS-1..4
+   (D-051 tag widening fires there); gpu axis.
+4. GC thresholds — still waiting for a program that needs them.
+Standing tripwires unchanged: D-045 (lua REPL ⇒ replay revisit
+FIRST); retain==trace symmetry law (M12).
 
 ## In flight
 Nothing.
@@ -40,6 +44,38 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m13-done — Shipped: femto_lua v0.2 (D-058), in two waves. Wave 1,
+the PACK CONVENTION: every Lua function is fn<[arr<dyn>],
+[arr<dyn>]> — one argument pack in, one values pack out, params read
+through bounds-checked nil-fill (__lua_arg) — which dissolved the
+exact-arity fence and made multiple returns a surface feature
+instead of plumbing. The kernel paid with ONE widening (two-slot
+arr<dyn> elements, stride-addressed) that M12's ARRAY_DYN tracer
+already knew how to walk: the collector handled argument packs with
+zero new GC code. Wave 2: return explists, destructuring
+locals/assignments, tail-position pack forwarding, break (loop-exit
+stack), repeat/until (condition sees body locals), generic for over
+the real (f, s, ctrl) protocol with pairs/ipairs/next seeded
+(table_next walks slot order; canon keeps pairs output
+order-independent), and string.sub/rep as frk_bstr ops + a module
+table. Corpus 12/12 vs lua5.1 (bar ≥90); diff 68/0 across seven
+runners; grid 63/63 × 5 × 2 with real frees under everything.
+Learned: the convention change was FRONTEND-ONLY exactly as D-058
+predicted — the deepest surface change femto_lua has had cost the
+kernel one element-width widening; and the interp/native iteration-
+order split (insertion vs slot order) is invisible under the canon
+aggregation rule, which is the rule working, not luck.
+
+M13 EXTRACTION: what v0.2 forced — (a) two-slot array elements (the
+only kernel change; arr<dyn> is now fully general for pairs);
+(b) frk_dyn.table_next — the first TWO-RESULT kernel op, and the
+lowering's replace-both-results pattern that came with it;
+(c) frk_bstr.sub/rep. What it did NOT force: closures, adts, mem,
+the dyn core, the collector — all untouched. The pack convention is
+promotable thinking: TS-1's union-narrowing calls and scheme's
+multi-value continuations will both want it; note for the frk.ctl
+design.
+
 m12-done — Shipped: the GC ladder's remaining rungs (D-057), both
 twins. Sized releases (three-word headers [layout][size][rcword];
 cascaded REAL frees); the layout-descriptor rung exactly as D-055
@@ -400,6 +436,24 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (twenty-first entry)
+    Milestone/step: M13 complete, tagged m13-done
+    Green? yes — 37 blocks; 68/0 (7 runners); grid 63/63 × 5 × 2
+    Did:
+    - D-058; pack convention (wave 1, regression-first); two-slot
+      arr<dyn> elements; multis/break/repeat/genfor/pairs/ipairs/
+      next/string (wave 2); 4 new corpus cases; MANIFEST v0.2
+    Next: queue per Next-action — scheme/ctl is queue-top
+    Landmines:
+    - THE fn type is fn<[arr<dyn>],[arr<dyn>]> — any helper seeded
+      as a global MUST be a pack-convention _v wrapper or unwrap{5}
+      type-mismatches at every call site
+    - pairs order differs interp (insertion) vs native (slot) —
+      LEGAL under canon's aggregation rule; never print raw pairs
+      sequences in corpus cases
+    - repeat's until scope: emit the condition BEFORE restoring the
+      env (Lua sees body locals there)
 
     Session end: 2026-07-03 (twentieth entry)
     Milestone/step: M12 complete, tagged m12-done
