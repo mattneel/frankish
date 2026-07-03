@@ -1,34 +1,43 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-03 (M0..M13 sessions)
-Phase: M13 complete (tag m13-done). femto_lua v0.2: the pack
-convention, multiple returns, iterators, string module — arity fence
-dissolved.
-Tree: green — `make test` 37 blocks; diff 68 cases 0 divergent (7
-runners); grid 63/63 × 4 triples × 2 strategies + s390x canary; the
-collector live under all of it.
+Updated: 2026-07-03 (M0..M14 sessions)
+Phase: M14 complete (tag m14-done). Tail calls are law — trampoline
+in the reference semantics, musttail natively; 500k-frame fixed-
+stack goldens hold on all five architectures.
+Tree: green — `make test` 37 blocks; diff 70 cases 0 divergent (7
+runners); grid 65/65 × 4 triples × 2 strategies + s390x canary.
 
 ## Next action
-M13 closed. The queue (human pick or logged L4 choice — "Continue"
-has meant queue order):
-1. scheme/ctl track (r7rs_core): tail calls AS LAW (a lowering
-   obligation, not deeper recursion — D-029's exemption finally
-   cashes), one-shot continuations, frk.ctl's first ops. The last
-   unopened specimen axis. Read SPEC §4.4 + specimens/r7rs_core
-   before anything; expect the manifest-ratification + gate pattern
-   (M10 precedent) before implementation.
-2. femto_lua v0.3 (varargs, explicit iterator triples, mid-explist
-   spreads, __newindex + more metamethods, io fences).
-3. Effects lowering (D-012, evidence passing); frk.stage; TS-1..4
-   (D-051 tag widening fires there); gpu axis.
-4. GC thresholds — still waiting for a program that needs them.
-Standing tripwires unchanged: D-045 (lua REPL ⇒ replay revisit
-FIRST); retain==trace symmetry law (M12).
+M14 closed. THE QUEUE IS NOW BLOCKED-BY-DESIGN AT ITS TOP: r7rs_core
+ratification is gated by its own stub on the ctl effects design, and
+SPEC §4.4 anchors that design to the human's Rocq handler calculus —
+see For-the-human. Work available WITHOUT the anchor:
+1. The uniform-signature convention (D-059's ledgered gap): every
+   function one LLVM type ⇒ musttail for indirect and cross-
+   signature tails — completes the tail-call law natively for
+   lua-level `return f(x)` chains, and is the r7rs prerequisite
+   engineering that can proceed independent of the effects design.
+2. femto_lua v0.3; TS-1 (narrowing verifier — the research slice;
+   D-051 tag widening fires); effects lowering BLOCKED (anchor);
+   frk.stage; gpu axis.
+3. GC thresholds — still waiting for a program that needs them.
 
 ## In flight
 Nothing.
 
 ## For the human
+- THE ROCQ ANCHOR (M14 escalation, blocking r7rs): the r7rs_core
+  stub forbids its own ratification "before the ctl effects design
+  lands", and SPEC §4.4 names YOUR Rocq handler calculus as that
+  design's semantic anchor — "its typing/charge discipline becomes
+  this dialect's verifier obligations." Only you can supply it.
+  Options: (a) provide the calculus (or its typing/charge rules in
+  any written form) and the effects design proceeds; (b) amend §4.4
+  to unanchor the design (a D-entry striking the dependency); or
+  (c) leave r7rs gated and keep working the unblocked queue (the
+  uniform-signature convention is real prerequisite work available
+  now). Tail calls — the stub's hardest lowering obligation — are
+  already law as of m14-done and do not wait on this.
 - SEQUENCING: M0–M10 are done — the scheduled program is complete.
   The beyond-M10 tracks (femto_lua implementation, the GC ladder,
   scheme/ctl, effects, stage/TS-1..4/gpu) are peers; picking the
@@ -44,6 +53,31 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m14-done — Shipped: tail calls as law, first rung (D-059). The
+interpreter trampolines every tail-shaped call (frame REPLACEMENT
+threading Step::TailCall to eval_function's loop; the D-029 depth
+cap counts non-tail entries only — its exemption clause, finally
+cashed). Natively, frk-tail-calls joins the pipeline as a fifth
+stage: identical-signature direct tails get musttail (self-recursion
+always, equal-signature mutual too); wasm32 gains -mtail-call. The
+law's verifiers are 500k-frame fixed-stack goldens that FAIL without
+each rung — and they hold on ALL FIVE architectures including
+big-endian s390x and wasm's tail-call instruction (grid 65/65 × 2).
+The semantic depth of the change surfaced immediately: the old
+runaway-recursion test was TAIL-SHAPED and became a legitimate
+infinite loop — its fixture now uses the call result (non-tail),
+guarding the depth cap for the world it still governs. LEDGERED GAP:
+indirect + cross-signature tails (lua-level `return f(x)` chains)
+await the uniform-signature convention. ESCALATED: r7rs ratification
+blocked on the human's Rocq handler calculus per the stub's own law.
+
+M14 EXTRACTION: reference-semantics-leads-native-follows held its
+shape — the trampoline is total and general, musttail is a
+conservatively-gated subset, and the corpus goldens measure exactly
+the difference. The tail-shape detector (call-feeds-adjacent-return)
+is the same pattern at both levels, interp and LLVM — one semantic
+idea, two carriers.
+
 m13-done — Shipped: femto_lua v0.2 (D-058), in two waves. Wave 1,
 the PACK CONVENTION: every Lua function is fn<[arr<dyn>],
 [arr<dyn>]> — one argument pack in, one values pack out, params read
@@ -436,6 +470,24 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (twenty-second entry)
+    Milestone/step: M14 complete, tagged m14-done
+    Green? yes — 37 blocks; 70/0 (7 runners); grid 65/65 × 5 × 2
+    Did:
+    - D-059; interp trampoline (Step::TailCall + CfgOutcome + the
+      eval_function loop); frk-tail-calls pass (5th stage);
+      -mtail-call for wasm; 500k-frame law goldens; runaway test
+      re-fixtured non-tail; Rocq escalation filed
+    Next: BLOCKED-BY-DESIGN at queue top (Rocq anchor — For the
+    human); unblocked: uniform-signature convention
+    Landmines:
+    - a TAIL-SHAPED infinite recursion is now an infinite loop, not
+      a depth trap — depth-cap tests must use non-tail fixtures
+    - musttail rewrites ONLY identical-LLVM-type direct calls; do
+      not widen without the uniform convention (stack-arg ABIs)
+    - pkill -f with a pattern matching your own command line is
+      suicide (cost one shell this session)
 
     Session end: 2026-07-03 (twenty-first entry)
     Milestone/step: M13 complete, tagged m13-done
