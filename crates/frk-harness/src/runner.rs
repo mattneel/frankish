@@ -114,6 +114,15 @@ fn parse_and_verify<'c>(
             frk_front::lua::compile_lua(context, &file, source)
                 .map_err(|e| RunError::Parse(format!("{}: {e}", case.source_path.display())))?
         }
+        SourceKind::Scheme => {
+            let file = case
+                .source_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "case.scm".to_string());
+            frk_front::scheme::compile_scheme(context, &file, source)
+                .map_err(|e| RunError::Parse(format!("{}: {e}", case.source_path.display())))?
+        }
         SourceKind::Transcript => {
             return Err(RunError::Parse(format!(
                 "{}: transcripts run only under the repl runner",
@@ -144,6 +153,7 @@ pub fn default_runners() -> Vec<Box<dyn Runner>> {
         Box::new(OcamlOracle),
         Box::new(NodeOracle),
         Box::new(LuaOracle),
+        Box::new(SchemeOracle),
         Box::new(ReplRunner),
     ]
 }
@@ -176,6 +186,40 @@ impl Runner for LuaOracle {
         }
         String::from_utf8(output.stdout)
             .map_err(|_| RunError::Invoke("lua5.1 produced non-UTF-8 output".into()))
+    }
+}
+
+/// The upstream oracle for r7rs_core (M15, D-060): chibi-scheme runs
+/// the SAME .scm file (`-q`, so `(import (scheme base) (scheme write))`
+/// supplies call/cc + display), LC_ALL=C, STDOUT only. chibi's
+/// `CHIBI_VERSION_TESTED` pin is the spec reference.
+pub struct SchemeOracle;
+
+impl Runner for SchemeOracle {
+    fn name(&self) -> &'static str {
+        "scheme"
+    }
+
+    fn applicable(&self, case: &Case) -> bool {
+        case.kind == SourceKind::Scheme
+    }
+
+    fn run(&self, case: &Case) -> Result<String, RunError> {
+        let output = std::process::Command::new("chibi-scheme")
+            .arg("-q")
+            .arg(&case.source_path)
+            .env("LC_ALL", "C")
+            .output()
+            .map_err(|e| RunError::Invoke(format!("running chibi-scheme: {e}")))?;
+        if !output.status.success() {
+            return Err(RunError::Invoke(format!(
+                "chibi-scheme exited with {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        String::from_utf8(output.stdout)
+            .map_err(|_| RunError::Invoke("chibi-scheme produced non-UTF-8 output".into()))
     }
 }
 
@@ -275,8 +319,31 @@ fn interpret_case(case: &Case) -> Result<String, RunError> {
         frk_interp::Interp::new(&module).map_err(|e| RunError::Invoke(e.to_string()))?;
     frk_dialects::register_eval(&mut interp);
 
-    if matches!(case.kind, SourceKind::Ts | SourceKind::Lua) {
+    if matches!(case.kind, SourceKind::Ts | SourceKind::Lua | SourceKind::Scheme) {
         // TS-0/Lua protocol (D-047/D-054): void entry; output = prints.
+        // scheme display protocol (M15): no trailing newline; newline
+        // emits one; booleans as #t/#f.
+        interp.register_builtin(
+            "frk_rt_scm_display_num",
+            Box::new(|arguments, output| {
+                output.push_str(&frk_rt::format_lua_num(arguments[0].as_float()?));
+                Ok(vec![])
+            }),
+        );
+        interp.register_builtin(
+            "frk_rt_scm_display_bool",
+            Box::new(|arguments, output| {
+                output.push_str(if arguments[0].as_signed()? != 0 { "#t" } else { "#f" });
+                Ok(vec![])
+            }),
+        );
+        interp.register_builtin(
+            "frk_rt_scm_newline",
+            Box::new(|_arguments, output| {
+                output.push('\n');
+                Ok(vec![])
+            }),
+        );
         interp.register_builtin(
             frk_front::loanword::PRINT_F64,
             Box::new(|arguments, output| {
@@ -454,6 +521,17 @@ impl Runner for JitRunner {
             );
             engine.register_symbol("frk_rt_bstr_sub", frk_rt::frk_rt_bstr_sub as *mut ());
             engine.register_symbol("frk_rt_bstr_rep", frk_rt::frk_rt_bstr_rep as *mut ());
+            // scheme display resolves to CAPTURING symbols (shared
+            // stdout, D-047) — no trailing newline for display.
+            engine.register_symbol(
+                "frk_rt_scm_display_num",
+                capture_scm_display_num as *mut (),
+            );
+            engine.register_symbol(
+                "frk_rt_scm_display_bool",
+                capture_scm_display_bool as *mut (),
+            );
+            engine.register_symbol("frk_rt_scm_newline", capture_scm_newline as *mut ());
             // Control effects (κ_frk, D-060): the pending-cell carrier.
             engine.register_symbol(
                 "frk_rt_ctl_prompt_enter",
@@ -481,7 +559,7 @@ impl Runner for JitRunner {
                 capture_print_str as *mut (),
             );
         }
-        if matches!(case.kind, SourceKind::Ts | SourceKind::Lua) {
+        if matches!(case.kind, SourceKind::Ts | SourceKind::Lua | SourceKind::Scheme) {
             CAPTURE.with(|buffer| buffer.borrow_mut().clear());
             unsafe {
                 engine
@@ -549,6 +627,20 @@ extern "C" fn capture_print_str(s: *const u8) {
         buffer.push_str(&text);
         buffer.push('\n');
     });
+}
+
+// scheme display protocol (M15): display has NO trailing newline;
+// newline emits one. Capturing versions for the in-process JIT.
+extern "C" fn capture_scm_display_num(value: f64) {
+    CAPTURE.with(|buffer| buffer.borrow_mut().push_str(&frk_rt::format_lua_num(value)));
+}
+
+extern "C" fn capture_scm_display_bool(value: u8) {
+    CAPTURE.with(|buffer| buffer.borrow_mut().push_str(if value != 0 { "#t" } else { "#f" }));
+}
+
+extern "C" fn capture_scm_newline() {
+    CAPTURE.with(|buffer| buffer.borrow_mut().push('\n'));
 }
 
 /// The upstream oracle for ml_core (SPEC §7.2/§8; oracle policy in
@@ -803,7 +895,7 @@ impl Runner for AotRunner {
             }
 
             let shim_path = work.join("shim.c");
-            let shim: &str = if matches!(case.kind, SourceKind::Ts | SourceKind::Lua) {
+            let shim: &str = if matches!(case.kind, SourceKind::Ts | SourceKind::Lua | SourceKind::Scheme) {
                 // TS entry protocol (D-047): void main; output happens
                 // through the linked C runtime's print functions.
                 "extern void frk_entry(void);\nint main(void) { frk_entry(); return 0; }\n"

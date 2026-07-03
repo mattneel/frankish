@@ -8,4 +8,17 @@
 //! reader lands first and standalone.
 
 pub mod ast;
+pub mod emit;
 pub mod reader;
+
+use melior::Context;
+use melior::ir::Module;
+
+pub fn compile_scheme<'c>(
+    context: &'c Context,
+    file: &str,
+    source: &str,
+) -> Result<Module<'c>, String> {
+    let program = ast::parse(source)?;
+    emit::emit(context, file, source, &program)
+}

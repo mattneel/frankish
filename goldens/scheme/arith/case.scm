@@ -1,0 +1,6 @@
+(import (scheme base) (scheme write))
+(display (+ 1 2)) (newline)
+(display (* 6 (- 10 3))) (newline)
+(display (quotient 17 5)) (newline)
+(display (remainder 17 5)) (newline)
+(display (if (< 2 3) 111 222)) (newline)

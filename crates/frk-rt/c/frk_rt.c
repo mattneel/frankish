@@ -647,6 +647,14 @@ void frk_rt_print_lua_bool(unsigned char value) {
 }
 void frk_rt_print_lua_nil(void) { printf("nil\n"); }
 
+/* scheme display protocol (M15, r7rs_core): no trailing newline; the
+ * mirror of the Rust twin. */
+void frk_rt_scm_display_num(double value) { printf("%.14g", value); }
+void frk_rt_scm_display_bool(unsigned char value) {
+    printf("%s", value ? "#t" : "#f");
+}
+void frk_rt_scm_newline(void) { printf("\n"); }
+
 /* ---- strings (M9, D-049): {u64 len; u16 units[]}; plain malloc,
  * strategy-independent. UTF-16 code-unit semantics throughout. ---- */
 

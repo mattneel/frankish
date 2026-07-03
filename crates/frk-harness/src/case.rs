@@ -29,6 +29,9 @@ pub enum SourceKind {
     /// A femto_lua program (M11, D-052/D-054): native reader; output
     /// is the print stream, entry is void; lua5.1 is the oracle.
     Lua,
+    /// An r7rs_core program (M15, D-060): native reader; output is the
+    /// display stream, entry is void; chibi-scheme is the oracle.
+    Scheme,
 }
 
 /// One golden case: a directory holding `case.mlir` + `expected.out`.
@@ -99,6 +102,7 @@ const ML_SOURCE: &str = "case.ml";
 const TRANSCRIPT_SOURCE: &str = "transcript.in";
 const TS_SOURCE: &str = "case.ts";
 const LUA_SOURCE: &str = "case.lua";
+const SCHEME_SOURCE: &str = "case.scm";
 const EXPECTED_FILE: &str = "expected.out";
 
 /// Walks `root` and returns every directory containing a `case.mlir`,
@@ -138,6 +142,11 @@ fn walk(root: &Path, dir: &Path, cases: &mut Vec<Case>) -> Result<(), CaseError>
     let lua_path = dir.join(LUA_SOURCE);
     if lua_path.is_file() {
         cases.push(load(root, dir, lua_path, SourceKind::Lua)?);
+        return Ok(());
+    }
+    let scheme_path = dir.join(SCHEME_SOURCE);
+    if scheme_path.is_file() {
+        cases.push(load(root, dir, scheme_path, SourceKind::Scheme)?);
         return Ok(());
     }
     let entries = fs::read_dir(dir).map_err(|e| CaseError::Io(dir.to_path_buf(), e))?;

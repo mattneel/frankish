@@ -1016,6 +1016,26 @@ pub extern "C" fn frk_rt_print_lua_nil() {
     println!("nil");
 }
 
+// ---- scheme display protocol (M15, r7rs_core): `display` prints
+// WITHOUT a newline (unlike lua's print); `newline` prints one. Number
+// formatting reuses the %.14g emulation (fixnums print as decimals);
+// booleans print `#t`/`#f`. ----
+
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_scm_display_num(value: f64) {
+    print!("{}", format_lua_num(value));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_scm_display_bool(value: u8) {
+    print!("{}", if value != 0 { "#t" } else { "#f" });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_scm_newline() {
+    println!();
+}
+
 /// Test/introspection helper (not part of the lowering ABI).
 pub fn rc_count(payload: *mut u8) -> i64 {
     unsafe { count_of(*(payload.sub(8) as *const i64)) }
