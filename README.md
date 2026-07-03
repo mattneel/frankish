@@ -15,6 +15,8 @@ route would have spelled it.
 Start here: `AGENTS.md` (law) → `docs/SPEC.md` (design) →
 `docs/DECISIONS.md` (ledger) → `STATE.md` (now).
 
-Status: M0 done — toolchain pinned (LLVM/MLIR 22, melior), workspace
-skeleton, and an `add(i64,i64)` JIT smoke test, green from a clean clone:
+Status: M1 done — harness v0 is live: byte-exact goldens with `make bless`
+discipline, a 6-case upstream-dialect corpus running under the MLIR JIT,
+a differential-runner scaffold awaiting the M2 interpreter, and per-pass
+stage dumps (`frnksh emit --stages`). Green from a clean clone:
 `make setup && make build && make test`.

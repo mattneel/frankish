@@ -1,22 +1,26 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-02 (M0 session)
-Phase: M0 complete (tag m0-done); M1 not started.
+Updated: 2026-07-02 (M0+M1 session)
+Phase: M1 complete (tag m1-done); M2 not started.
 Tree: green — `make test` passes; clean-clone `make ci` verified (exit 0).
 
 ## Next action
-M1 Harness v0 per docs/SPEC.md §13 (read SPEC §7 first): golden runner
-(byte-exact; `make bless` with justification, law L2), `emit --stages`
-dump format, docs/canon.md v0, differential runner scaffold.
-Exit: harness self-tests + ≥5 goldens over upstream-dialect programs.
+M2 Derived interpreter per docs/SPEC.md §13 (read SPEC §7.1 first): Eval
+trait; interpreter over func/arith/scf/cf; two-way diff (interp vs JIT)
+live on all goldens. Wiring is pre-built: append the interpreter to
+frk_harness::runner::default_runners() and the standing corpus tests +
+make diff become the two-way gate automatically; flip reference_runner()
+to the interpreter (D-008) in the same change.
+Exit: L3 enforced in CI.
 
 ## In flight
 Nothing.
 
 ## For the human
 - Review ⚑ D-005 (host stack ruling) in docs/DECISIONS.md — made on your
-  behalf. M0 evidence supports it: melior 0.27.2 built and JIT'd against
-  LLVM/MLIR 22.1.8 with no binding gap encountered.
+  behalf. Evidence through M1 supports it: melior 0.27.2 builds, JITs,
+  runs pass pipelines, and prints IR against LLVM/MLIR 22.1.8 with no
+  binding gap encountered.
 
 ## Milestone log
 m0-done — Shipped: SPEC §12 workspace skeleton (7 crates + sandbox/);
@@ -37,6 +41,28 @@ create_to_llvm() is the one-shot lowering. Cheats awaiting promotion:
 none — no dialect work happened; frnksh is an honest placeholder that
 prints its pre-M8 status.
 
+m1-done — Shipped: docs/canon.md v0 + frk_harness::canon (the single
+§7.4 filter; CRLF/CR→LF, one trailing LF, i64 rendering, float policy
+pinned); golden engine (goldens/<suite>/<case>/ layout, strict
+`// frk-case:` directives, check writes gitignored output.actual,
+bless reports changed/unchanged, zero-case corpus is an error);
+6-case upstream corpus (arith/scf.for-i64/scf.if/cf.cond_br/func.call)
+with expected outputs computed by hand before the runner ran, syntax
+validated via mlir-opt 22; differential scaffold (diff_corpus, BTreeMap
+matrix, L3 escalation text in the report) live on the corpus via
+default_runners(); stage dumps (00-parsed + NN-<pass> per shared
+pipeline table, out dir recreated whole, never goldened — docs/
+stages.md); frnksh test/bless/diff/emit + make bless|diff. Ledger:
+D-027 (custom golden runner, format, entry protocol, pipeline),
+D-028 (single-pass-manager stage dumps). Learned: scf.for takes i64
+induction directly (no index detour needed); the pipeline
+scf-to-cf → convert-to-llvm → reconcile-unrealized-casts covers all
+six cases; melior pass constructors are macro-named from C API symbols
+(strip Conversion/Convert/Pass, snake-case). Cheats awaiting
+promotion: none. Known wart (accepted for v0): `emit --stages` default
+out dir uses the source file stem, so corpus files (all named
+case.mlir) collide on out/stages/case — pass --out for those.
+
 ## Handoff template (copy for every session end)
     Session end: <date>
     Milestone/step: <where>
@@ -46,6 +72,25 @@ prints its pre-M8 status.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-02 (second entry this session)
+    Milestone/step: M1 complete, tagged m1-done
+    Green? yes — make test green; clean-clone scripts/ci.sh exit 0
+    Did:
+    - canon contract + filter; golden engine + 6-case corpus; diff
+      scaffold; stage dumps; frnksh subcommands; make bless|diff
+    - D-027, D-028 appended; goldens/README.md + docs/canon.md +
+      docs/stages.md written
+    Next: M2 — Eval trait + interpreter over func/arith/scf/cf; append
+    it to default_runners() and flip reference_runner() (D-008); exit =
+    L3 enforced in CI
+    Landmines:
+    - run cargo via make (exports MLIR_SYS_220_PREFIX/TABLEGEN_220_PREFIX)
+    - melior is alpha: build contexts via frk_core::context() only
+    - never bless without an L2 justification line in the commit; the
+      bless report prints changed/unchanged per case to keep you honest
+    - goldens comparison happens ONLY through frk_harness::canon — do
+      not add a second normalization anywhere
 
     Session end: 2026-07-02
     Milestone/step: M0 complete, tagged m0-done
