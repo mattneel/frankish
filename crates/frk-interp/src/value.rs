@@ -14,6 +14,10 @@ pub enum Value {
     /// A structured value: which variant (`tag`) plus its field values.
     /// Products are single-variant sums at runtime: tag 0.
     Adt { tag: usize, fields: Vec<Value> },
+    /// A first-class function: the lifted callee's symbol plus the
+    /// captured values (by value, D-035). Applying it calls
+    /// `callee(captures..., args...)`.
+    Closure { callee: String, captures: Vec<Value> },
 }
 
 fn mask(width: u32) -> u64 {
@@ -40,11 +44,18 @@ impl Value {
         Self::Adt { tag, fields }
     }
 
+    pub fn closure(callee: impl Into<String>, captures: Vec<Value>) -> Self {
+        Self::Closure { callee: callee.into(), captures }
+    }
+
     fn int_parts(&self) -> Result<(u64, u32), EvalError> {
         match self {
             Self::Int { bits, width } => Ok((*bits, *width)),
             Self::Adt { .. } => Err(EvalError::TypeMismatch(
                 "expected an integer, got an adt value".into(),
+            )),
+            Self::Closure { .. } => Err(EvalError::TypeMismatch(
+                "expected an integer, got a closure".into(),
             )),
         }
     }
@@ -82,6 +93,21 @@ impl Value {
             Self::Int { width, .. } => Err(EvalError::TypeMismatch(format!(
                 "expected an adt value, got i{width}"
             ))),
+            Self::Closure { .. } => Err(EvalError::TypeMismatch(
+                "expected an adt value, got a closure".into(),
+            )),
+        }
+    }
+
+    pub fn as_closure(&self) -> Result<(&str, &[Value]), EvalError> {
+        match self {
+            Self::Closure { callee, captures } => Ok((callee, captures)),
+            Self::Int { width, .. } => Err(EvalError::TypeMismatch(format!(
+                "expected a closure, got i{width}"
+            ))),
+            Self::Adt { .. } => Err(EvalError::TypeMismatch(
+                "expected a closure, got an adt value".into(),
+            )),
         }
     }
 }
@@ -144,6 +170,25 @@ mod tests {
         assert!(value.as_bool().is_err());
         assert!(value.width().is_err());
         assert!(Value::bool(true).as_adt().is_err());
+    }
+
+    #[test]
+    fn closures_nest_and_readers_stay_honest() {
+        let closure = Value::closure("f", vec![Value::bool(true)]);
+        let (callee, captures) = closure.as_closure().unwrap();
+        assert_eq!(callee, "f");
+        assert_eq!(captures.len(), 1);
+        // Closures capture closures and travel inside adt values.
+        let outer = Value::adt(1, vec![Value::closure("g", vec![closure.clone()])]);
+        let (_, fields) = outer.as_adt().unwrap();
+        let (inner_callee, inner_captures) = fields[0].as_closure().unwrap();
+        assert_eq!(inner_callee, "g");
+        assert_eq!(inner_captures[0], closure);
+        // And every reader rejects the wrong shape loudly.
+        assert!(closure.as_signed().is_err());
+        assert!(closure.as_adt().is_err());
+        assert!(Value::bool(true).as_closure().is_err());
+        assert!(Value::adt(0, vec![]).as_closure().is_err());
     }
 
     #[test]
