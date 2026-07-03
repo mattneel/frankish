@@ -26,6 +26,19 @@ pub struct Case {
     pub entry: String,
     /// Entry result rendering (directive `result=`, default `i64`).
     pub result: ResultKind,
+    /// Runner names this case applies to (directive `runners=a,b`);
+    /// None = every runner (SPEC §7.2 "all applicable runners"). Used
+    /// while an op set is ahead of some execution path (e.g. adt before
+    /// its K3 lowering); a skip is reported, never silent.
+    pub runners: Option<Vec<String>>,
+}
+
+impl Case {
+    pub fn applies_to(&self, runner: &str) -> bool {
+        self.runners
+            .as_ref()
+            .is_none_or(|list| list.iter().any(|name| name == runner))
+    }
 }
 
 #[derive(Debug)]
@@ -33,6 +46,9 @@ pub enum CaseError {
     Io(PathBuf, io::Error),
     Directive { case: PathBuf, message: String },
     EmptyCorpus(PathBuf),
+    /// Every case's `runners=` directive excluded this runner — almost
+    /// certainly a typo'd runner name, never a green suite.
+    NothingApplies { root: PathBuf, runner: String },
 }
 
 impl fmt::Display for CaseError {
@@ -46,6 +62,12 @@ impl fmt::Display for CaseError {
                 f,
                 "no cases found under {} (a corpus with zero cases is a wrong path, \
                  not a green suite)",
+                root.display()
+            ),
+            Self::NothingApplies { root, runner } => write!(
+                f,
+                "every case under {} excludes runner {runner:?} via runners= \
+                 directives — typo'd runner name?",
                 root.display()
             ),
         }
@@ -94,6 +116,7 @@ fn load(root: &Path, dir: &Path, source_path: PathBuf) -> Result<Case, CaseError
 
     let mut entry = String::from("main");
     let mut result = ResultKind::I64;
+    let mut runners = None;
 
     for line in source.lines() {
         let Some(directive) = line.trim().strip_prefix(DIRECTIVE_PREFIX) else {
@@ -115,10 +138,21 @@ fn load(root: &Path, dir: &Path, source_path: PathBuf) -> Result<Case, CaseError
                     message: format!("unsupported result type {other:?} (v0: i64)"),
                 });
             }
+            ("runners", list) => {
+                let names: Vec<String> =
+                    list.split(',').map(|name| name.trim().to_string()).collect();
+                if names.is_empty() || names.iter().any(String::is_empty) {
+                    return Err(CaseError::Directive {
+                        case: source_path.clone(),
+                        message: format!("runners needs a comma-separated list, got {list:?}"),
+                    });
+                }
+                runners = Some(names);
+            }
             (other, _) => {
                 return Err(CaseError::Directive {
                     case: source_path.clone(),
-                    message: format!("unknown key {other:?} (known: entry, result)"),
+                    message: format!("unknown key {other:?} (known: entry, result, runners)"),
                 });
             }
         }
@@ -139,6 +173,7 @@ fn load(root: &Path, dir: &Path, source_path: PathBuf) -> Result<Case, CaseError
         expected_path: dir.join(EXPECTED_FILE),
         entry,
         result,
+        runners,
     })
 }
 
@@ -170,6 +205,35 @@ mod tests {
         );
         let cases = discover(corpus.root()).unwrap();
         assert_eq!(cases[0].entry, "start");
+    }
+
+    #[test]
+    fn runners_directive_parses_and_gates_applicability() {
+        let corpus = TempCorpus::new();
+        corpus.add_case(
+            "s/c",
+            "// frk-case: runners=interp, jit\nfunc.func @main() { return }",
+            Some("0\n"),
+        );
+        let cases = discover(corpus.root()).unwrap();
+        assert!(cases[0].applies_to("interp"));
+        assert!(cases[0].applies_to("jit"));
+        assert!(!cases[0].applies_to("aot"));
+
+        let unrestricted = {
+            let corpus = TempCorpus::new();
+            corpus.add_case("s/c", "func.func @main() { return }", None);
+            discover(corpus.root()).unwrap().remove(0)
+        };
+        assert!(unrestricted.applies_to("anything"));
+    }
+
+    #[test]
+    fn empty_runners_directive_is_an_error() {
+        let corpus = TempCorpus::new();
+        corpus.add_case("s/c", "// frk-case: runners=\n", Some("0\n"));
+        let error = discover(corpus.root()).unwrap_err();
+        assert!(matches!(error, CaseError::Directive { .. }), "{error}");
     }
 
     #[test]

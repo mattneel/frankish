@@ -105,12 +105,23 @@ pub fn diff_corpus(root: &Path, runners: &[&dyn Runner]) -> Result<DiffReport, C
     for case in &cases {
         let mut outputs = BTreeMap::new();
         for runner in runners {
+            if !case.applies_to(runner.name()) {
+                continue;
+            }
             let output = runner
                 .run(case)
                 .map(|raw| canon::canonicalize(&raw))
                 .map_err(|error| error.to_string());
             let clobbered = outputs.insert(runner.name(), output).is_some();
             assert!(!clobbered, "duplicate runner name {:?}", runner.name());
+        }
+        if outputs.is_empty() {
+            // A case no registered runner can execute is red, not
+            // invisible — the likely cause is a typo'd runners= list.
+            outputs.insert(
+                "(none)",
+                Err("no registered runner applies to this case".to_string()),
+            );
         }
         diffs.push(CaseDiff {
             name: case.name.clone(),
@@ -162,6 +173,30 @@ mod tests {
         let bad = FakeRunner::failing("engine exploded");
         let report = diff_corpus(corpus.root(), &[&ok, &bad]).unwrap();
         assert!(!report.is_green(), "{report}");
+    }
+
+    #[test]
+    fn runner_directives_narrow_the_matrix_without_reddening_it() {
+        let corpus = TempCorpus::new();
+        corpus.add_case("s/both", "irrelevant", None);
+        corpus.add_case("s/only_alpha", "// frk-case: runners=alpha\n", None);
+        let alpha = FakeRunner::named("alpha", "1\n");
+        let beta = FakeRunner::named("beta", "1\n");
+        let report = diff_corpus(corpus.root(), &[&alpha, &beta]).unwrap();
+        assert!(report.is_green(), "{report}");
+    }
+
+    #[test]
+    fn a_case_no_runner_can_execute_is_red() {
+        let corpus = TempCorpus::new();
+        corpus.add_case("s/orphan", "// frk-case: runners=ghost\n", None);
+        let alpha = FakeRunner::named("alpha", "1\n");
+        let report = diff_corpus(corpus.root(), &[&alpha]).unwrap();
+        assert!(!report.is_green(), "{report}");
+        assert!(
+            report.to_string().contains("no registered runner"),
+            "{report}"
+        );
     }
 
     #[test]

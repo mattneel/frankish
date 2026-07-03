@@ -27,6 +27,9 @@ pub enum Status {
     /// Bless wrote expected.out; `changed` is false when bytes were
     /// already identical.
     Blessed { changed: bool },
+    /// The case's `runners=` directive excludes this runner. Reported,
+    /// never silent; a corpus where *everything* skips is an error.
+    Skipped,
     /// Canonical output differs from expected.out; the actual bytes were
     /// written next to it as output.actual (gitignored).
     Mismatch,
@@ -51,7 +54,10 @@ pub struct Report {
 impl Report {
     pub fn is_green(&self) -> bool {
         self.outcomes.iter().all(|outcome| {
-            matches!(outcome.status, Status::Pass | Status::Blessed { .. })
+            matches!(
+                outcome.status,
+                Status::Pass | Status::Blessed { .. } | Status::Skipped
+            )
         })
     }
 }
@@ -73,6 +79,9 @@ impl fmt::Display for Report {
                 Status::Blessed { changed: false } => {
                     passed += 1;
                     format!("blessed {} (unchanged)", outcome.name)
+                }
+                Status::Skipped => {
+                    format!("skip    {} (not applicable to this runner)", outcome.name)
                 }
                 Status::Mismatch => {
                     red += 1;
@@ -111,16 +120,31 @@ impl fmt::Display for Report {
 /// `/goldens/**/*.actual` gitignore pattern.
 const ACTUAL_FILE: &str = "output.actual";
 
-/// Runs every case under `root` through `runner` in `mode`.
+/// Runs every applicable case under `root` through `runner` in `mode`.
+/// A corpus where nothing applies to this runner is an error (a typo'd
+/// `runners=` directive must not read as green).
 pub fn run_goldens(root: &Path, runner: &dyn Runner, mode: Mode) -> Result<Report, CaseError> {
     let cases = case::discover(root)?;
-    let outcomes = cases
+    let outcomes: Vec<CaseOutcome> = cases
         .iter()
         .map(|case| CaseOutcome {
             name: case.name.clone(),
-            status: run_case(case, runner, mode),
+            status: if case.applies_to(runner.name()) {
+                run_case(case, runner, mode)
+            } else {
+                Status::Skipped
+            },
         })
         .collect();
+    if outcomes
+        .iter()
+        .all(|outcome| matches!(outcome.status, Status::Skipped))
+    {
+        return Err(CaseError::NothingApplies {
+            root: root.to_path_buf(),
+            runner: runner.name().to_string(),
+        });
+    }
     Ok(Report {
         runner: runner.name(),
         outcomes,
@@ -235,6 +259,33 @@ mod tests {
             report.outcomes[0].status,
             Status::Blessed { changed: false }
         ));
+    }
+
+    #[test]
+    fn non_applicable_cases_skip_visibly_and_stay_green() {
+        let corpus = TempCorpus::new();
+        corpus.add_case("s/runs", "irrelevant", Some("42\n"));
+        corpus.add_case(
+            "s/skips",
+            "// frk-case: runners=some_other_runner\n",
+            Some("99\n"),
+        );
+        let runner = FakeRunner::fixed("42");
+        let report = run_goldens(corpus.root(), &runner, Mode::Check).unwrap();
+        assert!(report.is_green(), "{report}");
+        assert!(report.to_string().contains("skip    s/skips"), "{report}");
+    }
+
+    #[test]
+    fn a_corpus_where_everything_skips_is_an_error() {
+        let corpus = TempCorpus::new();
+        corpus.add_case("s/a", "// frk-case: runners=elsewhere\n", Some("1\n"));
+        let runner = FakeRunner::fixed("1");
+        let error = run_goldens(corpus.root(), &runner, Mode::Check).unwrap_err();
+        assert!(
+            matches!(error, crate::case::CaseError::NothingApplies { .. }),
+            "{error}"
+        );
     }
 
     #[test]

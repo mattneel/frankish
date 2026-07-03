@@ -21,9 +21,13 @@ Optional `// frk-case: key=value` comment lines anywhere in case.mlir:
 
     // frk-case: entry=main      entry function symbol   (default: main)
     // frk-case: result=i64      return rendering        (default: i64; v0's only type)
+    // frk-case: runners=a,b     applicable runners      (default: all — SPEC §7.2)
 
 Unknown keys and unsupported values are errors — a typo'd directive must
-never silently become a default.
+never silently become a default. `runners=` exists for op sets that are
+ahead of some execution path (adt before its lowering); skips are
+reported per case, a corpus where everything skips a runner is an error,
+and a case no registered runner can execute is red in `make diff`.
 
 ## UB is inadmissible
 

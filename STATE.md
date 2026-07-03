@@ -6,28 +6,27 @@ Tree: green — `make test` passes; clean-clone scripts/ci.sh verified
 (exit 0); `make diff`: 8 cases, interp vs jit, 0 divergent.
 
 ## Next action
-M3 frk.adt under D-031. Step 1 DONE: frk_adt IRDL definition lives in
-crates/frk-dialects/src/adt.rs (sum/product parametric types; make_sum
-/tag_of/extract/make_product/get; encoding + landmines documented in
-the module header); frk_dialects::register(&Context) loads it; K1
-smoke green (tests/adt_smoke.rs — positive round-trip, IRDL negatives,
-type round-trips, builder construction). Remaining build order:
-2. K1 second half: the frk verification pass (semantic invariants IRDL
-   can't say: extract result type = field type, tag/field ranges, make
-   arity vs variant shape) — decode sum params via type-print →
-   Attribute::parse (no C API accessor for dynamic type params); runs
-   in harness runners before execution.
-3. K2: Eval impls for the five ops (Value grows an Adt variant — costs
-   Copy, refactor interp to Clone; entry protocol stays i64) plus
-   upstream cf.switch eval in frk-interp (dispatch rides it).
-4. K5 seed: goldens/adt suite (construct/extract/switch programs, i64
-   results, hand-computed expecteds) — runners must call
-   frk_dialects::register in their context setup for these to parse.
-5. K3: lowering the five ops → LLVM structs + tag; melior has
-   RewritePattern + apply_patterns_and_fold_greedily — evaluate vs a
-   plain module-walk rewrite, D-entry the choice.
+M3 frk.adt under D-031. Steps 1–4 DONE: K1 whole (IRDL definition +
+register() + smoke; semantic verifier wired into every runner's front
+half — register → parse → MLIR verify → frk verify); K2 whole (Eval
+impls for all five ops, Value::Adt, cf.switch upstream eval, the
+de-regioned match shape proven end to end); K5 seeded (goldens/adt: 4
+cases, interp-only via the new `runners=` directive; skips visible,
+all-skip and no-runner cases are red). `make diff`: 12 cases, 0
+divergent. Remaining:
+5. K3: lowering make_sum/tag_of/extract/make_product/get → LLVM
+   structs + integer tag (cf.switch is already upstream). Design
+   choices to D-entry: rewrite mechanism (melior RewritePattern +
+   apply_patterns_and_fold_greedily vs a plain module-walk rewriter in
+   Rust) and the memory story for v0 (adt values are fixed-shape —
+   no payload boxing needed until recursive types; likely flat LLVM
+   struct {i64 tag, union-as-largest-payload} by-value). When green,
+   DELETE the `runners=interp` lines from goldens/adt/* so the corpus
+   goes 3-way — that flip is the L3 moment for the dialect.
 6. Decision-tree pass (Maranget, D-025): pattern matrix → dispatch IR,
    goldened over matrix→IR.
+7. K6 docs page (semantics, lowering contract, interaction-matrix rows,
+   tier impact) + K7 sweep (all forks ledgered), then m3-done.
 Exit: K1–K7 checked; 3-way goldens green.
 
 ## In flight
