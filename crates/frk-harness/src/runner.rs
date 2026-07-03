@@ -11,7 +11,7 @@ use melior::ir::Module;
 use melior::ir::operation::OperationLike;
 
 use crate::canon;
-use crate::case::{Case, ResultKind};
+use crate::case::{Case, ResultKind, SourceKind};
 use crate::pipeline;
 
 /// A named way to execute a case and produce raw (pre-canonicalization)
@@ -19,6 +19,13 @@ use crate::pipeline;
 pub trait Runner {
     fn name(&self) -> &'static str;
     fn run(&self, case: &Case) -> Result<String, RunError>;
+    /// Whether this runner can execute this case at all (specimen
+    /// oracles only speak their specimen's language). Combined with the
+    /// case's `runners=` directive by the golden/diff engines.
+    fn applicable(&self, case: &Case) -> bool {
+        let _ = case;
+        true
+    }
 }
 
 #[derive(Debug)]
@@ -67,8 +74,13 @@ fn parse_and_verify<'c>(
     source: &str,
     case: &Case,
 ) -> Result<Module<'c>, RunError> {
-    let module = Module::parse(context, source)
-        .ok_or_else(|| RunError::Parse(format!("{}", case.source_path.display())))?;
+    let module = match case.kind {
+        SourceKind::Mlir => Module::parse(context, source)
+            .ok_or_else(|| RunError::Parse(format!("{}", case.source_path.display())))?,
+        SourceKind::Ml => frk_front::compile_ml(context, source).map_err(|e| {
+            RunError::Parse(format!("{}: {e}", case.source_path.display()))
+        })?,
+    };
     if !module.as_operation().verify() {
         return Err(RunError::Verify(format!(
             "{}: module failed MLIR verification",
@@ -82,9 +94,14 @@ fn parse_and_verify<'c>(
 
 /// Every runner applicable to the corpus today — the list `make diff`
 /// executes and the corpus tests hold in pairwise agreement (law L3).
-/// interp + jit since M2; M7 adds the AOT path, specimens their oracles.
+/// interp + jit since M2, the ocaml oracle since M5 (ml cases only);
+/// M7 adds the AOT path.
 pub fn default_runners() -> Vec<Box<dyn Runner>> {
-    vec![Box::new(InterpRunner), Box::new(JitRunner)]
+    vec![
+        Box::new(InterpRunner),
+        Box::new(JitRunner),
+        Box::new(OcamlOracle),
+    ]
 }
 
 /// The runner blessing writes goldens from: the derived interpreter,
@@ -188,5 +205,57 @@ impl Runner for JitRunner {
                 Ok(canon::render_i64(result))
             }
         }
+    }
+}
+
+/// The upstream oracle for ml_core (SPEC §7.2/§8; oracle policy in
+/// docs/canon.md §5): the SAME source file the frankish runners
+/// compile, run by `ocaml` with `print_int (main ())` appended, under
+/// LC_ALL=C, through the same canon filter. The int-width divergence
+/// (OCaml 63-bit vs our i64) is a corpus rule: values stay within 62
+/// bits (specimens/ml_core/MANIFEST.md).
+pub struct OcamlOracle;
+
+impl Runner for OcamlOracle {
+    fn name(&self) -> &'static str {
+        "ocaml"
+    }
+
+    fn applicable(&self, case: &Case) -> bool {
+        case.kind == SourceKind::Ml
+    }
+
+    fn run(&self, case: &Case) -> Result<String, RunError> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+
+        let source = fs::read_to_string(&case.source_path)
+            .map_err(|e| RunError::Io(format!("{}: {e}", case.source_path.display())))?;
+        let wrapped = format!("{source}\nlet () = print_int (main ())\n");
+
+        let path = std::env::temp_dir().join(format!(
+            "frk-oracle-{}-{}.ml",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, wrapped)
+            .map_err(|e| RunError::Io(format!("{}: {e}", path.display())))?;
+
+        let output = std::process::Command::new("ocaml")
+            .arg(&path)
+            .env("LC_ALL", "C")
+            .output();
+        let _ = fs::remove_file(&path);
+        let output = output.map_err(|e| RunError::Invoke(format!("running ocaml: {e}")))?;
+
+        if !output.status.success() {
+            return Err(RunError::Invoke(format!(
+                "ocaml exited with {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        String::from_utf8(output.stdout)
+            .map_err(|_| RunError::Invoke("ocaml produced non-UTF-8 output".into()))
     }
 }

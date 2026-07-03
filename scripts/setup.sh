@@ -34,6 +34,9 @@ need "MLIR C headers ($MLIR_PREFIX/include/mlir-c)" \
 need "mlir-tblgen ($MLIR_PREFIX/bin/mlir-tblgen)" \
 	"test -x \"$MLIR_PREFIX/bin/mlir-tblgen\"" \
 	"apt: sudo apt-get install mlir-$LLVM_MAJOR-tools | brew llvm@$LLVM_MAJOR already includes it"
+need "ocaml (the ml_core specimen oracle, M5)" \
+	"command -v ocaml" \
+	"apt: sudo apt-get install ocaml | brew: brew install ocaml"
 need "libPolly.a (tblgen links llvm-config --libs, which names Polly)" \
 	"test -f \"$MLIR_PREFIX/lib/libPolly.a\"" \
 	"apt: sudo apt-get install libpolly-$LLVM_MAJOR-dev | brew llvm@$LLVM_MAJOR already bundles it"

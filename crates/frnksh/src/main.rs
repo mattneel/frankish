@@ -26,6 +26,7 @@ const USAGE: &str = "usage:
   frnksh bless [--goldens DIR]           rewrite expected outputs — commit message
                                          must justify the change (AGENTS.md L2)
   frnksh diff  [--goldens DIR]           compare all runners pairwise (AGENTS.md L3)
+  frnksh dashboard [--goldens DIR]       conformance % per suite per runner (SPEC §8)
   frnksh emit --stages FILE [--out DIR]  write per-pass IR snapshots
                                          (default DIR: out/stages/<FILE stem>)";
 
@@ -36,6 +37,7 @@ enum Command {
     Test { goldens: PathBuf },
     Bless { goldens: PathBuf },
     Diff { goldens: PathBuf },
+    Dashboard { goldens: PathBuf },
     Emit { source: PathBuf, out: Option<PathBuf> },
 }
 
@@ -46,7 +48,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
     };
 
     match subcommand {
-        "test" | "bless" | "diff" => {
+        "test" | "bless" | "diff" | "dashboard" => {
             let mut goldens = PathBuf::from("goldens");
             match (words.next(), words.next(), words.next()) {
                 (None, ..) => {}
@@ -56,6 +58,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             Ok(match subcommand {
                 "test" => Command::Test { goldens },
                 "bless" => Command::Bless { goldens },
+                "dashboard" => Command::Dashboard { goldens },
                 _ => Command::Diff { goldens },
             })
         }
@@ -144,6 +147,18 @@ fn run(command: Command) -> ExitCode {
                 }
                 Err(error) => {
                     eprintln!("frnksh diff: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        Command::Dashboard { goldens } => {
+            match frk_harness::dashboard::dashboard(&goldens) {
+                Ok(board) => {
+                    print!("{board}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("frnksh dashboard: {error}");
                     ExitCode::from(2)
                 }
             }

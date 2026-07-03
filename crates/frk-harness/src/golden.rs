@@ -129,7 +129,7 @@ pub fn run_goldens(root: &Path, runner: &dyn Runner, mode: Mode) -> Result<Repor
         .iter()
         .map(|case| CaseOutcome {
             name: case.name.clone(),
-            status: if case.applies_to(runner.name()) {
+            status: if case.applies_to(runner.name()) && runner.applicable(case) {
                 run_case(case, runner, mode)
             } else {
                 Status::Skipped

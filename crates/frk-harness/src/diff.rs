@@ -105,7 +105,7 @@ pub fn diff_corpus(root: &Path, runners: &[&dyn Runner]) -> Result<DiffReport, C
     for case in &cases {
         let mut outputs = BTreeMap::new();
         for runner in runners {
-            if !case.applies_to(runner.name()) {
+            if !case.applies_to(runner.name()) || !runner.applicable(case) {
                 continue;
             }
             let output = runner

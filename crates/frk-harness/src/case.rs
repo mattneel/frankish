@@ -14,6 +14,14 @@ pub enum ResultKind {
     I64,
 }
 
+/// What language the case's source is in — decided by which file the
+/// case directory holds (`case.mlir` or `case.ml`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceKind {
+    Mlir,
+    Ml,
+}
+
 /// One golden case: a directory holding `case.mlir` + `expected.out`.
 #[derive(Clone, Debug)]
 pub struct Case {
@@ -31,6 +39,7 @@ pub struct Case {
     /// while an op set is ahead of some execution path (e.g. adt before
     /// its K3 lowering); a skip is reported, never silent.
     pub runners: Option<Vec<String>>,
+    pub kind: SourceKind,
 }
 
 impl Case {
@@ -76,9 +85,9 @@ impl fmt::Display for CaseError {
 
 impl std::error::Error for CaseError {}
 
-const SOURCE_FILE: &str = "case.mlir";
+const MLIR_SOURCE: &str = "case.mlir";
+const ML_SOURCE: &str = "case.ml";
 const EXPECTED_FILE: &str = "expected.out";
-const DIRECTIVE_PREFIX: &str = "// frk-case:";
 
 /// Walks `root` and returns every directory containing a `case.mlir`,
 /// sorted by name so reports and diffs are deterministic (canon §3 spirit).
@@ -94,9 +103,14 @@ pub fn discover(root: &Path) -> Result<Vec<Case>, CaseError> {
 }
 
 fn walk(root: &Path, dir: &Path, cases: &mut Vec<Case>) -> Result<(), CaseError> {
-    let source_path = dir.join(SOURCE_FILE);
-    if source_path.is_file() {
-        cases.push(load(root, dir, source_path)?);
+    let mlir_path = dir.join(MLIR_SOURCE);
+    if mlir_path.is_file() {
+        cases.push(load(root, dir, mlir_path, SourceKind::Mlir)?);
+        return Ok(());
+    }
+    let ml_path = dir.join(ML_SOURCE);
+    if ml_path.is_file() {
+        cases.push(load(root, dir, ml_path, SourceKind::Ml)?);
         return Ok(());
     }
     let entries = fs::read_dir(dir).map_err(|e| CaseError::Io(dir.to_path_buf(), e))?;
@@ -110,7 +124,12 @@ fn walk(root: &Path, dir: &Path, cases: &mut Vec<Case>) -> Result<(), CaseError>
     Ok(())
 }
 
-fn load(root: &Path, dir: &Path, source_path: PathBuf) -> Result<Case, CaseError> {
+fn load(
+    root: &Path,
+    dir: &Path,
+    source_path: PathBuf,
+    kind: SourceKind,
+) -> Result<Case, CaseError> {
     let source = fs::read_to_string(&source_path)
         .map_err(|e| CaseError::Io(source_path.clone(), e))?;
 
@@ -119,7 +138,14 @@ fn load(root: &Path, dir: &Path, source_path: PathBuf) -> Result<Case, CaseError
     let mut runners = None;
 
     for line in source.lines() {
-        let Some(directive) = line.trim().strip_prefix(DIRECTIVE_PREFIX) else {
+        // `// frk-case:` in .mlir files; `(* frk-case: ... *)` in .ml
+        // files (which must stay valid OCaml for the oracle).
+        let trimmed = line.trim();
+        let directive = if let Some(rest) = trimmed.strip_prefix("// frk-case:") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("(* frk-case:") {
+            rest.trim_end().trim_end_matches("*)")
+        } else {
             continue;
         };
         let directive = directive.trim();
@@ -174,6 +200,7 @@ fn load(root: &Path, dir: &Path, source_path: PathBuf) -> Result<Case, CaseError
         entry,
         result,
         runners,
+        kind,
     })
 }
 

@@ -19,7 +19,7 @@ export TABLEGEN_220_PREFIX ?= $(MLIR_PREFIX)
 CARGO ?= cargo
 CARGOFLAGS ?=
 
-.PHONY: setup build test bless diff ci clean
+.PHONY: setup build test bless diff dashboard ci clean
 
 # Verify the pinned toolchain is present; names anything missing. Never
 # mutates the system.
@@ -42,6 +42,10 @@ bless:
 # Runner-agreement matrix over the golden corpus (SPEC §7.2; law L3).
 diff:
 	$(CARGO) run -q -p frnksh $(CARGOFLAGS) -- diff
+
+# Conformance % per suite per runner (SPEC §8: a number, not a vibe).
+dashboard:
+	$(CARGO) run -q -p frnksh $(CARGOFLAGS) -- dashboard
 
 # Exactly what CI runs; plain shell all the way down.
 ci:
