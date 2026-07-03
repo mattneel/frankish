@@ -1,42 +1,25 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M9 sessions)
-Phase: M9 in flight — loanword v1 FROZEN + TS-0 slice-1 shipped and
-triangulated; strings + arrays remain for TS-0 manifest 100% (the M9
-exit bar), then m9-done.
-Tree: green — `make test` 30 blocks; diff 48 cases 0 divergent
-across [interp,jit,jit-rc,ocaml,node,repl]; grid 43/43 × 4 triples ×
-2 strategies; canary s390x 43/43 × 2; dashboard 7 suites 100%
-everywhere applicable. Startup number: fib(30) native 3.0 ms vs node
-53.7 ms (17.7×).
+Phase: M9 complete (tag m9-done); M10 not started.
+Tree: green — `make test` 31 blocks; diff 52 cases 0 divergent (6
+runners); grid 47/47 × 4 triples × 2 strategies; canary s390x 47/47
+× 2; TS-0 manifest 100%. Startup number (Static Hermes framing,
+D-050.5): fib(30) native 3.0 ms vs node 53.7 ms — instant startup on
+a boot-dominated microbenchmark.
 
 ## Next action
-M9 second half: TS-0 manifest completion. DONE: loanword v1 frozen
-(D-046 — canonical JSON + sha id + spans + embedded source; §6.5
-threading LANDS for loanword programs), tools/loanword-ts (tsc 6.0.3
-checker-as-oracle, no build step), the Rust consumer
-(frk_front::loanword — f64/bool/functions/control-flow/mutable-lets-
-as-boxes), Value::Float + IEEE evaluators + interp builtins/output
-buffer, SlotKind::F64, three-way print protocol (canon §6 fence),
-node as sixth runner, 6-case ts0 corpus green EVERYWHERE incl. the
-s390x canary, the 17.7× startup number, D-047/D-048.
-Remaining for the exit bar (TS-0 manifest lists strings + arrays):
-1. STRINGS: needs a representation ruling (MANIFEST says UTF-16 code
-   units, JS semantics — rt decision D-entry): frk-rt string ABI
-   (alloc/concat/len/eq + print_str), kernel surface (frk.str dialect
-   or mem-boxed bytes + rt calls? DESIGN FIRST), loanword vocab
-   extension is VERSION-GATED (D-046) — additive nodes within v1
-   (str literal, concat, ===) per the freeze's extension rule.
-   console.log(string) prints raw (no quotes, JS).
-2. ARRAYS: number[] literals, index read/write, .length, .push?
-   (MANIFEST "arrays" unqualified — scope minimally: literal, index
-   get/set, length; push only if a corpus case demands). Lowering:
-   frk_mem-adjacent heap block {len, cap?, data...} — likely a small
-   frk_mem widening (array_new/get/set/len) — D-entry.
-3. Corpus additions per idiom + node agreement + grid; dashboard;
-   THEN m9-done (extraction report: what TS forced vs ml).
-4. frnksh run FILE.ts (works via runners; verify + doc) + README
-   update with the startup number.
+M10 per docs/SPEC.md §13: femto_lua opens. frk.dyn v0 (tagging
+D-entry required — nan-boxing vs pointer tagging vs fat values, an
+UNRULED fork); the Lua string ruling (femto_lua MANIFEST); the GC
+GATE: rc+cycles vs MMTk spike REPORT before proceeding (SPEC's own
+words — a written comparison, not code first). Read SPEC §4.5 +
+specimens/femto_lua/MANIFEST.md before anything. Exit: manifest
+ratified; dyn contract underway; GC decision logged. Also due at
+M10 per earlier ledger threads: liveness-based rc releases (D-041's
+deferred clause — frk_rt_alloc_count is the waiting target), string
+tracing (D-049), D-045's effects trigger arms the moment the shell
+can observe femto_lua IO.
 
 ## In flight
 Nothing.
@@ -47,6 +30,42 @@ Nothing.
   implemented and goldened)
 
 ## Milestone log
+m9-done — Shipped: loanword v1 + the whole TS-0 stage. The freeze
+(D-046): canonical JSON, sha-256 content id (refusal PROVEN by
+tampered fixture, D-050.2), version-gated vocabulary, self-contained
+artifacts; §6.5 landed and WITNESSED (OOB trap at oob.ts:4:13,
+D-050.3). Producer: tools/loanword-ts, tsc 6.0.3 checker-as-oracle +
+noImplicitReturns (the D-050.1 corollary: the oracle's flags are
+part of the oracle). Consumer: frk_front::loanword with span→
+Location threading. TS-0 semantics: f64 (first float, SlotKind::F64),
+mutable lets as boxes, arrays in frk.mem (OOB=trap+location,
+stricter-than-JS by ruling), strings as rt-owned UTF-16 in both
+twins (code-unit ruling fired at .length: 😀.length=2 vs V8
+everywhere), three-way print protocol under canon §6's fence. Sixth
+runner: node. Exit bars: TS-0 manifest 100% ✓; diff green ✓ (52
+cases, 0 divergent, 6 runners); grid 47/47 × 5 architectures × 2
+strategies. Startup number recorded with D-050.5's framing. Ledger:
+D-046..D-050 (+D-045 amendment). Learned: melior binary_operands
+insists on int widths; noLib needs the classic global-interface
+prelude; wasm's exact import signatures catch ABI drift nothing else
+does; reviews and implementations can cross in flight — record the
+crossing honestly instead of unwinding shipped evidence.
+
+M9 EXTRACTION REPORT: TS forced (a) f64 + the F64 slot kind (the
+admission rule working exactly as designed — float entered carrying
+IEEE-vs-print semantics ml_core never had); (b) arrays into frk.mem
+(the first NEW kernel surface a specimen demanded since M7);
+(c) frk_str — the first rt-VALUE dialect (immutable, rt-owned,
+outside the strategy axis: a genuinely new kind of kernel resident);
+(d) the managed/unmanaged pointer split (a CORRECTNESS hole the rc
+strategy had been walking toward since M7 — strings found it);
+(e) host builtins + the interp output buffer (which is also the
+first thing D-045's effects trigger will point at); (f) nothing in
+closures/adts — TS-0 never touched them, by design. Cheats awaiting
+promotion: none private; the per-case node producer invocation is a
+cost note, not a cheat. The loanword freeze held: strings/arrays
+entered as ADDITIVE vocabulary, no version bump.
+
 m8-done — Shipped: the frankish shell (SPEC §9; semantics D-043).
 Bare frnksh = REPL on the reference interpreter; re-elaborate-whole
 session model; typed value rendering; poly exprs as schemes without
@@ -279,6 +298,26 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (sixteenth entry)
+    Milestone/step: M9 complete, tagged m9-done
+    Green? yes — 31 blocks; 52 cases 0 divergent; grid 47/47 × 5 × 2;
+    TS-0 manifest 100%
+    Did:
+    - strings (UTF-16 both twins, surrogate goldens), arrays (frk.mem,
+      OOB trap + location), Ptr managed/unmanaged split, D-049/D-050,
+      second review integrated (noImplicitReturns, tamper refusal,
+      §6.5 witness, Static Hermes framing, fuzz-fence note)
+    Next: M10 femto_lua per Next-action — GC SPIKE REPORT FIRST
+    Landmines:
+    - the strings steer crossed implementation in flight; D-050.4
+      records the crossing — check STATE timing before deferring
+      rulings the code may already have made
+    - frk_str pointers are UNMANAGED (no rc header); any new
+      rt-owned pointer type must join the unmanaged arm or rc
+      corrupts ptr-8
+    - noLib preludes need the full classic global-interface set or
+      array literals type as {}
 
     Session end: 2026-07-03 (fifteenth entry)
     Milestone/step: M9 first half — loanword frozen, TS-0 slice-1
