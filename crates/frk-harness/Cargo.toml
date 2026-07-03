@@ -8,5 +8,6 @@ publish.workspace = true
 
 [dependencies]
 frk-core.workspace = true
+frk-dialects.workspace = true
 frk-interp.workspace = true
 melior.workspace = true

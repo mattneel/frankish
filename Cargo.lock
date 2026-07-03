@@ -151,6 +151,7 @@ version = "0.0.1"
 dependencies = [
  "frk-core",
  "melior",
+ "mlir-sys",
 ]
 
 [[package]]
@@ -162,6 +163,7 @@ name = "frk-harness"
 version = "0.0.1"
 dependencies = [
  "frk-core",
+ "frk-dialects",
  "frk-interp",
  "melior",
 ]

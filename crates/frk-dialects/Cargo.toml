@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 melior.workspace = true
+mlir-sys.workspace = true
 
 [dev-dependencies]
 frk-core.workspace = true

@@ -23,6 +23,9 @@ pub trait Runner {
 
 #[derive(Debug)]
 pub enum RunError {
+    /// Harness-side defect (dialect registration, thread spawning) — not
+    /// a property of the case.
+    Setup(String),
     Io(String),
     Parse(String),
     Verify(String),
@@ -33,6 +36,7 @@ pub enum RunError {
 impl fmt::Display for RunError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Setup(m) => write!(f, "setup: {m}"),
             Self::Io(m) => write!(f, "io: {m}"),
             Self::Parse(m) => write!(f, "parse: {m}"),
             Self::Verify(m) => write!(f, "verify: {m}"),
@@ -43,6 +47,38 @@ impl fmt::Display for RunError {
 }
 
 impl std::error::Error for RunError {}
+
+/// The shared front half of every runner: kernel-aware context, parse,
+/// MLIR verify, frankish semantic verify (SPEC §3 K1 as amended by
+/// D-031: semantic verification runs before ANY execution or lowering).
+/// Returns the context; the caller re-parses into it (melior modules
+/// borrow their context, so a helper can't return both).
+fn frk_context(case: &Case) -> Result<(melior::Context, String), RunError> {
+    let source = fs::read_to_string(&case.source_path)
+        .map_err(|e| RunError::Io(format!("{}: {e}", case.source_path.display())))?;
+    let context = frk_core::context();
+    frk_dialects::register(&context)
+        .map_err(|e| RunError::Setup(format!("kernel dialect registration: {e}")))?;
+    Ok((context, source))
+}
+
+fn parse_and_verify<'c>(
+    context: &'c melior::Context,
+    source: &str,
+    case: &Case,
+) -> Result<Module<'c>, RunError> {
+    let module = Module::parse(context, source)
+        .ok_or_else(|| RunError::Parse(format!("{}", case.source_path.display())))?;
+    if !module.as_operation().verify() {
+        return Err(RunError::Verify(format!(
+            "{}: module failed MLIR verification",
+            case.source_path.display()
+        )));
+    }
+    frk_dialects::verify(context, &module)
+        .map_err(|errors| RunError::Verify(format!("{errors}")))?;
+    Ok(module)
+}
 
 /// Every runner applicable to the corpus today — the list `make diff`
 /// executes and the corpus tests hold in pairwise agreement (law L3).
@@ -82,18 +118,8 @@ impl Runner for InterpRunner {
 }
 
 fn interpret_case(case: &Case) -> Result<String, RunError> {
-    let source = fs::read_to_string(&case.source_path)
-        .map_err(|e| RunError::Io(format!("{}: {e}", case.source_path.display())))?;
-
-    let context = frk_core::context();
-    let module = Module::parse(&context, &source)
-        .ok_or_else(|| RunError::Parse(format!("{}", case.source_path.display())))?;
-    if !module.as_operation().verify() {
-        return Err(RunError::Verify(format!(
-            "{}: module failed MLIR verification",
-            case.source_path.display()
-        )));
-    }
+    let (context, source) = frk_context(case)?;
+    let module = parse_and_verify(&context, &source, case)?;
 
     let results = frk_interp::interpret_entry(&module, &case.entry, &[])
         .map_err(|e| RunError::Invoke(e.to_string()))?;
@@ -126,19 +152,8 @@ impl Runner for JitRunner {
     }
 
     fn run(&self, case: &Case) -> Result<String, RunError> {
-        let source = fs::read_to_string(&case.source_path)
-            .map_err(|e| RunError::Io(format!("{}: {e}", case.source_path.display())))?;
-
-        let context = frk_core::context();
-        let mut module = Module::parse(&context, &source)
-            .ok_or_else(|| RunError::Parse(format!("{}", case.source_path.display())))?;
-
-        if !module.as_operation().verify() {
-            return Err(RunError::Verify(format!(
-                "{}: module failed MLIR verification",
-                case.source_path.display()
-            )));
-        }
+        let (context, source) = frk_context(case)?;
+        let mut module = parse_and_verify(&context, &source, case)?;
 
         pipeline::lower_to_llvm(&context, &mut module)
             .map_err(|e| RunError::Lower(format!("{e}")))?;

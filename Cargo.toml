@@ -23,6 +23,9 @@ publish = false
 # scripts/check-pins.sh). melior is alpha: load dialects eagerly
 # (docs/LANDSCAPE.md), bump only deliberately.
 melior = "=0.27.2"
+# Same crate melior resolves; used directly only to work around melior
+# 0.27.2's miswired ArrayAttribute::try_from (docs/LANDSCAPE.md).
+mlir-sys = "220"
 
 frk-core = { path = "crates/frk-core" }
 frk-dialects = { path = "crates/frk-dialects" }

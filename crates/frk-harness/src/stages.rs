@@ -49,11 +49,18 @@ pub fn dump_stages(source_path: &Path, out_dir: &Path) -> Result<Vec<PathBuf>, S
         .map_err(|e| StageError::Io(source_path.to_path_buf(), e))?;
 
     let context = frk_core::context();
+    frk_dialects::register(&context).map_err(|e| StageError::Lower {
+        stage: "registration".to_string(),
+        message: e.to_string(),
+    })?;
     let mut module = Module::parse(&context, &source)
         .ok_or_else(|| StageError::Parse(source_path.to_path_buf()))?;
     if !module.as_operation().verify() {
         return Err(StageError::Verify(source_path.to_path_buf()));
     }
+    // Semantic verification precedes any lowering (SPEC §3 K1, D-031).
+    frk_dialects::verify(&context, &module)
+        .map_err(|_| StageError::Verify(source_path.to_path_buf()))?;
 
     if out_dir.exists() {
         fs::remove_dir_all(out_dir).map_err(|e| StageError::Io(out_dir.to_path_buf(), e))?;

@@ -13,6 +13,13 @@ quarter before depending on it, and update this file when you do.
 - **cairo-native** (LambdaClass): production language on melior; their blog
   is the honest field guide to off-path MLIR C API pain.
   https://blog.lambdaclass.com/cairo-and-mlir/
+- **melior 0.27.2 defect** (verified 2026-07-02):
+  `ArrayAttribute::try_from` is miswired to `is_dense_i64_array`
+  (src/ir/attribute/array.rs:54) and rejects every genuine ArrayAttr.
+  All other attribute try_froms audited clean at that version.
+  frk-dialects carries a contained mlir-sys shim
+  (adt.rs `array_elements`) — delete it when the fix lands upstream;
+  the one-line patch is worth sending to mlir-rs/melior.
 - **IRDL** (upstream MLIR dialect): dialect definitions as IR programs;
   runtime registration; generated verifiers; DynamicOpDefinition supports
   verifier + optional parser/printer/fold hook. Our v2 user-dialect hatch.
