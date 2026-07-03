@@ -1,23 +1,42 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-03 (M0..M8 sessions)
-Phase: M8 complete (tag m8-done); M9 not started.
-Tree: green — `make test` 30 blocks; transcript goldens 5/5; grid and
-canary green as of m7-done (unchanged paths).
+Updated: 2026-07-03 (M0..M9 sessions)
+Phase: M9 in flight — loanword v1 FROZEN + TS-0 slice-1 shipped and
+triangulated; strings + arrays remain for TS-0 manifest 100% (the M9
+exit bar), then m9-done.
+Tree: green — `make test` 30 blocks; diff 48 cases 0 divergent
+across [interp,jit,jit-rc,ocaml,node,repl]; grid 43/43 × 4 triples ×
+2 strategies; canary s390x 43/43 × 2; dashboard 7 suites 100%
+everywhere applicable. Startup number: fib(30) native 3.0 ms vs node
+53.7 ms (17.7×).
 
 ## Next action
-M9 per docs/SPEC.md §13: loanword v1 + TS-0. Freeze the loanword
-interchange format (D-024: canonical JSON, sorted keys, SHA-256
-content id; CBOR measured at freeze); ship tools/loanword-ts on the
-tsc API (NODE_MIN_MAJOR=20 pinned; check tsc availability); frnksh
-consumes loanword → kernel dialects → native; fib.ts demo golden +
-the startup number. Read SPEC §6.3 + §8 TS-0 and
-specimens/typescript MANIFEST (if present — create per the specimen
-protocol if not). D-039's green-tree trigger fires HERE (hard
-revisit); §6.5 span threading is scheduled here (D-039/D-044.4).
-Also due: D-013 (number = f64 — the first float in the kernel;
-watch the D-044.2 float fence interplay: ml_core keeps float OUT,
-TS-0 brings f64 THROUGH the admission rule as the idiom it fences).
+M9 second half: TS-0 manifest completion. DONE: loanword v1 frozen
+(D-046 — canonical JSON + sha id + spans + embedded source; §6.5
+threading LANDS for loanword programs), tools/loanword-ts (tsc 6.0.3
+checker-as-oracle, no build step), the Rust consumer
+(frk_front::loanword — f64/bool/functions/control-flow/mutable-lets-
+as-boxes), Value::Float + IEEE evaluators + interp builtins/output
+buffer, SlotKind::F64, three-way print protocol (canon §6 fence),
+node as sixth runner, 6-case ts0 corpus green EVERYWHERE incl. the
+s390x canary, the 17.7× startup number, D-047/D-048.
+Remaining for the exit bar (TS-0 manifest lists strings + arrays):
+1. STRINGS: needs a representation ruling (MANIFEST says UTF-16 code
+   units, JS semantics — rt decision D-entry): frk-rt string ABI
+   (alloc/concat/len/eq + print_str), kernel surface (frk.str dialect
+   or mem-boxed bytes + rt calls? DESIGN FIRST), loanword vocab
+   extension is VERSION-GATED (D-046) — additive nodes within v1
+   (str literal, concat, ===) per the freeze's extension rule.
+   console.log(string) prints raw (no quotes, JS).
+2. ARRAYS: number[] literals, index read/write, .length, .push?
+   (MANIFEST "arrays" unqualified — scope minimally: literal, index
+   get/set, length; push only if a corpus case demands). Lowering:
+   frk_mem-adjacent heap block {len, cap?, data...} — likely a small
+   frk_mem widening (array_new/get/set/len) — D-entry.
+3. Corpus additions per idiom + node agreement + grid; dashboard;
+   THEN m9-done (extraction report: what TS forced vs ml).
+4. frnksh run FILE.ts (works via runners; verify + doc) + README
+   update with the startup number.
 
 ## In flight
 Nothing.
@@ -260,6 +279,30 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (fifteenth entry)
+    Milestone/step: M9 first half — loanword frozen, TS-0 slice-1
+    green everywhere, startup number taken
+    Green? yes — 30 blocks; 48 cases 0 divergent (6 runners); grid
+    43/43 × 5 architectures × 2 strategies
+    Did:
+    - D-046 (freeze), D-047 (ts conventions), D-048 (green tree
+      resolved: not adopted), D-045 (effects-trigger amendment on
+      D-043, human directive)
+    - producer/consumer/corpus/oracle/prints as summarized in
+      Next-action; fib 17.7× vs node
+    Next: strings + arrays → manifest 100% → m9-done
+    Landmines:
+    - binary_operands INSISTS on int widths — float evaluators use
+      float_operands; adding int ops that touch floats will bite
+    - interp builtins answer only ABSENT-or-BODYLESS symbols; a
+      module-level func.func with a body always wins
+    - the AOT shim is per-kind (ts = void variant); the i64 shim on
+      a void entry prints garbage — found by the ts0 grid
+    - producer runs are per-case node invocations (~60ms); cache if
+      corpus growth makes it felt
+    - canon §6 fence: printed values 0 or |v| ∈ [1e-4, 1e15) finite;
+      widening it is a canon change (D-entry)
 
     Session end: 2026-07-03 (fourteenth entry)
     Milestone/step: M8 complete, tagged m8-done
