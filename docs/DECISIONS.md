@@ -139,3 +139,21 @@ veto-ledger pattern and most deserve their review.
   future dialect design demonstrably suffers from de-regioning (bring
   the suffering as evidence), or upstream IRDL grows trait support
   (LANDSCAPE watch item), and then only by a new entry.
+- D-032 [adt] K3 v0 lowering is an external MLIR pass (melior
+  create_external) in the shared pipeline table — "lower-frk-adt",
+  stage 01 in every dump. Representation: sum →
+  !llvm.struct<(i64 tag, i64 × max-field-count)>, product →
+  !llvm.struct<(i64 × fields)>; narrow integer fields extui/trunci
+  through uniform i64 slots. Mechanics: plan-then-apply (layouts
+  decoded from original frk types; set_type sweep over block args and
+  op results; function_type attribute rewrite; IrRewriter op
+  replacement in program order). Fences: field types must be builtin
+  integers ≤64 — nested adts wait for the memory axis (M7); and
+  wrong-variant extract is unspecified in lowered code while the
+  interpreter traps (D-029), so extracts must be tag-guarded (exactly
+  the decision-tree output shape) and an unguarded extract is
+  inadmissible as a golden. Rationale: obviously-correct wasteful
+  layout first — niche/tag-packing is its own later, separately-
+  goldened pass (D-025). Revisit: representation when frk.mem lands
+  (heap/recursive types); pass packaging if melior grows
+  DialectConversion bindings.

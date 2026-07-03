@@ -9,9 +9,11 @@
 
 pub mod adt;
 mod adt_eval;
+mod adt_lower;
 pub mod verify;
 
 pub use adt_eval::register_eval;
+pub use adt_lower::lower_adt_pass;
 pub use verify::{Finding, VerifyErrors, verify};
 
 use std::fmt;

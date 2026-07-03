@@ -7,10 +7,11 @@ use melior::ir::Module;
 use melior::pass::{self, Pass, PassManager};
 use melior::{Context, Error};
 
-/// Upstream dialects (func/arith/scf/cf) → LLVM dialect. Validated against
-/// mlir-opt with the same pass names; goldens/upstream/* all lower through
-/// this.
+/// Kernel + upstream dialects → LLVM dialect. Kernel lowerings run
+/// first (they emit upstream/llvm ops), then the upstream conversions
+/// validated against mlir-opt. Every golden lowers through this table.
 pub const UPSTREAM_TO_LLVM: &[(&str, fn() -> Pass)] = &[
+    ("lower-frk-adt", frk_dialects::lower_adt_pass),
     ("convert-scf-to-cf", pass::conversion::create_scf_to_control_flow),
     ("convert-to-llvm", pass::conversion::create_to_llvm),
     (

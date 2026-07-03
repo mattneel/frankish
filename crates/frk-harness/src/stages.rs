@@ -120,15 +120,16 @@ mod tests {
             names,
             [
                 "00-parsed.mlir",
-                "01-convert-scf-to-cf.mlir",
-                "02-convert-to-llvm.mlir",
-                "03-reconcile-unrealized-casts.mlir",
+                "01-lower-frk-adt.mlir",
+                "02-convert-scf-to-cf.mlir",
+                "03-convert-to-llvm.mlir",
+                "04-reconcile-unrealized-casts.mlir",
             ]
         );
 
         let parsed = fs::read_to_string(&written[0]).unwrap();
         assert!(parsed.contains("func.func"), "{parsed}");
-        let lowered = fs::read_to_string(&written[2]).unwrap();
+        let lowered = fs::read_to_string(&written[3]).unwrap();
         assert!(lowered.contains("llvm.func"), "{lowered}");
     }
 

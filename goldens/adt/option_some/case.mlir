@@ -1,9 +1,7 @@
-// frk-case: runners=interp
-// (flips to all runners when the K3 lowering lands, M3)
 //
 // The de-regioned match (D-031) over Option<i64>, Some arm: tag dispatch
 // via cf.switch, guarded extract, +1. Some(41) → 42.
-func.func @main() -> i64 {
+func.func @main() -> i64 attributes {llvm.emit_c_interface} {
   %x = arith.constant 41 : i64
   %s = "frk_adt.make_sum"(%x) {variant = 1 : i64} : (i64) -> !frk_adt.sum<[[], [i64]]>
   %tag = "frk_adt.tag_of"(%s) : (!frk_adt.sum<[[], [i64]]>) -> i64
