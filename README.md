@@ -15,7 +15,7 @@ route would have spelled it.
 Start here: `AGENTS.md` (law) → `docs/SPEC.md` (design) →
 `docs/DECISIONS.md` (ledger) → `STATE.md` (now).
 
-Status: M7 done — the memory axis and the world. Memory strategy is
+Status: M8 done — frankish has a face: bare `frnksh` is the frankish shell (ml_core on the reference interpreter, typed value rendering, :type/:load/:emit/:profile), goldened by scripted transcripts like everything else. Before that, the memory axis and the world: Memory strategy is
 a compiler knob, not a language feature: the same IR runs under arena
 and rc lowerings, byte-identically. And the grid proves it
 everywhere: every golden × both strategies × five architectures

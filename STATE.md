@@ -1,50 +1,52 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-03 (M0..M7 sessions)
-Phase: M7 complete (tag m7-done); M8 not started.
-Tree: green — `make test` 27 blocks; diff[interp,jit,jit-rc,ocaml] 37
-cases 0 divergent; dashboard 100% × 4 × 5; `make grid` 37/37 on
-x86_64/aarch64/riscv64/wasm32-wasi × {arena,rc}; `make canary` 37/37
-on s390x (big-endian) × both.
+Updated: 2026-07-03 (M0..M8 sessions)
+Phase: M8 complete (tag m8-done); M9 not started.
+Tree: green — `make test` 30 blocks; transcript goldens 5/5; grid and
+canary green as of m7-done (unchanged paths).
 
 ## Next action
-M8 per docs/SPEC.md §13: the frnksh shell — bare invocation becomes
-the REPL (D-002), `frnksh run FILE` executes a specimen source file
-end to end, `frnksh emit` grows a plain (non-stages) mode; frontends
-register by extension (.ml → ml_core). Read SPEC §9 for the surface
-contract before building; the REPL evaluates through the reference
-interpreter (D-008) with per-line incremental binding accumulation.
-Check DECISIONS for D-002/D-008 constraints; expect a D-entry for the
-REPL's binding-accumulation semantics (unruled).
+M9 per docs/SPEC.md §13: loanword v1 + TS-0. Freeze the loanword
+interchange format (D-024: canonical JSON, sorted keys, SHA-256
+content id; CBOR measured at freeze); ship tools/loanword-ts on the
+tsc API (NODE_MIN_MAJOR=20 pinned; check tsc availability); frnksh
+consumes loanword → kernel dialects → native; fib.ts demo golden +
+the startup number. Read SPEC §6.3 + §8 TS-0 and
+specimens/typescript MANIFEST (if present — create per the specimen
+protocol if not). D-039's green-tree trigger fires HERE (hard
+revisit); §6.5 span threading is scheduled here (D-039/D-044.4).
+Also due: D-013 (number = f64 — the first float in the kernel;
+watch the D-044.2 float fence interplay: ml_core keeps float OUT,
+TS-0 brings f64 THROUGH the admission rule as the idiom it fences).
 
 ## In flight
 Nothing.
 
 ## For the human
-- Review ⚑ D-041 rc-v0 clause: rc allocates headers and retains (with
-  transfer elision) but inserts NO releases — collection needs the
-  liveness pass scheduled at the M10 GC gate. Strike the clause if
-  you want releases to gate M7 instead (adds a real dataflow pass to
-  the milestone).
-- Review ⚑ D-038 (M5 frontend rulings): three items touch the ratified
-  ml_core manifest — float fenced OUT of v0.1 by the admission rule
-  (the manifest listed it in scope; the corpus is float-free), match
-  redundancy is an error where OCaml warns, and min-caml vendoring is
-  deferred pending license verification (the 18-program hand corpus is
-  the v0 conformance corpus). Strike any of these with a superseding
-  entry if you want the manifest read literally instead.
-- Review ⚑ D-005 (host stack ruling) in docs/DECISIONS.md — made on your
-  behalf. Evidence through M4 supports it strongly: melior 0.27.2 has
-  now built two IRDL dialects, an interpreter, two type-changing
-  lowering passes with synthesized functions, external MLIR passes, and
-  JIT symbol registration — one library bug found and shimmed
-  (ArrayAttribute::try_from, LANDSCAPE), zero blocking gaps.
-- RESOLVED 2026-07-02: you struck D-030 → D-031 appended (pure IRDL,
-  no C++ shim, trait-free dialect designs; match de-regioned; SPEC §3
-  K1 + §4.1 amended). Nothing further needed unless you also want the
-  amended §4.1 wording itself adjusted.
+- (queue empty — the 2026-07-03 review is integrated as D-044:
+  D-041/D-038/D-005 ratified, riders executed, M8 exit amendment
+  implemented and goldened)
 
 ## Milestone log
+m8-done — Shipped: the frankish shell (SPEC §9; semantics D-043).
+Bare frnksh = REPL on the reference interpreter; re-elaborate-whole
+session model; typed value rendering; poly exprs as schemes without
+emission; :type/:load/:emit/:profile; frnksh run FILE. MainPolicy
+::OptionalAny + lenient zonk in the frontend. Transcript goldens (5)
+as SourceKind::Transcript + the repl runner driving the exact library
+engine. Exit bar (transcript goldens green) met AS AMENDED by the
+human review (D-044.4): every shell error echoes the offending line,
+proven by the division-trap golden. The review also ratified D-041
+(rider: frk_rt_alloc_count in both twins), D-038 (manifest scope line
+amended), D-005 (with prejudice — stack closed by evidence). ORC
+per-cell redefinition: scoped out as the stretch; the re-elaboration
+model makes it a later performance upgrade, not a semantic change.
+Learned: NothingApplies needed downgrading to a noted skip for
+kind-homogeneous corpus subsets; :load error text must name the
+requested file only (resolved paths are cwd-dependent, portability);
+the trap message carries the op name (arith.divsi: division by zero)
+— keep it, it is the closest thing to a location until M9 spans.
+
 m7-done — Shipped: the memory axis and the world. frk.mem (third
 kernel dialect, K1-K7): box_new/get/set over !frk_mem.box<T>;
 Strategy ∈ {Arena, Rc} as a LOWERING PARAMETER (D-041 ⚑ — rc v0
@@ -258,6 +260,28 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (fourteenth entry)
+    Milestone/step: M8 complete, tagged m8-done
+    Green? yes — 30 blocks; transcripts 5/5
+    Did:
+    - frk-repl crate (engine, pretty types, typed rendering,
+      transcript driver); frnksh bare=REPL + run FILE; harness
+      Transcript kind + repl runner; five transcript goldens
+    - frontend: MainPolicy::OptionalAny, lenient zonk, main_result,
+      emit generalized to any concrete main result
+    - integrated the first human ⚑ review (D-044): three
+      ratifications + riders + the M8 error-echo exit amendment
+    Next: M9 (loanword + TS-0) per Next-action — big one: green-tree
+    decision fires, span threading due, first float
+    Landmines:
+    - REPL classification is parser-driven (decl-parse then
+      expr-wrap) — never token-sniff; `let x = 1 in x` is an EXPR
+    - lenient_zonk is REPL-only; batch compilation still hard-errors
+      on ambiguity — do not leak OptionalAny into compile_ml
+    - transcript expected.out contains OS error text ("No such file
+      or directory (os error 2)") — Linux/macOS agree; Windows would
+      not (frontier concern, not Tier-0)
 
     Session end: 2026-07-03 (thirteenth entry)
     Milestone/step: M7 complete, tagged m7-done
