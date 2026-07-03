@@ -94,3 +94,11 @@ veto-ledger pattern and most deserve their review.
   MLIR's printer). Rationale: exact after-pass-N snapshots without
   C-API IR-printing instrumentation. Revisit: if melior grows pass
   printing hooks or a dump ever needs to gate.
+- D-029 [interp] The derived interpreter is total and deterministic:
+  MLIR-level UB (div by zero, signed-div overflow, non-positive scf.for
+  step) traps; call depth caps at 1024 frames and traps. Corollary: the
+  golden corpus must be UB-free — native paths do whatever LLVM does
+  with UB, so UB can never be compared. Rationale: reference semantics
+  (D-008) cannot have undefined outcomes. Revisit: depth cap if a
+  specimen legitimately exceeds it (scheme tail calls are exempt by
+  design — proper TCO is a lowering obligation, not deeper recursion).

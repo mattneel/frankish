@@ -164,6 +164,10 @@ dependencies = [
 [[package]]
 name = "frk-interp"
 version = "0.0.1"
+dependencies = [
+ "frk-core",
+ "melior",
+]
 
 [[package]]
 name = "frk-rt"
