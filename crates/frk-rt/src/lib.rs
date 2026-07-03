@@ -5,8 +5,8 @@
 
 use std::alloc::{Layout, alloc, dealloc};
 
-fn raw_alloc(bytes: usize) -> *mut u8 {
-    let layout = match Layout::from_size_align(bytes.max(1), 8) {
+fn raw_alloc(bytes: u64) -> *mut u8 {
+    let layout = match Layout::from_size_align((bytes.max(1)) as usize, 8) {
         Ok(layout) => layout,
         Err(_) => return std::ptr::null_mut(),
     };
@@ -16,16 +16,18 @@ fn raw_alloc(bytes: usize) -> *mut u8 {
 /// Arena strategy (D-041): bump allocation with process lifetime — the
 /// v0 arena is never reset (region reset entry points arrive with real
 /// region inference). 8-aligned; zero-byte requests return a valid
-/// unique pointer; null only if the host allocator fails.
+/// unique pointer; null only if the host allocator fails. Sizes are
+/// u64 on every target (D-042 — 32-bit-word targets enforce exact
+/// signatures; the c mirror matches).
 #[unsafe(no_mangle)]
-pub extern "C" fn frk_rt_arena_alloc(bytes: usize) -> *mut u8 {
+pub extern "C" fn frk_rt_arena_alloc(bytes: u64) -> *mut u8 {
     raw_alloc(bytes)
 }
 
 /// Rc strategy (D-041): an i64 refcount header sits at `ptr - 8`; the
 /// returned pointer addresses the payload. The count starts at 1.
 #[unsafe(no_mangle)]
-pub extern "C" fn frk_rt_rc_alloc(payload_bytes: usize) -> *mut u8 {
+pub extern "C" fn frk_rt_rc_alloc(payload_bytes: u64) -> *mut u8 {
     let total = payload_bytes.max(1).checked_add(8);
     let Some(total) = total else {
         return std::ptr::null_mut();

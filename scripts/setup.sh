@@ -37,6 +37,18 @@ need "mlir-tblgen ($MLIR_PREFIX/bin/mlir-tblgen)" \
 need "ocaml (the ml_core specimen oracle, M5)" \
 	"command -v ocaml" \
 	"apt: sudo apt-get install ocaml | brew: brew install ocaml"
+need "mlir-translate (AOT: MLIR -> LLVM IR, M7)" \
+	"test -x \"$MLIR_PREFIX/bin/mlir-translate\"" \
+	"apt: sudo apt-get install mlir-$LLVM_MAJOR-tools"
+need "zig (the cross C driver, D-018; scripts/zigcc.sh)" \
+	"sh scripts/zigcc.sh --version" \
+	"https://ziglang.org/download or an anyzig shim; pin: versions.env ZIG_VERSION"
+need "qemu-user (grid executors: aarch64/riscv64/s390x)" \
+	"command -v qemu-aarch64 && command -v qemu-riscv64 && command -v qemu-s390x" \
+	"apt: sudo apt-get install qemu-user"
+need "wasmtime (grid executor: wasm32-wasi)" \
+	"command -v wasmtime || test -x \"$HOME/.wasmtime/bin/wasmtime\"" \
+	"curl https://wasmtime.dev/install.sh -sSf | bash"
 need "libPolly.a (tblgen links llvm-config --libs, which names Polly)" \
 	"test -f \"$MLIR_PREFIX/lib/libPolly.a\"" \
 	"apt: sudo apt-get install libpolly-$LLVM_MAJOR-dev | brew llvm@$LLVM_MAJOR already bundles it"

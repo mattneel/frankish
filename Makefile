@@ -19,7 +19,7 @@ export TABLEGEN_220_PREFIX ?= $(MLIR_PREFIX)
 CARGO ?= cargo
 CARGOFLAGS ?=
 
-.PHONY: setup build test bless diff dashboard ci clean
+.PHONY: setup build test bless diff dashboard grid grid-native canary ci clean
 
 # Verify the pinned toolchain is present; names anything missing. Never
 # mutates the system.
@@ -46,6 +46,19 @@ diff:
 # Conformance % per suite per runner (SPEC §8: a number, not a vibe).
 dashboard:
 	$(CARGO) run -q -p frnksh $(CARGOFLAGS) -- dashboard
+
+# The Tier-0 AOT cross grid (SPEC §10; D-042): every golden × every
+# grid triple × both memory strategies, executed via qemu/wasmtime.
+grid:
+	$(CARGO) run -q -p frnksh $(CARGOFLAGS) -- grid
+
+# The host-triple slice of the grid — what CI runs on every push.
+grid-native:
+	$(CARGO) run -q -p frnksh $(CARGOFLAGS) -- grid --native
+
+# The big-endian nightly canary (D-017): the same grid on s390x.
+canary:
+	$(CARGO) run -q -p frnksh $(CARGOFLAGS) -- grid --canary
 
 # Exactly what CI runs; plain shell all the way down.
 ci:

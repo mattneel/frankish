@@ -27,6 +27,10 @@ const USAGE: &str = "usage:
                                          must justify the change (AGENTS.md L2)
   frnksh diff  [--goldens DIR]           compare all runners pairwise (AGENTS.md L3)
   frnksh dashboard [--goldens DIR]       conformance % per suite per runner (SPEC §8)
+  frnksh grid [--goldens DIR] [--canary|--native]
+                                         AOT cross grid, both strategies (SPEC §10);
+                                         --canary: the s390x big-endian leg;
+                                         --native: host triple only (the CI slice)
   frnksh emit --stages FILE [--out DIR]  write per-pass IR snapshots
                                          (default DIR: out/stages/<FILE stem>)";
 
@@ -38,6 +42,7 @@ enum Command {
     Bless { goldens: PathBuf },
     Diff { goldens: PathBuf },
     Dashboard { goldens: PathBuf },
+    Grid { goldens: PathBuf, canary: bool, native_only: bool },
     Emit { source: PathBuf, out: Option<PathBuf> },
 }
 
@@ -48,6 +53,24 @@ fn parse(args: &[String]) -> Result<Command, String> {
     };
 
     match subcommand {
+        "grid" => {
+            let mut goldens = PathBuf::from("goldens");
+            let mut canary = false;
+            let mut native_only = false;
+            loop {
+                match words.next() {
+                    None => break,
+                    Some("--goldens") => match words.next() {
+                        Some(dir) => goldens = PathBuf::from(dir),
+                        None => return Err("grid: --goldens needs a DIR".into()),
+                    },
+                    Some("--canary") => canary = true,
+                    Some("--native") => native_only = true,
+                    Some(other) => return Err(format!("grid: unknown argument {other:?}")),
+                }
+            }
+            Ok(Command::Grid { goldens, canary, native_only })
+        }
         "test" | "bless" | "diff" | "dashboard" => {
             let mut goldens = PathBuf::from("goldens");
             match (words.next(), words.next(), words.next()) {
@@ -161,6 +184,61 @@ fn run(command: Command) -> ExitCode {
                     eprintln!("frnksh dashboard: {error}");
                     ExitCode::from(2)
                 }
+            }
+        }
+        Command::Grid { goldens, canary, native_only } => {
+            use frk_dialects::Strategy;
+            use frk_harness::runner::{AotRunner, Triple};
+            let triples: Vec<Triple> = if canary {
+                vec![Triple::S390xLinux]
+            } else if native_only {
+                vec![Triple::X86_64Linux]
+            } else {
+                Triple::GRID.to_vec()
+            };
+            let mut green = true;
+            println!("{:<16} {:>8} {:>8}", "triple", "arena", "rc");
+            for triple in triples {
+                let mut cells = Vec::new();
+                for strategy in [Strategy::Arena, Strategy::Rc] {
+                    let runner = AotRunner::new(triple, strategy);
+                    match run_goldens(&goldens, &runner, Mode::Check) {
+                        Ok(report) => {
+                            let total = report
+                                .outcomes
+                                .iter()
+                                .filter(|o| {
+                                    !matches!(o.status, frk_harness::golden::Status::Skipped)
+                                })
+                                .count();
+                            let ok = report
+                                .outcomes
+                                .iter()
+                                .filter(|o| {
+                                    matches!(o.status, frk_harness::golden::Status::Pass)
+                                })
+                                .count();
+                            if !report.is_green() {
+                                green = false;
+                                eprintln!("{report}");
+                            }
+                            cells.push(format!("{ok}/{total}"));
+                        }
+                        Err(error) => {
+                            green = false;
+                            cells.push("ERR".into());
+                            eprintln!("frnksh grid [{}]: {error}", triple.short());
+                        }
+                    }
+                }
+                println!("{:<16} {:>8} {:>8}", triple.target(), cells[0], cells[1]);
+            }
+            if green {
+                println!("grid: GREEN (both strategies)");
+                ExitCode::SUCCESS
+            } else {
+                println!("grid: RED");
+                ExitCode::FAILURE
             }
         }
         Command::Emit { source, out } => {

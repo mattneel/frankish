@@ -276,3 +276,273 @@ impl Runner for OcamlOracle {
             .map_err(|_| RunError::Invoke("ocaml produced non-UTF-8 output".into()))
     }
 }
+
+/// Tier-0 grid triples (D-017/D-042). Musl-static (zig bundles libc)
+/// so qemu-user executes sysroot-free; wasm32-wasi runs on wasmtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Triple {
+    X86_64Linux,
+    Aarch64Linux,
+    Riscv64Linux,
+    S390xLinux,
+    Wasm32Wasi,
+}
+
+impl Triple {
+    pub const GRID: [Triple; 4] = [
+        Triple::X86_64Linux,
+        Triple::Aarch64Linux,
+        Triple::Riscv64Linux,
+        Triple::Wasm32Wasi,
+    ];
+
+    pub fn target(self) -> &'static str {
+        match self {
+            Self::X86_64Linux => "x86_64-linux-musl",
+            Self::Aarch64Linux => "aarch64-linux-musl",
+            Self::Riscv64Linux => "riscv64-linux-musl",
+            Self::S390xLinux => "s390x-linux-musl",
+            Self::Wasm32Wasi => "wasm32-wasi",
+        }
+    }
+
+    pub fn short(self) -> &'static str {
+        match self {
+            Self::X86_64Linux => "x86_64",
+            Self::Aarch64Linux => "aarch64",
+            Self::Riscv64Linux => "riscv64",
+            Self::S390xLinux => "s390x",
+            Self::Wasm32Wasi => "wasm32",
+        }
+    }
+
+    /// The executor prefix, if any (native runs directly).
+    fn executor(self) -> Option<Vec<String>> {
+        match self {
+            Self::X86_64Linux => None,
+            Self::Aarch64Linux => Some(vec!["qemu-aarch64".into()]),
+            Self::Riscv64Linux => Some(vec!["qemu-riscv64".into()]),
+            Self::S390xLinux => Some(vec!["qemu-s390x".into()]),
+            Self::Wasm32Wasi => Some(vec![wasmtime_path(), "run".into()]),
+        }
+    }
+}
+
+fn wasmtime_path() -> String {
+    if which("wasmtime") {
+        return "wasmtime".into();
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let candidate = format!("{home}/.wasmtime/bin/wasmtime");
+        if std::path::Path::new(&candidate).is_file() {
+            return candidate;
+        }
+    }
+    "wasmtime".into()
+}
+
+fn which(name: &str) -> bool {
+    std::env::var("PATH").is_ok_and(|path| {
+        path.split(':')
+            .any(|dir| std::path::Path::new(dir).join(name).is_file())
+    })
+}
+
+fn mlir_prefix() -> String {
+    std::env::var("MLIR_SYS_220_PREFIX").unwrap_or_else(|_| "/usr/lib/llvm-22".into())
+}
+
+/// Walks up from a case directory to the repo root (the directory
+/// holding versions.env) — the AOT runner needs scripts/ and
+/// crates/frk-rt/c/ regardless of the harness process's cwd.
+fn repo_root_from(start: &std::path::Path) -> Result<std::path::PathBuf, RunError> {
+    let mut dir = start
+        .canonicalize()
+        .map_err(|e| RunError::Io(format!("{}: {e}", start.display())))?;
+    loop {
+        if dir.join("versions.env").is_file() {
+            return Ok(dir);
+        }
+        if !dir.pop() {
+            return Err(RunError::Io(
+                "no versions.env above the corpus — AOT needs the repo root".into(),
+            ));
+        }
+    }
+}
+
+/// The AOT runner (D-042): strategy pipeline → mlir-translate →
+/// llvm-22 clang compiles IR to a per-triple object (IR version
+/// safety) → zig cc links it with the generated shim and the C
+/// runtime mirror (bundled musl/wasi libc) → execute (qemu/wasmtime
+/// off-native) → canon over stdout.
+pub struct AotRunner {
+    pub triple: Triple,
+    pub strategy: frk_dialects::Strategy,
+    /// Leaked once at construction: Runner::name returns &'static str.
+    name: &'static str,
+}
+
+impl AotRunner {
+    pub fn new(triple: Triple, strategy: frk_dialects::Strategy) -> Self {
+        let name = match strategy {
+            frk_dialects::Strategy::Arena => format!("aot-{}", triple.short()),
+            frk_dialects::Strategy::Rc => format!("aot-{}-rc", triple.short()),
+        };
+        Self {
+            triple,
+            strategy,
+            name: Box::leak(name.into_boxed_str()),
+        }
+    }
+}
+
+impl Runner for AotRunner {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn run(&self, case: &Case) -> Result<String, RunError> {
+        use std::process::Command;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+
+        let (context, source) = frk_context(case)?;
+        let mut module = parse_and_verify(&context, &source, case)?;
+
+        // Rename the entry symbol pre-lowering: the C shim owns main()
+        // (D-042; entry functions are externally-invoked-only).
+        rename_entry(&module, &case.entry, "frk_entry").map_err(RunError::Verify)?;
+
+        pipeline::lower_to_llvm(&context, &mut module, self.strategy)
+            .map_err(|e| RunError::Lower(format!("{e}")))?;
+
+        let root = repo_root_from(&case.dir)?;
+        let work = std::env::temp_dir().join(format!(
+            "frk-aot-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&work).map_err(|e| RunError::Io(format!("{e}")))?;
+        let cleanup = |result: Result<String, RunError>| {
+            let _ = fs::remove_dir_all(&work);
+            result
+        };
+
+        let run = || -> Result<String, RunError> {
+            let mlir_path = work.join("lowered.mlir");
+            fs::write(&mlir_path, module.as_operation().to_string())
+                .map_err(|e| RunError::Io(format!("{e}")))?;
+
+            let ll_path = work.join("case.ll");
+            let translate = Command::new(format!("{}/bin/mlir-translate", mlir_prefix()))
+                .args(["--mlir-to-llvmir"])
+                .arg(&mlir_path)
+                .args(["-o"])
+                .arg(&ll_path)
+                .output()
+                .map_err(|e| RunError::Invoke(format!("mlir-translate: {e}")))?;
+            if !translate.status.success() {
+                return Err(RunError::Lower(format!(
+                    "mlir-translate: {}",
+                    String::from_utf8_lossy(&translate.stderr)
+                )));
+            }
+
+            // IR → object with the PINNED LLVM's clang (the IR may be
+            // newer than zig's bundled LLVM); zig links with its libc.
+            let obj_path = work.join("case.o");
+            let compile = Command::new(format!("{}/bin/clang", mlir_prefix()))
+                .args(["-target", self.triple.target(), "-O1", "-c"])
+                .arg(&ll_path)
+                .args(["-o"])
+                .arg(&obj_path)
+                .output()
+                .map_err(|e| RunError::Invoke(format!("clang: {e}")))?;
+            if !compile.status.success() {
+                return Err(RunError::Lower(format!(
+                    "clang -c: {}",
+                    String::from_utf8_lossy(&compile.stderr)
+                )));
+            }
+
+            let shim_path = work.join("shim.c");
+            fs::write(
+                &shim_path,
+                "#include <stdio.h>\n                 extern long long frk_entry(void);\n                 int main(void) { printf(\"%lld\\n\", frk_entry()); return 0; }\n",
+            )
+            .map_err(|e| RunError::Io(format!("{e}")))?;
+
+            let exe_path = work.join("case.exe");
+            let link = Command::new("sh")
+                .arg(root.join("scripts/zigcc.sh"))
+                .args(["-target", self.triple.target(), "-O1"])
+                .arg(&obj_path)
+                .arg(&shim_path)
+                .arg(root.join("crates/frk-rt/c/frk_rt.c"))
+                .args(["-o"])
+                .arg(&exe_path)
+                .current_dir(&root)
+                .output()
+                .map_err(|e| RunError::Invoke(format!("zigcc: {e}")))?;
+            if !link.status.success() {
+                return Err(RunError::Lower(format!(
+                    "zig cc link: {}",
+                    String::from_utf8_lossy(&link.stderr)
+                )));
+            }
+
+            let output = match self.triple.executor() {
+                None => Command::new(&exe_path)
+                    .output()
+                    .map_err(|e| RunError::Invoke(format!("exec: {e}")))?,
+                Some(executor) => {
+                    let mut command = Command::new(&executor[0]);
+                    for arg in &executor[1..] {
+                        command.arg(arg);
+                    }
+                    command
+                        .arg(&exe_path)
+                        .output()
+                        .map_err(|e| RunError::Invoke(format!("{}: {e}", executor[0])))?
+                }
+            };
+            if !output.status.success() {
+                return Err(RunError::Invoke(format!(
+                    "target exited with {}: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+            String::from_utf8(output.stdout)
+                .map_err(|_| RunError::Invoke("non-UTF-8 target output".into()))
+        };
+        cleanup(run())
+    }
+}
+
+/// Renames the module-level func.func `from` to `to` (sym_name only —
+/// valid because entry symbols are externally-invoked-only, D-042).
+fn rename_entry(module: &Module, from: &str, to: &str) -> Result<(), String> {
+    use melior::ir::BlockLike;
+    use melior::ir::attribute::StringAttribute;
+    use melior::ir::operation::OperationMutLike;
+
+    let context = unsafe { module.context().to_ref() };
+    let body = module.body();
+    let mut next = body.first_operation_mut();
+    while let Some(mut op) = next {
+        let following = op.next_in_block_mut();
+        let name_matches = op
+            .attribute("sym_name")
+            .ok()
+            .and_then(|attribute| StringAttribute::try_from(attribute).ok())
+            .is_some_and(|attribute| attribute.value() == from);
+        if name_matches {
+            op.set_attribute("sym_name", StringAttribute::new(context, to).into());
+            return Ok(());
+        }
+        next = following;
+    }
+    Err(format!("entry symbol {from:?} not found for AOT rename"))
+}

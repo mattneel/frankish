@@ -193,6 +193,33 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-042 [grid] The AOT/cross protocol (M7 second half). (1) AOT flow:
+  pre-lowering, the entry func.func is RENAMED to @frk_entry (corpus
+  protocol: entry functions are externally-invoked-only, so the rename
+  is reference-free and the C shim's main() never collides); then the
+  normal strategy pipeline, mlir-translate --mlir-to-llvmir, and
+  scripts/zigcc.sh (zig cc, ZIG_VERSION-pinned, plain-zig and anyzig
+  shims both handled) links {case.ll, generated shim.c printing
+  %lld of frk_entry(), crates/frk-rt/c/frk_rt.c} per triple. (2) The C
+  runtime mirror: the grid compiles frk_rt.c per triple instead of
+  cross-building the Rust crate — zero rustup-target setup; the Rust
+  crate stays canonical for the JIT; the two implementations are held
+  behaviorally equal BY the grid (aot must byte-match jit on every
+  golden, law L3). ABI corollary, found by the first wasm grid run:
+  allocator SIZES are u64 on every target — the kernel lowering
+  passes i64 unconditionally and 32-bit-word targets (wasm) enforce
+  exact import signatures, so a size_t runtime signature traps at
+  link (signature_mismatch); both runtime twins take u64 and cast
+  down. (3) Triples are musl-static (zig bundles libc), so
+  qemu-user runs them sysroot-free: x86_64-linux-musl (native exec),
+  aarch64/riscv64 via qemu-user, wasm32-wasi via wasmtime; s390x is
+  the big-endian nightly canary (D-017) — the slot model is
+  same-width load/store symmetric, which is exactly what the canary
+  proves. (4) Runner placement: the dev loop (make test/diff) keeps
+  the 4 fast runners; AOT lives in `make grid` (native + cross ×
+  both strategies) and `make ci` runs the native slice — continuous
+  L3 coverage without a 6-runner dev loop. Revisit: fold aot into
+  default_runners if compile latency stops mattering.
 - D-041 [mem] ⚑ frk.mem v0 surface + strategy knob, designed to retire
   four ledgered debts as one design (D-032 boxed reps, D-035 arena
   discipline and by-ref captures, D-038 recursive ADTs — the last two

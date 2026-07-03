@@ -22,6 +22,13 @@ files spell `(* frk-case: ... *)`. Keep integer results under 2^62
 (OCaml's 63-bit ints; the divergence rule lives in the ml_core
 MANIFEST).
 
+## Entry protocol note (AOT)
+
+The AOT/grid runners rename the entry function to `frk_entry` before
+lowering (the C shim owns `main`), so entry functions must be
+externally-invoked-only — nothing else in the module may call the
+entry symbol (D-042).
+
 ## Case directives
 
 Optional `// frk-case: key=value` comment lines anywhere in case.mlir:
