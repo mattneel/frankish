@@ -6,32 +6,28 @@ Tree: green — `make test` passes; clean-clone scripts/ci.sh verified
 (exit 0); `make diff`: 8 cases, interp vs jit, 0 divergent.
 
 ## Next action
-M3 frk.adt under D-031 (human struck D-030: pure IRDL, no C++ shim,
-trait-free dialect designs — SPEC §3 K1 + §4.1 amended). Build order:
-1. K1: frk_adt IRDL definition embedded in frk-dialects — parametric
-   sum/product types (variant/field structure as attribute params;
-   loose IRDL constraints) + pure ops make (variadic operands +
-   variant-index attr), tag_of, extract (variant+field attrs). Expose
-   frk_dialects::register(&Context); decide there how runners obtain
-   an adt-aware context (watch the frk-core↔frk-dialects dependency
-   direction). Smoke (L1): parse+verify good and bad adt IR — extend
-   registration.rs's pattern.
+M3 frk.adt under D-031. Step 1 DONE: frk_adt IRDL definition lives in
+crates/frk-dialects/src/adt.rs (sum/product parametric types; make_sum
+/tag_of/extract/make_product/get; encoding + landmines documented in
+the module header); frk_dialects::register(&Context) loads it; K1
+smoke green (tests/adt_smoke.rs — positive round-trip, IRDL negatives,
+type round-trips, builder construction). Remaining build order:
 2. K1 second half: the frk verification pass (semantic invariants IRDL
-   can't say: extract result type = field type, tag range, make arity
-   vs variant shape) — runs in harness runners before execution.
-3. K2: Eval impls for make/tag_of/extract (Value grows an Adt variant;
-   internal-only — entry protocol stays i64, canon.md untouched) plus
-   upstream cf.switch eval in frk-interp (match dispatch rides it).
+   can't say: extract result type = field type, tag/field ranges, make
+   arity vs variant shape) — decode sum params via type-print →
+   Attribute::parse (no C API accessor for dynamic type params); runs
+   in harness runners before execution.
+3. K2: Eval impls for the five ops (Value grows an Adt variant — costs
+   Copy, refactor interp to Clone; entry protocol stays i64) plus
+   upstream cf.switch eval in frk-interp (dispatch rides it).
 4. K5 seed: goldens/adt suite (construct/extract/switch programs, i64
-   results, hand-computed expecteds), green under interp+jit → 3-way
-   when lowering lands.
-5. K3: lowering make/tag_of/extract → LLVM structs + tag (+cf.switch
-   already upstream); melior RewritePattern machinery exists
-   (apply_patterns_and_fold_greedily) — evaluate vs a plain
-   module-walk rewrite, D-entry the choice.
-6. Decision-tree pass (Maranget, D-025): frontend pattern matrix →
-   dispatch IR, goldened over matrix→IR (its consumer arrives with
-   ml_core at M5; the pass + goldens land in M3 per SPEC §13).
+   results, hand-computed expecteds) — runners must call
+   frk_dialects::register in their context setup for these to parse.
+5. K3: lowering the five ops → LLVM structs + tag; melior has
+   RewritePattern + apply_patterns_and_fold_greedily — evaluate vs a
+   plain module-walk rewrite, D-entry the choice.
+6. Decision-tree pass (Maranget, D-025): pattern matrix → dispatch IR,
+   goldened over matrix→IR.
 Exit: K1–K7 checked; 3-way goldens green.
 
 ## In flight
