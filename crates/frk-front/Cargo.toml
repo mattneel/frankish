@@ -5,3 +5,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+
+[dependencies]
+ena.workspace = true
+frk-dialects.workspace = true
+melior.workspace = true
+
+[dev-dependencies]
+frk-core.workspace = true
+frk-interp.workspace = true

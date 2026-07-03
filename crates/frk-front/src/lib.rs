@@ -1,4 +1,51 @@
-//! frk-front — the frontend kit: readers, green-tree binder, type kit, and
-//! the loanword consumer (SPEC §6).
+//! frk-front — the frontend kit: readers, binder, type kit, and (M9)
+//! the loanword consumer (SPEC §6). First resident: the ml_core
+//! specimen frontend (M5) — scaffolding-grade lexer/parser (D-019),
+//! HM inference with let-polymorphism over ena (SPEC §6.4), and
+//! emission into the kernel dialects.
 //!
-//! First populated at M5 (ml_core parser scaffold + HM via the type kit).
+//! v0 debts, all ledgered: spans don't thread into MLIR locations yet
+//! (§6.5 — a diagnostic pointing at IR instead of source is a known
+//! bug class until then); the green tree (§6.2) is deferred with the
+//! rowan-vs-custom decision; polymorphic multi-instantiation emission
+//! and recursive ADTs are fenced (D-038).
+
+pub mod ast;
+pub mod emit;
+pub mod infer;
+pub mod lex;
+pub mod types;
+
+use melior::Context;
+use melior::ir::Module;
+
+#[derive(Debug)]
+pub enum CompileError {
+    Parse(String),
+    Type(String),
+    Emit(String),
+}
+
+impl std::fmt::Display for CompileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parse(m) => write!(f, "parse: {m}"),
+            Self::Type(m) => write!(f, "type: {m}"),
+            Self::Emit(m) => write!(f, "emit: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for CompileError {}
+
+/// Compiles an ml_core program to a kernel-dialect module inside
+/// `context`. Precondition: the kernel dialects are registered
+/// (`frk_dialects::register`).
+pub fn compile_ml<'c>(
+    context: &'c Context,
+    source: &str,
+) -> Result<Module<'c>, CompileError> {
+    let program = ast::parse(source).map_err(|e| CompileError::Parse(e.to_string()))?;
+    let typed = infer::infer(&program).map_err(|e| CompileError::Type(e.to_string()))?;
+    emit::emit(context, &typed).map_err(CompileError::Emit)
+}

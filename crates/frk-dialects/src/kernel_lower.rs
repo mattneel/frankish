@@ -71,35 +71,40 @@ pub fn lower_kernel_pass() -> Pass {
 }
 
 /// What one field/param/capture is, slot-wise.
-#[derive(Clone, Copy, Debug)]
-enum SlotKind {
+#[derive(Clone, Debug)]
+enum SlotKind<'c> {
     /// An integer of the given width: one slot, extui/trunci adapted.
     Int(u32),
     /// A closure {ptr, ptr}: two slots, ptrtoint/inttoptr adapted.
     Closure,
+    /// A nested adt value: `slots` verbatim i64 words (its own lowered
+    /// struct is all-i64), rebuilt as `mapped` on read. Finite by
+    /// construction — recursive ADTs cannot even be spelled (D-038).
+    Words { slots: usize, mapped: Type<'c> },
 }
 
-impl SlotKind {
-    fn slots(self) -> usize {
+impl SlotKind<'_> {
+    fn slots(&self) -> usize {
         match self {
             Self::Int(_) => 1,
             Self::Closure => 2,
+            Self::Words { slots, .. } => *slots,
         }
     }
 }
 
-fn slot_kind(r#type: Type<'_>) -> Result<SlotKind, String> {
+fn slot_kind<'c>(context: &'c Context, r#type: Type<'c>) -> Result<SlotKind<'c>, String> {
     let printed = r#type.to_string();
     if printed.starts_with("!frk_closure.fn<") {
         return Ok(SlotKind::Closure);
     }
     if printed.starts_with("!frk_adt.") {
-        return Err(format!(
-            "nested adt fields are fenced until frk.mem (M7): {printed}"
-        ));
+        let mapped = map_type(context, r#type)?;
+        let slots = struct_field_count(&mapped)?;
+        return Ok(SlotKind::Words { slots, mapped });
     }
     let width = IntegerType::try_from(r#type)
-        .map_err(|_| format!("unsupported field type {printed} (integers ≤64 and closures only)"))?
+        .map_err(|_| format!("unsupported field type {printed} (integers ≤64, closures, adts)"))?
         .width();
     if width > 64 {
         return Err(format!("field width {width} exceeds 64"));
@@ -107,11 +112,25 @@ fn slot_kind(r#type: Type<'_>) -> Result<SlotKind, String> {
     Ok(SlotKind::Int(width))
 }
 
-fn kinds_of(fields: &[Type<'_>]) -> Result<Vec<SlotKind>, String> {
-    fields.iter().map(|field| slot_kind(*field)).collect()
+/// Counts the fields of an !llvm.struct<(i64 × N)> by its printed form —
+/// the structs this pass makes are always uniform i64 tuples.
+fn struct_field_count(mapped: &Type<'_>) -> Result<usize, String> {
+    let printed = mapped.to_string();
+    let inner = printed
+        .strip_prefix("!llvm.struct<(")
+        .and_then(|rest| rest.strip_suffix(")>"))
+        .ok_or_else(|| format!("expected a struct type, got {printed}"))?;
+    if inner.is_empty() {
+        return Ok(0);
+    }
+    Ok(inner.split(',').count())
 }
 
-fn total_slots(kinds: &[SlotKind]) -> usize {
+fn kinds_of<'c>(context: &'c Context, fields: &[Type<'c>]) -> Result<Vec<SlotKind<'c>>, String> {
+    fields.iter().map(|field| slot_kind(context, *field)).collect()
+}
+
+fn total_slots(kinds: &[SlotKind<'_>]) -> usize {
     kinds.iter().map(|kind| kind.slots()).sum()
 }
 
@@ -129,7 +148,7 @@ enum Planned<'c, 'a> {
     Read {
         op: OperationRef<'c, 'a>,
         offset: usize,
-        kind: SlotKind,
+        kind: SlotKind<'c>,
     },
     ProductNew {
         op: OperationRef<'c, 'a>,
@@ -139,12 +158,12 @@ enum Planned<'c, 'a> {
         op: OperationRef<'c, 'a>,
         container: Type<'c>,
         old_slots: usize,
-        kind: SlotKind,
+        kind: SlotKind<'c>,
     },
     MakeClosure {
         op: OperationRef<'c, 'a>,
         callee: String,
-        env_kinds: Vec<SlotKind>,
+        env_kinds: Vec<SlotKind<'c>>,
         /// Lowered parameter/result types for the thunk signature.
         params: Vec<Type<'c>>,
         result: Type<'c>,
@@ -152,7 +171,7 @@ enum Planned<'c, 'a> {
     },
     ApplyClosure {
         op: OperationRef<'c, 'a>,
-        param_kinds: Vec<SlotKind>,
+        param_kinds: Vec<SlotKind<'c>>,
         result: Type<'c>,
     },
 }
@@ -278,7 +297,7 @@ fn plan_adt<'c, 'a>(
             container: map_type(context, result_type()?)?,
         }),
         "product_snoc" => {
-            let old = kinds_of(&decode_product(context, operand_type()?)?)?;
+            let old = kinds_of(context, &decode_product(context, operand_type()?)?)?;
             let appended = op
                 .operand(1)
                 .map_err(|_| "snoc without a value operand".to_string())?
@@ -287,18 +306,19 @@ fn plan_adt<'c, 'a>(
                 op,
                 container: map_type(context, result_type()?)?,
                 old_slots: total_slots(&old),
-                kind: slot_kind(appended)?,
+                kind: slot_kind(context, appended)?,
             })
         }
         "make_sum" => {
             let variants = decode_sum(context, result_type()?)?;
             let tag = index("variant")? as i64;
             kinds_of(
+                context,
                 variants
                     .get(tag as usize)
                     .ok_or_else(|| format!("variant {tag} out of range"))?,
             )?;
-            let payload = kinds_of(&decode_product(context, operand_type()?)?)?;
+            let payload = kinds_of(context, &decode_product(context, operand_type()?)?)?;
             Ok(Planned::MakeSum {
                 op,
                 tag,
@@ -312,6 +332,7 @@ fn plan_adt<'c, 'a>(
             let variant = index("variant")?;
             let field = index("field")?;
             let kinds = kinds_of(
+                context,
                 variants
                     .get(variant)
                     .ok_or_else(|| format!("variant {variant} out of range"))?,
@@ -322,11 +343,11 @@ fn plan_adt<'c, 'a>(
             Ok(Planned::Read {
                 op,
                 offset: 1 + total_slots(&kinds[..field]),
-                kind: kinds[field],
+                kind: kinds[field].clone(),
             })
         }
         "get" => {
-            let kinds = kinds_of(&decode_product(context, operand_type()?)?)?;
+            let kinds = kinds_of(context, &decode_product(context, operand_type()?)?)?;
             let field = index("field")?;
             if field >= kinds.len() {
                 return Err(format!("field {field} out of range"));
@@ -334,7 +355,7 @@ fn plan_adt<'c, 'a>(
             Ok(Planned::Read {
                 op,
                 offset: total_slots(&kinds[..field]),
-                kind: kinds[field],
+                kind: kinds[field].clone(),
             })
         }
         other => Err(format!("no lowering for frk_adt.{other}")),
@@ -350,7 +371,7 @@ fn plan_closure<'c, 'a>(
     match suffix {
         "make" => {
             let callee = crate::closure::callee_name(op)?;
-            let env_kinds = kinds_of(&decode_product(
+            let env_kinds = kinds_of(context, &decode_product(
                 context,
                 op.operand(0)
                     .map_err(|_| "make without an env operand".to_string())?
@@ -394,7 +415,7 @@ fn plan_closure<'c, 'a>(
             };
             Ok(Planned::ApplyClosure {
                 op,
-                param_kinds: kinds_of(&params)?,
+                param_kinds: kinds_of(context, &params)?,
                 result: map_type(context, *result)?,
             })
         }
@@ -423,11 +444,11 @@ fn map_type<'c>(context: &'c Context, r#type: Type<'c>) -> Result<Type<'c>, Stri
         let variants = decode_sum(context, r#type)?;
         let mut max_slots = 0;
         for fields in &variants {
-            max_slots = max_slots.max(total_slots(&kinds_of(fields)?));
+            max_slots = max_slots.max(total_slots(&kinds_of(context, fields)?));
         }
         Ok(slots_struct(context, 1 + max_slots))
     } else if printed.starts_with("!frk_adt.product<") {
-        let kinds = kinds_of(&decode_product(context, r#type)?)?;
+        let kinds = kinds_of(context, &decode_product(context, r#type)?)?;
         Ok(slots_struct(context, total_slots(&kinds)))
     } else if printed.starts_with("!frk_closure.fn<") {
         Ok(closure_struct(context))
@@ -562,6 +583,27 @@ fn synthesize_thunks(
         let mut offset = 0usize;
         for kind in env_kinds {
             match kind {
+                SlotKind::Words { slots, mapped } => {
+                    let mut rebuilt = {
+                        let undef = block.append_operation(llvm::undef(*mapped, location));
+                        let raw = undef.result(0).map_err(|e| e.to_string())?.to_raw();
+                        unsafe { Value::from_raw(raw) }
+                    };
+                    for index in 0..*slots {
+                        let word = load_slot(context, &block, env_ptr, offset + index, location)?;
+                        let inserted = block.append_operation(llvm::insert_value(
+                            context,
+                            rebuilt,
+                            DenseI64ArrayAttribute::new(context, &[index as i64]),
+                            word,
+                            location,
+                        ));
+                        let raw = inserted.result(0).map_err(|e| e.to_string())?.to_raw();
+                        rebuilt = unsafe { Value::from_raw(raw) };
+                    }
+                    call_args.push(rebuilt);
+                    offset += slots;
+                }
                 SlotKind::Int(width) => {
                     let slot = load_slot(context, &block, env_ptr, offset, location)?;
                     let value = if *width < 64 {
@@ -793,7 +835,7 @@ fn apply<'c>(
             }
             let appended = operand(op, 1)?;
             write_slots(
-                context, rewriter, &mut acc, old_slots, kind, appended, location,
+                context, rewriter, &mut acc, old_slots, kind.clone(), appended, location,
             )?;
             finish(rewriter, op, acc)
         }
@@ -961,7 +1003,7 @@ fn apply<'c>(
             let mut offset = 0usize;
             for kind in &param_kinds {
                 let value =
-                    read_slots(context, rewriter, arg_pack, offset, *kind, location)?;
+                    read_slots(context, rewriter, arg_pack, offset, kind.clone(), location)?;
                 call_operands.push(value);
                 offset += kind.slots();
             }
@@ -1054,12 +1096,33 @@ fn read_slots<'c>(
     rewriter: &RewriterBase<'c, '_>,
     container: Value<'c, '_>,
     offset: usize,
-    kind: SlotKind,
+    kind: SlotKind<'c>,
     location: Location<'c>,
 ) -> Result<Value<'c, 'c>, String> {
     let i64_type: Type = IntegerType::new(context, 64).into();
     let ptr = llvm::r#type::pointer(context, 0);
     match kind {
+        SlotKind::Words { slots, mapped } => {
+            // Rebuild the nested adt struct from verbatim word slots.
+            let mut rebuilt = result_value(rewriter.insert(llvm::undef(mapped, location)))?;
+            for index in 0..slots {
+                let word = result_value(rewriter.insert(llvm::extract_value(
+                    context,
+                    container,
+                    DenseI64ArrayAttribute::new(context, &[(offset + index) as i64]),
+                    i64_type,
+                    location,
+                )))?;
+                rebuilt = result_value(rewriter.insert(llvm::insert_value(
+                    context,
+                    rebuilt,
+                    DenseI64ArrayAttribute::new(context, &[index as i64]),
+                    word,
+                    location,
+                )))?;
+            }
+            Ok(rebuilt)
+        }
         SlotKind::Int(width) => {
             let slot = result_value(rewriter.insert(llvm::extract_value(
                 context,
@@ -1124,12 +1187,30 @@ fn write_slots<'c>(
     rewriter: &RewriterBase<'c, '_>,
     accumulator: &mut Value<'c, 'c>,
     offset: usize,
-    kind: SlotKind,
+    kind: SlotKind<'c>,
     value: Value<'c, '_>,
     location: Location<'c>,
 ) -> Result<(), String> {
     let i64_type: Type = IntegerType::new(context, 64).into();
     match kind {
+        SlotKind::Words { slots, .. } => {
+            for index in 0..slots {
+                let word = result_value(rewriter.insert(llvm::extract_value(
+                    context,
+                    value,
+                    DenseI64ArrayAttribute::new(context, &[index as i64]),
+                    i64_type,
+                    location,
+                )))?;
+                *accumulator = result_value(rewriter.insert(llvm::insert_value(
+                    context,
+                    *accumulator,
+                    DenseI64ArrayAttribute::new(context, &[(offset + index) as i64]),
+                    word,
+                    location,
+                )))?;
+            }
+        }
         SlotKind::Int(width) => {
             let widened = if width < 64 {
                 result_value(rewriter.insert(cast_op("arith.extui", value, i64_type, location)?))?
