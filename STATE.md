@@ -1,34 +1,41 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-03 (M0..M10 sessions)
-Phase: M10 complete (tag m10-done). THE SCHEDULED PROGRAM (SPEC §13
-M0–M10) IS COMPLETE. Beyond-M10 tracks are unscheduled and ordered;
-sequencing them is a taste call — see "For the human".
-Tree: green — `make test` 32 blocks; diff 53 cases 0 divergent (6
-runners); grid 47/47 × 4 triples × 2 strategies + s390x canary
-(dyn golden interp-fenced by design, excluded via runners=).
+Updated: 2026-07-03 (M0..M11 sessions)
+Phase: M11 in flight (D-054 — the human picked femto_lua + GC ladder,
+"Do it"). Bars 1–2 of 4 DONE: dyn K3 (fence lifted) and GC step 1
+(releases fire). Bars 3–4 remain: the Lua frontend + %.14g canon.
+Tree: green — `make test` 34 blocks; diff 54 cases 0 divergent (6
+runners); native grid 49/49 both strategies.
 
 ## Next action
-The scheduled program is complete. The unscheduled queue (SPEC §13
-"beyond M10", plus accumulated ledger debts), in the SPEC's order
-with debt annotations — awaiting the human's sequencing (see "For
-the human"):
-1. femto_lua IMPLEMENTATION (manifest ratified D-052; dyn K3 +
-   byte strings + tables + __index; the interp-fenced dyn golden
-   widens to all runners the day K3 lands).
-2. The GC implementation ladder (D-053 sequencing): D-041 liveness
-   releases → sized releases → cycle candidates + trial deletion;
-   frk_rt_alloc_count is the metric; the leak-canary golden becomes
-   writable at step one. D-045's effects trigger arms with Lua IO.
-3. scheme/ctl track (r7rs_core: tail calls as law, one-shot
-   continuations, frk.ctl).
-4. Effects lowering (evidence-passing, D-012).
-5. frk.stage; TS-1..4 (narrowing verifier is the research slice);
-   height axis (gpu).
-Do not start any of these without either a human pick or an L4 call
-logged with rationale for choosing among PEER tracks (the ledger
-protocol covers unadjudicated forks, but sequencing whole tracks is
-the constitution's named escalation case).
+M11 bars 3–4: the femto_lua frontend (D-052 manifest, D-054 fences).
+DONE this arc: dyn K3 (fat-value lowering — scalars adapt in place,
+multi-word payloads heap-box via the strategy allocator; native tag
+check = straight-line frk_rt_dyn_check abort, proven interp-level
+(located traps), AOT-level (subprocess abort test); fence lifted,
+boxed-closure golden); GC step 1 (block-local releases + counters +
+THE LEAK CANARY: 3 allocated, 3 released at runtime under rc).
+Remaining, in order:
+1. Lua canon fence (bar 4 first — printing precedes goldens): %.14g
+   three ways: Rust twin emulation (integer fast path + 14-sig-digit
+   positional inside the TS-0-style value fence), C twin native
+   %.14g, lua5.1 oracle. canon.md §7 + rt fns frk_rt_print_lua_*
+   (num/str/bool/nil per D-052 print scope).
+2. frk-front lua module: lexer/parser (hand-rolled, D-054), all
+   values dyn (fat), emission: arithmetic = unwrap-num→op→wrap;
+   locals = boxes of dyn; functions fixed-arity fn<[dyn×n],[dyn]>
+   in tag-5 wraps; if/while/numeric-for as cf; .. and # via
+   frk_str?? NO — Lua strings are BYTE strings (D-052): needs the
+   byte-string surface FIRST (sibling ops or frk_str widening —
+   D-052 deferred this to implementation: DECIDE via D-entry;
+   recommendation: frk_str gains a parallel byte face is WRONG
+   (two semantics one dialect); new frk_bstr micro-dialect (lit/
+   concat/eq/len/intern) with rt intern table is honest).
+3. Tables (frk_dyn.table_* per the M10 thinking — get does the
+   __index walk), LuaOracle runner (kind Lua, ext .lua), corpus
+   ≥90% vs lua5.1, grid, dashboard row, m11-done.
+Sequencing note: 1 → 2(scalars first, no strings) → bstr → 2(full)
+→ 3. Commit per green step as ever.
 
 ## In flight
 Nothing.
@@ -335,6 +342,26 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (eighteenth entry)
+    Milestone/step: M11 bars 1–2 (dyn K3 + GC step 1)
+    Green? yes — 34 blocks; 54 cases 0 divergent; native grid 49/49
+    Did:
+    - D-054 (milestone contract from the human's pick); dyn K3 with
+      the boxed-payload arm + AOT abort-path subprocess test; GC
+      step 1 releases + release_count in both twins + leak canary
+    Next: bars 3–4 per Next-action (canon fence first, then the
+      frontend, then bstr, then tables)
+    Landmines:
+    - dyn tag mismatch under IN-PROCESS JIT aborts the harness;
+      corpus law: no mismatch cases in jit-run goldens (the checked
+      path is verified at interp + AOT levels instead)
+    - the release pass anchors on TERMINATORS (they survive
+      rewriting); if a future plan ever replaces a terminator, the
+      anchors die — revisit the anchor scheme then
+    - escape analysis counts func.call operands as escaping (callee
+      may store); releasing across calls needs the real liveness
+      pass (ladder step 2+)
 
     Session end: 2026-07-03 (seventeenth entry)
     Milestone/step: M10 complete, tagged m10-done — SCHEDULED PROGRAM
