@@ -4,3 +4,10 @@
 //! implementation is [`canon`].
 
 pub mod canon;
+pub mod case;
+pub mod golden;
+pub mod pipeline;
+pub mod runner;
+
+#[cfg(test)]
+pub(crate) mod testutil;

@@ -80,3 +80,11 @@ veto-ledger pattern and most deserve their review.
 - D-026 [dyn] Structural interface dispatch uses Go-style itabs (cached
   interface/type pairs); inline caches deferred. Revisit: at femto_lua
   metatable design if itabs misfit.
+- D-027 [harness] Golden runner is custom, not insta: corpus at
+  goldens/<suite>/<case>/ (case.mlir + expected.out + gitignored
+  *.actual), directives as `// frk-case: k=v` comments, v0 entry protocol
+  = nullary entry returning i64 with llvm.emit_c_interface, JIT lowering
+  = scf-to-cf → convert-to-llvm → reconcile-unrealized-casts (one shared
+  pipeline table). Rationale: bless/diff/multi-runner flow doesn't fit
+  cargo-snapshot tools and this costs zero new deps. Revisit: if
+  directive creep demands a real manifest format.
