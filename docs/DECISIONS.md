@@ -88,3 +88,9 @@ veto-ledger pattern and most deserve their review.
   pipeline table). Rationale: bless/diff/multi-runner flow doesn't fit
   cargo-snapshot tools and this costs zero new deps. Revisit: if
   directive creep demands a real manifest format.
+- D-028 [harness] Stage dumps v0 = one single-pass PassManager per
+  pipeline entry, snapshots in MLIR default textual form, out dir
+  recreated whole, dumps never goldened (pedagogy artifact tracking
+  MLIR's printer). Rationale: exact after-pass-N snapshots without
+  C-API IR-printing instrumentation. Revisit: if melior grows pass
+  printing hooks or a dump ever needs to gate.

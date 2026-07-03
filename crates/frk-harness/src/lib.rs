@@ -9,6 +9,7 @@ pub mod diff;
 pub mod golden;
 pub mod pipeline;
 pub mod runner;
+pub mod stages;
 
 #[cfg(test)]
 pub(crate) mod testutil;
