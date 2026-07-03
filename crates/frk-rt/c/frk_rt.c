@@ -40,6 +40,39 @@ void *frk_rt_rc_alloc(uint64_t payload_bytes) {
     return base + 8;
 }
 
+/* JS-faithful f64 printing (D-047): shortest round-trip digits via
+ * precision search (1..17, first %.{p}g whose strtod round-trips
+ * bit-exactly); integer-valued doubles in range print as integers.
+ * The corpus fence (canon): values are 0 or |v| in [1e-4, 1e15),
+ * finite — %g stays positional there and matches JS ToString. */
+#include <stdio.h>
+#include <math.h>
+
+void frk_rt_print_f64(double value) {
+    if (value == (long long)value && fabs(value) < 1e15) {
+        /* Integer-valued: JS prints no decimal point. Covers -0
+         * correctly? JS prints "-0" for negative zero: */
+        if (value == 0.0 && signbit(value)) {
+            printf("-0\n");
+            return;
+        }
+        printf("%lld\n", (long long)value);
+        return;
+    }
+    char buffer[64];
+    for (int precision = 1; precision <= 17; precision++) {
+        snprintf(buffer, sizeof buffer, "%.*g", precision, value);
+        double back;
+        sscanf(buffer, "%lf", &back);
+        if (back == value) break;
+    }
+    printf("%s\n", buffer);
+}
+
+void frk_rt_print_bool(unsigned char value) {
+    printf("%s\n", value ? "true" : "false");
+}
+
 void frk_rt_rc_retain(void *payload) {
     if (!payload) return;
     int64_t *header = (int64_t *)((unsigned char *)payload - 8);

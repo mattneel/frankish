@@ -11,6 +11,7 @@
 //! and recursive ADTs are fenced (D-038).
 
 pub mod ast;
+pub mod loanword;
 pub mod emit;
 pub mod infer;
 pub mod lex;

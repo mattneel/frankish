@@ -1,5 +1,6 @@
 //! arith: constants, integer arithmetic (wrapping, per MLIR's modulo-2^n
-//! semantics), comparisons, select. Signed-division UB traps (D-029).
+//! semantics), float arithmetic (IEEE, M9/TS-0 — no UB, no traps),
+//! comparisons, select, bitcast. Signed-division UB traps (D-029).
 
 use std::collections::HashMap;
 
@@ -21,6 +22,141 @@ pub(crate) fn register(registry: &mut HashMap<&'static str, Box<dyn Eval>>) {
     registry.insert("arith.divsi", Box::new(DivSI));
     registry.insert("arith.cmpi", Box::new(CmpI));
     registry.insert("arith.select", Box::new(Select));
+    registry.insert("arith.addf", Box::new(FloatBin(|a, b| a + b)));
+    registry.insert("arith.subf", Box::new(FloatBin(|a, b| a - b)));
+    registry.insert("arith.mulf", Box::new(FloatBin(|a, b| a * b)));
+    registry.insert("arith.divf", Box::new(FloatBin(|a, b| a / b)));
+    registry.insert("arith.remf", Box::new(FloatBin(|a, b| a % b)));
+    registry.insert("arith.negf", Box::new(NegF));
+    registry.insert("arith.cmpf", Box::new(CmpF));
+    registry.insert("arith.bitcast", Box::new(Bitcast));
+    registry.insert("arith.xori", Box::new(XorI));
+}
+
+/// Two operands with no integer-width insistence (float ops).
+fn float_operands(
+    frame: &Frame,
+    op: OperationRef<'_, '_>,
+) -> Result<(Value, Value), EvalError> {
+    let mut values = operand_values(frame, op, 0, 2)?;
+    let rhs = values.pop().expect("two operands");
+    let lhs = values.pop().expect("two operands");
+    Ok((lhs, rhs))
+}
+
+/// IEEE binary op: total, deterministic (NaN propagates; never traps).
+struct FloatBin(fn(f64, f64) -> f64);
+impl Eval for FloatBin {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let (lhs, rhs) = float_operands(frame, op)?;
+        let value = (self.0)(lhs.as_float()?, rhs.as_float()?);
+        continue_with_result(frame, op, Value::float(value))
+    }
+}
+
+struct NegF;
+impl Eval for NegF {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let values = operand_values(frame, op, 0, 1)?;
+        continue_with_result(frame, op, Value::float(-values[0].as_float()?))
+    }
+}
+
+/// arith.cmpf with the ordered/unordered predicates TS-0 emits:
+/// oeq/one/olt/ole/ogt/oge (false on NaN) and une (true on NaN — JS
+/// NaN !== NaN).
+struct CmpF;
+impl Eval for CmpF {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let (lhs, rhs) = float_operands(frame, op)?;
+        let (a, b) = (lhs.as_float()?, rhs.as_float()?);
+        let predicate = op
+            .attribute("predicate")
+            .ok()
+            .and_then(|attribute| IntegerAttribute::try_from(attribute).ok())
+            .ok_or_else(|| EvalError::Malformed("arith.cmpf without predicate".into()))?
+            .value();
+        // MLIR CmpFPredicate numbering (llvm-project ArithBase.td).
+        let result = match predicate {
+            1 => a == b,                       // oeq
+            2 => a > b,                        // ogt
+            3 => a >= b,                       // oge
+            4 => a < b,                        // olt
+            5 => a <= b,                       // ole
+            6 => a != b && !(a.is_nan() || b.is_nan()), // one
+            13 => a != b || a.is_nan() || b.is_nan(),   // une (JS !==)
+            other => {
+                return Err(EvalError::Unsupported(format!(
+                    "cmpf predicate {other}"
+                )));
+            }
+        };
+        continue_with_result(frame, op, Value::bool(result))
+    }
+}
+
+/// Same-width bit reinterpretation: f64 <-> i64 (the slot model's
+/// float path, D-046).
+struct Bitcast;
+impl Eval for Bitcast {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let values = operand_values(frame, op, 0, 1)?;
+        let result_type = op
+            .result(0)
+            .map_err(|_| EvalError::Malformed("bitcast without result".into()))?
+            .r#type();
+        let value = if result_type.to_string() == "f64" {
+            let (bits, width) = values[0].int_parts()?;
+            if width != 64 {
+                return Err(EvalError::Unsupported(format!(
+                    "bitcast i{width} -> f64"
+                )));
+            }
+            Value::float(f64::from_bits(bits))
+        } else if IntegerType::try_from(result_type).is_ok_and(|t| t.width() == 64) {
+            Value::int(values[0].as_float()?.to_bits(), 64)?
+        } else {
+            return Err(EvalError::Unsupported(format!(
+                "bitcast to {result_type}"
+            )));
+        };
+        continue_with_result(frame, op, value)
+    }
+}
+
+struct XorI;
+impl Eval for XorI {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let (lhs, rhs) = binary_operands(frame, op)?;
+        let (a, width) = lhs.int_parts()?;
+        let (b, _) = rhs.int_parts()?;
+        continue_with_result(frame, op, Value::int(a ^ b, width)?)
+    }
 }
 
 fn int_width(r#type: Type<'_>) -> Result<u32, EvalError> {
@@ -40,13 +176,16 @@ impl Eval for Constant {
         let result = op
             .result(0)
             .map_err(|_| EvalError::Malformed("arith.constant without result".into()))?;
-        let width = int_width(result.r#type())?;
+        let width = int_width(result.r#type());
         let attribute = op
             .attribute("value")
             .map_err(|_| EvalError::Malformed("arith.constant without value".into()))?;
 
-        let value = if let Ok(integer) = IntegerAttribute::try_from(attribute) {
-            Value::int(integer.value() as u64, width)?
+        let value = if let Ok(float) = melior::ir::attribute::FloatAttribute::try_from(attribute)
+        {
+            Value::float(float.value())
+        } else if let Ok(integer) = IntegerAttribute::try_from(attribute) {
+            Value::int(integer.value() as u64, width?)?
         } else if let Ok(boolean) = BoolAttribute::try_from(attribute) {
             Value::bool(boolean.value())
         } else {

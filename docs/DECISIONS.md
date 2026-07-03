@@ -193,6 +193,76 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-048 [front] D-039's hard M9 trigger fires and resolves: the green
+  tree is NOT adopted. Evidence: loanword v1 shipped without lossless
+  trees — self-contained artifacts (embedded source + byte spans)
+  cover diagnostics and location threading, and no reprinter exists
+  or is scheduled (SPEC §9 lists fmt as "later"). rowan-vs-custom
+  dissolves for lack of a consumer; ml_core's plain AST and the tsc
+  AST both stand. Revisit: if fmt is ever scheduled, or a frontend
+  needs incremental reparse — whichever brings an actual consumer.
+- D-047 [ts0] TS-0 slice conventions (M9). number = f64 (D-013
+  faithful; the FIRST float in the kernel — it enters through the
+  admission rule as the idiom ml_core's fence excluded); boolean =
+  i1. Monomorphic fully-annotated functions lower to plain func.func
+  + func.call — closure-lite arrives only when a corpus case demands
+  it (the admission rule cuts both ways). `let` locals are frk_mem
+  boxes (assignment is the idiom TS carries that ml_core lacked; the
+  mem surface's first frontend consumer); parameters immutable
+  (assignment to them fenced, loud). console.log lowers to calls to
+  bodyless @frk_rt_print_f64/_bool declarations, resolved three ways
+  and DIFFED: interpreter builtins (append to the interp's output
+  buffer), in-process capturing JIT symbols (thread-local — the JIT
+  shares harness stdout), the real C runtime for AOT. Entry protocol:
+  ts cases emit @main() -> () and their output IS the captured
+  prints; the AOT shim is the void variant. JS semantics mappings:
+  === → cmpf oeq, !== → cmpf une (NaN !== NaN true), <,<=,>,>= →
+  ordered predicates (false on NaN), % → arith.remf (fmod, dividend
+  sign), &&/|| → strict select (pure subset). Number printing is JS
+  ToString within the CANON FENCE: printed values are 0 or |v| ∈
+  [1e-4, 1e15) and finite — inside it, Rust Display, the C
+  round-trip-precision search, and V8 agree byte-exactly (proven by
+  the float_precision golden four ways); outside it JS switches to
+  exponent spellings we do not reproduce yet. Dead code after
+  `return` drops (tsc-legal); fall-off-the-end of a value function
+  returns zero (tsc default lacks noImplicitReturns — fence note).
+  Revisit: the print fence when TS-1 needs full ToString; parameter
+  boxing when a case demands it.
+- D-046 [loanword] loanword v1 FROZEN (M9; SPEC §6.3, D-024
+  executed). Canonical encoding: JSON with recursively sorted keys,
+  no whitespace, UTF-8; content id = SHA-256 over the canonical bytes
+  WITHOUT the sha256 field, then the field is inserted and the whole
+  re-canonicalized for output; consumers MUST verify. Mandatory
+  fields: loanword (version, =1), producer, file, source (full text —
+  artifacts are self-contained; spans index into it), types (interned
+  table), decls, stmts. Every node carries "span": [start, end) byte
+  offsets; consumers thread them into FileLineColLoc via a line table
+  over the embedded source — §6.5 span threading LANDS with this
+  entry (loanword programs trap with file:line:col; ml_core's own
+  reader still owes its spans, scheduled with its v0.2). v1 node
+  vocabulary is the TS-0 slice (fn/log/let/assign/if/while/ret/expr;
+  num/bool/var/bin/un/cond/call); vocabulary EXTENSIONS are
+  version-gated, encoding changes are a v2. CBOR: measured DEFERRED —
+  the fib artifact is ~2KB canonical JSON; content-addressing and
+  debuggability beat the bytes at this scale (D-024's revisit
+  condition answered with the measurement it asked for). Rust
+  consumer deps: serde_json + sha2 (boring-standard; first
+  non-melior runtime deps in the workspace, noted deliberately).
+  Producer: tools/loanword-ts on the tsc 6.0.3 API, checker-as-oracle
+  (strict; we never reimplement the checker), node ≥ 20 runs it
+  directly via native type stripping — no build step. Revisit:
+  encoding at 100× artifact scale; vocabulary at TS-1.
+- D-045 [repl] Amendment to D-043's revisit clause (human directive,
+  2026-07-03): revisit ADDITIONALLY when the shell can observe effects
+  (IO or cross-line identity) — re-elaboration's replay becomes
+  semantics at that point, not implementation. Rationale: D-043 is
+  legal today only because D-029's interpreter is total,
+  deterministic, and effect-free, so re-running the prefix is
+  unobservable; the moment IO or box identity crosses lines (femto_lua
+  is precisely the specimen that makes it reachable), replay is
+  visible semantics — effects replay N times, a box is a different box
+  each line. Named now so M10 cannot shift semantics silently.
+  Revisit: fires at first observable effect in the shell.
 - D-044 [human-review] First ⚑-queue adjudication (2026-07-03), with
   dispositions from the human, recorded verbatim in effect:
   (1) D-041 RATIFIED — v0 rc without liveness releases is correct

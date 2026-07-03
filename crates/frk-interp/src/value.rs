@@ -23,6 +23,9 @@ pub enum Value {
     /// A frk_mem box: a shared mutable cell (D-041). Clones alias the
     /// same cell; equality is cell identity.
     Box(Rc<RefCell<Value>>),
+    /// An f64 (M9, TS-0). Equality is BIT equality — deterministic
+    /// under diffing, NaN == NaN by bits.
+    Float(f64),
 }
 
 impl PartialEq for Value {
@@ -39,6 +42,7 @@ impl PartialEq for Value {
                 Self::Closure { callee: b, captures: cb },
             ) => a == b && ca == cb,
             (Self::Box(a), Self::Box(b)) => Rc::ptr_eq(a, b),
+            (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
             _ => false,
         }
     }
@@ -74,6 +78,19 @@ impl Value {
         Self::Closure { callee: callee.into(), captures }
     }
 
+    pub fn float(value: f64) -> Self {
+        Self::Float(value)
+    }
+
+    pub fn as_float(&self) -> Result<f64, EvalError> {
+        match self {
+            Self::Float(value) => Ok(*value),
+            other => Err(EvalError::TypeMismatch(format!(
+                "expected an f64, got {other:?}"
+            ))),
+        }
+    }
+
     pub fn boxed(value: Value) -> Self {
         Self::Box(Rc::new(RefCell::new(value)))
     }
@@ -87,7 +104,7 @@ impl Value {
         }
     }
 
-    fn int_parts(&self) -> Result<(u64, u32), EvalError> {
+    pub(crate) fn int_parts(&self) -> Result<(u64, u32), EvalError> {
         match self {
             Self::Int { bits, width } => Ok((*bits, *width)),
             Self::Adt { .. } => Err(EvalError::TypeMismatch(
@@ -98,6 +115,9 @@ impl Value {
             )),
             Self::Box(_) => Err(EvalError::TypeMismatch(
                 "expected an integer, got a box".into(),
+            )),
+            Self::Float(_) => Err(EvalError::TypeMismatch(
+                "expected an integer, got an f64".into(),
             )),
         }
     }
@@ -141,6 +161,9 @@ impl Value {
             Self::Box(_) => Err(EvalError::TypeMismatch(
                 "expected an adt value, got a box".into(),
             )),
+            Self::Float(_) => Err(EvalError::TypeMismatch(
+                "expected an adt value, got an f64".into(),
+            )),
         }
     }
 
@@ -155,6 +178,9 @@ impl Value {
             )),
             Self::Box(_) => Err(EvalError::TypeMismatch(
                 "expected a closure, got a box".into(),
+            )),
+            Self::Float(_) => Err(EvalError::TypeMismatch(
+                "expected a closure, got an f64".into(),
             )),
         }
     }

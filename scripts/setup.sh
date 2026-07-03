@@ -49,6 +49,12 @@ need "qemu-user (grid executors: aarch64/riscv64/s390x)" \
 need "wasmtime (grid executor: wasm32-wasi)" \
 	"command -v wasmtime || test -x \"$HOME/.wasmtime/bin/wasmtime\"" \
 	"curl https://wasmtime.dev/install.sh -sSf | bash"
+need "node >= $NODE_MIN_MAJOR (loanword producer + TS-0 oracle, M9)" \
+	"node -e 'process.exit(process.versions.node.split(\".\")[0] >= $NODE_MIN_MAJOR ? 0 : 1)'" \
+	"https://nodejs.org (v$NODE_MIN_MAJOR+; v23+ runs .ts directly)"
+need "loanword-ts deps (tools/loanword-ts/node_modules)" \
+	"test -d tools/loanword-ts/node_modules/typescript" \
+	"cd tools/loanword-ts && npm install"
 need "libPolly.a (tblgen links llvm-config --libs, which names Polly)" \
 	"test -f \"$MLIR_PREFIX/lib/libPolly.a\"" \
 	"apt: sudo apt-get install libpolly-$LLVM_MAJOR-dev | brew llvm@$LLVM_MAJOR already bundles it"

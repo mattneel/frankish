@@ -89,6 +89,26 @@ pub unsafe extern "C" fn frk_rt_rc_release(payload: *mut u8) {
     }
 }
 
+/// JS-faithful f64 → text (D-047): Rust's Display IS shortest
+/// round-trip, and its integer-value trimming matches JS ToString for
+/// the corpus range (canon rule: values are 0 or |v| ∈ [1e-4, 1e15),
+/// finite — outside that JS switches to exponent spellings we fence).
+pub fn format_f64(value: f64) -> String {
+    format!("{value}")
+}
+
+/// Prints one number, newline-terminated (console.log protocol).
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_print_f64(value: f64) {
+    println!("{}", format_f64(value));
+}
+
+/// Prints a boolean as JS spells it. i1 arrives zero-extended.
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_print_bool(value: u8) {
+    println!("{}", if value != 0 { "true" } else { "false" });
+}
+
 /// Test/introspection helper (not part of the lowering ABI).
 pub fn rc_count(payload: *mut u8) -> i64 {
     unsafe { *(payload.sub(8) as *const i64) }
@@ -141,6 +161,16 @@ mod tests {
             (p as *mut i64).write(42);
             assert_eq!((p as *const i64).read(), 42);
         }
+    }
+
+    #[test]
+    fn f64_formatting_is_js_faithful_in_the_fenced_range() {
+        assert_eq!(format_f64(832040.0), "832040");
+        assert_eq!(format_f64(0.5), "0.5");
+        assert_eq!(format_f64(0.1 + 0.2), "0.30000000000000004");
+        assert_eq!(format_f64(1.0 / 3.0), "0.3333333333333333");
+        assert_eq!(format_f64(-0.0), "-0");
+        assert_eq!(format_f64(0.0001), "0.0001");
     }
 
     #[test]

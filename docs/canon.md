@@ -52,3 +52,14 @@ Oracle processes run under `LC_ALL=C`. Their stdout goes through §1
 unchanged. An oracle that cannot be made byte-stable under this contract
 gets a per-oracle normalizer documented in its specimen MANIFEST — never
 an exemption from comparison.
+
+## §6 TS-0 number printing (M9; D-047)
+
+console.log output compares across four printers: the interpreter
+builtin and the JIT capture (both Rust `Display`), the C runtime's
+round-trip-precision search (AOT, all triples), and V8 itself. They
+agree byte-exactly within the fence: printed values are 0 or
+|v| ∈ [1e-4, 1e15), finite. Corpus law: stay inside it. Outside it JS
+switches to exponent spellings ("1e+21", "1e-7", "Infinity") that the
+frankish printers do not reproduce yet — widening the fence is a
+canon change and takes a D-entry (TS-1 candidate).

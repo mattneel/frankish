@@ -102,6 +102,8 @@ enum SlotKind<'c> {
     Words { slots: usize, mapped: Type<'c> },
     /// A frk_mem box: one !llvm.ptr, ptrtoint in / inttoptr out.
     Ptr,
+    /// An f64 (M9/TS-0): one slot, arith.bitcast in and out.
+    F64,
 }
 
 impl SlotKind<'_> {
@@ -111,6 +113,7 @@ impl SlotKind<'_> {
             Self::Closure => 2,
             Self::Words { slots, .. } => *slots,
             Self::Ptr => 1,
+            Self::F64 => 1,
         }
     }
 }
@@ -122,6 +125,9 @@ fn slot_kind<'c>(context: &'c Context, r#type: Type<'c>) -> Result<SlotKind<'c>,
     }
     if printed.starts_with("!frk_mem.box<") {
         return Ok(SlotKind::Ptr);
+    }
+    if printed == "f64" {
+        return Ok(SlotKind::F64);
     }
     if printed.starts_with("!frk_adt.") {
         let mapped = map_type(context, r#type)?;
@@ -750,6 +756,15 @@ fn synthesize_thunks(
                         location,
                     )?);
                     let raw = as_ptr.result(0).map_err(|e| e.to_string())?.to_raw();
+                    call_args.push(unsafe { Value::from_raw(raw) });
+                    offset += 1;
+                }
+                SlotKind::F64 => {
+                    let slot = load_slot(context, &block, env_ptr, offset, location)?;
+                    let f64_type = Type::parse(context, "f64").ok_or("f64 type")?;
+                    let as_f64 =
+                        block.append_operation(cast_op("arith.bitcast", slot, f64_type, location)?);
+                    let raw = as_f64.result(0).map_err(|e| e.to_string())?.to_raw();
                     call_args.push(unsafe { Value::from_raw(raw) });
                     offset += 1;
                 }
@@ -1438,6 +1453,17 @@ fn read_slots<'c>(
             )))?;
             result_value(rewriter.insert(cast_op("llvm.inttoptr", slot, ptr, location)?))
         }
+        SlotKind::F64 => {
+            let slot = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                container,
+                DenseI64ArrayAttribute::new(context, &[offset as i64]),
+                i64_type,
+                location,
+            )))?;
+            let f64_type = Type::parse(context, "f64").ok_or("f64 type")?;
+            result_value(rewriter.insert(cast_op("arith.bitcast", slot, f64_type, location)?))
+        }
         SlotKind::Int(width) => {
             let slot = result_value(rewriter.insert(llvm::extract_value(
                 context,
@@ -1529,6 +1555,17 @@ fn write_slots<'c>(
         SlotKind::Ptr => {
             let word =
                 result_value(rewriter.insert(cast_op("llvm.ptrtoint", value, i64_type, location)?))?;
+            *accumulator = result_value(rewriter.insert(llvm::insert_value(
+                context,
+                *accumulator,
+                DenseI64ArrayAttribute::new(context, &[offset as i64]),
+                word,
+                location,
+            )))?;
+        }
+        SlotKind::F64 => {
+            let word =
+                result_value(rewriter.insert(cast_op("arith.bitcast", value, i64_type, location)?))?;
             *accumulator = result_value(rewriter.insert(llvm::insert_value(
                 context,
                 *accumulator,

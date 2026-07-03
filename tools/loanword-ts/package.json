@@ -1,0 +1,10 @@
+{
+  "name": "loanword-ts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TS frontend: tsc-API checker-as-oracle, emits loanword (SPEC 6.3)",
+  "dependencies": {
+    "typescript": "6.0.3"
+  }
+}

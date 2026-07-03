@@ -76,9 +76,18 @@ impl Frame {
     }
 }
 
+/// A host-provided function: called for `func.call` to a symbol with
+/// no body (runtime externals — prints, M9/D-046). Receives the
+/// argument values and the shared output buffer.
+pub type Builtin = Box<dyn Fn(&[Value], &mut String) -> Result<Vec<Value>, EvalError>>;
+
 pub struct Interp<'c, 'a> {
     registry: HashMap<&'static str, Box<dyn Eval>>,
     functions: HashMap<String, OperationRef<'c, 'a>>,
+    builtins: HashMap<String, Builtin>,
+    /// Program output (println-style builtins append; D-045: once the
+    /// shell can OBSERVE effects, replay semantics must be revisited).
+    output: std::cell::RefCell<String>,
     depth: Cell<usize>,
 }
 
@@ -104,13 +113,33 @@ impl<'c, 'a> Interp<'c, 'a> {
         Ok(Self {
             registry: crate::upstream::register_all(),
             functions,
+            builtins: HashMap::new(),
+            output: std::cell::RefCell::new(String::new()),
             depth: Cell::new(0),
         })
     }
 
+    /// Registers a host builtin for calls to a bodyless symbol.
+    pub fn register_builtin(&mut self, symbol: impl Into<String>, builtin: Builtin) {
+        self.builtins.insert(symbol.into(), builtin);
+    }
+
+    /// Drains everything builtins printed so far.
+    pub fn take_output(&self) -> String {
+        std::mem::take(&mut self.output.borrow_mut())
+    }
+
+    pub(crate) fn call_builtin(
+        &self,
+        symbol: &str,
+        arguments: &[Value],
+    ) -> Option<Result<Vec<Value>, EvalError>> {
+        let builtin = self.builtins.get(symbol)?;
+        Some(builtin(arguments, &mut self.output.borrow_mut()))
+    }
+
     /// Registers (or overrides) the evaluator for one op — the K2 hook
-    /// kernel dialects use to plug their semantics in (frk-dialects
-    /// exposes a `register_eval` that calls this for each of its ops).
+    /// kernel dialects use to plug their semantics in.
     pub fn register_eval(&mut self, op: &'static str, evaluator: Box<dyn Eval>) {
         self.registry.insert(op, evaluator);
     }
@@ -118,6 +147,22 @@ impl<'c, 'a> Interp<'c, 'a> {
     /// Calls `name(args)` and returns its results. This is both the public
     /// entry and the path `func.call` re-enters.
     pub fn eval_function(&self, name: &str, args: &[Value]) -> Result<Vec<Value>, EvalError> {
+        // Host builtins shadow nothing: they answer only for symbols
+        // that are absent or BODYLESS in the module (external
+        // declarations — the module indexes them for its symbol table,
+        // but they have nothing to run).
+        let bodyless = match self.functions.get(name) {
+            None => true,
+            Some(function) => function
+                .region(0)
+                .map(|region| region.first_block().is_none())
+                .unwrap_or(true),
+        };
+        if bodyless {
+            if let Some(result) = self.call_builtin(name, args) {
+                return result;
+            }
+        }
         let function = *self
             .functions
             .get(name)

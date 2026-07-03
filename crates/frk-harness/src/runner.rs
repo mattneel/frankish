@@ -69,6 +69,26 @@ fn frk_context(case: &Case) -> Result<(melior::Context, String), RunError> {
     Ok((context, source))
 }
 
+/// Runs the loanword producer (tools/loanword-ts via node) over a .ts
+/// case and returns the canonical artifact text (D-047).
+fn produce_loanword(case: &Case) -> Result<String, RunError> {
+    let root = repo_root_from(&case.dir)?;
+    let output = std::process::Command::new("node")
+        .arg(root.join("tools/loanword-ts/src/main.ts"))
+        .arg(&case.source_path)
+        .env("LC_ALL", "C")
+        .output()
+        .map_err(|e| RunError::Invoke(format!("node (loanword producer): {e}")))?;
+    if !output.status.success() {
+        return Err(RunError::Parse(format!(
+            "loanword-ts: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    String::from_utf8(output.stdout)
+        .map_err(|_| RunError::Parse("non-UTF-8 loanword artifact".into()))
+}
+
 fn parse_and_verify<'c>(
     context: &'c melior::Context,
     source: &str,
@@ -80,6 +100,11 @@ fn parse_and_verify<'c>(
         SourceKind::Ml => frk_front::compile_ml(context, source).map_err(|e| {
             RunError::Parse(format!("{}: {e}", case.source_path.display()))
         })?,
+        SourceKind::Ts => {
+            let artifact = produce_loanword(case)?;
+            frk_front::loanword::compile_loanword(context, &artifact)
+                .map_err(|e| RunError::Parse(format!("{}: {e}", case.source_path.display())))?
+        }
         SourceKind::Transcript => {
             return Err(RunError::Parse(format!(
                 "{}: transcripts run only under the repl runner",
@@ -108,8 +133,42 @@ pub fn default_runners() -> Vec<Box<dyn Runner>> {
         Box::new(JitRunner { strategy: frk_dialects::Strategy::Arena }),
         Box::new(JitRunner { strategy: frk_dialects::Strategy::Rc }),
         Box::new(OcamlOracle),
+        Box::new(NodeOracle),
         Box::new(ReplRunner),
     ]
+}
+
+/// The upstream oracle for TS-0 (M9): node runs the SAME .ts file
+/// directly (native type stripping, node >= 20 per versions.env),
+/// LC_ALL=C, through the same canon filter. node/V8 is ground truth
+/// (specimens/typescript/MANIFEST.md).
+pub struct NodeOracle;
+
+impl Runner for NodeOracle {
+    fn name(&self) -> &'static str {
+        "node"
+    }
+
+    fn applicable(&self, case: &Case) -> bool {
+        case.kind == SourceKind::Ts
+    }
+
+    fn run(&self, case: &Case) -> Result<String, RunError> {
+        let output = std::process::Command::new("node")
+            .arg(&case.source_path)
+            .env("LC_ALL", "C")
+            .output()
+            .map_err(|e| RunError::Invoke(format!("running node: {e}")))?;
+        if !output.status.success() {
+            return Err(RunError::Invoke(format!(
+                "node exited with {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        String::from_utf8(output.stdout)
+            .map_err(|_| RunError::Invoke("node produced non-UTF-8 output".into()))
+    }
 }
 
 /// The scripted-transcript runner (M8 exit bar): drives the EXACT
@@ -174,6 +233,31 @@ fn interpret_case(case: &Case) -> Result<String, RunError> {
     let mut interp =
         frk_interp::Interp::new(&module).map_err(|e| RunError::Invoke(e.to_string()))?;
     frk_dialects::register_eval(&mut interp);
+
+    if case.kind == SourceKind::Ts {
+        // TS-0 protocol (D-047): void entry; output = the prints.
+        interp.register_builtin(
+            frk_front::loanword::PRINT_F64,
+            Box::new(|arguments, output| {
+                output.push_str(&frk_rt::format_f64(arguments[0].as_float()?));
+                output.push('\n');
+                Ok(vec![])
+            }),
+        );
+        interp.register_builtin(
+            frk_front::loanword::PRINT_BOOL,
+            Box::new(|arguments, output| {
+                output.push_str(if arguments[0].as_bool()? { "true" } else { "false" });
+                output.push('\n');
+                Ok(vec![])
+            }),
+        );
+        interp
+            .eval_function(&case.entry, &[])
+            .map_err(|e| RunError::Invoke(e.to_string()))?;
+        return Ok(interp.take_output());
+    }
+
     let results = interp
         .eval_function(&case.entry, &[])
         .map_err(|e| RunError::Invoke(e.to_string()))?;
@@ -246,6 +330,26 @@ impl Runner for JitRunner {
                 "frk_rt_rc_release",
                 frk_rt::frk_rt_rc_release as *mut (),
             );
+            // TS prints resolve to in-process CAPTURING symbols: the
+            // JIT shares our stdout, so the real runtime's println
+            // would interleave with harness output (D-047).
+            engine.register_symbol(
+                frk_front::loanword::PRINT_F64,
+                capture_print_f64 as *mut (),
+            );
+            engine.register_symbol(
+                frk_front::loanword::PRINT_BOOL,
+                capture_print_bool as *mut (),
+            );
+        }
+        if case.kind == SourceKind::Ts {
+            CAPTURE.with(|buffer| buffer.borrow_mut().clear());
+            unsafe {
+                engine
+                    .invoke_packed(&case.entry, &mut [])
+                    .map_err(|e| RunError::Invoke(format!("{}: {e}", case.entry)))?;
+            }
+            return Ok(CAPTURE.with(|buffer| buffer.borrow_mut().split_off(0)));
         }
         match case.result {
             ResultKind::I64 => {
@@ -259,6 +363,27 @@ impl Runner for JitRunner {
             }
         }
     }
+}
+
+thread_local! {
+    /// Print capture for in-process JIT runs of ts cases (D-047).
+    static CAPTURE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+extern "C" fn capture_print_f64(value: f64) {
+    CAPTURE.with(|buffer| {
+        let mut buffer = buffer.borrow_mut();
+        buffer.push_str(&frk_rt::format_f64(value));
+        buffer.push('\n');
+    });
+}
+
+extern "C" fn capture_print_bool(value: u8) {
+    CAPTURE.with(|buffer| {
+        let mut buffer = buffer.borrow_mut();
+        buffer.push_str(if value != 0 { "true" } else { "false" });
+        buffer.push('\n');
+    });
 }
 
 /// The upstream oracle for ml_core (SPEC §7.2/§8; oracle policy in
@@ -507,11 +632,14 @@ impl Runner for AotRunner {
             }
 
             let shim_path = work.join("shim.c");
-            fs::write(
-                &shim_path,
-                "#include <stdio.h>\n                 extern long long frk_entry(void);\n                 int main(void) { printf(\"%lld\\n\", frk_entry()); return 0; }\n",
-            )
-            .map_err(|e| RunError::Io(format!("{e}")))?;
+            let shim: &str = if case.kind == SourceKind::Ts {
+                // TS entry protocol (D-047): void main; output happens
+                // through the linked C runtime's print functions.
+                "extern void frk_entry(void);\nint main(void) { frk_entry(); return 0; }\n"
+            } else {
+                "#include <stdio.h>\nextern long long frk_entry(void);\nint main(void) { printf(\"%lld\\n\", frk_entry()); return 0; }\n"
+            };
+            fs::write(&shim_path, shim).map_err(|e| RunError::Io(format!("{e}")))?;
 
             let exe_path = work.join("case.exe");
             let link = Command::new("sh")

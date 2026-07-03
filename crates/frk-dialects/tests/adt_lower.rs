@@ -129,17 +129,31 @@ fn nested_adt_fields_lower_through_word_slots() {
 }
 
 #[test]
-fn non_integer_scalar_fields_still_fail_loudly() {
-    // Floats (and any non-integer scalar) remain outside the slot
-    // model until a design admits them.
+fn f64_fields_lower_and_narrower_floats_still_fail() {
+    // M9 lifted the f64 fence (SlotKind::F64, D-047): one slot,
+    // bitcast in and out.
     let context = adt_context();
-    let result = lower(
+    let lowered = lower(
         &context,
-        r#"func.func @main(%x: f64) -> !frk_adt.product<[f64]> {
+        r#"func.func @main(%x: f64) -> f64 {
             %e = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
             %p = "frk_adt.product_snoc"(%e, %x) : (!frk_adt.product<[]>, f64) -> !frk_adt.product<[f64]>
-            return %p : !frk_adt.product<[f64]>
+            %back = "frk_adt.get"(%p) {field = 0 : i64} : (!frk_adt.product<[f64]>) -> f64
+            return %back : f64
+        }"#,
+    )
+    .expect("f64 fields lower via bitcast slots (M9)");
+    assert!(!lowered.contains("frk_adt"), "{lowered}");
+    assert!(lowered.contains("arith.bitcast"), "{lowered}");
+
+    // f32 (and every other non-f64 float) remains outside the model.
+    let result = lower(
+        &context,
+        r#"func.func @main(%x: f32) -> !frk_adt.product<[f32]> {
+            %e = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
+            %p = "frk_adt.product_snoc"(%e, %x) : (!frk_adt.product<[]>, f32) -> !frk_adt.product<[f32]>
+            return %p : !frk_adt.product<[f32]>
         }"#,
     );
-    assert!(result.is_err(), "f64 fields are outside the v0 slot model");
+    assert!(result.is_err(), "f32 fields are outside the v0 slot model");
 }

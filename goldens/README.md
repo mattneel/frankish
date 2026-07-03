@@ -18,7 +18,11 @@ func/arith/scf/cf; `adt/` and `closure/` exercise the kernel dialects;
 allocation surface under every strategy runner; `ml_core/` holds specimen programs — plain OCaml files that must (a)
 define `let main () = <int expr>` and (b) run verbatim under the
 `ocaml` oracle, which appends `print_int (main ())`. Directives in .ml
-files spell `(* frk-case: ... *)`. Keep integer results under 2^62
+files spell `(* frk-case: ... *)`. `ts0/` holds TypeScript TS-0
+programs (`case.ts`): compiled through the loanword producer
+(node + tsc), entry is void, the OUTPUT is the console.log stream,
+and node itself is the oracle; number printing obeys canon §6's
+fence. `repl/` holds scripted shell transcripts (`transcript.in`). Keep integer results under 2^62
 (OCaml's 63-bit ints; the divergence rule lives in the ml_core
 MANIFEST).
 

@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 ena.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 frk-dialects.workspace = true
 melior.workspace = true
 

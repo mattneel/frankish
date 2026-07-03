@@ -29,6 +29,8 @@ melior = "=0.27.2"
 mlir-sys = "220"
 # Unification for the type kit (SPEC §6.4; D-005 bill of materials).
 ena = "0.14"
+serde_json = "1"
+sha2 = "0.10"
 
 frk-core = { path = "crates/frk-core" }
 frk-dialects = { path = "crates/frk-dialects" }
