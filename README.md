@@ -15,8 +15,9 @@ route would have spelled it.
 Start here: `AGENTS.md` (law) → `docs/SPEC.md` (design) →
 `docs/DECISIONS.md` (ledger) → `STATE.md` (now).
 
-Status: M1 done — harness v0 is live: byte-exact goldens with `make bless`
-discipline, a 6-case upstream-dialect corpus running under the MLIR JIT,
-a differential-runner scaffold awaiting the M2 interpreter, and per-pass
-stage dumps (`frnksh emit --stages`). Green from a clean clone:
+Status: M2 done — the differential law is live. The derived interpreter
+(reference semantics) and the MLIR JIT agree byte-exactly on an 8-case
+upstream-dialect corpus, enforced on every `make test`; `make diff`
+prints the runner matrix. Harness: byte-exact goldens + `make bless`
+discipline + per-pass stage dumps. Green from a clean clone:
 `make setup && make build && make test`.

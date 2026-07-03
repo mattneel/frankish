@@ -1,26 +1,29 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-02 (M0+M1 session)
-Phase: M1 complete (tag m1-done); M2 not started.
-Tree: green — `make test` passes; clean-clone `make ci` verified (exit 0).
+Updated: 2026-07-02 (M0+M1+M2 session)
+Phase: M2 complete (tag m2-done); M3 not started.
+Tree: green — `make test` passes; clean-clone scripts/ci.sh verified
+(exit 0); `make diff`: 8 cases, interp vs jit, 0 divergent.
 
 ## Next action
-M2 Derived interpreter per docs/SPEC.md §13 (read SPEC §7.1 first): Eval
-trait; interpreter over func/arith/scf/cf; two-way diff (interp vs JIT)
-live on all goldens. Wiring is pre-built: append the interpreter to
-frk_harness::runner::default_runners() and the standing corpus tests +
-make diff become the two-way gate automatically; flip reference_runner()
-to the interpreter (D-008) in the same change.
-Exit: L3 enforced in CI.
+M3 frk.adt per docs/SPEC.md §13 (read SPEC §3 + §4.1 first): the first
+kernel dialect, full K1–K7 contract — ops/types/verifier, Eval impls
+(the frk-interp trait is waiting), lowering to LLVM structs + tag +
+switch, Maranget decision-tree pass with its own goldens,
+exhaustiveness via rustc_pattern_analysis behind a trait boundary.
+Open question to settle FIRST (K1): how a custom dialect registers
+through melior/the C API — IRDL runtime loading vs unregistered-op
+discipline vs C++ shim. That choice is a D-entry before code.
+Exit: K1–K7 checked; 3-way goldens green.
 
 ## In flight
 Nothing.
 
 ## For the human
 - Review ⚑ D-005 (host stack ruling) in docs/DECISIONS.md — made on your
-  behalf. Evidence through M1 supports it: melior 0.27.2 builds, JITs,
-  runs pass pipelines, and prints IR against LLVM/MLIR 22.1.8 with no
-  binding gap encountered.
+  behalf. Evidence through M2 supports it: melior 0.27.2 builds, JITs,
+  walks IR generically (interpreter), runs pass pipelines, and prints IR
+  against LLVM/MLIR 22.1.8 with no binding gap encountered.
 
 ## Milestone log
 m0-done — Shipped: SPEC §12 workspace skeleton (7 crates + sandbox/);
@@ -63,6 +66,27 @@ promotion: none. Known wart (accepted for v0): `emit --stages` default
 out dir uses the source file stem, so corpus files (all named
 case.mlir) collide on out/stages/case — pass --out for those.
 
+m2-done — Shipped: frk-interp — the K2 Eval trait + derived
+interpreter over func/arith/scf/cf (value domain: two's-complement
+ints ≤64 bits; per-call Frame keyed by MLIR value identity; multi-
+block CFG execution; single-block structured regions; symbol-indexed
+func.call). Semantics ruled in D-029: total & deterministic — UB
+traps (div-by-zero, signed-div overflow, non-positive for-step), call
+depth caps at 1024; corollary: corpus must be UB-free (goldens/README
+rule added). Harness: InterpRunner on a STACK_SIZE thread;
+default_runners()=[interp, jit]; reference_runner()=interp (D-008
+assumed in full — blessing writes reference bytes). Corpus at 8 cases
+(+fib_rec recursion, +add_wrap modulo-2^64 canary). L3 IS ENFORCED IN
+CI: make test two-way-diffs every golden; make diff prints the
+matrix (8 cases, 0 divergent). Learned: interpreted frames cost a few
+KiB of host stack each — depth-ceiling programs need the STACK_SIZE
+thread (libtest's 2 MiB default overflows); melior successor operand
+splitting needs no segment attribute (destination arg counts
+suffice); i1 sign-extends to -1 (tested, it will bite someone).
+Cheats awaiting promotion: none — but note the interpreter recurses
+on the host stack; if a specimen needs unbounded depth, that's a
+rework flag, not a knob.
+
 ## Handoff template (copy for every session end)
     Session end: <date>
     Milestone/step: <where>
@@ -72,6 +96,27 @@ case.mlir) collide on out/stages/case — pass --out for those.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-02 (third entry this session)
+    Milestone/step: M2 complete, tagged m2-done
+    Green? yes — make test green (incl. two-way diff on all 8 goldens);
+    clean-clone scripts/ci.sh exit 0
+    Did:
+    - frk-interp: Eval trait, value domain, CFG/structured execution,
+      upstream evaluators (arith/func/cf/scf), 20 verifiers
+    - D-029 (trap semantics + depth ceiling); UB-free corpus rule
+    - InterpRunner wired as reference; corpus → 8 cases; L3 live in CI
+    Next: M3 frk.adt — but FIRST settle the custom-dialect registration
+    mechanism (IRDL vs unregistered ops vs C++ shim) as a D-entry; it
+    shapes everything K1 onward
+    Landmines:
+    - deep interpretation needs frk_interp::STACK_SIZE threads; never
+      call interpret_entry on a default 2 MiB test thread for recursive
+      programs
+    - blessing now writes INTERPRETER bytes; if jit disagrees afterward
+      that is an L3 first-rank finding, not a blessing mistake
+    - i1 as_signed() is -1, not 1 — use as_bool()/as_unsigned() unless
+      you really mean sign extension
 
     Session end: 2026-07-02 (second entry this session)
     Milestone/step: M1 complete, tagged m1-done
