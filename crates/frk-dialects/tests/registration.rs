@@ -1,12 +1,17 @@
-//! Substrate verifier for D-030: frankish kernel dialects register
-//! through IRDL runtime loading (melior `load_irdl_dialects`), which must
-//! give us everything K1 demands from *registration*: parseable ops and
-//! parametric types, print/parse round-trips, builder-API construction,
-//! and — decisive — IRDL-generated verifiers that actually reject bad IR.
+//! Substrate verifier for D-031: frankish kernel dialects register
+//! through IRDL runtime loading (melior `load_irdl_dialects`) — the ONLY
+//! registration mechanism in v1 — which must give us everything K1
+//! demands from *registration*: parseable ops and parametric types,
+//! print/parse round-trips, builder-API construction, and — decisive —
+//! IRDL-generated verifiers that actually reject bad IR.
 //!
-//! This test IS the evidence the D-030 ruling cites. If an MLIR bump ever
-//! breaks one of these properties, the ruling's revisit condition fires
-//! here first.
+//! This test IS the evidence the D-031 ruling stands on (it originally
+//! backed D-030, struck by the human in favor of trait-free dialect
+//! designs). If an MLIR bump ever breaks one of these properties, the
+//! ruling's revisit condition fires here first. The ceiling this
+//! mechanism imposes — no traits, so no custom terminators, successors,
+//! or region ops — is pinned in docs/LANDSCAPE.md and shapes every
+//! dialect design (D-031).
 
 use melior::ir::operation::{OperationBuilder, OperationLike};
 use melior::ir::{Block, BlockLike, Location, Module, Region, RegionLike, Type};

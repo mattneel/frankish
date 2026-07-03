@@ -53,9 +53,12 @@ Every kernel dialect ships all of K1–K7 before it is "done". Partial dialects
 live on branches, not main.
 
 - **K1 Definition.** Ops, types, attributes; documented invariants; verifier
-  enforcing them. Registered dialects, compiled into the framework (the
-  C++/ODS-adjacent cost is paid once here, never by users; IRDL is the v2
-  escape hatch for user dialects, D-006).
+  enforcing them. Registered dialects, loaded at context startup from IRDL
+  definitions embedded in the framework — no C++/ODS anywhere in v1
+  (amended per D-031, which also bars trait-requiring op designs);
+  invariants beyond IRDL's constraint language are enforced by a frankish
+  verification pass that runs before any execution or lowering. IRDL
+  runtime loading doubles as the v2 user-dialect hatch (D-006).
 - **K2 Eval.** Every op implements the Eval interface (§7.1). The derived
   interpreter over K2 is the dialect's reference semantics.
 - **K3 Lowerings.** At least one lowering pass to strictly lower dialects
@@ -75,11 +78,17 @@ Reuse upstream, never wrap gratuitously: arith, scf, cf, func, memref, ptr,
 index, llvm; gpu/vector reserved for the height axis (§10).
 
 ### §4.1 frk.adt
-Sums, products, tuples; `make`, `tag`, `extract`, and a region-based `match`.
-Passes: Maranget-style decision-tree compilation (its own goldens over the
-matrix→tree mapping); exhaustiveness/usefulness via the rustc_pattern_analysis
+Sums, products, tuples as parametric `!frk_adt` types; pure value ops
+`make`, `tag_of`, `extract`. There is no region-based `match` op (amended
+per D-031): multiway dispatch rides upstream `cf.switch`, and surface
+`match` is compiled directly to dispatch IR by the decision-tree pass.
+Passes: Maranget-style decision-tree compilation from the frontend's
+pattern matrix to dispatch IR (its own goldens over the matrix→IR
+mapping, D-025); exhaustiveness/usefulness via the rustc_pattern_analysis
 crate behind a trait boundary; niche/tag-packing optimization as a later,
-separately-goldened pass. Lowering: LLVM structs + integer tag + switch.
+separately-goldened pass. Invariants beyond IRDL's constraint language
+are enforced by the frk verification pass (K1, D-031). Lowering: LLVM
+structs + integer tag + switch.
 
 ### §4.2 frk.closure
 `closure.make` (fn ref + capture list) and `closure.apply`. Capture analysis

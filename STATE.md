@@ -6,19 +6,32 @@ Tree: green — `make test` passes; clean-clone scripts/ci.sh verified
 (exit 0); `make diff`: 8 cases, interp vs jit, 0 divergent.
 
 ## Next action
-M3 frk.adt, step 0 DONE (registration ruled: D-030 two-tier; evidence
-in crates/frk-dialects/tests/registration.rs). Next: build the Tier-B
-native shim skeleton — a small C++ ODS library (cmake, driven from
-make setup/build via the existing MLIR_PREFIX; cmake+ninja+headers all
-ship with llvm-22-dev/libmlir-22-dev on apt and with brew llvm@22)
-exposing a mlirDialectHandle that frk_core::context() registers.
-Define frk_adt there: match (region arms) + frk_adt.yield (a real
-Terminator-trait op) + make/tag/extract (these three are IRDL-shaped,
-but keep the dialect whole in one place). Smoke first (L1): parse +
-verify a match, positive and negative. Then the §3 ladder: K2 Eval
-impls (frk-interp trait is waiting), K3 decision-tree lowering
-(Maranget, D-025, own goldens), exhaustiveness via
-rustc_pattern_analysis behind a trait boundary.
+M3 frk.adt under D-031 (human struck D-030: pure IRDL, no C++ shim,
+trait-free dialect designs — SPEC §3 K1 + §4.1 amended). Build order:
+1. K1: frk_adt IRDL definition embedded in frk-dialects — parametric
+   sum/product types (variant/field structure as attribute params;
+   loose IRDL constraints) + pure ops make (variadic operands +
+   variant-index attr), tag_of, extract (variant+field attrs). Expose
+   frk_dialects::register(&Context); decide there how runners obtain
+   an adt-aware context (watch the frk-core↔frk-dialects dependency
+   direction). Smoke (L1): parse+verify good and bad adt IR — extend
+   registration.rs's pattern.
+2. K1 second half: the frk verification pass (semantic invariants IRDL
+   can't say: extract result type = field type, tag range, make arity
+   vs variant shape) — runs in harness runners before execution.
+3. K2: Eval impls for make/tag_of/extract (Value grows an Adt variant;
+   internal-only — entry protocol stays i64, canon.md untouched) plus
+   upstream cf.switch eval in frk-interp (match dispatch rides it).
+4. K5 seed: goldens/adt suite (construct/extract/switch programs, i64
+   results, hand-computed expecteds), green under interp+jit → 3-way
+   when lowering lands.
+5. K3: lowering make/tag_of/extract → LLVM structs + tag (+cf.switch
+   already upstream); melior RewritePattern machinery exists
+   (apply_patterns_and_fold_greedily) — evaluate vs a plain
+   module-walk rewrite, D-entry the choice.
+6. Decision-tree pass (Maranget, D-025): frontend pattern matrix →
+   dispatch IR, goldened over matrix→IR (its consumer arrives with
+   ml_core at M5; the pass + goldens land in M3 per SPEC §13).
 Exit: K1–K7 checked; 3-way goldens green.
 
 ## In flight
@@ -29,13 +42,10 @@ Nothing.
   behalf. Evidence through M2 supports it: melior 0.27.2 builds, JITs,
   walks IR generically (interpreter), runs pass pipelines, and prints IR
   against LLVM/MLIR 22.1.8 with no binding gap encountered.
-- Review D-030 (dialect registration, two-tier) before M3's shim work
-  starts in earnest: it commits the build to a small C++ ODS library
-  (cmake, compiled once at build time) because LLVM 22 IRDL can't
-  declare traits and region-based match needs a terminator op. The
-  evidence is a standing test; the alternative (redesign match to be
-  successor- or attribute-shaped and stay pure-IRDL) would amend SPEC
-  §4.1 — say so if you'd rather bend the design than the build.
+- RESOLVED 2026-07-02: you struck D-030 → D-031 appended (pure IRDL,
+  no C++ shim, trait-free dialect designs; match de-regioned; SPEC §3
+  K1 + §4.1 amended). Nothing further needed unless you also want the
+  amended §4.1 wording itself adjusted.
 
 ## Milestone log
 m0-done — Shipped: SPEC §12 workspace skeleton (7 crates + sandbox/);
@@ -108,6 +118,26 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-02 (fifth entry this session)
+    Milestone/step: D-030 struck per human ruling; D-031 appended
+    Green? yes — docs-only change; make test green (17 result blocks)
+    Did:
+    - appended D-031 (supersedes D-030): IRDL-only registration,
+      trait-free dialect designs, match de-regioned to pure ops +
+      cf.switch + matrix→IR decision-tree pass
+    - amended SPEC §3 K1 (no C++/ODS in v1; pass-hosted verifier for
+      deep invariants) and §4.1 (frk.adt op set)
+    - LANDSCAPE tier wording fixed; registration.rs header now cites
+      D-031; STATE next-action rewritten as the 6-step M3 build order
+    Next: M3 step 1 — frk_adt IRDL definition + register() +
+    parse/verify smoke (extend registration.rs's pattern)
+    Landmines:
+    - D-030 stays in the ledger struck-but-visible; never edit it —
+      the strike lives in D-031's first line
+    - kernel dialect designs must stay trait-free (no custom
+      terminators/successors/region ops) — check D-031 before
+      sketching any new dialect's op set
 
     Session end: 2026-07-02 (fourth entry this session)
     Milestone/step: M3 step 0 — dialect-registration ruling (D-030)

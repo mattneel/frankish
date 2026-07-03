@@ -120,3 +120,22 @@ veto-ledger pattern and most deserve their review.
   framework, never by users; D-005 and D-006 stand unchanged. Revisit:
   fold Tier B into Tier A when upstream IRDL grows trait declarations
   (LANDSCAPE watch item).
+- D-031 [dialects] **Supersedes D-030 (struck by the human,
+  2026-07-02).** Kernel dialects register via IRDL runtime loading
+  ONLY; there is no C++ ODS shim anywhere in v1 — the build stays pure
+  Rust/melior (D-005's rationale intact) and the design bends instead:
+  no kernel dialect op may require traits (terminators, successors,
+  trait-relaxed regions). Consequences, effective now: frk.adt drops
+  the region-based `match` op — the dialect is pure value ops (`make`,
+  `tag_of`, `extract` over parametric `!frk_adt` types), multiway
+  dispatch rides upstream `cf.switch`, and surface `match` is compiled
+  by the Maranget decision-tree pass (D-025) from the frontend's
+  pattern matrix straight to dispatch IR, goldened over the matrix→IR
+  mapping. Invariants beyond IRDL's constraint language (e.g.
+  extract's result type = the named field's type) are enforced by a
+  frankish verification pass run before any execution or lowering —
+  K1's "verifier enforcing invariants" hosted in a pass, not in C++.
+  SPEC §3 K1 and §4.1 amended citing this entry. Revisit: only if a
+  future dialect design demonstrably suffers from de-regioning (bring
+  the suffering as evidence), or upstream IRDL grows trait support
+  (LANDSCAPE watch item), and then only by a new entry.
