@@ -12,4 +12,5 @@ melior.workspace = true
 mlir-sys.workspace = true
 
 [dev-dependencies]
+frk-rt.workspace = true
 frk-core.workspace = true

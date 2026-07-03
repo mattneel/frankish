@@ -46,13 +46,79 @@ pub extern "C" fn frk_rt_arena_alloc(bytes: u64) -> *mut u8 {
     raw_alloc(bytes)
 }
 
-/// Rc strategy (D-041): an i64 refcount header sits at `ptr - 8`; the
-/// returned pointer addresses the payload. The count starts at 1.
+/// Rc strategy (D-041, header amended by D-057): a THREE-word header
+/// precedes the payload —
+/// `[layout: u64 @ ptr-24][size: u64 @ ptr-16][rcword: i64 @ ptr-8]`.
+/// The rcword packs Bacon–Rajan bookkeeping: bits 62..63 color
+/// (0 black, 1 gray, 2 white, 3 purple), bit 61 buffered, bits 0..60
+/// the count. Layout encoding per D-057: bits 0..1 kind (0 WORDMAP,
+/// 1 TABLE_SHELL, 2 ARRAY); WORDMAP carries 2-bit per-word codes from
+/// bit 4 (0 skip, 1 managed ptr, 2 dyn-tag+payload pair); ARRAY's
+/// element code sits in bits 2..3. LEAF = all-zero wordmap.
+const COLOR_SHIFT: u32 = 62;
+const COLOR_MASK: i64 = 0b11 << COLOR_SHIFT;
+const BUFFERED_BIT: i64 = 1 << 61;
+const COUNT_MASK: i64 = (1 << 61) - 1;
+const BLACK: i64 = 0;
+const GRAY: i64 = 1;
+const WHITE: i64 = 2;
+const PURPLE: i64 = 3;
+
+pub const LAYOUT_LEAF: u64 = 0;
+pub const LAYOUT_TABLE_SHELL: u64 = 1;
+pub const LAYOUT_ARRAY_LEAF: u64 = 2;
+pub const LAYOUT_ARRAY_PTR: u64 = 2 | (1 << 2);
+pub const LAYOUT_ARRAY_DYN: u64 = 2 | (2 << 2);
+
+/// Wordmap code for payload word `index` (0 skip, 1 ptr, 2 dyn-tag).
+pub fn layout_wordmap(codes: &[u8]) -> u64 {
+    let mut layout = 0u64;
+    for (index, &code) in codes.iter().enumerate().take(30) {
+        layout |= (code as u64 & 0b11) << (4 + 2 * index);
+    }
+    layout
+}
+
+unsafe fn header(payload: *mut u8) -> (*mut u64, *mut u64, *mut i64) {
+    unsafe {
+        (
+            payload.sub(24) as *mut u64, // layout
+            payload.sub(16) as *mut u64, // size
+            payload.sub(8) as *mut i64,  // rcword
+        )
+    }
+}
+
+fn count_of(rcword: i64) -> i64 {
+    rcword & COUNT_MASK
+}
+fn color_of(rcword: i64) -> i64 {
+    // LOGICAL shift: the color occupies the sign bits, and an
+    // arithmetic i64 shift smears them to -1 (found by the header
+    // probe: purple read back as -1 and never matched).
+    ((rcword as u64 & COLOR_MASK as u64) >> COLOR_SHIFT) as i64
+}
+fn with_color(rcword: i64, color: i64) -> i64 {
+    (rcword & !COLOR_MASK) | (color << COLOR_SHIFT)
+}
+
+static FREES: AtomicU64 = AtomicU64::new(0);
+
 #[unsafe(no_mangle)]
-pub extern "C" fn frk_rt_rc_alloc(payload_bytes: u64) -> *mut u8 {
+pub extern "C" fn frk_rt_rc_free_count() -> u64 {
+    FREES.load(Ordering::Relaxed)
+}
+
+fn candidates() -> &'static std::sync::Mutex<Vec<usize>> {
+    static BUFFER: std::sync::OnceLock<std::sync::Mutex<Vec<usize>>> =
+        std::sync::OnceLock::new();
+    BUFFER.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_rc_alloc(payload_bytes: u64, layout: u64) -> *mut u8 {
     ALLOCS.fetch_add(1, Ordering::Relaxed);
-    let total = payload_bytes.max(1).checked_add(8);
-    let Some(total) = total else {
+    let Some(total) = payload_bytes.max(1).checked_add(24) else {
         return std::ptr::null_mut();
     };
     let base = raw_alloc(total);
@@ -60,42 +126,290 @@ pub extern "C" fn frk_rt_rc_alloc(payload_bytes: u64) -> *mut u8 {
         return base;
     }
     unsafe {
-        (base as *mut i64).write(1);
-        base.add(8)
+        let payload = base.add(24);
+        let (l, s, r) = header(payload);
+        l.write(layout);
+        s.write(payload_bytes.max(1));
+        r.write(1); // count 1, black, unbuffered
+        payload
+    }
+}
+
+/// Children of `payload` per its layout word (D-057). The visitor
+/// receives each traced managed child pointer (nonzero).
+unsafe fn for_each_child(payload: *mut u8, mut visit: impl FnMut(*mut u8)) {
+    unsafe {
+        let (l, s, _) = header(payload);
+        let layout = *l;
+        let size = *s;
+        let mut visit_word = |word: u64| {
+            if word != 0 {
+                visit(word as usize as *mut u8);
+            }
+        };
+        match layout & 0b11 {
+            1 => {
+                // TABLE_SHELL: [cap, count, slots*, meta]; slots hold
+                // {state, ktag, kpay, vtag, vpay}; keys AND values.
+                let fields = payload as *const i64;
+                let cap = *fields;
+                let slots = *fields.add(2) as usize as *const i64;
+                let meta = *fields.add(3);
+                visit_word(meta as u64);
+                if !slots.is_null() {
+                    for index in 0..cap {
+                        let slot = slots.add((index * 5) as usize);
+                        if *slot != 1 {
+                            continue; // empty or tombstone
+                        }
+                        for (tag, pay) in [(*slot.add(1), *slot.add(2)), (*slot.add(3), *slot.add(4))] {
+                            if tag == 4 || tag == 5 {
+                                visit_word(pay as u64);
+                            }
+                        }
+                    }
+                }
+            }
+            2 => {
+                // ARRAY: [len, elems...]; element code in bits 2..3.
+                let code = (layout >> 2) & 0b11;
+                if code == 0 {
+                    return;
+                }
+                let words = payload as *const i64;
+                let length = *words;
+                match code {
+                    1 => {
+                        for index in 0..length {
+                            visit_word(*words.add((1 + index) as usize) as u64);
+                        }
+                    }
+                    2 => {
+                        // dyn pairs would occupy 2 words each — not
+                        // yet emitted by any frontend; trace defensively.
+                        let mut index = 0;
+                        while index + 1 < length * 2 {
+                            let tag = *words.add((1 + index) as usize);
+                            let pay = *words.add((2 + index) as usize);
+                            if tag == 4 || tag == 5 {
+                                visit_word(pay as u64);
+                            }
+                            index += 2;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {
+                // WORDMAP over payload words 0..min(30, size/8).
+                let words = payload as *const i64;
+                let word_count = ((size / 8) as usize).min(30);
+                let mut index = 0;
+                while index < word_count {
+                    let code = (layout >> (4 + 2 * index)) & 0b11;
+                    match code {
+                        1 => {
+                            visit_word(*words.add(index) as u64);
+                            index += 1;
+                        }
+                        2 => {
+                            let tag = *words.add(index);
+                            if index + 1 < word_count && (tag == 4 || tag == 5) {
+                                visit_word(*words.add(index + 1) as u64);
+                            }
+                            index += 2;
+                        }
+                        _ => index += 1,
+                    }
+                }
+            }
+        }
+    }
+}
+
+unsafe fn free_object(payload: *mut u8) {
+    unsafe {
+        let (l, s, _) = header(payload);
+        if *l & 0b11 == 1 {
+            // Table shells own their malloc'd slot array (D-056 debt).
+            let fields = payload as *const i64;
+            let slots = *fields.add(2) as usize as *mut u8;
+            if !slots.is_null() {
+                libc_free(slots);
+            }
+        }
+        let total = (*s + 24) as usize;
+        let base = payload.sub(24);
+        std::alloc::dealloc(base, Layout::from_size_align(total, 8).expect("layout"));
+        FREES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// The C twin's tables malloc their slots; the Rust twin mirrors with
+/// the global allocator through the same 8-aligned discipline. The
+/// table code in this twin uses raw_alloc, so "free" must match it.
+unsafe fn libc_free(pointer: *mut u8) {
+    // raw_alloc has no size record; table slot arrays record their
+    // capacity in the shell, but the shell is already being freed —
+    // recompute from the slot layout is not possible here, so slot
+    // arrays are allocated with a size prefix (see table_grow).
+    unsafe {
+        let base = pointer.sub(8);
+        let bytes = *(base as *const u64);
+        std::alloc::dealloc(
+            base,
+            Layout::from_size_align((bytes + 8) as usize, 8).expect("layout"),
+        );
     }
 }
 
 /// # Safety
-/// `payload` must be a live pointer returned by [`frk_rt_rc_alloc`].
+/// `payload` must be a live pointer from [`frk_rt_rc_alloc`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn frk_rt_rc_retain(payload: *mut u8) {
     if payload.is_null() {
         return;
     }
     unsafe {
-        let header = payload.sub(8) as *mut i64;
-        *header += 1;
+        let (_, _, r) = header(payload);
+        *r = with_color(*r + 1, BLACK);
     }
 }
 
-/// Decrements; frees header+payload at zero. The layout size is
-/// unknown at release time, so v0 frees with the minimal layout the
-/// allocator accepts — sound with Rust's global allocator only when
-/// alloc/dealloc layouts match, therefore v0 releases DO NOT free:
-/// they only decrement (freeing arrives with sized releases at the
-/// M10 GC-gate work; v0 rc's job is the plumbing — see D-041).
-///
 /// # Safety
-/// `payload` must be a live pointer returned by [`frk_rt_rc_alloc`].
+/// `payload` must be a live pointer from [`frk_rt_rc_alloc`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn frk_rt_rc_release(payload: *mut u8) {
     if payload.is_null() {
         return;
     }
     RELEASES.fetch_add(1, Ordering::Relaxed);
+    unsafe { release_inner(payload) }
+}
+
+unsafe fn release_inner(payload: *mut u8) {
     unsafe {
-        let header = payload.sub(8) as *mut i64;
-        *header -= 1;
+        let (l, _, r) = header(payload);
+        let rcword = *r;
+        let count = count_of(rcword) - 1;
+        if count == 0 {
+            // Release cascade, then free — unless the collector holds
+            // a buffered reference (it will free at markRoots).
+            *r = with_color(count | (rcword & BUFFERED_BIT), BLACK);
+            if rcword & BUFFERED_BIT == 0 {
+                for_each_child(payload, |child| release_inner(child));
+                free_object(payload);
+            }
+        } else {
+            // Possibly a cycle root: buffer non-leaf objects purple.
+            let leaf = *l == LAYOUT_LEAF;
+            let mut next = with_color(count | (rcword & BUFFERED_BIT), PURPLE);
+            if leaf {
+                *r = with_color(count | (rcword & BUFFERED_BIT), BLACK);
+            } else {
+                if rcword & BUFFERED_BIT == 0 {
+                    next |= BUFFERED_BIT;
+                    candidates().lock().expect("buffer").push(payload as usize);
+                }
+                *r = next;
+            }
+        }
+    }
+}
+
+/// The explicit cycle collection entry (D-057: deterministic trigger;
+/// automatic thresholds are the deferred last rung).
+///
+/// # Safety
+/// All buffered pointers originate from this runtime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_rc_collect() {
+    unsafe {
+        let roots: Vec<usize> = std::mem::take(&mut *candidates().lock().expect("buffer"));
+        // markRoots
+        let mut live_roots = Vec::new();
+        for &root in &roots {
+            let payload = root as *mut u8;
+            let (_, _, r) = header(payload);
+            let rcword = *r;
+            if color_of(rcword) == PURPLE && count_of(rcword) > 0 {
+                mark_gray(payload);
+                live_roots.push(root);
+            } else {
+                *r &= !BUFFERED_BIT;
+                // Bacon–Rajan's guard: only BLACK count-0 objects are
+                // deferred frees; a GRAY count-0 here is a TRIAL zero
+                // from a sibling root's mark phase — not ours to free.
+                if color_of(rcword) == BLACK && count_of(rcword) == 0 {
+                    for_each_child(payload, |child| release_inner(child));
+                    free_object(payload);
+                }
+            }
+        }
+        // scanRoots
+        for &root in &live_roots {
+            scan(root as *mut u8);
+        }
+        // collectRoots
+        for &root in &live_roots {
+            let payload = root as *mut u8;
+            let (_, _, r) = header(payload);
+            *r &= !BUFFERED_BIT;
+            collect_white(payload);
+        }
+    }
+}
+
+unsafe fn mark_gray(payload: *mut u8) {
+    unsafe {
+        let (_, _, r) = header(payload);
+        if color_of(*r) != GRAY {
+            *r = with_color(*r, GRAY);
+            for_each_child(payload, |child| {
+                let (_, _, cr) = header(child);
+                *cr -= 1; // trial decrement
+                mark_gray(child);
+            });
+        }
+    }
+}
+
+unsafe fn scan(payload: *mut u8) {
+    unsafe {
+        let (_, _, r) = header(payload);
+        if color_of(*r) == GRAY {
+            if count_of(*r) > 0 {
+                scan_black(payload);
+            } else {
+                *r = with_color(*r, WHITE);
+                for_each_child(payload, |child| scan(child));
+            }
+        }
+    }
+}
+
+unsafe fn scan_black(payload: *mut u8) {
+    unsafe {
+        let (_, _, r) = header(payload);
+        *r = with_color(*r, BLACK);
+        for_each_child(payload, |child| {
+            let (_, _, cr) = header(child);
+            *cr += 1; // restore
+            if color_of(*cr) != BLACK {
+                scan_black(child);
+            }
+        });
+    }
+}
+
+unsafe fn collect_white(payload: *mut u8) {
+    unsafe {
+        let (_, _, r) = header(payload);
+        if color_of(*r) == WHITE && (*r & BUFFERED_BIT) == 0 {
+            *r = with_color(*r, BLACK);
+            for_each_child(payload, |child| collect_white(child));
+            free_object(payload);
+        }
     }
 }
 
@@ -274,7 +588,11 @@ unsafe fn table_grow(shell: i64) {
         let old_slots_ptr = fields[2];
         let new_cap = if old_cap == 0 { 8 } else { old_cap * 2 };
         let new_bytes = new_cap * std::mem::size_of::<TableSlot>();
-        let new_ptr = raw_alloc(new_bytes as u64);
+        // Size-prefixed (8 bytes) so the collector's free_object can
+        // dealloc slot arrays without a side record (D-057).
+        let base = raw_alloc(new_bytes as u64 + 8);
+        (base as *mut u64).write(new_bytes as u64);
+        let new_ptr = base.add(8);
         std::ptr::write_bytes(new_ptr, 0, new_bytes);
         let old_fields = *fields;
         fields[0] = new_cap as i64;
@@ -288,6 +606,7 @@ unsafe fn table_grow(shell: i64) {
                     frk_rt_table_raw_set(shell, slot.ktag, slot.kpay, slot.vtag, slot.vpay);
                 }
             }
+            libc_free(old_slots_ptr as usize as *mut u8);
         }
         let _ = old_fields;
     }
@@ -523,7 +842,7 @@ pub extern "C" fn frk_rt_print_lua_nil() {
 
 /// Test/introspection helper (not part of the lowering ABI).
 pub fn rc_count(payload: *mut u8) -> i64 {
-    unsafe { *(payload.sub(8) as *const i64) }
+    unsafe { count_of(*(payload.sub(8) as *const i64)) }
 }
 
 const _: () = {
@@ -555,7 +874,7 @@ mod tests {
 
     #[test]
     fn rc_header_counts_retains_and_releases() {
-        let p = frk_rt_rc_alloc(16);
+        let p = frk_rt_rc_alloc(16, LAYOUT_LEAF);
         assert!(!p.is_null());
         assert_eq!(p as usize % 8, 0);
         assert_eq!(rc_count(p), 1);
@@ -573,6 +892,80 @@ mod tests {
             (p as *mut i64).write(42);
             assert_eq!((p as *const i64).read(), 42);
         }
+        unsafe {
+            frk_rt_rc_release(p);
+            frk_rt_rc_release(p); // to zero: leaf frees immediately
+        }
+    }
+
+    #[test]
+    fn release_cascade_frees_transitively() {
+        // inner <- outer (outer's word 0 is a managed pointer).
+        let frees_before = frk_rt_rc_free_count();
+        let inner = frk_rt_rc_alloc(8, LAYOUT_LEAF);
+        let outer = frk_rt_rc_alloc(8, layout_wordmap(&[1]));
+        unsafe {
+            (outer as *mut u64).write(inner as u64);
+            frk_rt_rc_release(outer); // count 1 -> 0: cascade
+        }
+        assert_eq!(
+            frk_rt_rc_free_count() - frees_before,
+            2,
+            "outer AND inner freed by the cascade"
+        );
+    }
+
+    #[test]
+    fn trial_deletion_dead_and_live_cycles() {
+        // The candidate buffer and counters are process-global; this
+        // test owns the whole cycle story SEQUENTIALLY (cargo runs
+        // tests in parallel — two collect() calls would steal each
+        // other's roots).
+        unsafe { frk_rt_rc_collect() }; // drain any prior candidates
+
+        // Dead cycle: a <-> b, externals dropped — pure rc never
+        // frees it; trial deletion must.
+        let frees_before = frk_rt_rc_free_count();
+        let a = frk_rt_rc_alloc(8, layout_wordmap(&[1]));
+        let b = frk_rt_rc_alloc(8, layout_wordmap(&[1]));
+        unsafe {
+            (a as *mut u64).write(b as u64);
+            frk_rt_rc_retain(b);
+            (b as *mut u64).write(a as u64);
+            frk_rt_rc_retain(a);
+            frk_rt_rc_release(a);
+            frk_rt_rc_release(b);
+        }
+        assert_eq!(frk_rt_rc_free_count(), frees_before, "cycle survives rc");
+        assert_eq!(rc_count(a), 1);
+        unsafe { frk_rt_rc_collect() };
+        assert_eq!(
+            frk_rt_rc_free_count() - frees_before,
+            2,
+            "trial deletion collects the dead cycle"
+        );
+
+        // Live cycle: same shape, ONE external stays — collect must
+        // restore counts and free nothing.
+        let frees_mid = frk_rt_rc_free_count();
+        let c = frk_rt_rc_alloc(8, layout_wordmap(&[1]));
+        let d = frk_rt_rc_alloc(8, layout_wordmap(&[1]));
+        unsafe {
+            (c as *mut u64).write(d as u64);
+            frk_rt_rc_retain(d);
+            (d as *mut u64).write(c as u64);
+            frk_rt_rc_retain(c);
+            frk_rt_rc_release(d); // d's external gone; c keeps its own
+        }
+        unsafe { frk_rt_rc_collect() };
+        assert_eq!(frk_rt_rc_free_count(), frees_mid, "live cycle survives");
+        assert_eq!(rc_count(c), 2, "counts restored by scan_black");
+        assert_eq!(rc_count(d), 1);
+        unsafe {
+            frk_rt_rc_release(c);
+            frk_rt_rc_collect();
+        }
+        assert_eq!(frk_rt_rc_free_count() - frees_mid, 2, "then it dies");
     }
 
     #[test]
@@ -660,7 +1053,7 @@ mod tests {
     fn the_allocation_counter_counts_both_strategies() {
         let before = frk_rt_alloc_count();
         let _ = frk_rt_arena_alloc(8);
-        let _ = frk_rt_rc_alloc(8);
+        let _ = frk_rt_rc_alloc(8, LAYOUT_LEAF);
         assert!(frk_rt_alloc_count() >= before + 2);
     }
 
@@ -687,7 +1080,7 @@ mod tests {
     #[test]
     fn zero_byte_requests_yield_valid_pointers() {
         assert!(!frk_rt_arena_alloc(0).is_null());
-        let p = frk_rt_rc_alloc(0);
+        let p = frk_rt_rc_alloc(0, LAYOUT_LEAF);
         assert!(!p.is_null());
         assert_eq!(rc_count(p), 1);
     }

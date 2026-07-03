@@ -33,14 +33,252 @@ void *frk_rt_arena_alloc(uint64_t bytes) {
     return malloc((size_t)bytes);
 }
 
-void *frk_rt_rc_alloc(uint64_t payload_bytes) {
-    frk_rt_allocs += 1;
-    if (payload_bytes == 0) payload_bytes = 1;
-    unsigned char *base = malloc((size_t)payload_bytes + 8);
-    if (!base) return base;
-    *(int64_t *)base = 1;
-    return base + 8;
+/* Rc strategy (D-041, header amended by D-057): three-word header
+ * [layout u64 @ -24][size u64 @ -16][rcword @ -8]. The rcword packs
+ * Bacon-Rajan state: bits 62..63 color (0 black 1 gray 2 white 3
+ * purple), bit 61 buffered, bits 0..60 count. ALL rcword arithmetic
+ * is UNSIGNED — the color lives in the sign bits, and an arithmetic
+ * shift smears it (the Rust twin found this the hard way; D-057).
+ * Layout encoding: bits 0..1 kind (0 wordmap, 1 table shell, 2
+ * array); wordmap 2-bit codes from bit 4 (0 skip, 1 ptr, 2 dyn-tag);
+ * array elem code in bits 2..3. Tier-0 targets are single-threaded.
+ */
+
+#define FRK_COLOR_SHIFT 62
+#define FRK_COLOR_MASK (3ULL << FRK_COLOR_SHIFT)
+#define FRK_BUFFERED (1ULL << 61)
+#define FRK_COUNT_MASK ((1ULL << 61) - 1)
+#define FRK_BLACK 0ULL
+#define FRK_GRAY 1ULL
+#define FRK_WHITE 2ULL
+#define FRK_PURPLE 3ULL
+
+static uint64_t frk_rc_frees;
+uint64_t frk_rt_rc_free_count(void) { return frk_rc_frees; }
+
+static uint64_t *frk_hdr_layout(unsigned char *p) { return (uint64_t *)(p - 24); }
+static uint64_t *frk_hdr_size(unsigned char *p) { return (uint64_t *)(p - 16); }
+static uint64_t *frk_hdr_rc(unsigned char *p) { return (uint64_t *)(p - 8); }
+static uint64_t frk_count(uint64_t w) { return w & FRK_COUNT_MASK; }
+static uint64_t frk_color(uint64_t w) { return (w & FRK_COLOR_MASK) >> FRK_COLOR_SHIFT; }
+static uint64_t frk_with_color(uint64_t w, uint64_t c) {
+    return (w & ~FRK_COLOR_MASK) | (c << FRK_COLOR_SHIFT);
 }
+
+static unsigned char **frk_cands;
+static uint64_t frk_cand_len, frk_cand_cap;
+
+static void frk_cand_push(unsigned char *p) {
+    if (frk_cand_len == frk_cand_cap) {
+        frk_cand_cap = frk_cand_cap ? frk_cand_cap * 2 : 64;
+        frk_cands = realloc(frk_cands, (size_t)frk_cand_cap * sizeof *frk_cands);
+    }
+    frk_cands[frk_cand_len++] = p;
+}
+
+void *frk_rt_rc_alloc(uint64_t payload_bytes, uint64_t layout) {
+    frk_rt_allocs += 1;
+    uint64_t bytes = payload_bytes ? payload_bytes : 1;
+    unsigned char *base = malloc((size_t)bytes + 24);
+    if (!base) return base;
+    unsigned char *payload = base + 24;
+    *frk_hdr_layout(payload) = layout;
+    *frk_hdr_size(payload) = bytes;
+    *frk_hdr_rc(payload) = 1; /* count 1, black, unbuffered */
+    return payload;
+}
+
+typedef void (*frk_visit_fn)(unsigned char *);
+
+static void frk_for_each_child(unsigned char *payload, frk_visit_fn visit) {
+    uint64_t layout = *frk_hdr_layout(payload);
+    uint64_t size = *frk_hdr_size(payload);
+    switch (layout & 3) {
+        case 1: { /* table shell */
+            int64_t *fields = (int64_t *)payload;
+            int64_t cap = fields[0];
+            int64_t *slots = (int64_t *)(intptr_t)fields[2];
+            if (fields[3]) visit((unsigned char *)(intptr_t)fields[3]);
+            if (slots)
+                for (int64_t i = 0; i < cap; i++) {
+                    int64_t *s = slots + i * 5;
+                    if (s[0] != 1) continue;
+                    if ((s[1] == 4 || s[1] == 5) && s[2])
+                        visit((unsigned char *)(intptr_t)s[2]);
+                    if ((s[3] == 4 || s[3] == 5) && s[4])
+                        visit((unsigned char *)(intptr_t)s[4]);
+                }
+            break;
+        }
+        case 2: { /* array */
+            uint64_t code = (layout >> 2) & 3;
+            if (code == 0) break;
+            int64_t *words = (int64_t *)payload;
+            int64_t len = words[0];
+            if (code == 1) {
+                for (int64_t i = 0; i < len; i++)
+                    if (words[1 + i]) visit((unsigned char *)(intptr_t)words[1 + i]);
+            } else {
+                for (int64_t i = 0; i + 1 < len * 2; i += 2) {
+                    int64_t tag = words[1 + i];
+                    if ((tag == 4 || tag == 5) && words[2 + i])
+                        visit((unsigned char *)(intptr_t)words[2 + i]);
+                }
+            }
+            break;
+        }
+        default: { /* wordmap */
+            int64_t *words = (int64_t *)payload;
+            uint64_t count = size / 8;
+            if (count > 30) count = 30;
+            for (uint64_t w = 0; w < count;) {
+                uint64_t code = (layout >> (4 + 2 * w)) & 3;
+                if (code == 1) {
+                    if (words[w]) visit((unsigned char *)(intptr_t)words[w]);
+                    w += 1;
+                } else if (code == 2) {
+                    int64_t tag = words[w];
+                    if (w + 1 < count && (tag == 4 || tag == 5) && words[w + 1])
+                        visit((unsigned char *)(intptr_t)words[w + 1]);
+                    w += 2;
+                } else {
+                    w += 1;
+                }
+            }
+        }
+    }
+}
+
+static void frk_free_object(unsigned char *payload) {
+    if ((*frk_hdr_layout(payload) & 3) == 1) {
+        int64_t *fields = (int64_t *)payload;
+        if (fields[2]) free((void *)(intptr_t)fields[2]);
+    }
+    free(payload - 24);
+    frk_rc_frees += 1;
+}
+
+static void frk_release_inner(unsigned char *payload);
+static void frk_release_visit(unsigned char *child) { frk_release_inner(child); }
+
+void frk_rt_rc_retain(void *payload) {
+    if (!payload) return;
+    uint64_t *r = frk_hdr_rc(payload);
+    *r = frk_with_color(*r + 1, FRK_BLACK);
+}
+
+static void frk_release_inner(unsigned char *payload) {
+    uint64_t *r = frk_hdr_rc(payload);
+    uint64_t w = *r;
+    uint64_t count = frk_count(w) - 1;
+    if (count == 0) {
+        *r = frk_with_color(count | (w & FRK_BUFFERED), FRK_BLACK);
+        if (!(w & FRK_BUFFERED)) {
+            frk_for_each_child(payload, frk_release_visit);
+            frk_free_object(payload);
+        }
+    } else {
+        if (*frk_hdr_layout(payload) == 0) {
+            *r = frk_with_color(count | (w & FRK_BUFFERED), FRK_BLACK);
+        } else {
+            uint64_t next = frk_with_color(count | (w & FRK_BUFFERED), FRK_PURPLE);
+            if (!(w & FRK_BUFFERED)) {
+                next |= FRK_BUFFERED;
+                frk_cand_push(payload);
+            }
+            *r = next;
+        }
+    }
+}
+
+void frk_rt_rc_release(void *payload) {
+    if (!payload) return;
+    frk_rt_releases += 1;
+    frk_release_inner(payload);
+}
+
+static void frk_mark_gray(unsigned char *payload);
+static void frk_mark_gray_visit(unsigned char *child) {
+    *frk_hdr_rc(child) -= 1;
+    frk_mark_gray(child);
+}
+static void frk_mark_gray(unsigned char *payload) {
+    uint64_t *r = frk_hdr_rc(payload);
+    if (frk_color(*r) != FRK_GRAY) {
+        *r = frk_with_color(*r, FRK_GRAY);
+        frk_for_each_child(payload, frk_mark_gray_visit);
+    }
+}
+
+static void frk_scan(unsigned char *payload);
+static void frk_scan_black(unsigned char *payload);
+static void frk_scan_black_visit(unsigned char *child) {
+    *frk_hdr_rc(child) += 1;
+    if (frk_color(*frk_hdr_rc(child)) != FRK_BLACK) frk_scan_black(child);
+}
+static void frk_scan_black(unsigned char *payload) {
+    uint64_t *r = frk_hdr_rc(payload);
+    *r = frk_with_color(*r, FRK_BLACK);
+    frk_for_each_child(payload, frk_scan_black_visit);
+}
+static void frk_scan_visit(unsigned char *child) { frk_scan(child); }
+static void frk_scan(unsigned char *payload) {
+    uint64_t *r = frk_hdr_rc(payload);
+    if (frk_color(*r) == FRK_GRAY) {
+        if (frk_count(*r) > 0) {
+            frk_scan_black(payload);
+        } else {
+            *r = frk_with_color(*r, FRK_WHITE);
+            frk_for_each_child(payload, frk_scan_visit);
+        }
+    }
+}
+
+static void frk_collect_white(unsigned char *payload);
+static void frk_collect_white_visit(unsigned char *child) { frk_collect_white(child); }
+static void frk_collect_white(unsigned char *payload) {
+    uint64_t *r = frk_hdr_rc(payload);
+    if (frk_color(*r) == FRK_WHITE && !(*r & FRK_BUFFERED)) {
+        *r = frk_with_color(*r, FRK_BLACK);
+        frk_for_each_child(payload, frk_collect_white_visit);
+        frk_free_object(payload);
+    }
+}
+
+void frk_rt_rc_collect(void) {
+    unsigned char **roots = frk_cands;
+    uint64_t root_count = frk_cand_len;
+    frk_cands = NULL;
+    frk_cand_len = frk_cand_cap = 0;
+
+    unsigned char **live = malloc((size_t)(root_count ? root_count : 1) * sizeof *live);
+    uint64_t live_count = 0;
+    for (uint64_t i = 0; i < root_count; i++) {
+        unsigned char *p = roots[i];
+        uint64_t *r = frk_hdr_rc(p);
+        uint64_t w = *r;
+        if (frk_color(w) == FRK_PURPLE && frk_count(w) > 0) {
+            frk_mark_gray(p);
+            live[live_count++] = p;
+        } else {
+            *r &= ~FRK_BUFFERED;
+            /* Bacon-Rajan guard: only BLACK count-0 is a deferred
+             * free; a GRAY count-0 is a sibling's TRIAL zero. */
+            if (frk_color(w) == FRK_BLACK && frk_count(w) == 0) {
+                frk_for_each_child(p, frk_release_visit);
+                frk_free_object(p);
+            }
+        }
+    }
+    for (uint64_t i = 0; i < live_count; i++) frk_scan(live[i]);
+    for (uint64_t i = 0; i < live_count; i++) {
+        *frk_hdr_rc(live[i]) &= ~FRK_BUFFERED;
+        frk_collect_white(live[i]);
+    }
+    free(live);
+    free(roots);
+}
+
 
 /* JS-faithful f64 printing (D-047): shortest round-trip digits via
  * precision search (1..17, first %.{p}g whose strtod round-trips
@@ -356,15 +594,3 @@ void frk_rt_print_str(const unsigned char *s) {
     putchar('\n');
 }
 
-void frk_rt_rc_retain(void *payload) {
-    if (!payload) return;
-    int64_t *header = (int64_t *)((unsigned char *)payload - 8);
-    *header += 1;
-}
-
-void frk_rt_rc_release(void *payload) {
-    if (!payload) return;
-    frk_rt_releases += 1;
-    int64_t *header = (int64_t *)((unsigned char *)payload - 8);
-    *header -= 1;
-}

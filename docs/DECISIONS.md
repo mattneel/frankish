@@ -193,6 +193,52 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-057 [m12/gc] The human picked the GC ladder ("Do it", second
+  time). M12 = the remaining rungs of D-053/D-055's sequencing,
+  climbed in order, both twins, exit bars:
+  (1) SIZED RELEASES — release-to-zero FREES. The rc header grows to
+  THREE words (amending D-041's one-word header):
+  [layout: u64 @ ptr-24][size: u64 @ ptr-16][refcount word @ ptr-8].
+  The size word serves dealloc AND the tracer's scan extent; the
+  refcount word carries Bacon–Rajan bookkeeping in its high bits
+  (bits 62..63 color: 0 black, 1 gray, 2 white, 3 purple; bit 61
+  buffered; bits 0..60 count). frk_rt_rc_alloc gains a LAYOUT
+  parameter: (payload_bytes, layout) -> ptr; arena_alloc is
+  unchanged (arena has no headers and never traces).
+  (2) THE LAYOUT-DESCRIPTOR RUNG (D-055.1, designed here): layout is
+  a u64 the LOWERING computes per allocation site from the slot
+  kinds it already knows. Encoding: bits 0..1 = kind — 0 WORDMAP,
+  1 TABLE_SHELL, 2 ARRAY. WORDMAP: bits 4..63 hold 2-bit codes for
+  payload words 0..29 — 0 skip, 1 managed pointer, 2 dyn-tag (this
+  word is a tag; the NEXT word is its payload, traced when tag ∈
+  {table, fun}). LEAF is the all-zero wordmap. ARRAY: bits 2..3 =
+  element code (same 0/1/2); the tracer reads the runtime length
+  from payload word 0. TABLE_SHELL: the tracer knows the 4-word
+  shell — meta word traced, the malloc'd slot array walked
+  tag-directed over keys AND values, and FREED with the shell (the
+  D-056 internals debt paid). CONSERVATIVE FRONTIER: payloads past
+  30 words, and aggregate-embedded pointers (Words slots), code as
+  skip — untraced edges act as external references: leak-biased,
+  never corrupt (the same frontier the retain side already has).
+  box<!frk_dyn.dyn> — every Lua local — codes as a dyn-pair, so Lua
+  garbage is REACHABLE by the tracer, which is the milestone's
+  point.
+  (3) RELEASE CASCADE + TRIAL DELETION: release-to-zero walks
+  children by layout (recursive release) then frees; release-to-
+  nonzero on a NON-LEAF buffers a purple candidate.
+  frk_rt_rc_collect() runs the classic three phases (mark-gray trial
+  decrement, scan restore, collect white) over the candidate buffer.
+  THE TRIGGER IS EXPLICIT in v1: collect is an ABI entry called by
+  tests/harness — deterministic and diffable; automatic thresholds
+  are the ladder's LAST rung, deferred until a corpus program needs
+  them (frk_rt_alloc/free counters are the evidence hooks).
+  (4) VERIFIERS: hand-built cycles through the raw ABI in BOTH twins
+  (the C side through the zigcc rig, %.14g-style); a release-cascade
+  test (box-in-box frees transitively); the full corpus under jit-rc
+  and the rc grid leg become the use-after-free detector the moment
+  frees are real — that is the corpus earning its keep, not a risk.
+  Revisit: thresholds when measured; the Words frontier at the same
+  time as the retain side's (one design, both directions).
 - D-056 [bstr/dyn] The femto_lua kernel prerequisites (M11 bar 3
   design; executes D-052's deferred representation choice).
   (1) BYTE STRINGS get their own micro-dialect frk_bstr — NOT an

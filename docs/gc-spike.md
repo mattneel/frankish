@@ -87,15 +87,19 @@ slot in SPEC §4.3 with named revisit conditions: a specimen with
 MEASURED GC-bound throughput (the counter hooks exist to measure), or
 MMTk-on-wasm maturing, or the grid deliberately dropping reach.
 
-**Sequencing** (implementation milestones, not M10; amended per
-D-055.1): first the D-041 liveness/release pass against
-`frk_rt_alloc_count` (DONE — M11 step 1, the leak canary passes);
-then sized releases; then **the layout-descriptor rung** — trial
-deletion traverses the object graph, so the managed/unmanaged slot
-knowledge (D-049) that today lives only in the compiler becomes a
-runtime-visible layout descriptor in BOTH twins (type maps in
-headers or side tables, within the portable-C budget) — a named bar
-so it is designed, not discovered mid-scan; then the candidate
-buffer + trial deletion; then threshold tuning against the femto_lua
-corpus. Strings stay outside (rt-owned, D-049) until the tracer
-exists, then join as leaf objects.
+**Sequencing** (amended per D-055.1; execution state per D-057):
+1. Liveness/release pass — DONE (M11 step 1; the leak canary).
+2. Sized releases — DONE (M12): three-word headers, real frees, the
+   full corpus under rc is now a standing use-after-free detector.
+3. The layout-descriptor rung — DONE (M12): per-site layout words
+   from the lowering's slot kinds, wordmap/table/array encodings,
+   lockstep-tested against the runtime's decoder; the frontier is
+   SYMMETRIC by construction (retain coverage == trace coverage —
+   the corpus found the one asymmetry within minutes of real frees).
+4. Candidate buffer + trial deletion — DONE (M12): Bacon–Rajan
+   three-phase, both twins byte-agreeing on the cascade/dead-cycle/
+   live-cycle free counts; EXPLICIT collect trigger (deterministic).
+5. Threshold tuning — deferred until a corpus program measurably
+   needs it (the counters are the evidence hooks).
+Strings stay outside (rt-owned, interned, D-049/D-056) — leaf
+pointers the tracer skips by the managed/unmanaged split.

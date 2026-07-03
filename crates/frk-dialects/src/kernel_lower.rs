@@ -61,6 +61,75 @@ pub enum Strategy {
     Rc,
 }
 
+/// What an owning store must retain under rc (computed at plan time
+/// from slot kind + source type; D-057's frontier symmetry: retain
+/// coverage EQUALS trace coverage or cascades free live objects).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RetainKind {
+    None,
+    /// A managed pointer (box/array).
+    Ptr,
+    /// A closure value: its env pointer (word 1) is managed.
+    ClosureEnv,
+    /// A dyn pair: retained iff the tag is table/fun — emitted
+    /// branch-free (select to null; retain(null) is a no-op).
+    DynPair,
+}
+
+fn retain_kind(kind: &SlotKind<'_>, ty: Type<'_>) -> RetainKind {
+    match kind {
+        SlotKind::Ptr { managed: true } => RetainKind::Ptr,
+        SlotKind::Closure => RetainKind::ClosureEnv,
+        SlotKind::Words { .. } if ty.to_string() == "!frk_dyn.dyn" => RetainKind::DynPair,
+        _ => RetainKind::None,
+    }
+}
+
+/// D-057 layout words, mirroring frk-rt's encoding (a dev-dependency
+/// parity test holds the two in lockstep). Codes: 0 skip, 1 managed
+/// pointer, 2 dyn-tag (pair with the next word).
+#[allow(dead_code)] // documented anchor of the encoding (D-057)
+pub(crate) const LAYOUT_LEAF: u64 = 0;
+pub(crate) const LAYOUT_TABLE_SHELL: u64 = 1;
+pub(crate) const LAYOUT_ARRAY_LEAF: u64 = 2;
+pub(crate) const LAYOUT_ARRAY_PTR: u64 = 2 | (1 << 2);
+pub(crate) const LAYOUT_ARRAY_DYN: u64 = 2 | (2 << 2);
+
+pub(crate) fn layout_wordmap(codes: &[u8]) -> u64 {
+    let mut layout = 0u64;
+    for (index, &code) in codes.iter().enumerate().take(30) {
+        layout |= (code as u64 & 0b11) << (4 + 2 * index);
+    }
+    layout
+}
+
+/// Per-word trace codes for a slot-kind sequence (the D-049 knowledge
+/// made runtime-visible — D-055's rung). Words (embedded aggregates)
+/// code as skip: the conservative leak-biased frontier, same as the
+/// retain side.
+fn kinds_layout(kinds: &[SlotKind<'_>], types: &[Type<'_>]) -> u64 {
+    let mut codes = Vec::new();
+    for (kind, ty) in kinds.iter().zip(types) {
+        match kind {
+            SlotKind::Int(_) | SlotKind::F64 => codes.push(0),
+            SlotKind::Ptr { managed } => codes.push(if *managed { 1 } else { 0 }),
+            SlotKind::Closure => {
+                codes.push(0); // thunk fn-ptr
+                codes.push(1); // env ptr (managed)
+            }
+            SlotKind::Words { slots, .. } => {
+                if ty.to_string() == "!frk_dyn.dyn" {
+                    codes.push(2); // dyn tag; pair traced by tag
+                    codes.push(0);
+                } else {
+                    codes.extend(std::iter::repeat_n(0u8, *slots));
+                }
+            }
+        }
+    }
+    layout_wordmap(&codes)
+}
+
 impl Strategy {
     fn alloc_symbol(self) -> &'static str {
         match self {
@@ -199,11 +268,13 @@ enum Planned<'c, 'a> {
         container: Type<'c>,
         old_slots: usize,
         kind: SlotKind<'c>,
+        appended_retain: RetainKind,
     },
     MakeClosure {
         op: OperationRef<'c, 'a>,
         callee: String,
         env_kinds: Vec<SlotKind<'c>>,
+        env_layout: u64,
         /// Lowered parameter/result types for the thunk signature.
         params: Vec<Type<'c>>,
         result: Type<'c>,
@@ -217,12 +288,12 @@ enum Planned<'c, 'a> {
     BoxNew {
         op: OperationRef<'c, 'a>,
         payload_bytes: usize,
-        /// The payload's lowered slot kind (drives an rc retain when it
-        /// is itself managed).
-        payload_kind: SlotKind<'c>,
+        payload_retain: RetainKind,
         /// GC ladder step 1 (D-053/D-054): when this allocation dies
         /// block-locally, the terminator to release before.
         die_at: Option<OperationRef<'c, 'a>>,
+        /// D-057 layout word for the tracer.
+        layout: u64,
     },
     BoxGet {
         op: OperationRef<'c, 'a>,
@@ -230,11 +301,12 @@ enum Planned<'c, 'a> {
     },
     BoxSet {
         op: OperationRef<'c, 'a>,
-        payload_kind: SlotKind<'c>,
+        payload_retain: RetainKind,
     },
     ArrayNew {
         op: OperationRef<'c, 'a>,
         die_at: Option<OperationRef<'c, 'a>>,
+        layout: u64,
     },
     ArrayGet {
         op: OperationRef<'c, 'a>,
@@ -245,6 +317,7 @@ enum Planned<'c, 'a> {
         op: OperationRef<'c, 'a>,
         elem_kind: SlotKind<'c>,
         elem_mapped: Type<'c>,
+        elem_retain: RetainKind,
     },
     ArrayLen {
         op: OperationRef<'c, 'a>,
@@ -265,6 +338,9 @@ enum Planned<'c, 'a> {
         op: OperationRef<'c, 'a>,
         tag: i64,
         payload_kind: SlotKind<'c>,
+        payload_retain: RetainKind,
+        /// Layout for the heap box when the payload is multi-word.
+        boxed_layout: u64,
     },
     DynUnwrap {
         op: OperationRef<'c, 'a>,
@@ -348,11 +424,58 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
     // release before the terminator. Cross-block lifetimes leak (the
     // documented conservative frontier; the cycle collector's ladder
     // continues from here).
+    //
+    // TRANSFER-vs-RELEASE exclusion (D-057, found by the corpus UAF):
+    // a value whose ONLY use is an owning store TRANSFERRED its one
+    // reference there (the retain was elided) — a block-exit release
+    // would spend that reference twice and free an object its new
+    // owner still holds. Such values get no die_at.
     if strategy == Strategy::Rc {
+        // Owning consumption sites: (consumer op, operand index) whose
+        // stores take ownership of a managed operand.
+        let mut owned_operands: HashMap<usize, usize> = HashMap::new();
+        for plan in &plans {
+            let sites: &[(OperationRef, usize)] = match plan {
+                Planned::ProductSnoc { op, appended_retain, .. }
+                    if *appended_retain != RetainKind::None =>
+                {
+                    &[(*op, 1)]
+                }
+                Planned::BoxNew { op, payload_retain, .. }
+                    if *payload_retain != RetainKind::None =>
+                {
+                    &[(*op, 0)]
+                }
+                Planned::BoxSet { op, payload_retain }
+                    if *payload_retain != RetainKind::None =>
+                {
+                    &[(*op, 1)]
+                }
+                Planned::ArraySet { op, elem_retain, .. }
+                    if *elem_retain != RetainKind::None =>
+                {
+                    &[(*op, 2)]
+                }
+                Planned::DynWrap { op, payload_retain, .. }
+                    if *payload_retain != RetainKind::None =>
+                {
+                    &[(*op, 0)]
+                }
+                Planned::TableRawSet { op } => &[(*op, 1), (*op, 2)],
+                Planned::TableSetMeta { op } => &[(*op, 1)],
+                _ => continue,
+            };
+            for (site, index) in sites {
+                if let Ok(value) = site.operand(*index) {
+                    *owned_operands.entry(value.to_raw().ptr as usize).or_insert(0) += 1;
+                }
+            }
+        }
+
         for plan in &mut plans {
             let (op, die_at) = match plan {
                 Planned::BoxNew { op, die_at, .. } => (*op, die_at),
-                Planned::ArrayNew { op, die_at } => (*op, die_at),
+                Planned::ArrayNew { op, die_at, .. } => (*op, die_at),
                 _ => continue,
             };
             let Ok(result) = op.result(0) else { continue };
@@ -362,7 +485,10 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
                 // Unused allocations die immediately too.
                 None => true,
                 Some((users, escapes)) => {
+                    let transferred = users.len() == 1
+                        && owned_operands.get(&key).copied().unwrap_or(0) >= 1;
                     !*escapes
+                        && !transferred
                         && users
                             .iter()
                             .all(|user| op_blocks.get(user).copied() == Some(def_block))
@@ -384,21 +510,27 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
     // Sharing must be resolved BEFORE any rewriting: use counts key on
     // pre-lowering SSA values, and op replacement rewrites operands in
     // place (a mid-rewrite lookup would miss and misread transfer).
-    let mut retain_shared: HashMap<usize, bool> = HashMap::new();
+    let mut retain_shared: HashMap<(usize, usize), bool> = HashMap::new();
     for plan in &plans {
-        let (op, index) = match plan {
-            Planned::ProductSnoc { op, .. } => (*op, 1usize),
-            Planned::BoxNew { op, .. } => (*op, 0),
-            Planned::BoxSet { op, .. } => (*op, 1),
-            Planned::ArraySet { op, .. } => (*op, 2),
+        let sites: &[(OperationRef, usize)] = match plan {
+            Planned::ProductSnoc { op, .. } => &[(*op, 1usize)],
+            Planned::BoxNew { op, .. } => &[(*op, 0)],
+            Planned::BoxSet { op, .. } => &[(*op, 1)],
+            Planned::ArraySet { op, .. } => &[(*op, 2)],
+            Planned::DynWrap { op, .. } => &[(*op, 0)],
+            // Table stores own both the key and the value (D-057).
+            Planned::TableRawSet { op } => &[(*op, 1), (*op, 2)],
+            Planned::TableSetMeta { op } => &[(*op, 1)],
             _ => continue,
         };
-        if let Ok(value) = op.operand(index) {
-            let count = use_counts
-                .get(&(value.to_raw().ptr as usize))
-                .copied()
-                .unwrap_or(0);
-            retain_shared.insert(op.to_raw().ptr as usize, count > 1);
+        for (op, index) in sites {
+            if let Ok(value) = op.operand(*index) {
+                let count = use_counts
+                    .get(&(value.to_raw().ptr as usize))
+                    .copied()
+                    .unwrap_or(0);
+                retain_shared.insert((op.to_raw().ptr as usize, *index), count > 1);
+            }
         }
     }
 
@@ -565,6 +697,7 @@ fn plan_adt<'c, 'a>(
                 container: map_type(context, result_type()?)?,
                 old_slots: total_slots(&old),
                 kind: slot_kind(context, appended)?,
+                appended_retain: retain_kind(&slot_kind(context, appended)?, appended),
             })
         }
         "make_sum" => {
@@ -629,12 +762,14 @@ fn plan_closure<'c, 'a>(
     match suffix {
         "make" => {
             let callee = crate::closure::callee_name(op)?;
-            let env_kinds = kinds_of(context, &decode_product(
+            let env_fields = decode_product(
                 context,
                 op.operand(0)
                     .map_err(|_| "make without an env operand".to_string())?
                     .r#type(),
-            )?)?;
+            )?;
+            let env_kinds = kinds_of(context, &env_fields)?;
+            let env_layout = kinds_layout(&env_kinds, &env_fields);
             let (params, results) = decode_fn(
                 context,
                 op.result(0)
@@ -656,6 +791,7 @@ fn plan_closure<'c, 'a>(
                 op,
                 callee,
                 env_kinds,
+                env_layout,
                 params,
                 result,
                 thunk,
@@ -695,11 +831,14 @@ fn plan_mem<'c, 'a>(
                     .r#type(),
             )?;
             let kind = slot_kind(context, elem)?;
+            let layout = kinds_layout(std::slice::from_ref(&kind), &[elem]);
+            let payload_retain = retain_kind(&kind, elem);
             Ok(Planned::BoxNew {
                 op,
                 payload_bytes: (kind.slots().max(1)) * 8,
-                payload_kind: kind,
+                payload_retain,
                 die_at: None,
+                layout,
             })
         }
         "box_get" => {
@@ -718,9 +857,27 @@ fn plan_mem<'c, 'a>(
                     .map_err(|_| "box_set without an operand".to_string())?
                     .r#type(),
             )?;
-            Ok(Planned::BoxSet { op, payload_kind: slot_kind(context, elem)? })
+            Ok(Planned::BoxSet {
+                op,
+                payload_retain: retain_kind(&slot_kind(context, elem)?, elem),
+            })
         }
-        "array_new" => Ok(Planned::ArrayNew { op, die_at: None }),
+        "array_new" => {
+            let elem = crate::mem::decode_arr(
+                context,
+                op.result(0)
+                    .map_err(|_| "array_new without a result".to_string())?
+                    .r#type(),
+            )?;
+            let layout = match slot_kind(context, elem)? {
+                SlotKind::Ptr { managed: true } => LAYOUT_ARRAY_PTR,
+                SlotKind::Words { .. } if elem.to_string() == "!frk_dyn.dyn" => {
+                    LAYOUT_ARRAY_DYN
+                }
+                _ => LAYOUT_ARRAY_LEAF,
+            };
+            Ok(Planned::ArrayNew { op, die_at: None, layout })
+        }
         "array_get" => {
             let elem = crate::mem::decode_arr(
                 context,
@@ -749,7 +906,13 @@ fn plan_mem<'c, 'a>(
                     "array elements must be one slot in v0 (D-049), got {elem}"
                 ));
             }
-            Ok(Planned::ArraySet { op, elem_mapped: map_type(context, elem)?, elem_kind: kind })
+            let elem_retain = retain_kind(&kind, elem);
+            Ok(Planned::ArraySet {
+                op,
+                elem_mapped: map_type(context, elem)?,
+                elem_kind: kind,
+                elem_retain,
+            })
         }
         "array_len" => Ok(Planned::ArrayLen { op }),
         other => Err(format!("no lowering for frk_mem.{other}")),
@@ -768,7 +931,10 @@ fn plan_dyn<'c, 'a>(
                 .operand(0)
                 .map_err(|_| "wrap without an operand".to_string())?
                 .r#type();
-            Ok(Planned::DynWrap { op, tag, payload_kind: slot_kind(context, payload)? })
+            let kind = slot_kind(context, payload)?;
+            let boxed_layout = kinds_layout(std::slice::from_ref(&kind), &[payload]);
+            let payload_retain = retain_kind(&kind, payload);
+            Ok(Planned::DynWrap { op, tag, payload_kind: kind, payload_retain, boxed_layout })
         }
         "unwrap" => {
             let tag = crate::dyn_dialect::tag_attr(op)?;
@@ -1062,10 +1228,17 @@ fn declare_runtime(
         Ok(())
     };
 
-    declare(
-        strategy.alloc_symbol(),
-        llvm::r#type::function(ptr, &[i64_type], false),
-    )?;
+    match strategy {
+        Strategy::Arena => declare(
+            strategy.alloc_symbol(),
+            llvm::r#type::function(ptr, &[i64_type], false),
+        )?,
+        // D-057: rc allocations carry their layout descriptor.
+        Strategy::Rc => declare(
+            strategy.alloc_symbol(),
+            llvm::r#type::function(ptr, &[i64_type, i64_type], false),
+        )?,
+    }
     if strategy == Strategy::Rc {
         declare(
             "frk_rt_rc_retain",
@@ -1343,11 +1516,11 @@ fn apply<'c, 'a>(
     rewriter: &RewriterBase<'c, '_>,
     plan: Planned<'c, 'a>,
     strategy: Strategy,
-    retain_shared: &HashMap<usize, bool>,
+    retain_shared: &HashMap<(usize, usize), bool>,
     releases: &mut Vec<(OperationRef<'c, 'a>, Value<'c, 'c>)>,
 ) -> Result<(), String> {
     match plan {
-        Planned::DynWrap { op, tag, payload_kind } => {
+        Planned::DynWrap { op, tag, payload_kind, payload_retain, boxed_layout } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
             let i64_type: Type = IntegerType::new(context, 64).into();
@@ -1372,7 +1545,13 @@ fn apply<'c, 'a>(
                     "llvm.ptrtoint", payload, i64_type, location,
                 )?))?,
                 SlotKind::Closure | SlotKind::Words { .. } => {
-                    let ptr = llvm::r#type::pointer(context, 0);
+                    let shared = retain_shared
+                        .get(&(op.to_raw().ptr as usize, 0))
+                        .copied()
+                        .unwrap_or(false);
+                    maybe_retain(
+                        context, rewriter, strategy, payload_retain, payload, shared, location,
+                    )?;
                     let slots = payload_kind.slots();
                     let size = result_value(rewriter.insert(
                         melior::dialect::arith::constant(
@@ -1381,13 +1560,9 @@ fn apply<'c, 'a>(
                             location,
                         ),
                     ))?;
-                    let boxed = result_value(rewriter.insert(direct_call(
-                        context,
-                        strategy.alloc_symbol(),
-                        &[size],
-                        ptr,
-                        location,
-                    )?))?;
+                    let boxed = strategy_alloc(
+                        context, rewriter, strategy, size, boxed_layout, location,
+                    )?;
                     rewriter.insert(store_op(context, payload, boxed, location)?);
                     result_value(rewriter.insert(cast_op(
                         "llvm.ptrtoint", boxed, i64_type, location,
@@ -1505,11 +1680,11 @@ fn apply<'c, 'a>(
             )))?;
             finish(rewriter, op, tag)
         }
-        Planned::ArrayNew { op, die_at } => {
+        Planned::ArrayNew { op, die_at, layout } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
             let i64_type: Type = IntegerType::new(context, 64).into();
-            let ptr = llvm::r#type::pointer(context, 0);
+            let _ptr = llvm::r#type::pointer(context, 0);
             let len = operand(op, 0)?;
             let eight = result_value(rewriter.insert(melior::dialect::arith::constant(
                 context,
@@ -1530,13 +1705,7 @@ fn apply<'c, 'a>(
                     .build()
                     .map_err(|e| e.to_string())?,
             ))?;
-            let base = result_value(rewriter.insert(direct_call(
-                context,
-                strategy.alloc_symbol(),
-                &[total],
-                ptr,
-                location,
-            )?))?;
+            let base = strategy_alloc(context, rewriter, strategy, total, layout, location)?;
             rewriter.insert(store_op(context, len, base, location)?);
             if let Some(terminator) = die_at {
                 releases.push((terminator, base));
@@ -1579,16 +1748,16 @@ fn apply<'c, 'a>(
             let value = elem_from_slot(context, rewriter, &elem_kind, elem_mapped, loaded, location)?;
             finish(rewriter, op, value)
         }
-        Planned::ArraySet { op, elem_kind, elem_mapped } => {
+        Planned::ArraySet { op, elem_kind, elem_mapped, elem_retain } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
             let addr = element_address(context, rewriter, op, location)?;
             let raw = operand(op, 2)?;
             let shared = retain_shared
-                .get(&(op.to_raw().ptr as usize))
+                .get(&(op.to_raw().ptr as usize, 2))
                 .copied()
                 .unwrap_or(false);
-            maybe_retain(context, rewriter, strategy, &elem_kind, raw, shared, location)?;
+            maybe_retain(context, rewriter, strategy, elem_retain, raw, shared, location)?;
             let slot = elem_to_slot(context, rewriter, &elem_kind, elem_mapped, raw, location)?;
             rewriter.insert(store_op(context, slot, addr, location)?);
             rewriter.erase_op(op);
@@ -1598,19 +1767,15 @@ fn apply<'c, 'a>(
             rewriter.set_insertion_point_before(op);
             let location = op.location();
             let i64_type: Type = IntegerType::new(context, 64).into();
-            let ptr = llvm::r#type::pointer(context, 0);
+            let _ptr = llvm::r#type::pointer(context, 0);
             let size = result_value(rewriter.insert(melior::dialect::arith::constant(
                 context,
                 IntegerAttribute::new(i64_type, 32).into(),
                 location,
             )))?;
-            let shell = result_value(rewriter.insert(direct_call(
-                context,
-                strategy.alloc_symbol(),
-                &[size],
-                ptr,
-                location,
-            )?))?;
+            let shell = strategy_alloc(
+                context, rewriter, strategy, size, LAYOUT_TABLE_SHELL, location,
+            )?;
             let shell_word =
                 result_value(rewriter.insert(cast_op("llvm.ptrtoint", shell, i64_type, location)?))?;
             rewriter.insert(direct_call_void(
@@ -1660,17 +1825,83 @@ fn apply<'c, 'a>(
         Planned::TableRawSet { op } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
             let table_pay = dyn_field(context, rewriter, operand(op, 0)?, 1, location)?;
             let key_tag = dyn_field(context, rewriter, operand(op, 1)?, 0, location)?;
             let key_pay = dyn_field(context, rewriter, operand(op, 1)?, 1, location)?;
             let value_tag = dyn_field(context, rewriter, operand(op, 2)?, 0, location)?;
             let value_pay = dyn_field(context, rewriter, operand(op, 2)?, 1, location)?;
+
+            // rc ownership discipline (D-057 frontier symmetry): the
+            // table owns stored keys and values — retain the incoming
+            // pair-payloads (masked, transfer-elided) BEFORE the set,
+            // release the overwritten value AFTER. Deleted keys stay
+            // leak-biased (documented).
+            let (old_tag, old_pay) = if strategy == Strategy::Rc {
+                let two = result_value(rewriter.insert(melior::dialect::arith::constant(
+                    context,
+                    IntegerAttribute::new(i64_type, 2).into(),
+                    location,
+                )))?;
+                let out = result_value(rewriter.insert(
+                    OperationBuilder::new("llvm.alloca", location)
+                        .add_attributes(&[(
+                            melior::ir::Identifier::new(context, "elem_type"),
+                            TypeAttribute::new(i64_type).into(),
+                        )])
+                        .add_operands(&[two])
+                        .add_results(&[ptr])
+                        .build()
+                        .map_err(|e| e.to_string())?,
+                ))?;
+                rewriter.insert(direct_call_void(
+                    context,
+                    "frk_rt_table_raw_get",
+                    &[table_pay, key_tag, key_pay, out],
+                    location,
+                )?);
+                let old_tag = load_slot_at(context, rewriter, out, 0, location)?;
+                let old_pay = load_slot_at(context, rewriter, out, 1, location)?;
+                for (tag, pay, index) in
+                    [(key_tag, key_pay, 1usize), (value_tag, value_pay, 2usize)]
+                {
+                    let shared = retain_shared
+                        .get(&(op.to_raw().ptr as usize, index))
+                        .copied()
+                        .unwrap_or(false);
+                    if shared {
+                        let masked =
+                            masked_dyn_ptr(context, rewriter, tag, pay, location)?;
+                        rewriter.insert(direct_call_void(
+                            context,
+                            "frk_rt_rc_retain",
+                            &[masked],
+                            location,
+                        )?);
+                    }
+                }
+                (Some(old_tag), Some(old_pay))
+            } else {
+                (None, None)
+            };
+
             rewriter.insert(direct_call_void(
                 context,
                 "frk_rt_table_raw_set",
                 &[table_pay, key_tag, key_pay, value_tag, value_pay],
                 location,
             )?);
+
+            if let (Some(old_tag), Some(old_pay)) = (old_tag, old_pay) {
+                let masked = masked_dyn_ptr(context, rewriter, old_tag, old_pay, location)?;
+                rewriter.insert(direct_call_void(
+                    context,
+                    "frk_rt_rc_release",
+                    &[masked],
+                    location,
+                )?);
+            }
             rewriter.erase_op(op);
             Ok(())
         }
@@ -1696,6 +1927,7 @@ fn apply<'c, 'a>(
             let i64_type: Type = IntegerType::new(context, 64).into();
             let ptr = llvm::r#type::pointer(context, 0);
             let table_pay = dyn_field(context, rewriter, operand(op, 0)?, 1, location)?;
+            let meta_tag = dyn_field(context, rewriter, operand(op, 1)?, 0, location)?;
             let meta_pay = dyn_field(context, rewriter, operand(op, 1)?, 1, location)?;
             let offset = result_value(rewriter.insert(melior::dialect::arith::constant(
                 context,
@@ -1711,7 +1943,35 @@ fn apply<'c, 'a>(
             ))?;
             let addr =
                 result_value(rewriter.insert(cast_op("llvm.inttoptr", addr_word, ptr, location)?))?;
-            rewriter.insert(store_op(context, meta_pay, addr, location)?);
+            if strategy == Strategy::Rc {
+                // Retain new meta (masked; shared-elided), release old.
+                let shared = retain_shared
+                    .get(&(op.to_raw().ptr as usize, 1))
+                    .copied()
+                    .unwrap_or(false);
+                if shared {
+                    let masked =
+                        masked_dyn_ptr(context, rewriter, meta_tag, meta_pay, location)?;
+                    rewriter.insert(direct_call_void(
+                        context,
+                        "frk_rt_rc_retain",
+                        &[masked],
+                        location,
+                    )?);
+                }
+                let old = load_slot_at(context, rewriter, addr, 0, location)?;
+                let old_ptr =
+                    result_value(rewriter.insert(cast_op("llvm.inttoptr", old, ptr, location)?))?;
+                rewriter.insert(store_op(context, meta_pay, addr, location)?);
+                rewriter.insert(direct_call_void(
+                    context,
+                    "frk_rt_rc_release",
+                    &[old_ptr],
+                    location,
+                )?);
+            } else {
+                rewriter.insert(store_op(context, meta_pay, addr, location)?);
+            }
             rewriter.erase_op(op);
             Ok(())
         }
@@ -2037,29 +2297,23 @@ fn apply<'c, 'a>(
             };
             finish(rewriter, op, value)
         }
-        Planned::BoxNew { op, payload_bytes, payload_kind, die_at } => {
+        Planned::BoxNew { op, payload_bytes, payload_retain, die_at, layout } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
             let i64_type: Type = IntegerType::new(context, 64).into();
-            let ptr = llvm::r#type::pointer(context, 0);
+            let _ptr = llvm::r#type::pointer(context, 0);
             let size = result_value(rewriter.insert(melior::dialect::arith::constant(
                 context,
                 IntegerAttribute::new(i64_type, payload_bytes as i64).into(),
                 location,
             )))?;
-            let payload_ptr = result_value(rewriter.insert(direct_call(
-                context,
-                strategy.alloc_symbol(),
-                &[size],
-                ptr,
-                location,
-            )?))?;
+            let payload_ptr = strategy_alloc(context, rewriter, strategy, size, layout, location)?;
             let payload = operand(op, 0)?;
             let shared = retain_shared
-                .get(&(op.to_raw().ptr as usize))
+                .get(&(op.to_raw().ptr as usize, 0))
                 .copied()
                 .unwrap_or(false);
-            maybe_retain(context, rewriter, strategy, &payload_kind, payload, shared, location)?;
+            maybe_retain(context, rewriter, strategy, payload_retain, payload, shared, location)?;
             rewriter.insert(store_op(context, payload, payload_ptr, location)?);
             if let Some(terminator) = die_at {
                 releases.push((terminator, payload_ptr));
@@ -2083,16 +2337,16 @@ fn apply<'c, 'a>(
             ))?;
             finish(rewriter, op, loaded)
         }
-        Planned::BoxSet { op, payload_kind } => {
+        Planned::BoxSet { op, payload_retain } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
             let boxed = operand(op, 0)?;
             let payload = operand(op, 1)?;
             let shared = retain_shared
-                .get(&(op.to_raw().ptr as usize))
+                .get(&(op.to_raw().ptr as usize, 1))
                 .copied()
                 .unwrap_or(false);
-            maybe_retain(context, rewriter, strategy, &payload_kind, payload, shared, location)?;
+            maybe_retain(context, rewriter, strategy, payload_retain, payload, shared, location)?;
             rewriter.insert(store_op(context, payload, boxed, location)?);
             rewriter.erase_op(op);
             Ok(())
@@ -2127,6 +2381,7 @@ fn apply<'c, 'a>(
             container,
             old_slots,
             kind,
+            appended_retain,
         } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
@@ -2151,10 +2406,10 @@ fn apply<'c, 'a>(
             }
             let appended = operand(op, 1)?;
             let shared = retain_shared
-                .get(&(op.to_raw().ptr as usize))
+                .get(&(op.to_raw().ptr as usize, 1))
                 .copied()
                 .unwrap_or(false);
-            maybe_retain(context, rewriter, strategy, &kind, appended, shared, location)?;
+            maybe_retain(context, rewriter, strategy, appended_retain, appended, shared, location)?;
             write_slots(
                 context, rewriter, &mut acc, old_slots, kind.clone(), appended, location,
             )?;
@@ -2204,6 +2459,7 @@ fn apply<'c, 'a>(
         Planned::MakeClosure {
             op,
             env_kinds,
+            env_layout,
             thunk,
             params,
             result,
@@ -2221,13 +2477,8 @@ fn apply<'c, 'a>(
                 IntegerAttribute::new(i64_type, (env_slots.max(1) * 8) as i64).into(),
                 location,
             )))?;
-            let env_ptr = result_value(rewriter.insert(direct_call(
-                context,
-                strategy.alloc_symbol(),
-                &[size],
-                ptr,
-                location,
-            )?))?;
+            let env_ptr =
+                strategy_alloc(context, rewriter, strategy, size, env_layout, location)?;
             let env_value = operand(op, 0)?;
             // No retains here by design: managed pointers were retained
             // (or transfer-elided) when they entered the env product at
@@ -2499,75 +2750,182 @@ fn store_op<'c>(
         .map_err(|e| e.to_string())
 }
 
-/// Under Rc, an owning store of a directly-managed value (a box ptr or
-/// a closure's env ptr) retains it — UNLESS this store is the value's
-/// only use (ownership transfer: the minimal elision, D-041). Void call:
-/// llvm.call with zero results.
+/// Under Rc, an owning store retains what it stores — coverage EQUAL
+/// to the tracer's (D-057 frontier symmetry). Elided when the store
+/// is the value's only use (ownership transfer, D-041). The DynPair
+/// arm is branch-free: the payload pointer is masked to null unless
+/// the tag is table/fun, and retain(null) is a no-op.
 #[allow(clippy::too_many_arguments)]
 fn maybe_retain<'c>(
     context: &'c Context,
     rewriter: &RewriterBase<'c, '_>,
     strategy: Strategy,
-    kind: &SlotKind<'c>,
+    kind: RetainKind,
     value: Value<'c, '_>,
     shared: bool,
     location: Location<'c>,
 ) -> Result<(), String> {
-    if strategy != Strategy::Rc || !shared {
+    if strategy != Strategy::Rc || !shared || kind == RetainKind::None {
         return Ok(());
     }
-    let managed_ptr: Option<Value<'c, 'c>> = match kind {
-        SlotKind::Ptr { managed: true } => Some(unsafe { Value::from_raw(value.to_raw()) }),
-        SlotKind::Closure => {
-            let ptr = llvm::r#type::pointer(context, 0);
-            Some(result_value(rewriter.insert(llvm::extract_value(
+    let managed = managed_ptr_of(context, rewriter, kind, value, location)?;
+    let Some(managed) = managed else {
+        return Ok(());
+    };
+    rewriter.insert(direct_call_void(
+        context,
+        "frk_rt_rc_retain",
+        &[managed],
+        location,
+    )?);
+    Ok(())
+}
+
+/// Projects the managed pointer a store owns, per RetainKind.
+fn managed_ptr_of<'c>(
+    context: &'c Context,
+    rewriter: &RewriterBase<'c, '_>,
+    kind: RetainKind,
+    value: Value<'c, '_>,
+    location: Location<'c>,
+) -> Result<Option<Value<'c, 'c>>, String> {
+    let i64_type: Type = IntegerType::new(context, 64).into();
+    let ptr = llvm::r#type::pointer(context, 0);
+    match kind {
+        RetainKind::None => Ok(None),
+        RetainKind::Ptr => Ok(Some(unsafe { Value::from_raw(value.to_raw()) })),
+        RetainKind::ClosureEnv => Ok(Some(result_value(rewriter.insert(
+            llvm::extract_value(
                 context,
                 value,
                 DenseI64ArrayAttribute::new(context, &[1]),
                 ptr,
                 location,
-            )))?)
+            ),
+        ))?)),
+        RetainKind::DynPair => {
+            let tag = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                value,
+                DenseI64ArrayAttribute::new(context, &[0]),
+                i64_type,
+                location,
+            )))?;
+            let pay = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                value,
+                DenseI64ArrayAttribute::new(context, &[1]),
+                i64_type,
+                location,
+            )))?;
+            Ok(Some(masked_dyn_ptr(context, rewriter, tag, pay, location)?))
         }
-        _ => None,
+    }
+}
+
+/// tag ∈ {table, fun} ? payload-as-ptr : null (branch-free).
+fn masked_dyn_ptr<'c>(
+    context: &'c Context,
+    rewriter: &RewriterBase<'c, '_>,
+    tag: Value<'c, '_>,
+    pay: Value<'c, '_>,
+    location: Location<'c>,
+) -> Result<Value<'c, 'c>, String> {
+    let i64_type: Type = IntegerType::new(context, 64).into();
+    let ptr = llvm::r#type::pointer(context, 0);
+    let four = result_value(rewriter.insert(melior::dialect::arith::constant(
+        context,
+        IntegerAttribute::new(i64_type, 4).into(),
+        location,
+    )))?;
+    let five = result_value(rewriter.insert(melior::dialect::arith::constant(
+        context,
+        IntegerAttribute::new(i64_type, 5).into(),
+        location,
+    )))?;
+    let zero = result_value(rewriter.insert(melior::dialect::arith::constant(
+        context,
+        IntegerAttribute::new(i64_type, 0).into(),
+        location,
+    )))?;
+    let tag_v = unsafe { Value::from_raw(tag.to_raw()) };
+    let pay_v = unsafe { Value::from_raw(pay.to_raw()) };
+    let cmpi = |predicate: i64, a: Value<'c, 'c>, b: Value<'c, 'c>| {
+        rewriter
+            .insert(
+                OperationBuilder::new("arith.cmpi", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "predicate"),
+                        IntegerAttribute::new(i64_type, predicate).into(),
+                    )])
+                    .add_operands(&[a, b])
+                    .add_results(&[IntegerType::new(context, 1).into()])
+                    .build()
+                    .map_err(|e| e.to_string())
+                    .map(|op| op)
+                    .unwrap(),
+            )
+            .result(0)
+            .map(|r| unsafe { Value::from_raw(r.to_raw()) })
+            .map_err(|e| e.to_string())
     };
-    let Some(managed) = managed_ptr else {
-        return Ok(());
-    };
-    rewriter.insert(
-        OperationBuilder::new("llvm.call", location)
-            .add_attributes(&[
-                (
-                    melior::ir::Identifier::new(context, "callee"),
-                    FlatSymbolRefAttribute::new(context, "frk_rt_rc_retain").into(),
-                ),
-                (
-                    melior::ir::Identifier::new(context, "CConv"),
-                    Attribute::parse(context, "#llvm.cconv<ccc>").ok_or("CConv")?,
-                ),
-                (
-                    melior::ir::Identifier::new(context, "TailCallKind"),
-                    Attribute::parse(context, "#llvm.tailcallkind<none>")
-                        .ok_or("TailCallKind")?,
-                ),
-                (
-                    melior::ir::Identifier::new(context, "fastmathFlags"),
-                    Attribute::parse(context, "#llvm.fastmath<none>").ok_or("fastmathFlags")?,
-                ),
-                (
-                    melior::ir::Identifier::new(context, "op_bundle_sizes"),
-                    Attribute::parse(context, "array<i32>").ok_or("op_bundle_sizes")?,
-                ),
-                (
-                    melior::ir::Identifier::new(context, "operandSegmentSizes"),
-                    Attribute::parse(context, "array<i32: 1, 0>")
-                        .ok_or("operandSegmentSizes")?,
-                ),
-            ])
-            .add_operands(&[managed])
+    let is4 = cmpi(0, tag_v, four)?;
+    let is5 = cmpi(0, tag_v, five)?;
+    let either = result_value(rewriter.insert(
+        OperationBuilder::new("arith.ori", location)
+            .add_operands(&[is4, is5])
+            .add_results(&[IntegerType::new(context, 1).into()])
             .build()
             .map_err(|e| e.to_string())?,
-    );
-    Ok(())
+    ))?;
+    let masked = result_value(rewriter.insert(
+        OperationBuilder::new("arith.select", location)
+            .add_operands(&[either, pay_v, zero])
+            .add_results(&[i64_type])
+            .build()
+            .map_err(|e| e.to_string())?,
+    ))?;
+    result_value(rewriter.insert(cast_op("llvm.inttoptr", masked, ptr, location)?))
+}
+
+/// Strategy allocation call: arena takes bytes; rc takes
+/// (bytes, layout) — the D-057 descriptor rides every allocation.
+fn strategy_alloc<'c>(
+    context: &'c Context,
+    rewriter: &RewriterBase<'c, '_>,
+    strategy: Strategy,
+    size: Value<'c, '_>,
+    layout: u64,
+    location: Location<'c>,
+) -> Result<Value<'c, 'c>, String> {
+    let i64_type: Type = IntegerType::new(context, 64).into();
+    let ptr = llvm::r#type::pointer(context, 0);
+    let size = unsafe { Value::from_raw(size.to_raw()) };
+    match strategy {
+        Strategy::Arena => result_value(rewriter.insert(direct_call(
+            context,
+            strategy.alloc_symbol(),
+            &[size],
+            ptr,
+            location,
+        )?)),
+        Strategy::Rc => {
+            let layout_value = result_value(rewriter.insert(
+                melior::dialect::arith::constant(
+                    context,
+                    IntegerAttribute::new(i64_type, layout as i64).into(),
+                    location,
+                ),
+            ))?;
+            result_value(rewriter.insert(direct_call(
+                context,
+                strategy.alloc_symbol(),
+                &[size, layout_value],
+                ptr,
+                location,
+            )?))
+        }
+    }
 }
 
 /// One field (0 = tag, 1 = payload) of a lowered dyn struct value.
@@ -2718,7 +3076,7 @@ fn direct_call_void<'c>(
         .map_err(|e| e.to_string())
 }
 
-/// Direct llvm.call by symbol (the allocator).
+/// Direct llvm.call by symbol (the allocator)./// Direct llvm.call by symbol (the allocator).
 fn direct_call<'c>(
     context: &'c Context,
     callee: &str,
