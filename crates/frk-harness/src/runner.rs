@@ -635,7 +635,7 @@ extern "C" fn capture_scm_display_num(value: f64) {
     CAPTURE.with(|buffer| buffer.borrow_mut().push_str(&frk_rt::format_lua_num(value)));
 }
 
-extern "C" fn capture_scm_display_bool(value: u8) {
+extern "C" fn capture_scm_display_bool(value: i64) {
     CAPTURE.with(|buffer| buffer.borrow_mut().push_str(if value != 0 { "#t" } else { "#f" }));
 }
 

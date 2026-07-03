@@ -1027,7 +1027,9 @@ pub extern "C" fn frk_rt_scm_display_num(value: f64) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn frk_rt_scm_display_bool(value: u8) {
+pub extern "C" fn frk_rt_scm_display_bool(value: i64) {
+    // i64 arg (not u8): wasm enforces exact import signatures, and the
+    // lowering passes the extended i1 as i64 (the u64-everywhere ABI).
     print!("{}", if value != 0 { "#t" } else { "#f" });
 }
 

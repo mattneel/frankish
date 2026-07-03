@@ -1,0 +1,5 @@
+(import (scheme base) (scheme write))
+(define (even? n) (if (= n 0) #t (odd? (- n 1))))
+(define (odd? n) (if (= n 0) #f (even? (- n 1))))
+(display (even? 100)) (newline)
+(display (odd? 7)) (newline)

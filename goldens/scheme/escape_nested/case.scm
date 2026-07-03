@@ -1,0 +1,8 @@
+(import (scheme base) (scheme write))
+(define (inner-escapes-inner)
+  (+ 100 (call/cc (lambda (k) (+ 1 (k 5))))))
+(define (inner-escapes-outer)
+  (call/cc (lambda (outer)
+    (+ 100 (call/cc (lambda (inner) (outer 8)))))))
+(display (inner-escapes-inner)) (newline)
+(display (inner-escapes-outer)) (newline)
