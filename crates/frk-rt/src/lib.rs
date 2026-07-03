@@ -535,6 +535,90 @@ pub extern "C" fn frk_rt_lua_error(code: i64) {
     std::process::abort();
 }
 
+// ---- control effects (M15; κ_frk, D-060): the result-passing
+// carrier for escape continuations. NO unwinder (Tier-0/wasm) — abort
+// sets a process-global "pending cell", every non-tail caller checks
+// it after a call and returns, until the matching prompt resolves it.
+// Single-threaded per run (like every other twin global). A well-formed
+// program leaves pending=0 and the prompt stack empty, so state never
+// leaks between goldens sharing a JIT process. ----
+
+/// Monotonic prompt-token source — never reused within a run, so a
+/// stale escape can never alias a fresh prompt (no ABA).
+static CTL_NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
+/// The single in-flight abort: flag, target token, and the 2-word dyn
+/// value {tag, payload}. Only one abort unwinds at a time.
+static CTL_PENDING: AtomicU64 = AtomicU64::new(0);
+static CTL_TARGET: AtomicU64 = AtomicU64::new(0);
+static CTL_VALUE_TAG: AtomicU64 = AtomicU64::new(0);
+static CTL_VALUE_PAYLOAD: AtomicU64 = AtomicU64::new(0);
+
+fn ctl_prompts() -> &'static std::sync::Mutex<Vec<i64>> {
+    static PROMPTS: std::sync::OnceLock<std::sync::Mutex<Vec<i64>>> =
+        std::sync::OnceLock::new();
+    PROMPTS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// Installs a fresh prompt and returns its token (κ_frk §2).
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_ctl_prompt_enter() -> i64 {
+    let token = CTL_NEXT_TOKEN.fetch_add(1, Ordering::Relaxed) as i64;
+    ctl_prompts().lock().unwrap().push(token);
+    token
+}
+
+/// Removes `token` and anything nested above it (LIFO; the truncate is
+/// defensive — a well-typed run pops the exact top).
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_ctl_prompt_exit(token: i64) {
+    let mut prompts = ctl_prompts().lock().unwrap();
+    if let Some(position) = prompts.iter().rposition(|&t| t == token) {
+        prompts.truncate(position);
+    }
+}
+
+/// Raises an abort toward `token`. A dead token is the "escape past
+/// extent" trap (the native analog of the interpreter's Trap). Live:
+/// park the value and set pending; the caller chain propagates.
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_ctl_abort(token: i64, tag: i64, payload: i64) {
+    if !ctl_prompts().lock().unwrap().contains(&token) {
+        eprintln!("frk: escape past extent (κ_frk, D-060)");
+        std::process::abort();
+    }
+    CTL_TARGET.store(token as u64, Ordering::Relaxed);
+    CTL_VALUE_TAG.store(tag as u64, Ordering::Relaxed);
+    CTL_VALUE_PAYLOAD.store(payload as u64, Ordering::Relaxed);
+    CTL_PENDING.store(1, Ordering::Relaxed);
+}
+
+/// The result-passing carrier read after a call: is an abort pending?
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_ctl_pending() -> i64 {
+    CTL_PENDING.load(Ordering::Relaxed) as i64
+}
+
+/// The prompt's catch test: if an abort targets `token`, clear pending,
+/// write the parked dyn to `out` (out[0]=tag, out[1]=payload), and
+/// return 1; otherwise return 0 (leave pending for an outer prompt).
+///
+/// # Safety
+/// `out` must point to two writable i64 slots when the return is 1.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_ctl_resolve(token: i64, out: *mut i64) -> i64 {
+    if CTL_PENDING.load(Ordering::Relaxed) == 0
+        || CTL_TARGET.load(Ordering::Relaxed) as i64 != token
+    {
+        return 0;
+    }
+    CTL_PENDING.store(0, Ordering::Relaxed);
+    unsafe {
+        *out = CTL_VALUE_TAG.load(Ordering::Relaxed) as i64;
+        *out.add(1) = CTL_VALUE_PAYLOAD.load(Ordering::Relaxed) as i64;
+    }
+    1
+}
+
 // ---- tables (M11 bar 3; D-056): pure-hash dyn-keyed maps. The
 // 4-word object shell [cap, count, slots, meta] is STRATEGY-allocated
 // by the lowering (rc headers work); slots are rt-malloc'd until the

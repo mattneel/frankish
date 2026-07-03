@@ -112,16 +112,35 @@ that catches a false license.
 | tail position (M14 law) | musttail / frame replacement | 500k-frame fixed-stack goldens (shipped m14-done) |
 
 v0 native lowering — result-passing, the D-011 default: in a module
-containing ctl ops, **every function that can transitively reach an
-`abort`** returns `{tag: i64, payload}` — tag 0 = normal, tag 1 =
-aborting, payload carries the token and value. Calls to such
-functions branch on the tag and re-propagate. `prompt` call-sites
-compare the aborting token against their own: match ⇒ yield payload;
-miss ⇒ keep propagating. Closure thunks participate identically (the
-pack convention means lua/scheme functions already share one
-signature — the tag threads through the pack ABI uniformly).
+containing ctl ops, an aborting computation sets a runtime **pending
+cell** (flag + target token + the 2-word dyn value) and returns
+immediately; every intervening frame, after a call that might have
+aborted, checks the flag and returns immediately too, until a
+`prompt` whose token matches clears the flag and yields the value.
+`prompt` call-sites compare the pending token against their own:
+match ⇒ yield the parked value; miss ⇒ leave pending set and let
+their own caller keep propagating. Closure thunks participate
+identically (the pack convention gives lua/scheme functions one
+signature; the flag rides the runtime, not the ABI).
 Fence, v0: aborts do not cross an AOT `frk_entry` boundary or a
 runtime-twin callback; the corpus stays inside frankish-emitted code.
+
+**The tail-call/guard law (the make-or-break property).** A pending-
+check is code that runs *after* a call returns — so guarding a call
+destroys its tail shape. But scheme's loops ARE tail recursion
+(millions deep) and M14 made proper tail calls law. The resolution
+is exact: **only NON-tail calls are guarded; tail calls are never
+guarded.** A tail call `return f(x)` returns f's result directly, so
+if f aborted, this frame returns f's dummy result with the pending
+flag *still set* — propagation happens for free, and the frame stays
+`musttail`. The guard is needed only where code consumes a call's
+result (a non-tail call), which is exactly where the tail shape was
+already absent. Consequently the ctl guard pass and the M14 tail-call
+pass never contend: a call is either tail (musttail, unguarded) or
+non-tail (guarded, not musttail) — the same tail-shape predicate
+partitions them. This must hold in BOTH the reference semantics
+(where the interpreter's real unwind is inherently tail-agnostic and
+therefore already correct) and native codegen.
 
 ## 4. What r7rs_core draws (the forcing specimen)
 

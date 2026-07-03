@@ -329,6 +329,72 @@ void frk_rt_lua_error(int64_t code) {
     abort();
 }
 
+/* ---- control effects (M15; κ_frk, D-060): the exact mirror of the
+ * Rust twin's result-passing carrier. NO unwinder (this file targets
+ * wasm32 among others). Single-threaded per run; a well-formed program
+ * leaves pending=0 and the prompt stack empty. ---- */
+
+static int64_t frk_ctl_next_token = 1;
+static int64_t frk_ctl_pending;
+static int64_t frk_ctl_target;
+static int64_t frk_ctl_value_tag;
+static int64_t frk_ctl_value_payload;
+static int64_t *frk_ctl_prompts;
+static uint64_t frk_ctl_len, frk_ctl_cap;
+
+int64_t frk_rt_ctl_prompt_enter(void) {
+    int64_t token = frk_ctl_next_token++;
+    if (frk_ctl_len == frk_ctl_cap) {
+        frk_ctl_cap = frk_ctl_cap ? frk_ctl_cap * 2 : 16;
+        frk_ctl_prompts =
+            realloc(frk_ctl_prompts, (size_t)frk_ctl_cap * sizeof *frk_ctl_prompts);
+    }
+    frk_ctl_prompts[frk_ctl_len++] = token;
+    return token;
+}
+
+/* Pop `token` and anything nested above it (LIFO; defensive truncate). */
+void frk_rt_ctl_prompt_exit(int64_t token) {
+    uint64_t i = frk_ctl_len;
+    while (i > 0) {
+        i -= 1;
+        if (frk_ctl_prompts[i] == token) {
+            frk_ctl_len = i;
+            return;
+        }
+    }
+}
+
+static int frk_ctl_live(int64_t token) {
+    for (uint64_t i = 0; i < frk_ctl_len; i += 1) {
+        if (frk_ctl_prompts[i] == token) return 1;
+    }
+    return 0;
+}
+
+void frk_rt_ctl_abort(int64_t token, int64_t tag, int64_t payload) {
+    if (!frk_ctl_live(token)) {
+        fprintf(stderr, "frk: escape past extent (\xce\xba_frk, D-060)\n");
+        abort();
+    }
+    frk_ctl_target = token;
+    frk_ctl_value_tag = tag;
+    frk_ctl_value_payload = payload;
+    frk_ctl_pending = 1;
+}
+
+int64_t frk_rt_ctl_pending(void) { return frk_ctl_pending; }
+
+/* If an abort targets `token`, clear pending, write the parked dyn to
+ * out[0]=tag,out[1]=payload, return 1; else return 0. */
+int64_t frk_rt_ctl_resolve(int64_t token, int64_t *out) {
+    if (!frk_ctl_pending || frk_ctl_target != token) return 0;
+    frk_ctl_pending = 0;
+    out[0] = frk_ctl_value_tag;
+    out[1] = frk_ctl_value_payload;
+    return 1;
+}
+
 /* ---- tables (M11 bar 3; D-056): pure-hash dyn-keyed maps, mirror
  * of the Rust twin. Shell [cap,count,slots,meta] strategy-allocated
  * by the lowering; slots malloc'd. All-i64 ABI, out-pointer returns. */
