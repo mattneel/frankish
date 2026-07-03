@@ -6,28 +6,32 @@ Tree: green — `make test` passes; clean-clone scripts/ci.sh verified
 (exit 0); `make diff`: 8 cases, interp vs jit, 0 divergent.
 
 ## Next action
-M3 frk.adt under D-031. Steps 1–4 DONE: K1 whole (IRDL definition +
-register() + smoke; semantic verifier wired into every runner's front
-half — register → parse → MLIR verify → frk verify); K2 whole (Eval
-impls for all five ops, Value::Adt, cf.switch upstream eval, the
-de-regioned match shape proven end to end); K5 seeded (goldens/adt: 4
-cases, interp-only via the new `runners=` directive; skips visible,
-all-skip and no-runner cases are red). `make diff`: 12 cases, 0
-divergent. Remaining:
-5. K3: lowering make_sum/tag_of/extract/make_product/get → LLVM
-   structs + integer tag (cf.switch is already upstream). Design
-   choices to D-entry: rewrite mechanism (melior RewritePattern +
-   apply_patterns_and_fold_greedily vs a plain module-walk rewriter in
-   Rust) and the memory story for v0 (adt values are fixed-shape —
-   no payload boxing needed until recursive types; likely flat LLVM
-   struct {i64 tag, union-as-largest-payload} by-value). When green,
-   DELETE the `runners=interp` lines from goldens/adt/* so the corpus
-   goes 3-way — that flip is the L3 moment for the dialect.
-6. Decision-tree pass (Maranget, D-025): pattern matrix → dispatch IR,
-   goldened over matrix→IR.
-7. K6 docs page (semantics, lowering contract, interaction-matrix rows,
-   tier impact) + K7 sweep (all forks ledgered), then m3-done.
-Exit: K1–K7 checked; 3-way goldens green.
+M3 frk.adt under D-031. K1, K2, K3, K5 are DONE and live: IRDL
+definition + registration + semantic verifier in every runner's front
+half; Eval impls (+ cf.switch upstream); the D-032 lowering as a real
+external pass ("lower-frk-adt", stage 01 in dumps); the adt corpus
+runs under BOTH runners — `make diff`: 12 cases, 0 divergent. The
+corpus flip immediately caught a real divergence (adt cases lacked
+llvm.emit_c_interface → jit had no ciface symbol while interp
+answered) — the differential law works. Remaining for m3-done:
+1. Decision-tree pass (Maranget, D-025; SPEC §4.1): v0 = pure
+   matrix→tree compilation with its own goldens (constructor tests,
+   wildcards/bindings, integer literals; occurrences as field paths),
+   plus exhaustiveness/usefulness via rustc_pattern_analysis behind a
+   trait boundary. IR *emission* from trees can be scoped to what M5's
+   ml_core needs — decide (and ledger) whether emission lands in M3 or
+   with its first consumer at M5; the tree-level goldens are what
+   D-025 demands now.
+2. K4 note: v0 adt lowering needs NO frk-rt component (flat by-value
+   structs, zero allocation) — record as satisfied-vacuously in the
+   K6 page, with the M7 revisit (heap/recursive types).
+3. K6 docs page (docs/dialects/adt.md: semantics, lowering contract,
+   interaction-matrix rows from SPEC §5, tier impact) + K7 sweep
+   (D-031/032/033 exist; sweep for stragglers), then milestone note,
+   tag m3-done, push.
+Exit: K1–K7 checked; goldens green under every applicable runner
+(interp+jit today — the SPEC's '3-way' reading arrives with the AOT
+runner at M7).
 
 ## In flight
 Nothing.

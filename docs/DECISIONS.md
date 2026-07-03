@@ -157,3 +157,12 @@ veto-ledger pattern and most deserve their review.
   goldened pass (D-025). Revisit: representation when frk.mem lands
   (heap/recursive types); pass packaging if melior grows
   DialectConversion bindings.
+- D-033 [harness] Golden cases may declare runner applicability
+  (`// frk-case: runners=a,b`; default all) per SPEC §7.2 "all
+  applicable runners" — for op sets ahead of some execution path.
+  Guard rails are law: skips print per case, a corpus whose every case
+  skips a runner is an error, and a case no registered runner executes
+  is red in the diff matrix. Rationale: staged dialect bring-up needs
+  interp-first goldens without weakening L3 where both runners apply.
+  Revisit: if directive lists rot after paths catch up (a skip that
+  never flips back is a smell — grep for runners= at milestone exits).
