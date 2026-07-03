@@ -15,7 +15,12 @@ route would have spelled it.
 Start here: `AGENTS.md` (law) → `docs/SPEC.md` (design) →
 `docs/DECISIONS.md` (ledger) → `STATE.md` (now).
 
-Status: M11 done — THREE languages ride the kernel, each held
+Status: M12 done — the rc strategy COLLECTS: sized releases, layout
+descriptors the compiler writes and the runtime walks, and
+Bacon–Rajan cycle collection, in both runtime twins, byte-agreeing —
+proven by hand-built cycle drills, a cross-twin zigcc rig, and the
+entire corpus running with real frees on five architectures. Three
+languages ride the kernel, each held
 byte-identical to its own upstream: core ML against ocaml,
 TypeScript against node/V8, and now Lua 5.1 against PUC-Rio —
 closures, metatables, interned strings, %.14g and all — across the

@@ -1,29 +1,25 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-03 (M0..M11 sessions)
-Phase: M11 complete (tag m11-done). Three languages ride the kernel,
-each against its own upstream oracle.
-Tree: green — `make test` 35 blocks; diff 64 cases 0 divergent
-(SEVEN runners: interp, jit, jit-rc, ocaml, node, lua, repl); grid
-59/59 × 4 triples × 2 strategies; canary s390x 59/59 × 2; dashboard
-10 suites × 7 runners, 100% everywhere applicable.
+Updated: 2026-07-03 (M0..M12 sessions)
+Phase: M12 complete (tag m12-done). The rc strategy COLLECTS: sized
+releases, runtime layout descriptors, Bacon–Rajan trial deletion —
+both twins, byte-agreeing.
+Tree: green — `make test` 37 blocks, zero warnings; diff 64 cases 0
+divergent (7 runners); grid 59/59 × 4 triples × 2 strategies + s390x
+canary — with real frees live on every rc leg.
 
 ## Next action
-M11 is closed. The remaining unscheduled queue (the human's next
-pick, or an L4-logged choice among peers):
-1. The GC ladder's remaining rungs (D-053/D-055 sequencing): sized
-   releases → THE LAYOUT-DESCRIPTOR RUNG (named, designed-not-
-   discovered) → candidate buffer + trial deletion → thresholds.
-   Tables/closures now exist to collect; the counters are live.
-2. femto_lua v0.2 (fence lifts by admission rule: multiple returns,
-   varargs, nil-fill arity, repeat/break, generic for + pairs/
-   ipairs — needs multi-value call plumbing; string library slice).
-3. scheme/ctl track (r7rs_core; tail calls as law).
+M12 closed. The queue (human pick or logged L4 choice):
+1. femto_lua v0.2 (multiple returns/varargs/nil-fill arity — the
+   multi-value plumbing; repeat/break; generic for + pairs/ipairs;
+   string library slice). The collector now backs it.
+2. GC thresholds (D-053's last rung) — DEFERRED BY DESIGN until a
+   corpus program measurably needs them; the counters are live.
+3. scheme/ctl track (r7rs_core; tail calls as law; frk.ctl).
 4. Effects lowering (D-012); frk.stage; TS-1..4; gpu axis.
-D-045's effects trigger is now ARMED IN PRINCIPLE: the shell cannot
-yet load .lua, but the interp output buffer + Lua IO exist — the
-moment the REPL grows a Lua mode, D-043's replay model must be
-revisited FIRST (the ledger says so; do not let it be discovered).
+Standing tripwires: D-045 (lua REPL mode ⇒ replay revisit FIRST);
+D-051 tag-space widening at TS-1; the Words retain/trace frontier
+widens SYMMETRICALLY or not at all (M12's lesson, now law-shaped).
 
 ## In flight
 Nothing.
@@ -44,6 +40,37 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m12-done — Shipped: the GC ladder's remaining rungs (D-057), both
+twins. Sized releases (three-word headers [layout][size][rcword];
+cascaded REAL frees); the layout-descriptor rung exactly as D-055
+demanded — designed, then climbed: per-site layout words from the
+lowering's slot kinds (wordmap/table/array encodings,
+lockstep-tested); Bacon–Rajan trial deletion over purple candidates
+with an explicit deterministic collect(). Cross-twin: the C
+collector, driven through zigcc, reports the byte-identical
+cascade/dead-cycle/live-cycle free counts (2/2/4/4/6). Grid: 59/59
+× 5 architectures × 2 strategies WITH FREES LIVE — every rc golden
+is a standing UAF detector, green. Verifier finds, in order: (1)
+the arithmetic-shift color smear (purple read as -1; the C twin is
+unsigned throughout because of it); (2) the retain/trace frontier
+ASYMMETRY (tracer saw dyn edges retains never counted → core dump →
+RetainKind + branch-free masked dyn retains + raw_set/set_meta
+ownership discipline); (3) the transfer-vs-release DOUBLE-SPEND
+(sole-use owning stores transfer their reference; block-exit
+releases spent it twice → no die_at for transferred values). All
+three were found by tests/corpus within minutes of frees becoming
+real — D-057.4 predicted exactly this and it held.
+
+M12 EXTRACTION: the milestone's law-shaped lesson — RETAIN COVERAGE
+MUST EQUAL TRACE COVERAGE, and lifetime analyses must respect
+ownership TRANSFER; the frontier widens symmetrically or not at
+all. The layout-descriptor design (header words computed by the
+compiler, walked by a runtime that never heard of SlotKind) is the
+D-049 split made physical, and the lockstep test is what keeps the
+two sides honest. Remaining leak-bias (deliberate, counted):
+deleted table keys, overwritten box payloads, >30-word payloads,
+non-dyn aggregate interiors.
+
 m11-done — Shipped: femto_lua v0.1 + the GC ladder's first rung —
 the track the human picked ("Do it"), all four D-054 bars.
 (1) dyn K3: fat-value lowering, boxed multi-word payloads through
@@ -373,6 +400,24 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (twentieth entry)
+    Milestone/step: M12 complete, tagged m12-done
+    Green? yes — 37 blocks, 0 warnings; 64/0 (7 runners); grid 59/59
+    × 5 × 2 with the collector live
+    Did:
+    - D-057; three-word headers + sized frees; layout descriptors +
+      lockstep test; trial deletion both twins + zigcc parity rig;
+      RetainKind symmetry; transfer-vs-release exclusion
+    Next: queue per Next-action (human pick)
+    Landmines:
+    - rcword arithmetic is UNSIGNED-ONLY (color in the sign bits;
+      arithmetic shifts smear — both twins document it)
+    - retain coverage == trace coverage, ALWAYS; widening one side
+      of the Words frontier without the other corrupts or leaks
+    - a value whose only use is an owning store has TRANSFERRED its
+      reference — never emit a block-exit release for it
+    - explicit collect() only; no automatic thresholds yet (D-053)
 
     Session end: 2026-07-03 (nineteenth entry)
     Milestone/step: M11 complete, tagged m11-done
