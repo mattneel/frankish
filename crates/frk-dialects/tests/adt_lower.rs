@@ -108,18 +108,38 @@ fn signatures_and_block_arguments_convert() {
 }
 
 #[test]
-fn non_integer_fields_fail_the_pass_loudly() {
+fn nested_adt_fields_lower_through_word_slots() {
+    // The D-032 nested-adt fence lifted with SlotKind::Words (M5): a
+    // sum inside a product copies as verbatim i64 words.
     let context = adt_context();
-    // A product field of sum type — fenced in v0 (D-032).
-    let result = lower(
+    let lowered = lower(
         &context,
         &format!(
-            r#"func.func @main(%s: {OPTION_I64}) -> !frk_adt.product<[{OPTION_I64}]> {{
+            r#"func.func @main(%s: {OPTION_I64}) -> i64 {{
                 %e = "frk_adt.product_new"() : () -> {P_EMPTY}
                 %p = "frk_adt.product_snoc"(%e, %s) : ({P_EMPTY}, {OPTION_I64}) -> !frk_adt.product<[{OPTION_I64}]>
-                return %p : !frk_adt.product<[{OPTION_I64}]>
+                %back = "frk_adt.get"(%p) {{field = 0 : i64}} : (!frk_adt.product<[{OPTION_I64}]>) -> {OPTION_I64}
+                %t = "frk_adt.tag_of"(%back) : ({OPTION_I64}) -> i64
+                return %t : i64
             }}"#
         ),
+    )
+    .expect("nested adt fields must lower (Words slots)");
+    assert!(!lowered.contains("frk_adt"), "{lowered}");
+}
+
+#[test]
+fn non_integer_scalar_fields_still_fail_loudly() {
+    // Floats (and any non-integer scalar) remain outside the slot
+    // model until a design admits them.
+    let context = adt_context();
+    let result = lower(
+        &context,
+        r#"func.func @main(%x: f64) -> !frk_adt.product<[f64]> {
+            %e = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
+            %p = "frk_adt.product_snoc"(%e, %x) : (!frk_adt.product<[]>, f64) -> !frk_adt.product<[f64]>
+            return %p : !frk_adt.product<[f64]>
+        }"#,
     );
-    assert!(result.is_err(), "nested adt fields are fenced in v0 (D-032)");
+    assert!(result.is_err(), "f64 fields are outside the v0 slot model");
 }
