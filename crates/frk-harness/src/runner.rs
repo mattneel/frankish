@@ -449,6 +449,12 @@ impl Runner for JitRunner {
             engine.register_symbol("frk_rt_table_len", frk_rt::frk_rt_table_len as *mut ());
             engine.register_symbol("frk_rt_lua_error", frk_rt::frk_rt_lua_error as *mut ());
             engine.register_symbol(
+                "frk_rt_table_next",
+                frk_rt::frk_rt_table_next as *mut (),
+            );
+            engine.register_symbol("frk_rt_bstr_sub", frk_rt::frk_rt_bstr_sub as *mut ());
+            engine.register_symbol("frk_rt_bstr_rep", frk_rt::frk_rt_bstr_rep as *mut ());
+            engine.register_symbol(
                 "frk_rt_print_lua_str",
                 capture_print_lua_str as *mut (),
             );

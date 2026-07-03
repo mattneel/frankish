@@ -307,6 +307,7 @@ enum Planned<'c, 'a> {
         op: OperationRef<'c, 'a>,
         die_at: Option<OperationRef<'c, 'a>>,
         layout: u64,
+        elem_slots: usize,
     },
     ArrayGet {
         op: OperationRef<'c, 'a>,
@@ -387,6 +388,15 @@ enum Planned<'c, 'a> {
         op: OperationRef<'c, 'a>,
     },
     DynPayloadWord {
+        op: OperationRef<'c, 'a>,
+    },
+    TableNext {
+        op: OperationRef<'c, 'a>,
+    },
+    BstrSub {
+        op: OperationRef<'c, 'a>,
+    },
+    BstrRep {
         op: OperationRef<'c, 'a>,
     },
 }
@@ -869,14 +879,15 @@ fn plan_mem<'c, 'a>(
                     .map_err(|_| "array_new without a result".to_string())?
                     .r#type(),
             )?;
-            let layout = match slot_kind(context, elem)? {
+            let kind = slot_kind(context, elem)?;
+            let layout = match &kind {
                 SlotKind::Ptr { managed: true } => LAYOUT_ARRAY_PTR,
                 SlotKind::Words { .. } if elem.to_string() == "!frk_dyn.dyn" => {
                     LAYOUT_ARRAY_DYN
                 }
                 _ => LAYOUT_ARRAY_LEAF,
             };
-            Ok(Planned::ArrayNew { op, die_at: None, layout })
+            Ok(Planned::ArrayNew { op, die_at: None, layout, elem_slots: kind.slots() })
         }
         "array_get" => {
             let elem = crate::mem::decode_arr(
@@ -886,9 +897,10 @@ fn plan_mem<'c, 'a>(
                     .r#type(),
             )?;
             let kind = slot_kind(context, elem)?;
-            if kind.slots() != 1 {
+            let is_dyn = elem.to_string() == "!frk_dyn.dyn";
+            if kind.slots() != 1 && !is_dyn {
                 return Err(format!(
-                    "array elements must be one slot in v0 (D-049), got {elem}"
+                    "array elements must be one slot or dyn (D-049/D-058), got {elem}"
                 ));
             }
             Ok(Planned::ArrayGet { op, elem_mapped: map_type(context, elem)?, elem_kind: kind })
@@ -901,9 +913,10 @@ fn plan_mem<'c, 'a>(
                     .r#type(),
             )?;
             let kind = slot_kind(context, elem)?;
-            if kind.slots() != 1 {
+            let is_dyn = elem.to_string() == "!frk_dyn.dyn";
+            if kind.slots() != 1 && !is_dyn {
                 return Err(format!(
-                    "array elements must be one slot in v0 (D-049), got {elem}"
+                    "array elements must be one slot or dyn (D-049/D-058), got {elem}"
                 ));
             }
             let elem_retain = retain_kind(&kind, elem);
@@ -957,6 +970,7 @@ fn plan_dyn<'c, 'a>(
         "set_meta" => Ok(Planned::TableSetMeta { op }),
         "get_meta" => Ok(Planned::TableGetMeta { op }),
         "payload_word" => Ok(Planned::DynPayloadWord { op }),
+        "table_next" => Ok(Planned::TableNext { op }),
         other => Err(format!("no lowering for frk_dyn.{other}")),
     }
 }
@@ -981,6 +995,8 @@ fn plan_bstr<'c, 'a>(
         "concat" => Ok(Planned::BstrConcat { op }),
         "eq" => Ok(Planned::BstrEq { op }),
         "len" => Ok(Planned::BstrLen { op }),
+        "sub" => Ok(Planned::BstrSub { op }),
+        "rep" => Ok(Planned::BstrRep { op }),
         other => Err(format!("no lowering for frk_bstr.{other}")),
     }
 }
@@ -1129,6 +1145,9 @@ fn declare_str_runtime(
             Planned::TableRawGet { .. } => needed.push(("frk_rt_table_raw_get", false)),
             Planned::TableRawSet { .. } => needed.push(("frk_rt_table_raw_set", false)),
             Planned::TableLen { .. } => needed.push(("frk_rt_table_len", false)),
+            Planned::TableNext { .. } => needed.push(("frk_rt_table_next", false)),
+            Planned::BstrSub { .. } => needed.push(("frk_rt_bstr_sub", true)),
+            Planned::BstrRep { .. } => needed.push(("frk_rt_bstr_rep", true)),
             _ => {}
         }
     }
@@ -1171,6 +1190,15 @@ fn declare_str_runtime(
                 false,
             ),
             "frk_rt_table_len" => llvm::r#type::function(i64_type, &[i64_type], false),
+            "frk_rt_table_next" => llvm::r#type::function(
+                llvm::r#type::void(context),
+                &[i64_type, i64_type, i64_type, ptr],
+                false,
+            ),
+            "frk_rt_bstr_sub" => {
+                llvm::r#type::function(ptr, &[ptr, i64_type, i64_type], false)
+            }
+            "frk_rt_bstr_rep" => llvm::r#type::function(ptr, &[ptr, i64_type], false),
             other => return Err(format!("unknown str runtime symbol {other}")),
         };
         let declaration = OperationBuilder::new("llvm.func", location)
@@ -1680,20 +1708,24 @@ fn apply<'c, 'a>(
             )))?;
             finish(rewriter, op, tag)
         }
-        Planned::ArrayNew { op, die_at, layout } => {
+        Planned::ArrayNew { op, die_at, layout, elem_slots } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
             let i64_type: Type = IntegerType::new(context, 64).into();
-            let _ptr = llvm::r#type::pointer(context, 0);
             let len = operand(op, 0)?;
             let eight = result_value(rewriter.insert(melior::dialect::arith::constant(
                 context,
                 IntegerAttribute::new(i64_type, 8).into(),
                 location,
             )))?;
+            let stride = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, (elem_slots * 8) as i64).into(),
+                location,
+            )))?;
             let data_bytes = result_value(rewriter.insert(
                 OperationBuilder::new("arith.muli", location)
-                    .add_operands(&[len, eight])
+                    .add_operands(&[len, stride])
                     .add_results(&[i64_type])
                     .build()
                     .map_err(|e| e.to_string())?,
@@ -1733,33 +1765,75 @@ fn apply<'c, 'a>(
         Planned::ArrayGet { op, elem_kind, elem_mapped } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
-            let addr = element_address(context, rewriter, op, location)?;
-            let loaded = result_value(rewriter.insert(
-                OperationBuilder::new("llvm.load", location)
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(context, "ordering"),
-                        Attribute::parse(context, "0 : i64").ok_or("ordering")?,
-                    )])
-                    .add_operands(&[addr])
-                    .add_results(&[elem_slot_type(context, &elem_kind, elem_mapped)])
-                    .build()
-                    .map_err(|e| e.to_string())?,
-            ))?;
-            let value = elem_from_slot(context, rewriter, &elem_kind, elem_mapped, loaded, location)?;
-            finish(rewriter, op, value)
+            let slots = elem_kind.slots();
+            let addr = element_address(context, rewriter, op, slots, location)?;
+            if slots == 2 {
+                // dyn element (D-058): load both words, rebuild.
+                let i64_type: Type = IntegerType::new(context, 64).into();
+                let _ = i64_type;
+                let w0 = load_slot_at(context, rewriter, addr, 0, location)?;
+                let w1 = load_slot_at(context, rewriter, addr, 1, location)?;
+                let value = build_dyn_words(context, rewriter, w0, w1, location)?;
+                finish(rewriter, op, value)
+            } else {
+                let loaded = result_value(rewriter.insert(
+                    OperationBuilder::new("llvm.load", location)
+                        .add_attributes(&[(
+                            melior::ir::Identifier::new(context, "ordering"),
+                            Attribute::parse(context, "0 : i64").ok_or("ordering")?,
+                        )])
+                        .add_operands(&[addr])
+                        .add_results(&[elem_slot_type(context, &elem_kind, elem_mapped)])
+                        .build()
+                        .map_err(|e| e.to_string())?,
+                ))?;
+                let value =
+                    elem_from_slot(context, rewriter, &elem_kind, elem_mapped, loaded, location)?;
+                finish(rewriter, op, value)
+            }
         }
         Planned::ArraySet { op, elem_kind, elem_mapped, elem_retain } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
-            let addr = element_address(context, rewriter, op, location)?;
+            let slots = elem_kind.slots();
+            let addr = element_address(context, rewriter, op, slots, location)?;
             let raw = operand(op, 2)?;
             let shared = retain_shared
                 .get(&(op.to_raw().ptr as usize, 2))
                 .copied()
                 .unwrap_or(false);
             maybe_retain(context, rewriter, strategy, elem_retain, raw, shared, location)?;
-            let slot = elem_to_slot(context, rewriter, &elem_kind, elem_mapped, raw, location)?;
-            rewriter.insert(store_op(context, slot, addr, location)?);
+            if slots == 2 {
+                // dyn element: store tag word then payload word.
+                let i64_type: Type = IntegerType::new(context, 64).into();
+                let ptr = llvm::r#type::pointer(context, 0);
+                let w0 = dyn_field(context, rewriter, raw, 0, location)?;
+                let w1 = dyn_field(context, rewriter, raw, 1, location)?;
+                rewriter.insert(store_op(context, w0, addr, location)?);
+                let addr_int = result_value(rewriter.insert(cast_op(
+                    "llvm.ptrtoint", addr, i64_type, location,
+                )?))?;
+                let eight = result_value(rewriter.insert(melior::dialect::arith::constant(
+                    context,
+                    IntegerAttribute::new(i64_type, 8).into(),
+                    location,
+                )))?;
+                let addr2_int = result_value(rewriter.insert(
+                    OperationBuilder::new("arith.addi", location)
+                        .add_operands(&[addr_int, eight])
+                        .add_results(&[i64_type])
+                        .build()
+                        .map_err(|e| e.to_string())?,
+                ))?;
+                let addr2 = result_value(rewriter.insert(cast_op(
+                    "llvm.inttoptr", addr2_int, ptr, location,
+                )?))?;
+                rewriter.insert(store_op(context, w1, addr2, location)?);
+            } else {
+                let slot =
+                    elem_to_slot(context, rewriter, &elem_kind, elem_mapped, raw, location)?;
+                rewriter.insert(store_op(context, slot, addr, location)?);
+            }
             rewriter.erase_op(op);
             Ok(())
         }
@@ -2026,6 +2100,76 @@ fn apply<'c, 'a>(
                     .map_err(|e| e.to_string())?,
             ))?;
             let value = build_dyn_words(context, rewriter, tag, word, location)?;
+            finish(rewriter, op, value)
+        }
+        Planned::TableNext { op } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
+            let table_pay = dyn_field(context, rewriter, operand(op, 0)?, 1, location)?;
+            let key_tag = dyn_field(context, rewriter, operand(op, 1)?, 0, location)?;
+            let key_pay = dyn_field(context, rewriter, operand(op, 1)?, 1, location)?;
+            let four = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, 4).into(),
+                location,
+            )))?;
+            let out = result_value(rewriter.insert(
+                OperationBuilder::new("llvm.alloca", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "elem_type"),
+                        TypeAttribute::new(i64_type).into(),
+                    )])
+                    .add_operands(&[four])
+                    .add_results(&[ptr])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            rewriter.insert(direct_call_void(
+                context,
+                "frk_rt_table_next",
+                &[table_pay, key_tag, key_pay, out],
+                location,
+            )?);
+            let kt = load_slot_at(context, rewriter, out, 0, location)?;
+            let kp = load_slot_at(context, rewriter, out, 1, location)?;
+            let vt = load_slot_at(context, rewriter, out, 2, location)?;
+            let vp = load_slot_at(context, rewriter, out, 3, location)?;
+            let key_dyn = build_dyn_words(context, rewriter, kt, kp, location)?;
+            let value_dyn = build_dyn_words(context, rewriter, vt, vp, location)?;
+            // Two results: replace each, then erase.
+            let r0 = op.result(0).map_err(|e| e.to_string())?;
+            let r1 = op.result(1).map_err(|e| e.to_string())?;
+            rewriter.replace_all_uses_with(r0.into(), key_dyn);
+            rewriter.replace_all_uses_with(r1.into(), value_dyn);
+            rewriter.erase_op(op);
+            Ok(())
+        }
+        Planned::BstrSub { op } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let ptr = llvm::r#type::pointer(context, 0);
+            let value = result_value(rewriter.insert(direct_call(
+                context,
+                "frk_rt_bstr_sub",
+                &[operand(op, 0)?, operand(op, 1)?, operand(op, 2)?],
+                ptr,
+                location,
+            )?))?;
+            finish(rewriter, op, value)
+        }
+        Planned::BstrRep { op } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let ptr = llvm::r#type::pointer(context, 0);
+            let value = result_value(rewriter.insert(direct_call(
+                context,
+                "frk_rt_bstr_rep",
+                &[operand(op, 0)?, operand(op, 1)?],
+                ptr,
+                location,
+            )?))?;
             finish(rewriter, op, value)
         }
         Planned::DynPayloadWord { op } => {
@@ -2647,12 +2791,13 @@ fn root_module<'c, 'a>(op: OperationRef<'c, 'a>) -> Result<OperationRef<'c, 'a>,
     }
 }
 
-/// &arr[i]: base + 8 (len header) + i*8, via ptrtoint arithmetic —
-/// portable across every grid triple (D-049).
+/// &arr[i]: base + 8 (len header) + i*stride, via ptrtoint
+/// arithmetic — portable across every grid triple (D-049/D-058).
 fn element_address<'c>(
     context: &'c Context,
     rewriter: &RewriterBase<'c, '_>,
     op: OperationRef<'c, '_>,
+    elem_slots: usize,
     location: Location<'c>,
 ) -> Result<Value<'c, 'c>, String> {
     let i64_type: Type = IntegerType::new(context, 64).into();
@@ -2665,9 +2810,14 @@ fn element_address<'c>(
         IntegerAttribute::new(i64_type, 8).into(),
         location,
     )))?;
+    let stride = result_value(rewriter.insert(melior::dialect::arith::constant(
+        context,
+        IntegerAttribute::new(i64_type, (elem_slots * 8) as i64).into(),
+        location,
+    )))?;
     let scaled = result_value(rewriter.insert(
         OperationBuilder::new("arith.muli", location)
-            .add_operands(&[index, eight])
+            .add_operands(&[index, stride])
             .add_results(&[i64_type])
             .build()
             .map_err(|e| e.to_string())?,

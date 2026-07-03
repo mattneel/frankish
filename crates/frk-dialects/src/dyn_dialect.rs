@@ -64,6 +64,11 @@ irdl.dialect @frk_dyn {
     irdl.operands(table: %d)
     irdl.results(meta: %d)
   }
+  irdl.operation @table_next {
+    %d = irdl.base @frk_dyn::@dyn
+    irdl.operands(table: %d, key: %d)
+    irdl.results(next_key: %d, next_value: %d)
+  }
   irdl.operation @payload_word {
     %d = irdl.base @frk_dyn::@dyn
     %n = irdl.is i64
@@ -107,7 +112,7 @@ pub(crate) fn verify_op<'c>(
             Ok(())
         }
         "tag_of" | "table_new" | "raw_get" | "raw_set" | "table_len" | "set_meta"
-        | "get_meta" | "payload_word" => Ok(()),
+        | "get_meta" | "payload_word" | "table_next" => Ok(()),
         other => Err(format!("no semantic verifier for frk_dyn.{other}")),
     }
 }

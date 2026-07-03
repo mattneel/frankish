@@ -13,6 +13,63 @@ pub(crate) fn register_eval(interp: &mut Interp<'_, '_>) {
     interp.register_eval("frk_bstr.concat", Box::new(Concat));
     interp.register_eval("frk_bstr.eq", Box::new(Eq));
     interp.register_eval("frk_bstr.len", Box::new(Len));
+    interp.register_eval("frk_bstr.sub", Box::new(Sub));
+    interp.register_eval("frk_bstr.rep", Box::new(Rep));
+}
+
+/// Lua string.sub semantics (D-058): 1-based, negative counts from
+/// the end, clamped; empty when the range inverts.
+pub(crate) fn sub_range(len: usize, from: i64, to: i64) -> (usize, usize) {
+    let len = len as i64;
+    let mut i = if from < 0 { len + from + 1 } else { from };
+    let mut j = if to < 0 { len + to + 1 } else { to };
+    if i < 1 {
+        i = 1;
+    }
+    if j > len {
+        j = len;
+    }
+    if i > j {
+        (0, 0)
+    } else {
+        ((i - 1) as usize, j as usize)
+    }
+}
+
+struct Sub;
+impl Eval for Sub {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let value = operand_value(frame, op, 0)?;
+        let bytes = value.as_bytes()?;
+        let from = operand_value(frame, op, 1)?.as_signed()?;
+        let to = operand_value(frame, op, 2)?.as_signed()?;
+        let (start, end) = sub_range(bytes.len(), from, to);
+        continue_with_result(frame, op, Value::bytes(bytes[start..end].to_vec()))
+    }
+}
+
+struct Rep;
+impl Eval for Rep {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let value = operand_value(frame, op, 0)?;
+        let bytes = value.as_bytes()?;
+        let count = operand_value(frame, op, 1)?.as_signed()?.max(0) as usize;
+        let mut out = Vec::with_capacity(bytes.len() * count);
+        for _ in 0..count {
+            out.extend_from_slice(bytes);
+        }
+        continue_with_result(frame, op, Value::bytes(out))
+    }
 }
 
 fn operand_value(

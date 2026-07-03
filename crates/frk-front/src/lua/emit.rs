@@ -117,6 +117,18 @@ impl<'c> Emitter<'c> {
     fn bstr_ty(&self) -> Type<'c> {
         Type::parse(self.context, "!frk_bstr.str").expect("bstr type")
     }
+    /// The D-058 pack: one argument/values array per call.
+    fn pack_ty(&self) -> Type<'c> {
+        Type::parse(self.context, "!frk_mem.arr<!frk_dyn.dyn>").expect("pack type")
+    }
+    /// THE Lua function type — every function, every arity (D-058).
+    fn lua_fn_ty(&self) -> Type<'c> {
+        Type::parse(
+            self.context,
+            "!frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>",
+        )
+        .expect("lua fn type")
+    }
     fn i64_ty(&self) -> Type<'c> {
         IntegerType::new(self.context, 64).into()
     }
@@ -644,6 +656,34 @@ impl<'c> Emitter<'c> {
             self.func(module, "__lua_len", &[dynt], &[dynt], region, false);
         }
 
+        // __lua_arg(pack, i) -> dyn: bounds-checked nil-fill read —
+        // the pack convention's adjuster (D-058).
+        {
+            let region = Region::new();
+            let entry = region
+                .append_block(Block::new(&[(self.pack_ty(), location), (self.i64_ty(), location)]));
+            let pack = block_arg(entry, 0)?;
+            let index = block_arg(entry, 1)?;
+            let len = self.build(entry, "frk_mem.array_len", &[pack], &[self.i64_ty()], &[], location)?;
+            let in_range = self.cmpi(entry, 2, index, len, location)?; // slt
+            let bget = region.append_block(Block::new(&[]));
+            let bnil = region.append_block(Block::new(&[]));
+            self.cond_br(entry, in_range, bget, bnil, location)?;
+            let value =
+                self.build(bget, "frk_mem.array_get", &[pack, index], &[self.dyn_ty()], &[], location)?;
+            ret(bget, &[value], location)?;
+            let nil = self.nil_dyn(bnil, location)?;
+            ret(bnil, &[nil], location)?;
+            self.func(
+                module,
+                "__lua_arg",
+                &[self.pack_ty(), self.i64_ty()],
+                &[self.dyn_ty()],
+                region,
+                false,
+            );
+        }
+
         // __lua_setmetatable(t, mt) -> dyn: sets and returns t (Lua).
         {
             let region = Region::new();
@@ -663,6 +703,29 @@ impl<'c> Emitter<'c> {
             let meta = self.build(entry, "frk_dyn.get_meta", &[table], &[dynt], &[], location)?;
             ret(entry, &[meta], location)?;
             self.func(module, "__lua_getmetatable", &[dynt], &[dynt], region, false);
+        }
+
+        // Pack-convention wrappers for the seeded stdlib (D-058): one
+        // pack in, one pack out, delegating to the typed helpers.
+        for (name, inner, arity) in [
+            ("__lua_print_v", "__lua_print", 1),
+            ("__lua_tostring_v", "__lua_tostring", 1),
+            ("__lua_setmetatable_v", "__lua_setmetatable", 2),
+            ("__lua_getmetatable_v", "__lua_getmetatable", 1),
+        ] {
+            let region = Region::new();
+            let entry = region.append_block(Block::new(&[(self.pack_ty(), location)]));
+            let pack = block_arg(entry, 0)?;
+            let mut arguments = Vec::new();
+            for index in 0..arity {
+                arguments.push(self.pack_get(entry, pack, index, location)?);
+            }
+            let result = self
+                .call(entry, inner, &arguments, &[dynt], location)?
+                .expect("result");
+            let out = self.make_pack(entry, &[result], location)?;
+            ret(entry, &[out], location)?;
+            self.func(module, name, &[self.pack_ty()], &[self.pack_ty()], region, false);
         }
 
         // __lua_index(t, k) -> dyn: rawget + the __index chain
@@ -719,15 +782,8 @@ impl<'c> Emitter<'c> {
                 .expect("result");
             ret(brec, &[recursed], location)?;
 
-            let fn_ty = Type::parse(
-                self.context,
-                "!frk_closure.fn<[!frk_dyn.dyn, !frk_dyn.dyn], [!frk_dyn.dyn]>",
-            )
-            .ok_or("fn type")?;
-            let f = self.unwrap(bcall, TAG_FUN, fn_ty, handler, location)?;
-            let pack = self.pack_dyns(bcall, &[table, key], location)?;
-            let result =
-                self.build(bcall, "frk_closure.apply", &[f, pack], &[dynt], &[], location)?;
+            let result_pack = self.call_lua(bcall, handler, &[table, key], location)?;
+            let result = self.pack_get(bcall, result_pack, 0, location)?;
             ret(bcall, &[result], location)?;
 
             let five = self.const_i64(berr2, 5, location)?;
@@ -786,6 +842,104 @@ impl<'c> Emitter<'c> {
         self.wrap(block, TAG_NUM, f, location)
     }
 
+    /// Wraps a pack-convention helper as a Lua function value.
+    fn helper_fun<'r>(
+        &self,
+        block: BlockRef<'c, 'r>,
+        symbol: &str,
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        let empty = Type::parse(self.context, "!frk_adt.product<[]>").ok_or("empty")?;
+        let env = self.build(block, "frk_adt.product_new", &[], &[empty], &[], location)?;
+        let closure = self.build(
+            block,
+            "frk_closure.make",
+            &[env],
+            &[self.lua_fn_ty()],
+            &[("callee", FlatSymbolRefAttribute::new(self.context, symbol).into())],
+            location,
+        )?;
+        self.wrap(block, TAG_FUN, closure, location)
+    }
+
+    /// Builds a values/arguments pack (arr<dyn>) — D-058.
+    fn make_pack<'r>(
+        &self,
+        block: BlockRef<'c, 'r>,
+        values: &[Value<'c, 'r>],
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        let len = self.const_i64(block, values.len() as i64, location)?;
+        let pack = self.build(
+            block,
+            "frk_mem.array_new",
+            &[len],
+            &[self.pack_ty()],
+            &[],
+            location,
+        )?;
+        for (index, value) in values.iter().enumerate() {
+            let index_value = self.const_i64(block, index as i64, location)?;
+            self.build0(
+                block,
+                "frk_mem.array_set",
+                &[pack, index_value, *value],
+                &[],
+                location,
+            )?;
+        }
+        Ok(pack)
+    }
+
+    /// Calls a Lua function value: unwrap at THE fn type, one pack in,
+    /// one pack out (D-058).
+    fn call_lua<'r>(
+        &self,
+        block: BlockRef<'c, 'r>,
+        callee_dyn: Value<'c, 'r>,
+        arguments: &[Value<'c, 'r>],
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        let function = self.unwrap(block, TAG_FUN, self.lua_fn_ty(), callee_dyn, location)?;
+        let pack = self.make_pack(block, arguments, location)?;
+        let empty = Type::parse(self.context, "!frk_adt.product<[]>").ok_or("empty product")?;
+        let product = self.build(block, "frk_adt.product_new", &[], &[empty], &[], location)?;
+        let wrapped_ty = Type::parse(
+            self.context,
+            "!frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>",
+        )
+        .ok_or("arg product")?;
+        let arg_product = self.build(
+            block,
+            "frk_adt.product_snoc",
+            &[product, pack],
+            &[wrapped_ty],
+            &[],
+            location,
+        )?;
+        self.build(
+            block,
+            "frk_closure.apply",
+            &[function, arg_product],
+            &[self.pack_ty()],
+            &[],
+            location,
+        )
+    }
+
+    /// pack[i] with nil-fill (the __lua_arg helper).
+    fn pack_get<'r>(
+        &self,
+        block: BlockRef<'c, 'r>,
+        pack: Value<'c, 'r>,
+        index: i64,
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        let index_value = self.const_i64(block, index, location)?;
+        self.call(block, "__lua_arg", &[pack, index_value], &[self.dyn_ty()], location)
+            .map(|value| value.expect("result"))
+    }
+
     /// Packs dyn values into a product (for apply's arg pack).
     fn pack_dyns<'r>(
         &self,
@@ -815,33 +969,15 @@ impl<'c> Emitter<'c> {
         let globals =
             self.build(entry, "frk_dyn.table_new", &[], &[self.dyn_ty()], &[], location)?;
 
-        // Seed the stdlib subset (D-052): each helper wrapped as a
-        // fun global at its arity.
-        for (name, helper, arity) in [
-            ("print", "__lua_print", 1),
-            ("tostring", "__lua_tostring", 1),
-            ("setmetatable", "__lua_setmetatable", 2),
-            ("getmetatable", "__lua_getmetatable", 1),
+        // Seed the stdlib subset (D-052/D-058): pack-convention
+        // wrappers, all at THE one Lua fn type.
+        for (name, helper) in [
+            ("print", "__lua_print_v"),
+            ("tostring", "__lua_tostring_v"),
+            ("setmetatable", "__lua_setmetatable_v"),
+            ("getmetatable", "__lua_getmetatable_v"),
         ] {
-            let empty = Type::parse(self.context, "!frk_adt.product<[]>").ok_or("empty")?;
-            let env = self.build(entry, "frk_adt.product_new", &[], &[empty], &[], location)?;
-            let fn_ty = Type::parse(
-                self.context,
-                &format!(
-                    "!frk_closure.fn<[{}], [!frk_dyn.dyn]>",
-                    vec!["!frk_dyn.dyn"; arity].join(", ")
-                ),
-            )
-            .ok_or("fn type")?;
-            let closure = self.build(
-                entry,
-                "frk_closure.make",
-                &[env],
-                &[fn_ty],
-                &[("callee", FlatSymbolRefAttribute::new(self.context, helper).into())],
-                location,
-            )?;
-            let wrapped = self.wrap(entry, TAG_FUN, closure, location)?;
+            let wrapped = self.helper_fun(entry, helper, location)?;
             let key_lit = self.str_lit(entry, name, location)?;
             let key = self.wrap(entry, TAG_STR, key_lit, location)?;
             self.build0(
@@ -874,9 +1010,10 @@ impl<'c> Emitter<'c> {
 
     fn emit_lifted(&mut self, module: &Module<'c>, job: LiftJob) -> Result<()> {
         let location = Location::unknown(self.context);
-        let mut inputs = vec![self.dyn_ty()]; // _G
+        // D-058 pack convention: (_G, capture boxes..., args-pack).
+        let mut inputs = vec![self.dyn_ty()];
         inputs.extend(std::iter::repeat_n(self.box_ty(), job.captures.len()));
-        inputs.extend(std::iter::repeat_n(self.dyn_ty(), job.params.len()));
+        inputs.push(self.pack_ty());
 
         let region = Region::new();
         let entry = region.append_block(Block::new(
@@ -887,9 +1024,11 @@ impl<'c> Emitter<'c> {
         for (index, name) in job.captures.iter().enumerate() {
             env.insert(name.clone(), block_arg(entry, 1 + index)?);
         }
-        // Params are mutable Lua locals: box them on entry.
+        // Params: nil-filled reads from the pack (extras drop by
+        // never being read) — Lua's arity adjustment, for free.
+        let pack = block_arg(entry, 1 + job.captures.len())?;
         for (index, name) in job.params.iter().enumerate() {
-            let value = block_arg(entry, 1 + job.captures.len() + index)?;
+            let value = self.pack_get(entry, pack, index as i64, location)?;
             let boxed = self.build(
                 entry,
                 "frk_mem.box_new",
@@ -904,10 +1043,11 @@ impl<'c> Emitter<'c> {
         let mut fcx = Fcx { region: &region, block: entry, env, globals, terminated: false };
         self.emit_block(&mut fcx, &job.body)?;
         if !fcx.terminated {
-            let nil = self.nil_dyn(fcx.block, location)?;
-            ret(fcx.block, &[nil], location)?;
+            // Fall-off returns NO values (an empty pack).
+            let empty = self.make_pack(fcx.block, &[], location)?;
+            ret(fcx.block, &[empty], location)?;
         }
-        self.func(module, &job.symbol, &inputs, &[self.dyn_ty()], region, false);
+        self.func(module, &job.symbol, &inputs, &[self.pack_ty()], region, false);
         Ok(())
     }
 
@@ -956,16 +1096,11 @@ impl<'c> Emitter<'c> {
                 self.build(fcx.block, "frk_adt.product_snoc", &[acc, *value], &[ty], &[], location)?;
         }
 
-        let fn_spelling = format!(
-            "!frk_closure.fn<[{}], [!frk_dyn.dyn]>",
-            vec!["!frk_dyn.dyn"; params.len()].join(", ")
-        );
-        let fn_ty = Type::parse(self.context, &fn_spelling).ok_or("fn type")?;
         let closure = self.build(
             fcx.block,
             "frk_closure.make",
             &[acc],
-            &[fn_ty],
+            &[self.lua_fn_ty()],
             &[("callee", FlatSymbolRefAttribute::new(self.context, &symbol).into())],
             location,
         )?;
@@ -1074,11 +1209,20 @@ impl<'c> Emitter<'c> {
             Stat::Do(body, _) => self.emit_block(fcx, body),
             Stat::Return(value, span) => {
                 let location = self.loc_at(*span);
-                let value = match value {
-                    Some(expression) => self.emit_expr(fcx, expression)?,
-                    None => self.nil_dyn(fcx.block, location)?,
+                let pack = match value {
+                    Some(expression) => {
+                        // A bare call in return position forwards its
+                        // whole pack (Lua tail-position multi).
+                        if let Expr::Call(callee, arguments, _) = expression {
+                            self.emit_call_pack(fcx, callee, arguments, location)?
+                        } else {
+                            let value = self.emit_expr(fcx, expression)?;
+                            self.make_pack(fcx.block, &[value], location)?
+                        }
+                    }
+                    None => self.make_pack(fcx.block, &[], location)?,
                 };
-                ret(fcx.block, &[value], location)?;
+                ret(fcx.block, &[pack], location)?;
                 fcx.terminated = true;
                 Ok(())
             }
@@ -1206,6 +1350,22 @@ impl<'c> Emitter<'c> {
         }
     }
 
+    /// Emits a call and returns its RAW values pack (D-058).
+    fn emit_call_pack<'r>(
+        &mut self,
+        fcx: &mut Fcx<'c, 'r>,
+        callee: &Expr,
+        arguments: &[Expr],
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        let callee = self.emit_expr(fcx, callee)?;
+        let mut values = Vec::new();
+        for argument in arguments {
+            values.push(self.emit_expr(fcx, argument)?);
+        }
+        self.call_lua(fcx.block, callee, &values, location)
+    }
+
     // ---- expressions (every result is a dyn) ----
 
     fn emit_expr<'r>(&mut self, fcx: &mut Fcx<'c, 'r>, expression: &Expr) -> Result<Value<'c, 'r>> {
@@ -1254,26 +1414,9 @@ impl<'c> Emitter<'c> {
                     .map(|value| value.expect("result"))
             }
             Expr::Call(callee, arguments, _) => {
-                let callee = self.emit_expr(fcx, callee)?;
-                let mut values = Vec::new();
-                for argument in arguments {
-                    values.push(self.emit_expr(fcx, argument)?);
-                }
-                let fn_spelling = format!(
-                    "!frk_closure.fn<[{}], [!frk_dyn.dyn]>",
-                    vec!["!frk_dyn.dyn"; values.len()].join(", ")
-                );
-                let fn_ty = Type::parse(self.context, &fn_spelling).ok_or("fn type")?;
-                let function = self.unwrap(fcx.block, TAG_FUN, fn_ty, callee, location)?;
-                let pack = self.pack_dyns(fcx.block, &values, location)?;
-                self.build(
-                    fcx.block,
-                    "frk_closure.apply",
-                    &[function, pack],
-                    &[self.dyn_ty()],
-                    &[],
-                    location,
-                )
+                // Expression context: the pack adjusts to ONE value.
+                let pack = self.emit_call_pack(fcx, callee, arguments, location)?;
+                self.pack_get(fcx.block, pack, 0, location)
             }
             Expr::Function(params, body, _) => self.emit_closure(fcx, params, body, location),
             Expr::Table(fields, _) => {

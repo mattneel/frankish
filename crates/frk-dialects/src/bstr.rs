@@ -34,6 +34,18 @@ irdl.dialect @frk_bstr {
     irdl.operands(value: %s)
     irdl.results(len: %n)
   }
+  irdl.operation @sub {
+    %s = irdl.base @frk_bstr::@str
+    %n = irdl.is i64
+    irdl.operands(value: %s, from: %n, to: %n)
+    irdl.results(out: %s)
+  }
+  irdl.operation @rep {
+    %s = irdl.base @frk_bstr::@str
+    %n = irdl.is i64
+    irdl.operands(value: %s, count: %n)
+    irdl.results(out: %s)
+  }
 }
 "#;
 
@@ -57,7 +69,7 @@ pub(crate) fn verify_op<'c>(
             }
             Ok(())
         }
-        "concat" | "eq" | "len" => Ok(()),
+        "concat" | "eq" | "len" | "sub" | "rep" => Ok(()),
         other => Err(format!("no semantic verifier for frk_bstr.{other}")),
     }
 }

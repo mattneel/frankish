@@ -193,6 +193,33 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-058 [m13/lua] femto_lua v0.2 ("Continue" ⇒ queue order, L4).
+  THE CONVENTION CHANGE: every Lua function adopts the uniform PACK
+  convention — fn<[arr<dyn>], [arr<dyn>]> — one argument pack in,
+  one values pack out. Consequences, all bought with FRONTEND-ONLY
+  changes (the kernel is untouched; M12's collector already traces
+  arr<dyn> via LAYOUT_ARRAY_DYN): (1) the D-054 exact-arity fence
+  DISSOLVES — missing params nil-fill and extras drop at the callee
+  prologue, Lua's real semantics; (2) multiple return values are the
+  pack itself — `return e1, e2`, destructuring `local a, b = f()`
+  and `a, b = f()`, expression context truncates to element 0; (3)
+  dyn fun unwraps use ONE fn type everywhere (no per-arity types).
+  Still fenced (v0.3+): varargs `...`, spread-in-the-middle
+  (f(g()) expanding g's pack as trailing arguments), and multis from
+  anything but calls. v0.2 also lifts: repeat/until, break, generic
+  for with pairs/ipairs/next, and a two-function string module
+  (string.sub with Lua's 1-based negative-tolerant indexing,
+  string.rep). ITERATION ORDER canon rule: pairs order is
+  implementation-defined in Lua AND here (our slot order ≠ PUC's) —
+  corpus law: pairs loops print only order-independent aggregates;
+  ordered output uses ipairs. next is an rt entry
+  (frk_rt_table_next, both twins, slot-order deterministic). Exit
+  bars: the eight v0.1 cases stay green under the new convention
+  (regression is the first bar); the v0.2 corpus (multis, nil-fill,
+  repeat/break, pairs/ipairs, string) ≥90% vs lua5.1; seven-runner
+  diff and the five-triple grid green. Revisit: varargs at v0.3;
+  pack-allocation cost if a benchmark ever cares (the counters are
+  live).
 - D-057 [m12/gc] The human picked the GC ladder ("Do it", second
   time). M12 = the remaining rungs of D-053/D-055's sequencing,
   climbed in order, both twins, exit bars:

@@ -700,6 +700,98 @@ pub extern "C" fn frk_rt_table_len(shell: i64) -> i64 {
     }
 }
 
+/// Iteration for pairs/next (D-058): scans slots from the given
+/// key's position + 1 (or 0 for a nil start key, tag 0). Slot order —
+/// deterministic for OUR tables, implementation-defined per Lua and
+/// canon. Writes {ktag, kpay, vtag, vpay} to out; nil key at end.
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_table_next(
+    shell: i64,
+    ktag: i64,
+    kpay: i64,
+    out: *mut i64,
+) {
+    unsafe {
+        let fields = table_fields(shell);
+        let cap = fields[0] as usize;
+        let start = if ktag == 0 {
+            0
+        } else {
+            let slots = table_slots(fields);
+            let mask = cap as u64 - 1;
+            let mut index = (table_hash(ktag, kpay) & mask) as usize;
+            let mut found = None;
+            loop {
+                let slot = slots[index];
+                if slot.state == TABLE_EMPTY {
+                    break;
+                }
+                if slot.state == TABLE_FULL && slot.ktag == ktag && slot.kpay == kpay {
+                    found = Some(index + 1);
+                    break;
+                }
+                index = (index + 1) & mask as usize;
+            }
+            match found {
+                Some(next) => next,
+                None => cap, // invalid key: end (lua errors; we end)
+            }
+        };
+        if cap > 0 {
+            let slots = table_slots(fields);
+            for index in start..cap {
+                let slot = slots[index];
+                if slot.state == TABLE_FULL {
+                    out.write(slot.ktag);
+                    out.add(1).write(slot.kpay);
+                    out.add(2).write(slot.vtag);
+                    out.add(3).write(slot.vpay);
+                    return;
+                }
+            }
+        }
+        out.write(0);
+        out.add(1).write(0);
+        out.add(2).write(0);
+        out.add(3).write(0);
+    }
+}
+
+/// Lua string.sub (D-058): 1-based, negative-from-end, clamped.
+///
+/// # Safety
+/// `s` must be a canonical byte string from this runtime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_bstr_sub(s: *const u8, from: i64, to: i64) -> *mut u8 {
+    let bytes = unsafe { bstr_parts(s) };
+    let length = bytes.len() as i64;
+    let mut i = if from < 0 { length + from + 1 } else { from };
+    let mut j = if to < 0 { length + to + 1 } else { to };
+    if i < 1 {
+        i = 1;
+    }
+    if j > length {
+        j = length;
+    }
+    if i > j {
+        return bstr_intern_bytes(&[]);
+    }
+    bstr_intern_bytes(&bytes[(i - 1) as usize..j as usize])
+}
+
+/// # Safety
+/// `s` must be a canonical byte string from this runtime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_bstr_rep(s: *const u8, count: i64) -> *mut u8 {
+    let bytes = unsafe { bstr_parts(s) };
+    let count = count.max(0) as usize;
+    let mut out = Vec::with_capacity(bytes.len() * count);
+    for _ in 0..count {
+        out.extend_from_slice(bytes);
+    }
+    bstr_intern_bytes(&out)
+}
+
 // ---- byte strings (M11 bar 3; D-052/D-056): interned, identity-
 // equal. Layout {u64 len, bytes}; the intern table owns canonical
 // pointers for the process lifetime (strings are rt values, outside

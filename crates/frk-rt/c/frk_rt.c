@@ -430,6 +430,64 @@ int64_t frk_rt_table_len(int64_t shell) {
     }
 }
 
+static unsigned char *bstr_intern_bytes(const unsigned char *bytes, uint64_t len);
+
+/* Iteration for pairs/next (D-058): slot-order scan. */
+void frk_rt_table_next(int64_t shell, int64_t ktag, int64_t kpay,
+                       int64_t *out) {
+    int64_t *f = (int64_t *)(intptr_t)shell;
+    int64_t cap = f[0];
+    frk_table_slot *slots = (frk_table_slot *)(intptr_t)f[2];
+    int64_t start = 0;
+    if (ktag != 0 && cap > 0) {
+        uint64_t mask = (uint64_t)cap - 1;
+        uint64_t i = frk_table_hash(ktag, kpay) & mask;
+        start = cap;
+        for (;;) {
+            frk_table_slot *s = &slots[i];
+            if (s->state == 0) break;
+            if (s->state == 1 && s->ktag == ktag && s->kpay == kpay) {
+                start = (int64_t)i + 1;
+                break;
+            }
+            i = (i + 1) & mask;
+        }
+    }
+    for (int64_t i = start; i < cap; i++) {
+        if (slots[i].state == 1) {
+            out[0] = slots[i].ktag; out[1] = slots[i].kpay;
+            out[2] = slots[i].vtag; out[3] = slots[i].vpay;
+            return;
+        }
+    }
+    out[0] = out[1] = out[2] = out[3] = 0;
+}
+
+/* Lua string.sub/rep (D-058). */
+void *frk_rt_bstr_sub(const unsigned char *s, int64_t from, int64_t to) {
+    uint64_t ulen = *(const uint64_t *)s;
+    int64_t len = (int64_t)ulen;
+    int64_t i = from < 0 ? len + from + 1 : from;
+    int64_t j = to < 0 ? len + to + 1 : to;
+    if (i < 1) i = 1;
+    if (j > len) j = len;
+    if (i > j) return bstr_intern_bytes((const unsigned char *)"", 0);
+    return bstr_intern_bytes(s + 8 + (i - 1), (uint64_t)(j - i + 1));
+}
+
+void *frk_rt_bstr_rep(const unsigned char *s, int64_t count) {
+    uint64_t len = *(const uint64_t *)s;
+    if (count < 0) count = 0;
+    uint64_t total = len * (uint64_t)count;
+    unsigned char *tmp = malloc((size_t)total + 1);
+    if (!tmp) return tmp;
+    for (int64_t i = 0; i < count; i++)
+        memcpy(tmp + (uint64_t)i * len, s + 8, (size_t)len);
+    unsigned char *canonical = bstr_intern_bytes(tmp, total);
+    free(tmp);
+    return canonical;
+}
+
 /* ---- byte strings (M11 bar 3; D-052/D-056): interned, identity-
  * equal. Layout {u64 len, bytes}. FNV-1a open addressing; canonical
  * pointers live for the process (rt values, outside the strategy

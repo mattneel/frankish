@@ -21,6 +21,46 @@ pub(crate) fn register_eval(interp: &mut Interp<'_, '_>) {
     interp.register_eval("frk_dyn.set_meta", Box::new(SetMeta));
     interp.register_eval("frk_dyn.get_meta", Box::new(GetMeta));
     interp.register_eval("frk_dyn.payload_word", Box::new(PayloadWord));
+    interp.register_eval("frk_dyn.table_next", Box::new(TableNext));
+}
+
+/// Iteration for pairs/next (D-058): nil key → first entry; else the
+/// entry AFTER the given key. Order here is INSERTION order; the
+/// native path iterates slot order — both are legal Lua (pairs order
+/// is implementation-defined), and the canon rule (D-058) keeps
+/// corpus output order-independent.
+struct TableNext;
+impl Eval for TableNext {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let table = table_of(&operand_value(frame, op, 0)?, op)?;
+        let key = operand_value(frame, op, 1)?;
+        let (key_tag, _) = key.as_dyn()?;
+        let data = table.borrow();
+        let start = if key_tag == crate::dyn_dialect::TAG_NIL as u64 {
+            0
+        } else {
+            match data.entries.iter().position(|(k, _)| *k == key) {
+                Some(index) => index + 1,
+                None => {
+                    return Err(EvalError::Trap(format!(
+                        "invalid key to next at {}",
+                        op.location()
+                    )));
+                }
+            }
+        };
+        let (next_key, next_value) = match data.entries.get(start) {
+            Some((k, v)) => (k.clone(), v.clone()),
+            None => (nil_dyn(), nil_dyn()),
+        };
+        drop(data);
+        frk_interp::eval_util::continue_with_results(frame, op, &[next_key, next_value])
+    }
 }
 
 /// Raw payload word for IDENTITY comparison (D-056; __lua_eq's
