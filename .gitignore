@@ -1,0 +1,24 @@
+# rust
+/target/
+**/*.rs.bk
+# node (tools/loanword-ts)
+node_modules/
+dist/
+# zig
+zig-cache/
+zig-out/
+.zig-cache/
+# build/harness output
+/out/
+/goldens/**/*.actual
+*.o
+*.a
+*.so
+*.dylib
+# editors/os
+.DS_Store
+*.swp
+.idea/
+.vscode/
+# local env (never commit machine paths)
+versions.local.env
