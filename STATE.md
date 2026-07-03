@@ -1,28 +1,45 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-03 (M0..M4 sessions)
-Phase: M4 complete (tag m4-done); M5 not started.
-Tree: green — `make test` passes; clean-clone scripts/ci.sh verified
-(exit 0, 24 green blocks); `make diff`: 15 cases, interp vs jit, 0
+Updated: 2026-07-03 (M0..M5 sessions)
+Phase: M5 in flight — the ml_core frontend is BUILT and interp-green;
+harness integration + oracle + corpus + dashboard remain.
+Tree: green — `make test` 25 blocks; `make diff`: 15 cases, 0
 divergent.
 
 ## Next action
-M5 ml_core v0 per docs/SPEC.md §13 (read SPEC §6, §8 and
-specimens/ml_core/MANIFEST.md first — session protocol step 5 now
-applies for real): parser scaffold (tree-sitter or hand-rolled per
-D-019's scaffolding allowance), HM via the type kit (ena
-unification), lowering to kernel dialects (adt + closure are ready
-and battle-tested; the decision-tree pass awaits its first consumer —
-emission from trees is the D-034 deferred piece that M5 must build),
-vendored conformance corpus, ocaml as the third oracle
-(LANDSCAPE: ocaml executable + min-caml sources as readable spec),
-dashboard row. Big new surfaces: frk-front comes alive (readers,
-binder, type kit), the harness gains per-specimen oracle runners
-(canon §5: LC_ALL=C + same filter), and the corpus gains a specimen
-suite. Watch the D-035/D-032 fences: ml_core programs whose adt
-values cross closure boundaries will hit the layout-oracle gap —
-schedule the widening or fence ml_core's subset accordingly in its
-MANIFEST. Exit: ≥90% manifest conformance; extraction report written.
+M5 second half. DONE: frk-front end to end (lexer/parser with
+pattern-let desugaring; HM over ena with real let-poly, instantiation
+recording, value restriction; typed-AST emission — match through the
+Maranget dtree into cf dispatch, universal closure calling convention,
+lambda lifting with the rec re-make pattern, bools as two-variant
+sums); kernel_lower gained SlotKind::Words (adt values cross closure
+boundaries as word copies; nested-adt fence LIFTED for finite types —
+fence tests updated); ten e2e batteries green through the reference
+interpreter incl. seven rejection cases. Remaining, in order:
+1. Harness: .ml cases — Case learns source kinds (case.ml vs
+   case.mlir); both runners' front half branches to
+   frk_front::compile_ml for Ml cases (frk-harness += frk-front dep).
+2. OracleRunner "ocaml": temp file = case.ml + "
+let () = print_int
+   (main ())
+"; std::process ocaml with LC_ALL=C; canon over stdout;
+   Runner gains applicable(case) (oracle: Ml only) folded into
+   golden/diff applicability. versions.env: OCAML_VERSION_TESTED=4.14.1
+   + setup.sh ocaml check.
+3. Corpus goldens/ml_core/*: ~15 hand cases (mirror the e2e batteries
+   as .ml files; ocaml-compatible by construction — the SAME file runs
+   under all three runners). Hand-computed expecteds. 63-bit note: keep
+   values ≤2^62 (canon rule, MANIFEST).
+4. Dashboard row: frnksh dashboard + make dashboard — per-suite ×
+   per-runner conformance % from golden reports (SPEC §8 'a number,
+   not a vibe').
+5. D-038 (one entry: float fenced by the admission rule ⚑, recursive
+   ADTs to v0.2/M7, poly emission ≤1 instantiation, redundancy=error,
+   hand-rolled parser as D-019 scaffolding, min-caml vendoring
+   deferred pending license verification — hand corpus is the corpus);
+   MANIFEST status update; extraction report in STATE; ⚑ flags for the
+   human (float + scope clarifications); m5-done when ≥90% of the
+   corpus is green under interp+jit+ocaml.
 
 ## In flight
 Nothing.
@@ -168,6 +185,29 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (ninth entry)
+    Milestone/step: M5 first half — frk-front built, interp-green
+    Green? yes — 25 blocks; diff 15 cases 0 divergent (one
+    intermediate commit pushed red for a stale fence test; corrected
+    and repushed in the next commit — the fence had LIFTED by design)
+    Did:
+    - frk-front: lexer, parser (desugaring), types+infer (ena, real
+      let-poly with recorded instantiations), emit (dtree consumer,
+      cf-CFG, lambda lifting + rec re-make, Words boundary crossing)
+    - kernel_lower: SlotKind::Words (nested adts + closure-boundary
+      adts as verbatim word copies); fence tests track the new law
+    - ten e2e batteries; found+fixed zero-case-switch emission bug
+    Next: M5 second half per the Next-action block (harness .ml,
+    ocaml oracle, corpus, dashboard, D-038, close)
+    Landmines:
+    - melior cf::cond_br/switch helpers use pre-MLIR-22 attr names
+      (operand_segment_sizes); emit.rs builds branches generically
+      with operandSegmentSizes — do not "simplify" back to the helpers
+    - single-variant dispatch must not emit cf.switch (zero-case
+      vector<0xi64> is illegal) — emitted inline; test covers it
+    - ocaml oracle wrapper appends print_int (main ()) — corpus files
+      MUST define main () and stay ocaml-runnable verbatim
 
     Session end: 2026-07-03 (eighth entry)
     Milestone/step: M4 complete, tagged m4-done
