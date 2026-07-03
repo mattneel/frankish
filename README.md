@@ -15,7 +15,12 @@ route would have spelled it.
 Start here: `AGENTS.md` (law) → `docs/SPEC.md` (design) →
 `docs/DECISIONS.md` (ledger) → `STATE.md` (now).
 
-Status: M9 done — a second language rides the kernel. TypeScript
+Status: M10 done — the scheduled program (M0–M10) is complete. The
+runtime dragon's cage is built and the door is open: frk.dyn's
+contract is live (fat values, located traps), femto_lua's manifest
+is ratified against the installed 5.1.5 oracle, and the GC gate is
+decided in writing (rc+cycles; docs/gc-spike.md). Before that, a
+second language rode the kernel: TypeScript
 (TS-0: functions, number/boolean/string, arrays, control flow)
 compiles through the frozen loanword interchange into the same
 dialects ml_core forced, and runs byte-identical to node/V8 on every

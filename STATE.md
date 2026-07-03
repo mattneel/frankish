@@ -1,35 +1,72 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-03 (M0..M9 sessions)
-Phase: M9 complete (tag m9-done); M10 not started.
-Tree: green — `make test` 31 blocks; diff 52 cases 0 divergent (6
-runners); grid 47/47 × 4 triples × 2 strategies; canary s390x 47/47
-× 2; TS-0 manifest 100%. Startup number (Static Hermes framing,
-D-050.5): fib(30) native 3.0 ms vs node 53.7 ms — instant startup on
-a boot-dominated microbenchmark.
+Updated: 2026-07-03 (M0..M10 sessions)
+Phase: M10 complete (tag m10-done). THE SCHEDULED PROGRAM (SPEC §13
+M0–M10) IS COMPLETE. Beyond-M10 tracks are unscheduled and ordered;
+sequencing them is a taste call — see "For the human".
+Tree: green — `make test` 32 blocks; diff 53 cases 0 divergent (6
+runners); grid 47/47 × 4 triples × 2 strategies + s390x canary
+(dyn golden interp-fenced by design, excluded via runners=).
 
 ## Next action
-M10 per docs/SPEC.md §13: femto_lua opens. frk.dyn v0 (tagging
-D-entry required — nan-boxing vs pointer tagging vs fat values, an
-UNRULED fork); the Lua string ruling (femto_lua MANIFEST); the GC
-GATE: rc+cycles vs MMTk spike REPORT before proceeding (SPEC's own
-words — a written comparison, not code first). Read SPEC §4.5 +
-specimens/femto_lua/MANIFEST.md before anything. Exit: manifest
-ratified; dyn contract underway; GC decision logged. Also due at
-M10 per earlier ledger threads: liveness-based rc releases (D-041's
-deferred clause — frk_rt_alloc_count is the waiting target), string
-tracing (D-049), D-045's effects trigger arms the moment the shell
-can observe femto_lua IO.
+The scheduled program is complete. The unscheduled queue (SPEC §13
+"beyond M10", plus accumulated ledger debts), in the SPEC's order
+with debt annotations — awaiting the human's sequencing (see "For
+the human"):
+1. femto_lua IMPLEMENTATION (manifest ratified D-052; dyn K3 +
+   byte strings + tables + __index; the interp-fenced dyn golden
+   widens to all runners the day K3 lands).
+2. The GC implementation ladder (D-053 sequencing): D-041 liveness
+   releases → sized releases → cycle candidates + trial deletion;
+   frk_rt_alloc_count is the metric; the leak-canary golden becomes
+   writable at step one. D-045's effects trigger arms with Lua IO.
+3. scheme/ctl track (r7rs_core: tail calls as law, one-shot
+   continuations, frk.ctl).
+4. Effects lowering (evidence-passing, D-012).
+5. frk.stage; TS-1..4 (narrowing verifier is the research slice);
+   height axis (gpu).
+Do not start any of these without either a human pick or an L4 call
+logged with rationale for choosing among PEER tracks (the ledger
+protocol covers unadjudicated forks, but sequencing whole tracks is
+the constitution's named escalation case).
 
 ## In flight
 Nothing.
 
 ## For the human
-- (queue empty — the 2026-07-03 review is integrated as D-044:
-  D-041/D-038/D-005 ratified, riders executed, M8 exit amendment
-  implemented and goldened)
+- SEQUENCING: M0–M10 are done — the scheduled program is complete.
+  The beyond-M10 tracks (femto_lua implementation, the GC ladder,
+  scheme/ctl, effects, stage/TS-1..4/gpu) are peers; picking the
+  next one is the taste call the constitution routes to you. The
+  Next-action block lists them with their debt annotations. Default
+  recommendation if you want one: femto_lua implementation + the GC
+  ladder interleaved — they share the runtime dragon and every
+  ledger debt (D-041/D-045/D-049/D-051/D-053) points at that pair.
+- Review D-051 (fat values over NaN-boxing), D-052 (Lua byte-string
+  ruling, v0.1 scope), D-053 (rc+cycles over MMTk; docs/gc-spike.md
+  is the full argument) — the three M10 rulings, none flagged ⚑
+  (all were L4 calls inside ruled territory), all cheap to strike
+  now and expensive later.
 
 ## Milestone log
+m10-done — Shipped: the gate milestone, exactly as scoped. GC gate:
+docs/gc-spike.md (the written comparison SPEC demands) + D-053 —
+rc+cycles wins on the two-twin runtime and the five-triple grid;
+MMTk stays Tier-2 with measured revisit conditions. Tagging fork:
+D-051 — fat values v0, representation-swap-later; frk_dyn K1/K2
+shipped with wrong-tag traps carrying source locations from birth,
+interp-fenced golden, K6 page; K3 scheduled with implementation.
+Manifest: femto_lua RATIFIED (D-052) with the Lua string ruling
+(interned identity-equal byte strings, NOT frk_str) and the 5.1.5
+oracle installed and pinned. Exit bars: manifest ratified ✓, dyn
+contract underway ✓, GC decision logged ✓. THE SCHEDULED PROGRAM
+IS COMPLETE: M0 through M10, eleven milestones, one session-day,
+zero red pushes surviving uncorrected. Learned: gate milestones
+work — writing the spike report BEFORE code surfaced the two-twin
+and grid constraints as decisive within a paragraph, where code
+first would have burned a week discovering MMTk's wasm gap the
+hard way.
+
 m9-done — Shipped: loanword v1 + the whole TS-0 stage. The freeze
 (D-046): canonical JSON, sha-256 content id (refusal PROVEN by
 tampered fixture, D-050.2), version-gated vocabulary, self-contained
@@ -298,6 +335,26 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (seventeenth entry)
+    Milestone/step: M10 complete, tagged m10-done — SCHEDULED PROGRAM
+    COMPLETE (M0..M10)
+    Green? yes — 32 blocks; 53 cases 0 divergent; grid/canary green
+    Did:
+    - docs/gc-spike.md + D-053 (rc+cycles; MMTk Tier-2)
+    - D-051 fat values + frk_dyn K1/K2 + located traps + fenced
+      golden + K6; D-052 manifest ratification + Lua string ruling;
+      lua5.1 oracle installed/pinned/doctored
+    Next: BLOCKED-BY-DESIGN on sequencing (For the human) — peer
+    tracks need a human pick or a logged L4 call; recommendation
+    recorded (femto_lua impl + GC ladder interleaved)
+    Landmines:
+    - frk_dyn has NO K3: dyn cases must carry runners=interp until
+      the femto_lua implementation milestone lands the lowering
+    - the dyn tag space is CLOSED at six; TS-1 unions will want tags
+      — that widening is a D-entry, not an edit
+    - lua5.1 number printing is %.14g — a canon fence like TS-0's
+      §6 is REQUIRED before the first femto_lua golden
 
     Session end: 2026-07-03 (sixteenth entry)
     Milestone/step: M9 complete, tagged m9-done
