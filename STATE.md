@@ -7,22 +7,35 @@ Tree: green — `make test` passes; clean-clone scripts/ci.sh verified
 divergent.
 
 ## Next action
-M4 frk.closure per docs/SPEC.md §13 (read SPEC §4.2 + §3 first):
-closure.make (fn ref + capture list) and closure.apply, full K1–K7.
-Design constraints settled in advance: trait-free op shapes only
-(D-031 — closure.make carrying a flat symbol ref + variadic captures
-fits IRDL; no regions); captures by-value in v1 v0 (the memory-axis
-knob arrives with frk.mem — ledger the v0 stance);
-defunctionalization (SPEC's no-heap alternate strategy) is NOT v0 —
-ledger the deferral. Lowering sketch: env as a D-032-style flat
-struct + function pointer (llvm.mlir.addressof + llvm.call indirect);
-mind the same integer-fields-only fence and the same L3 flip
-choreography (runners=interp until lowering lands, then delete the
-directive — D-033's rot check applies). Interaction row to pre-solve:
-closure × mem/arena (SPEC §5) stays future; closure × adt (a closure
-capturing an adt value / stored in one) will hit the D-032 fence —
-decide whether to widen the fence or fence the interaction, ledger
-either way. Exit: church-encoding + counter goldens green under diff.
+M4 frk.closure, in flight. DONE so far: D-035 (strategy: env-struct +
+fn ptr on frk-rt heap — church's upward escape kills stack envs and
+same-signature capture kills flat defunc, so K4 activates now;
+defunc + by-ref captures deferred to M7; boundary fence = integers +
+closure types) and D-036 (the variadic ceiling discovery → packed op
+surfaces for BOTH dialects; adt redesigned to product_new/product_snoc
+/make_sum(payload); closure K1 packed from birth: make(env product)
+{callee} / apply(closure, args product) -> one result; combined IRDL
+module load; symbol-table-aware verify driver; corpus at 13 incl.
+mixed_fields, 0 divergent). Remaining, in order:
+1. K2: Value::Closure { callee, captures } in frk-interp; closure
+   Eval impls in frk-dialects (make snapshots env fields; apply
+   re-enters eval_function with captures ++ unpacked args); interp
+   tests incl. the church shape end to end (expect 42).
+2. K4: frk_rt_alloc in frk-rt — #[no_mangle] extern "C",
+   v0 = leaking bump (documented); unit test; K4 doc note.
+3. K3: closure lowering pass ("lower-frk-closure", pipeline slot
+   AFTER lower-frk-adt so captures/args arrive as lowered structs):
+   fn type → !llvm.struct<(ptr, ptr)>; make → frk_rt_alloc(env bytes)
+   + stores + addressof thunk; apply → extractvalue ×2 + indirect
+   llvm.call with unpacked args; synthesized thunk per make-site
+   (loads env slots, calls lifted callee). JIT runner registers the
+   frk_rt_alloc symbol via ExecutionEngine::register_symbol.
+4. K5: goldens/closure — church (apply(two_outer(inc-closure), 40) =
+   42, upward escape) + counter_fold (scf.for applying +3 four times
+   from 30 = 42; the STATEFUL counter waits for frk.mem — note it);
+   runners=interp first, delete after K3 (D-033 choreography).
+5. K6 page + K7 sweep + m4-done.
+Exit: church-encoding + counter goldens green under diff.
 
 ## In flight
 Nothing.
@@ -137,6 +150,33 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-02 (seventh entry this session)
+    Milestone/step: M4 in flight — D-035/D-036 ruled; K1 done for
+    frk.closure; frk.adt REDESIGNED to the packed surface
+    Green? yes — make test 23 blocks; make diff 13 cases 0 divergent
+    Did:
+    - discovered the IRDL variadic-unification ceiling (first-rank:
+      mixed-type make_sum NEVER worked; M3 corpus was uniform by luck);
+      pinned in LANDSCAPE, ruled D-036 (no variadics — packed surfaces)
+    - redesigned frk_adt: product_new/product_snoc/make_sum(payload);
+      rewrote IRDL, verify, eval, lowering, all tests, all goldens;
+      added the mixed_fields golden (the previously-inexpressible case)
+    - frk.closure K1 on the packed surface: IRDL (cross-dialect
+      product refs via combined-module load), deep semantic verifier
+      (symbol table in the verify driver), 6 smoke tests incl. the
+      full church shape verifying clean
+    - D-035 ruled ahead of the remaining work (env+fnptr on frk-rt
+      heap; defunc/by-ref deferred; boundary fence)
+    Next: M4 step 1 in the Next-action block (K2 closure eval)
+    Landmines:
+    - IRDL variables unify EVERYWHERE, including within a variadic
+      group and across operand/result positions — never share one, and
+      never add a variadic group to a kernel op (D-036)
+    - both dialects must load as ONE IRDL module (cross-dialect
+      @frk_adt::@product refs); register() already does this
+    - "#builtin.symbol_ref" is the base name for FlatSymbolRef; there
+      is no flat_symbol_ref registered name
 
     Session end: 2026-07-02 (sixth entry this session)
     Milestone/step: M3 complete, tagged m3-done
