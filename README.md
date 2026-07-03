@@ -15,9 +15,10 @@ route would have spelled it.
 Start here: `AGENTS.md` (law) → `docs/SPEC.md` (design) →
 `docs/DECISIONS.md` (ledger) → `STATE.md` (now).
 
-Status: M2 done — the differential law is live. The derived interpreter
-(reference semantics) and the MLIR JIT agree byte-exactly on an 8-case
-upstream-dialect corpus, enforced on every `make test`; `make diff`
-prints the runner matrix. Harness: byte-exact goldens + `make bless`
-discipline + per-pass stage dumps. Green from a clean clone:
-`make setup && make build && make test`.
+Status: M3 done — the first kernel dialect is real. frk.adt (sums,
+products, tag dispatch — no match op, by design) is IRDL-registered,
+semantically verified, interpreted, and compiled through its own MLIR
+lowering pass, with the interpreter and JIT byte-equal on a 12-case
+corpus at every `make test`. Pattern matching compiles via a Maranget
+decision-tree pass with byte-exact tree goldens. Green from a clean
+clone: `make setup && make build && make test`.

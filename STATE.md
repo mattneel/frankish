@@ -1,37 +1,28 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-02 (M0+M1+M2 session)
-Phase: M2 complete (tag m2-done); M3 not started.
+Updated: 2026-07-02 (M0..M3 sessions)
+Phase: M3 complete (tag m3-done); M4 not started.
 Tree: green — `make test` passes; clean-clone scripts/ci.sh verified
-(exit 0); `make diff`: 8 cases, interp vs jit, 0 divergent.
+(exit 0, 22 green blocks); `make diff`: 12 cases, interp vs jit, 0
+divergent.
 
 ## Next action
-M3 frk.adt under D-031. K1, K2, K3, K5 are DONE and live: IRDL
-definition + registration + semantic verifier in every runner's front
-half; Eval impls (+ cf.switch upstream); the D-032 lowering as a real
-external pass ("lower-frk-adt", stage 01 in dumps); the adt corpus
-runs under BOTH runners — `make diff`: 12 cases, 0 divergent. The
-corpus flip immediately caught a real divergence (adt cases lacked
-llvm.emit_c_interface → jit had no ciface symbol while interp
-answered) — the differential law works. Remaining for m3-done:
-1. Decision-tree pass (Maranget, D-025; SPEC §4.1): v0 = pure
-   matrix→tree compilation with its own goldens (constructor tests,
-   wildcards/bindings, integer literals; occurrences as field paths),
-   plus exhaustiveness/usefulness via rustc_pattern_analysis behind a
-   trait boundary. IR *emission* from trees can be scoped to what M5's
-   ml_core needs — decide (and ledger) whether emission lands in M3 or
-   with its first consumer at M5; the tree-level goldens are what
-   D-025 demands now.
-2. K4 note: v0 adt lowering needs NO frk-rt component (flat by-value
-   structs, zero allocation) — record as satisfied-vacuously in the
-   K6 page, with the M7 revisit (heap/recursive types).
-3. K6 docs page (docs/dialects/adt.md: semantics, lowering contract,
-   interaction-matrix rows from SPEC §5, tier impact) + K7 sweep
-   (D-031/032/033 exist; sweep for stragglers), then milestone note,
-   tag m3-done, push.
-Exit: K1–K7 checked; goldens green under every applicable runner
-(interp+jit today — the SPEC's '3-way' reading arrives with the AOT
-runner at M7).
+M4 frk.closure per docs/SPEC.md §13 (read SPEC §4.2 + §3 first):
+closure.make (fn ref + capture list) and closure.apply, full K1–K7.
+Design constraints settled in advance: trait-free op shapes only
+(D-031 — closure.make carrying a flat symbol ref + variadic captures
+fits IRDL; no regions); captures by-value in v1 v0 (the memory-axis
+knob arrives with frk.mem — ledger the v0 stance);
+defunctionalization (SPEC's no-heap alternate strategy) is NOT v0 —
+ledger the deferral. Lowering sketch: env as a D-032-style flat
+struct + function pointer (llvm.mlir.addressof + llvm.call indirect);
+mind the same integer-fields-only fence and the same L3 flip
+choreography (runners=interp until lowering lands, then delete the
+directive — D-033's rot check applies). Interaction row to pre-solve:
+closure × mem/arena (SPEC §5) stays future; closure × adt (a closure
+capturing an adt value / stored in one) will hit the D-032 fence —
+decide whether to widen the fence or fence the interaction, ledger
+either way. Exit: church-encoding + counter goldens green under diff.
 
 ## In flight
 Nothing.
@@ -47,6 +38,35 @@ Nothing.
   amended §4.1 wording itself adjusted.
 
 ## Milestone log
+m3-done — Shipped: frk.adt, the first kernel dialect, full K1–K7
+under D-031 (pure IRDL, trait-free, no match op). K1: IRDL definition
+(sum/product parametric types; make_sum/tag_of/extract/make_product/
+get) + frk semantic verifier (index ranges, result-type-equals-field,
+arity/type-vs-shape) wired into every runner's front half. K2: Eval
+impls over Value::Adt (wrong-variant extract traps); cf.switch joined
+the upstream interpreter; Interp grew the register_eval hook +
+eval_util authoring kit. K3 (D-032): lower-frk-adt as an external
+MLIR pass, stage 01 in dumps — sum → {i64 tag, i64×K} struct, product
+tagless, extui/trunci slot adaptation; integer-fields-≤64 fence until
+frk.mem. K5: goldens/adt (4 cases) green under interp AND jit — the
+runners= flip caught a real divergence day one (missing
+llvm.emit_c_interface: jit had no ciface symbol while interp
+answered). Decision-tree pass (D-025/D-034): Maranget matrix→tree,
+typed columns, ten byte-exact tree goldens; exhaustiveness/usefulness
+tree-derived behind the PatternAnalysis boundary
+(rustc_pattern_analysis deferred to M5); IR emission deferred to its
+first consumer (ml_core). K4 vacuous (flat by-value structs, zero
+runtime; revisit M7) — documented with the rest in
+docs/dialects/adt.md (K6). K7: D-031/032/033/034. Learned: melior
+0.27.2's ArrayAttribute::try_from is miswired to is_dense_i64_array
+(LANDSCAPE-pinned; mlir-sys shim in adt.rs; all other attribute
+try_froms audit clean); IRDL constraint variables unify VALUES
+(separate vars per independent attribute); external passes + IrRewriter
+(via as_rewriter_base) suffice for type-changing lowerings without
+DialectConversion. Cheats awaiting promotion: none — but two explicit
+deferrals with M5 revisits (rustc_pattern_analysis, tree→IR emission)
+and one fence (integer-only adt fields) with an M7 revisit.
+
 m0-done — Shipped: SPEC §12 workspace skeleton (7 crates + sandbox/);
 versions.env as the single pin point (RUST_TOOLCHAIN=1.96.0,
 LLVM_MAJOR=22, LLVM_VERSION_TESTED=22.1.8, MELIOR_VERSION=0.27.2) with
@@ -117,6 +137,31 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-02 (sixth entry this session)
+    Milestone/step: M3 complete, tagged m3-done
+    Green? yes — make test 22 blocks; clean-clone ci.sh exit 0;
+    make diff 12 cases 0 divergent
+    Did:
+    - K1 (IRDL + semantic verifier in every runner), K2 (Eval impls,
+      Value::Adt, cf.switch), K3 (D-032 external lowering pass +
+      corpus flip to two-way — caught the emit_c_interface divergence),
+      K5 (adt corpus + D-033 runners= machinery), decision-tree pass
+      (D-025/D-034, ten tree goldens), K4 vacuous note, K6 page
+      (docs/dialects/adt.md), K7 (D-031..034)
+    - melior ArrayAttribute::try_from bug found, shimmed, pinned
+    Next: M4 frk.closure per the Next-action block (trait-free op
+    design, by-value captures v0, defunctionalization deferred —
+    ledger both; church-encoding + counter goldens are the exit)
+    Landmines:
+    - adt lowering fences integer fields ≤64; closures capturing adt
+      values will hit it — decide widen-vs-fence EARLY, ledger it
+    - unguarded frk_adt.extract: interp traps, lowered code reads
+      garbage — never admissible as a golden (D-032)
+    - dtree goldens are literal strings in tests/adt_dtree.rs; a
+      heuristic change re-blesses them with an L2 justification
+    - the runners= directive rot check (D-033): grep goldens for
+      runners= at every milestone exit — today it greps clean
 
     Session end: 2026-07-02 (fifth entry this session)
     Milestone/step: D-030 struck per human ruling; D-031 appended
