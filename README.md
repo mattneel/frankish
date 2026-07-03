@@ -15,4 +15,6 @@ route would have spelled it.
 Start here: `AGENTS.md` (law) → `docs/SPEC.md` (design) →
 `docs/DECISIONS.md` (ledger) → `STATE.md` (now).
 
-Status: pre-M0 bootstrap. Nothing builds yet; that's M0's job.
+Status: M0 done — toolchain pinned (LLVM/MLIR 22, melior), workspace
+skeleton, and an `add(i64,i64)` JIT smoke test, green from a clean clone:
+`make setup && make build && make test`.
