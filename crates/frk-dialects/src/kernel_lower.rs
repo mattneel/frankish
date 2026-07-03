@@ -51,12 +51,31 @@ use crate::closure::decode_fn;
 struct PassId;
 static LOWER_KERNEL_PASS_ID: PassId = PassId;
 
-/// Constructs the pass; the shared pipeline table calls this exactly
-/// like the upstream `create_*` constructors.
-pub fn lower_kernel_pass() -> Pass {
+/// The memory strategy (D-041): a lowering parameter, never IR. Arena
+/// bump-allocates (process-lifetime v0); Rc adds refcount headers and
+/// retain calls at owning stores (elided on ownership transfer);
+/// releases arrive with the M10 GC-gate liveness work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Strategy {
+    Arena,
+    Rc,
+}
+
+impl Strategy {
+    fn alloc_symbol(self) -> &'static str {
+        match self {
+            Self::Arena => "frk_rt_arena_alloc",
+            Self::Rc => "frk_rt_rc_alloc",
+        }
+    }
+}
+
+/// Constructs the pass for one strategy; the pipeline builds it fresh
+/// per run exactly like the upstream `create_*` constructors.
+pub fn lower_kernel_pass(strategy: Strategy) -> Pass {
     create_external(
-        |operation: OperationRef, pass: ExternalPass| {
-            if let Err(message) = lower_kernel(operation) {
+        move |operation: OperationRef, pass: ExternalPass| {
+            if let Err(message) = lower_kernel(operation, strategy) {
                 eprintln!("lower-frk-kernel: {message}");
                 pass.signal_failure();
             }
@@ -64,7 +83,7 @@ pub fn lower_kernel_pass() -> Pass {
         TypeId::create(&LOWER_KERNEL_PASS_ID),
         "lower-frk-kernel",
         "lower-frk-kernel",
-        "lower frk_adt + frk_closure ops and types to LLVM form (D-032/D-035/D-037)",
+        "lower frk_adt/closure/mem ops and types to LLVM form (D-032/D-035/D-037/D-041)",
         "",
         &[],
     )
@@ -81,6 +100,8 @@ enum SlotKind<'c> {
     /// struct is all-i64), rebuilt as `mapped` on read. Finite by
     /// construction — recursive ADTs cannot even be spelled (D-038).
     Words { slots: usize, mapped: Type<'c> },
+    /// A frk_mem box: one !llvm.ptr, ptrtoint in / inttoptr out.
+    Ptr,
 }
 
 impl SlotKind<'_> {
@@ -89,6 +110,7 @@ impl SlotKind<'_> {
             Self::Int(_) => 1,
             Self::Closure => 2,
             Self::Words { slots, .. } => *slots,
+            Self::Ptr => 1,
         }
     }
 }
@@ -97,6 +119,9 @@ fn slot_kind<'c>(context: &'c Context, r#type: Type<'c>) -> Result<SlotKind<'c>,
     let printed = r#type.to_string();
     if printed.starts_with("!frk_closure.fn<") {
         return Ok(SlotKind::Closure);
+    }
+    if printed.starts_with("!frk_mem.box<") {
+        return Ok(SlotKind::Ptr);
     }
     if printed.starts_with("!frk_adt.") {
         let mapped = map_type(context, r#type)?;
@@ -174,11 +199,26 @@ enum Planned<'c, 'a> {
         param_kinds: Vec<SlotKind<'c>>,
         result: Type<'c>,
     },
+    BoxNew {
+        op: OperationRef<'c, 'a>,
+        payload_bytes: usize,
+        /// The payload's lowered slot kind (drives an rc retain when it
+        /// is itself managed).
+        payload_kind: SlotKind<'c>,
+    },
+    BoxGet {
+        op: OperationRef<'c, 'a>,
+        result: Type<'c>,
+    },
+    BoxSet {
+        op: OperationRef<'c, 'a>,
+        payload_kind: SlotKind<'c>,
+    },
 }
 
 /// Lowers every kernel op and type under `module` (the pipeline anchors
 /// this on builtin.module).
-pub fn lower_kernel(module: OperationRef<'_, '_>) -> Result<(), String> {
+pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<(), String> {
     // Sound: the context strictly outlives every IR object walked here.
     let context = unsafe { module.context().to_ref() };
 
@@ -186,6 +226,7 @@ pub fn lower_kernel(module: OperationRef<'_, '_>) -> Result<(), String> {
     let mut retypes = Vec::new();
     let mut signatures = HashMap::new();
     let mut thunk_counter = 0usize;
+    let mut use_counts: HashMap<usize, usize> = HashMap::new();
     collect(
         context,
         module,
@@ -193,6 +234,7 @@ pub fn lower_kernel(module: OperationRef<'_, '_>) -> Result<(), String> {
         &mut retypes,
         &mut signatures,
         &mut thunk_counter,
+        &mut use_counts,
     )?;
 
     for (value, mapped) in &retypes {
@@ -202,18 +244,38 @@ pub fn lower_kernel(module: OperationRef<'_, '_>) -> Result<(), String> {
 
     // Thunks + the frk_rt_alloc declaration are built against retyped
     // callee signatures, so this happens after the sweeps.
-    let needs_allocator = plans
-        .iter()
-        .any(|plan| matches!(plan, Planned::MakeClosure { .. }));
+    // Sharing must be resolved BEFORE any rewriting: use counts key on
+    // pre-lowering SSA values, and op replacement rewrites operands in
+    // place (a mid-rewrite lookup would miss and misread transfer).
+    let mut retain_shared: HashMap<usize, bool> = HashMap::new();
+    for plan in &plans {
+        let (op, index) = match plan {
+            Planned::ProductSnoc { op, .. } => (*op, 1usize),
+            Planned::BoxNew { op, .. } => (*op, 0),
+            Planned::BoxSet { op, .. } => (*op, 1),
+            _ => continue,
+        };
+        if let Ok(value) = op.operand(index) {
+            let count = use_counts
+                .get(&(value.to_raw().ptr as usize))
+                .copied()
+                .unwrap_or(0);
+            retain_shared.insert(op.to_raw().ptr as usize, count > 1);
+        }
+    }
+
+    let needs_allocator = plans.iter().any(|plan| {
+        matches!(plan, Planned::MakeClosure { .. } | Planned::BoxNew { .. })
+    });
     if needs_allocator {
-        declare_allocator(context, module)?;
+        declare_runtime(context, module, strategy)?;
         synthesize_thunks(context, module, &plans)?;
     }
 
     let rewriter = IrRewriter::new(context);
     let rewriter = rewriter.as_rewriter_base();
     for plan in plans {
-        apply(context, &rewriter, plan)?;
+        apply(context, &rewriter, plan, strategy, &retain_shared)?;
     }
     Ok(())
 }
@@ -225,6 +287,7 @@ fn collect<'c, 'a>(
     retypes: &mut Vec<(Value<'c, 'a>, Type<'c>)>,
     signatures: &mut HashMap<usize, Type<'c>>,
     thunk_counter: &mut usize,
+    use_counts: &mut HashMap<usize, usize>,
 ) -> Result<(), String> {
     let name = op
         .name()
@@ -233,10 +296,19 @@ fn collect<'c, 'a>(
         .map_err(|_| "non-UTF-8 op name".to_string())?
         .to_string();
 
+    // SSA use counts feed the rc transfer-elision (D-041).
+    for index in 0..op.operand_count() {
+        if let Ok(operand) = op.operand(index) {
+            *use_counts.entry(operand.to_raw().ptr as usize).or_insert(0) += 1;
+        }
+    }
+
     if let Some(suffix) = name.strip_prefix("frk_adt.") {
         plans.push(plan_adt(context, suffix, op)?);
     } else if let Some(suffix) = name.strip_prefix("frk_closure.") {
         plans.push(plan_closure(context, suffix, op, thunk_counter)?);
+    } else if let Some(suffix) = name.strip_prefix("frk_mem.") {
+        plans.push(plan_mem(context, suffix, op)?);
     } else {
         if name == "func.func" {
             if let Some(mapped) = mapped_signature(context, op)? {
@@ -265,7 +337,9 @@ fn collect<'c, 'a>(
             }
             let mut inner = current.first_operation();
             while let Some(inner_op) = inner {
-                collect(context, inner_op, plans, retypes, signatures, thunk_counter)?;
+                collect(
+                    context, inner_op, plans, retypes, signatures, thunk_counter, use_counts,
+                )?;
                 inner = inner_op.next_in_block();
             }
             block = current.next_in_region();
@@ -423,9 +497,53 @@ fn plan_closure<'c, 'a>(
     }
 }
 
+fn plan_mem<'c, 'a>(
+    context: &'c Context,
+    suffix: &str,
+    op: OperationRef<'c, 'a>,
+) -> Result<Planned<'c, 'a>, String> {
+    match suffix {
+        "box_new" => {
+            let elem = crate::mem::decode_box(
+                context,
+                op.result(0)
+                    .map_err(|_| "box_new without a result".to_string())?
+                    .r#type(),
+            )?;
+            let kind = slot_kind(context, elem)?;
+            Ok(Planned::BoxNew {
+                op,
+                payload_bytes: (kind.slots().max(1)) * 8,
+                payload_kind: kind,
+            })
+        }
+        "box_get" => {
+            let elem = crate::mem::decode_box(
+                context,
+                op.operand(0)
+                    .map_err(|_| "box_get without an operand".to_string())?
+                    .r#type(),
+            )?;
+            Ok(Planned::BoxGet { op, result: map_type(context, elem)? })
+        }
+        "box_set" => {
+            let elem = crate::mem::decode_box(
+                context,
+                op.operand(0)
+                    .map_err(|_| "box_set without an operand".to_string())?
+                    .r#type(),
+            )?;
+            Ok(Planned::BoxSet { op, payload_kind: slot_kind(context, elem)? })
+        }
+        other => Err(format!("no lowering for frk_mem.{other}")),
+    }
+}
+
 fn is_kernel_type(r#type: Type<'_>) -> bool {
     let printed = r#type.to_string();
-    printed.starts_with("!frk_adt.") || printed.starts_with("!frk_closure.")
+    printed.starts_with("!frk_adt.")
+        || printed.starts_with("!frk_closure.")
+        || printed.starts_with("!frk_mem.")
 }
 
 fn closure_struct(context: &Context) -> Type<'_> {
@@ -452,6 +570,8 @@ fn map_type<'c>(context: &'c Context, r#type: Type<'c>) -> Result<Type<'c>, Stri
         Ok(slots_struct(context, total_slots(&kinds)))
     } else if printed.starts_with("!frk_closure.fn<") {
         Ok(closure_struct(context))
+    } else if printed.starts_with("!frk_mem.box<") {
+        Ok(llvm::r#type::pointer(context, 0))
     } else {
         Ok(r#type)
     }
@@ -505,35 +625,52 @@ fn rewrite_signatures(module: OperationRef<'_, '_>, signatures: &HashMap<usize, 
     }
 }
 
-/// `llvm.func @frk_rt_alloc(i64) -> !llvm.ptr` — external declaration,
-/// resolved by the JIT's registered symbol or by linking frk-rt.
-fn declare_allocator(context: &Context, module: OperationRef<'_, '_>) -> Result<(), String> {
+/// Declares the strategy's runtime symbols (resolved by the JIT's
+/// registered symbols or by linking frk-rt): the allocator always, and
+/// under Rc the retain hook too.
+fn declare_runtime(
+    context: &Context,
+    module: OperationRef<'_, '_>,
+    strategy: Strategy,
+) -> Result<(), String> {
     let location = module.location();
     let i64_type: Type = IntegerType::new(context, 64).into();
     let ptr = llvm::r#type::pointer(context, 0);
-    let function_type = llvm::r#type::function(ptr, &[i64_type], false);
-
-    let declaration = OperationBuilder::new("llvm.func", location)
-        .add_attributes(&[
-            (
-                melior::ir::Identifier::new(context, "sym_name"),
-                StringAttribute::new(context, "frk_rt_alloc").into(),
-            ),
-            (
-                melior::ir::Identifier::new(context, "function_type"),
-                TypeAttribute::new(function_type).into(),
-            ),
-        ])
-        .add_regions([Region::new()])
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    module
+    let body = module
         .region(0)
         .map_err(|e| e.to_string())?
         .first_block()
-        .ok_or_else(|| "module without a body".to_string())?
-        .append_operation(declaration);
+        .ok_or_else(|| "module without a body".to_string())?;
+
+    let declare = |name: &str, function_type: Type| -> Result<(), String> {
+        let declaration = OperationBuilder::new("llvm.func", location)
+            .add_attributes(&[
+                (
+                    melior::ir::Identifier::new(context, "sym_name"),
+                    StringAttribute::new(context, name).into(),
+                ),
+                (
+                    melior::ir::Identifier::new(context, "function_type"),
+                    TypeAttribute::new(function_type).into(),
+                ),
+            ])
+            .add_regions([Region::new()])
+            .build()
+            .map_err(|e| e.to_string())?;
+        body.append_operation(declaration);
+        Ok(())
+    };
+
+    declare(
+        strategy.alloc_symbol(),
+        llvm::r#type::function(ptr, &[i64_type], false),
+    )?;
+    if strategy == Strategy::Rc {
+        declare(
+            "frk_rt_rc_retain",
+            llvm::r#type::function(llvm::r#type::void(context), &[ptr], false),
+        )?;
+    }
     Ok(())
 }
 
@@ -603,6 +740,18 @@ fn synthesize_thunks(
                     }
                     call_args.push(rebuilt);
                     offset += slots;
+                }
+                SlotKind::Ptr => {
+                    let slot = load_slot(context, &block, env_ptr, offset, location)?;
+                    let as_ptr = block.append_operation(cast_op(
+                        "llvm.inttoptr",
+                        slot,
+                        llvm::r#type::pointer(context, 0),
+                        location,
+                    )?);
+                    let raw = as_ptr.result(0).map_err(|e| e.to_string())?.to_raw();
+                    call_args.push(unsafe { Value::from_raw(raw) });
+                    offset += 1;
                 }
                 SlotKind::Int(width) => {
                     let slot = load_slot(context, &block, env_ptr, offset, location)?;
@@ -779,8 +928,67 @@ fn apply<'c>(
     context: &'c Context,
     rewriter: &RewriterBase<'c, '_>,
     plan: Planned<'c, '_>,
+    strategy: Strategy,
+    retain_shared: &HashMap<usize, bool>,
 ) -> Result<(), String> {
     match plan {
+        Planned::BoxNew { op, payload_bytes, payload_kind } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
+            let size = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, payload_bytes as i64).into(),
+                location,
+            )))?;
+            let payload_ptr = result_value(rewriter.insert(direct_call(
+                context,
+                strategy.alloc_symbol(),
+                &[size],
+                ptr,
+                location,
+            )?))?;
+            let payload = operand(op, 0)?;
+            let shared = retain_shared
+                .get(&(op.to_raw().ptr as usize))
+                .copied()
+                .unwrap_or(false);
+            maybe_retain(context, rewriter, strategy, &payload_kind, payload, shared, location)?;
+            rewriter.insert(store_op(context, payload, payload_ptr, location)?);
+            finish(rewriter, op, payload_ptr)
+        }
+        Planned::BoxGet { op, result } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let boxed = operand(op, 0)?;
+            let loaded = result_value(rewriter.insert(
+                OperationBuilder::new("llvm.load", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "ordering"),
+                        Attribute::parse(context, "0 : i64").ok_or("ordering attr")?,
+                    )])
+                    .add_operands(&[boxed])
+                    .add_results(&[result])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            finish(rewriter, op, loaded)
+        }
+        Planned::BoxSet { op, payload_kind } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let boxed = operand(op, 0)?;
+            let payload = operand(op, 1)?;
+            let shared = retain_shared
+                .get(&(op.to_raw().ptr as usize))
+                .copied()
+                .unwrap_or(false);
+            maybe_retain(context, rewriter, strategy, &payload_kind, payload, shared, location)?;
+            rewriter.insert(store_op(context, payload, boxed, location)?);
+            rewriter.erase_op(op);
+            Ok(())
+        }
         Planned::TagOf { op } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
@@ -834,6 +1042,11 @@ fn apply<'c>(
                 )))?;
             }
             let appended = operand(op, 1)?;
+            let shared = retain_shared
+                .get(&(op.to_raw().ptr as usize))
+                .copied()
+                .unwrap_or(false);
+            maybe_retain(context, rewriter, strategy, &kind, appended, shared, location)?;
             write_slots(
                 context, rewriter, &mut acc, old_slots, kind.clone(), appended, location,
             )?;
@@ -902,12 +1115,16 @@ fn apply<'c>(
             )))?;
             let env_ptr = result_value(rewriter.insert(direct_call(
                 context,
-                "frk_rt_alloc",
+                strategy.alloc_symbol(),
                 &[size],
                 ptr,
                 location,
             )?))?;
             let env_value = operand(op, 0)?;
+            // No retains here by design: managed pointers were retained
+            // (or transfer-elided) when they entered the env product at
+            // snoc time — the product-to-heap copy is not a new owner
+            // acquisition (D-041 ownership model).
             for slot in 0..env_slots {
                 let word = result_value(rewriter.insert(llvm::extract_value(
                     context,
@@ -1046,6 +1263,94 @@ fn apply<'c>(
     }
 }
 
+/// Typed llvm.store of `value` at `address`.
+fn store_op<'c>(
+    context: &'c Context,
+    value: Value<'c, '_>,
+    address: Value<'c, '_>,
+    location: Location<'c>,
+) -> Result<Operation<'c>, String> {
+    OperationBuilder::new("llvm.store", location)
+        .add_attributes(&[(
+            melior::ir::Identifier::new(context, "ordering"),
+            Attribute::parse(context, "0 : i64").ok_or("ordering attr")?,
+        )])
+        .add_operands(&[value, address])
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// Under Rc, an owning store of a directly-managed value (a box ptr or
+/// a closure's env ptr) retains it — UNLESS this store is the value's
+/// only use (ownership transfer: the minimal elision, D-041). Void call:
+/// llvm.call with zero results.
+#[allow(clippy::too_many_arguments)]
+fn maybe_retain<'c>(
+    context: &'c Context,
+    rewriter: &RewriterBase<'c, '_>,
+    strategy: Strategy,
+    kind: &SlotKind<'c>,
+    value: Value<'c, '_>,
+    shared: bool,
+    location: Location<'c>,
+) -> Result<(), String> {
+    if strategy != Strategy::Rc || !shared {
+        return Ok(());
+    }
+    let managed_ptr: Option<Value<'c, 'c>> = match kind {
+        SlotKind::Ptr => Some(unsafe { Value::from_raw(value.to_raw()) }),
+        SlotKind::Closure => {
+            let ptr = llvm::r#type::pointer(context, 0);
+            Some(result_value(rewriter.insert(llvm::extract_value(
+                context,
+                value,
+                DenseI64ArrayAttribute::new(context, &[1]),
+                ptr,
+                location,
+            )))?)
+        }
+        _ => None,
+    };
+    let Some(managed) = managed_ptr else {
+        return Ok(());
+    };
+    rewriter.insert(
+        OperationBuilder::new("llvm.call", location)
+            .add_attributes(&[
+                (
+                    melior::ir::Identifier::new(context, "callee"),
+                    FlatSymbolRefAttribute::new(context, "frk_rt_rc_retain").into(),
+                ),
+                (
+                    melior::ir::Identifier::new(context, "CConv"),
+                    Attribute::parse(context, "#llvm.cconv<ccc>").ok_or("CConv")?,
+                ),
+                (
+                    melior::ir::Identifier::new(context, "TailCallKind"),
+                    Attribute::parse(context, "#llvm.tailcallkind<none>")
+                        .ok_or("TailCallKind")?,
+                ),
+                (
+                    melior::ir::Identifier::new(context, "fastmathFlags"),
+                    Attribute::parse(context, "#llvm.fastmath<none>").ok_or("fastmathFlags")?,
+                ),
+                (
+                    melior::ir::Identifier::new(context, "op_bundle_sizes"),
+                    Attribute::parse(context, "array<i32>").ok_or("op_bundle_sizes")?,
+                ),
+                (
+                    melior::ir::Identifier::new(context, "operandSegmentSizes"),
+                    Attribute::parse(context, "array<i32: 1, 0>")
+                        .ok_or("operandSegmentSizes")?,
+                ),
+            ])
+            .add_operands(&[managed])
+            .build()
+            .map_err(|e| e.to_string())?,
+    );
+    Ok(())
+}
+
 /// Direct llvm.call by symbol (the allocator).
 fn direct_call<'c>(
     context: &'c Context,
@@ -1122,6 +1427,16 @@ fn read_slots<'c>(
                 )))?;
             }
             Ok(rebuilt)
+        }
+        SlotKind::Ptr => {
+            let slot = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                container,
+                DenseI64ArrayAttribute::new(context, &[offset as i64]),
+                i64_type,
+                location,
+            )))?;
+            result_value(rewriter.insert(cast_op("llvm.inttoptr", slot, ptr, location)?))
         }
         SlotKind::Int(width) => {
             let slot = result_value(rewriter.insert(llvm::extract_value(
@@ -1210,6 +1525,17 @@ fn write_slots<'c>(
                     location,
                 )))?;
             }
+        }
+        SlotKind::Ptr => {
+            let word =
+                result_value(rewriter.insert(cast_op("llvm.ptrtoint", value, i64_type, location)?))?;
+            *accumulator = result_value(rewriter.insert(llvm::insert_value(
+                context,
+                *accumulator,
+                DenseI64ArrayAttribute::new(context, &[offset as i64]),
+                word,
+                location,
+            )))?;
         }
         SlotKind::Int(width) => {
             let widened = if width < 64 {

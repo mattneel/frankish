@@ -193,6 +193,36 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-041 [mem] ⚑ frk.mem v0 surface + strategy knob, designed to retire
+  four ledgered debts as one design (D-032 boxed reps, D-035 arena
+  discipline and by-ref captures, D-038 recursive ADTs — the last two
+  UNLOCKED by this surface, scheduled separately at v0.2). Surface
+  (packed/trait-free per D-031/D-036): !frk_mem.box<T> with
+  box_new(value) / box_get / box_set — the cell primitive. Strategy is
+  a LOWERING PARAMETER, never IR: the kernel lowering takes
+  Strategy ∈ {Arena, Rc}; both lower box<T> AND closure envs to
+  !llvm.ptr with payloads stored as their lowered forms; boxes occupy
+  one slot inside adts/envs (SlotKind::Ptr, ptrtoint/inttoptr).
+  Runtime ABI per strategy: arena → frk_rt_arena_alloc (the M4 bump
+  formalized — the v0 arena is process-lifetime; region reset entry
+  points come with real region inference); rc → frk_rt_rc_alloc (i64
+  refcount header at ptr-8, payload pointer returned, count starts 1)
+  + frk_rt_rc_retain / frk_rt_rc_release (frees at zero).
+  frk_rt_alloc is retired — D-035's same-symbol clause executed as a
+  rename; the JIT registers all strategy symbols.
+  ⚑ rc v0 policy: a retain accompanies every new owning store of a
+  managed pointer (into envs or boxes), ELIDED when the stored value's
+  only use is that store — ownership transfer, the minimal elision
+  pass, real and SSA-checkable. NO automatic releases yet: release
+  insertion needs liveness and lands with the M10 GC-gate work. v0 rc
+  therefore proves the strategy plumbing end to end (distinct ABI,
+  headers, retain+elision, corpus-identical results enforced by a
+  second JIT runner in the diff matrix) but collects nothing. Strike
+  this clause if liveness-based releases should gate M7 instead.
+  Interp semantics: Value::Box — a shared mutable cell with identity
+  equality; reference semantics is strategy-agnostic by construction.
+  Revisit: releases + escape analysis at the M10 GC gate; box layout
+  again when recursive ADTs land (ml_core v0.2).
 - D-040 [specimens] M6 retrospective fires D-009's revisit: the order
   is CONFIRMED. Evidence: ml_core-first retired the abstraction risk
   exactly as intended — the M3/M4 dialects carried a full ML subset

@@ -14,7 +14,8 @@ Format ruled in D-027; comparison contract in docs/canon.md.
 A directory is a case iff it contains `case.mlir` or `case.ml`.
 Suites are just directories; `upstream/` holds MLIR programs over
 func/arith/scf/cf; `adt/` and `closure/` exercise the kernel dialects;
-`ml_core/` holds specimen programs — plain OCaml files that must (a)
+`mem/` exercises the
+allocation surface under every strategy runner; `ml_core/` holds specimen programs — plain OCaml files that must (a)
 define `let main () = <int expr>` and (b) run verbatim under the
 `ocaml` oracle, which appends `print_int (main ())`. Directives in .ml
 files spell `(* frk-case: ... *)`. Keep integer results under 2^62

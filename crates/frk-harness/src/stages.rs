@@ -67,14 +67,17 @@ pub fn dump_stages(source_path: &Path, out_dir: &Path) -> Result<Vec<PathBuf>, S
     }
     fs::create_dir_all(out_dir).map_err(|e| StageError::Io(out_dir.to_path_buf(), e))?;
 
-    let mut written = Vec::with_capacity(1 + pipeline::UPSTREAM_TO_LLVM.len());
+    // Dumps use the Arena strategy (the default profile); a per-dump
+    // strategy flag can arrive with real profile plumbing.
+    let stage_list = pipeline::stages(frk_dialects::Strategy::Arena);
+    let mut written = Vec::with_capacity(1 + stage_list.len());
     written.push(snapshot(out_dir, 0, "parsed", &module)?);
 
-    for (index, (name, constructor)) in pipeline::UPSTREAM_TO_LLVM.iter().enumerate() {
+    for (index, (name, pass)) in stage_list.into_iter().enumerate() {
         let manager = PassManager::new(&context);
-        manager.add_pass(constructor());
+        manager.add_pass(pass);
         manager.run(&mut module).map_err(|e| StageError::Lower {
-            stage: (*name).to_string(),
+            stage: name.to_string(),
             message: format!("{e}"),
         })?;
         written.push(snapshot(out_dir, index + 1, name, &module)?);

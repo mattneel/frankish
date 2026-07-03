@@ -14,11 +14,13 @@ mod adt_eval;
 mod attr_util;
 pub mod closure;
 mod closure_eval;
+pub mod mem;
+mod mem_eval;
 pub mod verify;
 
 mod kernel_lower;
 
-pub use kernel_lower::lower_kernel_pass;
+pub use kernel_lower::{Strategy, lower_kernel_pass};
 pub use verify::{Finding, VerifyErrors, verify};
 
 /// Registers every kernel dialect's evaluators into an interpreter —
@@ -26,6 +28,7 @@ pub use verify::{Finding, VerifyErrors, verify};
 pub fn register_eval(interp: &mut frk_interp::Interp<'_, '_>) {
     adt_eval::register_eval(interp);
     closure_eval::register_eval(interp);
+    mem_eval::register_eval(interp);
 }
 
 use std::fmt;
@@ -62,7 +65,7 @@ pub fn register(context: &Context) -> Result<(), RegisterError> {
     // One combined module: frk_closure's IRDL references
     // @frk_adt::@product, and IRDL symbol refs resolve only within the
     // module being loaded.
-    let combined = format!("{}\n{}", adt::IRDL, closure::IRDL);
+    let combined = format!("{}\n{}\n{}", adt::IRDL, closure::IRDL, mem::IRDL);
     register_one(context, &combined, "frk kernel dialects")
 }
 

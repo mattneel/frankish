@@ -99,7 +99,8 @@ fn parse_and_verify<'c>(
 pub fn default_runners() -> Vec<Box<dyn Runner>> {
     vec![
         Box::new(InterpRunner),
-        Box::new(JitRunner),
+        Box::new(JitRunner { strategy: frk_dialects::Strategy::Arena }),
+        Box::new(JitRunner { strategy: frk_dialects::Strategy::Rc }),
         Box::new(OcamlOracle),
     ]
 }
@@ -169,30 +170,46 @@ fn interpret_case(case: &Case) -> Result<String, RunError> {
     }
 }
 
-/// The ORC JIT runner: parse → verify → shared lowering pipeline →
-/// ExecutionEngine → render the entry's return per docs/canon.md §2.
-pub struct JitRunner;
+/// The ORC JIT runner, one per memory strategy (D-041): parse → verify
+/// → shared lowering pipeline at the strategy → ExecutionEngine →
+/// render the entry's return per docs/canon.md §2. Both strategies sit
+/// in default_runners, so the diff matrix holds them byte-equal.
+pub struct JitRunner {
+    pub strategy: frk_dialects::Strategy,
+}
 
 impl Runner for JitRunner {
     fn name(&self) -> &'static str {
-        "jit"
+        match self.strategy {
+            frk_dialects::Strategy::Arena => "jit",
+            frk_dialects::Strategy::Rc => "jit-rc",
+        }
     }
 
     fn run(&self, case: &Case) -> Result<String, RunError> {
         let (context, source) = frk_context(case)?;
         let mut module = parse_and_verify(&context, &source, case)?;
 
-        pipeline::lower_to_llvm(&context, &mut module)
+        pipeline::lower_to_llvm(&context, &mut module, self.strategy)
             .map_err(|e| RunError::Lower(format!("{e}")))?;
 
         // Entry functions carry llvm.emit_c_interface (goldens/README.md);
         // invoke_packed resolves the _mlir_ciface_ wrapper by entry name.
         let engine = ExecutionEngine::new(&module, 2, &[], false, false);
-        // The kernel lowering calls frk_rt_alloc for closure envs
-        // (D-035); the harness process hosts frk-rt, so hand the JIT the
-        // symbol directly. AOT (M7) links the staticlib instead.
+        // The kernel lowering calls the strategy's runtime (D-041); the
+        // harness process hosts frk-rt, so hand the JIT every symbol.
+        // AOT (M7 grid) links the staticlib instead.
         unsafe {
-            engine.register_symbol("frk_rt_alloc", frk_rt::frk_rt_alloc as *mut ());
+            engine.register_symbol(
+                "frk_rt_arena_alloc",
+                frk_rt::frk_rt_arena_alloc as *mut (),
+            );
+            engine.register_symbol("frk_rt_rc_alloc", frk_rt::frk_rt_rc_alloc as *mut ());
+            engine.register_symbol("frk_rt_rc_retain", frk_rt::frk_rt_rc_retain as *mut ());
+            engine.register_symbol(
+                "frk_rt_rc_release",
+                frk_rt::frk_rt_rc_release as *mut (),
+            );
         }
         match case.result {
             ResultKind::I64 => {

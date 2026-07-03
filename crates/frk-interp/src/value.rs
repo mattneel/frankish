@@ -5,8 +5,10 @@
 //! event, widening what they can *compute with* is not.
 
 use crate::error::EvalError;
+use std::cell::RefCell;
+use std::rc::Rc;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum Value {
     /// An integer of `width` bits (1..=64), stored sign-agnostically in
     /// the low bits of `bits`; bits above `width` are always zero.
@@ -18,7 +20,31 @@ pub enum Value {
     /// captured values (by value, D-035). Applying it calls
     /// `callee(captures..., args...)`.
     Closure { callee: String, captures: Vec<Value> },
+    /// A frk_mem box: a shared mutable cell (D-041). Clones alias the
+    /// same cell; equality is cell identity.
+    Box(Rc<RefCell<Value>>),
 }
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Int { bits: a, width: wa }, Self::Int { bits: b, width: wb }) => {
+                a == b && wa == wb
+            }
+            (Self::Adt { tag: a, fields: fa }, Self::Adt { tag: b, fields: fb }) => {
+                a == b && fa == fb
+            }
+            (
+                Self::Closure { callee: a, captures: ca },
+                Self::Closure { callee: b, captures: cb },
+            ) => a == b && ca == cb,
+            (Self::Box(a), Self::Box(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Value {}
 
 fn mask(width: u32) -> u64 {
     if width >= 64 { u64::MAX } else { (1u64 << width) - 1 }
@@ -48,6 +74,19 @@ impl Value {
         Self::Closure { callee: callee.into(), captures }
     }
 
+    pub fn boxed(value: Value) -> Self {
+        Self::Box(Rc::new(RefCell::new(value)))
+    }
+
+    pub fn as_box(&self) -> Result<&Rc<RefCell<Value>>, EvalError> {
+        match self {
+            Self::Box(cell) => Ok(cell),
+            other => Err(EvalError::TypeMismatch(format!(
+                "expected a box, got {other:?}"
+            ))),
+        }
+    }
+
     fn int_parts(&self) -> Result<(u64, u32), EvalError> {
         match self {
             Self::Int { bits, width } => Ok((*bits, *width)),
@@ -56,6 +95,9 @@ impl Value {
             )),
             Self::Closure { .. } => Err(EvalError::TypeMismatch(
                 "expected an integer, got a closure".into(),
+            )),
+            Self::Box(_) => Err(EvalError::TypeMismatch(
+                "expected an integer, got a box".into(),
             )),
         }
     }
@@ -96,6 +138,9 @@ impl Value {
             Self::Closure { .. } => Err(EvalError::TypeMismatch(
                 "expected an adt value, got a closure".into(),
             )),
+            Self::Box(_) => Err(EvalError::TypeMismatch(
+                "expected an adt value, got a box".into(),
+            )),
         }
     }
 
@@ -107,6 +152,9 @@ impl Value {
             ))),
             Self::Adt { .. } => Err(EvalError::TypeMismatch(
                 "expected a closure, got an adt value".into(),
+            )),
+            Self::Box(_) => Err(EvalError::TypeMismatch(
+                "expected a closure, got a box".into(),
             )),
         }
     }
@@ -189,6 +237,25 @@ mod tests {
         assert!(closure.as_adt().is_err());
         assert!(Value::bool(true).as_closure().is_err());
         assert!(Value::adt(0, vec![]).as_closure().is_err());
+    }
+
+    #[test]
+    fn boxes_are_shared_mutable_cells_with_identity_equality() {
+        let a = Value::boxed(Value::bool(false));
+        let alias = a.clone();
+        *alias.as_box().unwrap().borrow_mut() = Value::int(9, 64).unwrap();
+        assert_eq!(
+            a.as_box().unwrap().borrow().as_signed().unwrap(),
+            9,
+            "clones alias the same cell"
+        );
+        let b = Value::boxed(Value::int(9, 64).unwrap());
+        assert_eq!(a, alias);
+        assert_ne!(a, b, "equality is identity, not contents");
+        assert!(a.as_signed().is_err());
+        assert!(a.as_adt().is_err());
+        assert!(a.as_closure().is_err());
+        assert!(Value::bool(true).as_box().is_err());
     }
 
     #[test]

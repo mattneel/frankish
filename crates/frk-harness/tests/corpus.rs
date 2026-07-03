@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use frk_harness::golden::{Mode, run_goldens};
 use frk_harness::runner::JitRunner;
+use frk_dialects::Strategy;
 
 fn corpus_root() -> PathBuf {
     // crates/frk-harness → repo root → goldens/
@@ -18,7 +19,7 @@ fn corpus_root() -> PathBuf {
 
 #[test]
 fn repository_goldens_are_green_under_jit() {
-    let report = run_goldens(&corpus_root(), &JitRunner, Mode::Check)
+    let report = run_goldens(&corpus_root(), &JitRunner { strategy: Strategy::Arena }, Mode::Check)
         .expect("corpus discovery failed");
     assert!(
         report.outcomes.len() >= 5,
