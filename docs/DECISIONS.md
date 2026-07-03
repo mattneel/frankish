@@ -157,6 +157,22 @@ veto-ledger pattern and most deserve their review.
   goldened pass (D-025). Revisit: representation when frk.mem lands
   (heap/recursive types); pass packaging if melior grows
   DialectConversion bindings.
+- D-034 [adt] Decision-tree pass v0 (D-025 executed): pure matrix→tree
+  compilation in frk-dialects (adt_dtree) — pattern language =
+  variant / product / int-literal / wildcard / binding; typed columns
+  (occurrence + nested ValueType); Maranget baseline heuristic
+  (leftmost first-row constructor); products specialize without a
+  switch node; SwitchTag omits its default iff tag coverage is
+  complete. Tree goldens are literal renderings inside the pass's test
+  suite until a textual matrix format exists (M5) — byte-exact under
+  the same L2 duties. Exhaustiveness/usefulness derive from the tree
+  (reachable Fail → witness; leaf-absent arm → redundant) behind the
+  PatternAnalysis trait — complete for this pattern language; SPEC
+  §4.1's rustc_pattern_analysis clause is deferred to M5 behind that
+  same boundary (adopt when ml_core patterns need or-patterns, ranges,
+  guards). IR emission from trees lands with its first consumer
+  (ml_core, M5), never speculatively. Revisit: both deferrals at the
+  M5 manifest freeze.
 - D-033 [harness] Golden cases may declare runner applicability
   (`// frk-case: runners=a,b`; default all) per SPEC §7.2 "all
   applicable runners" — for op sets ahead of some execution path.

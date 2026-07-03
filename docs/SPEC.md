@@ -83,10 +83,12 @@ Sums, products, tuples as parametric `!frk_adt` types; pure value ops
 per D-031): multiway dispatch rides upstream `cf.switch`, and surface
 `match` is compiled directly to dispatch IR by the decision-tree pass.
 Passes: Maranget-style decision-tree compilation from the frontend's
-pattern matrix to dispatch IR (its own goldens over the matrix→IR
-mapping, D-025); exhaustiveness/usefulness via the rustc_pattern_analysis
-crate behind a trait boundary; niche/tag-packing optimization as a later,
-separately-goldened pass. Invariants beyond IRDL's constraint language
+pattern matrix to dispatch IR (its own goldens over the matrix→tree
+mapping, D-025; emission to IR arrives with ml_core, D-034);
+exhaustiveness/usefulness behind a trait boundary — v0 is the
+tree-derived oracle, rustc_pattern_analysis adoption deferred to M5
+(D-034); niche/tag-packing optimization as a later, separately-goldened
+pass. Invariants beyond IRDL's constraint language
 are enforced by the frk verification pass (K1, D-031). Lowering: LLVM
 structs + integer tag + switch.
 

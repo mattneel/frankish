@@ -8,6 +8,7 @@
 //! contexts by calling [`register`] right after `frk_core::context()`.
 
 pub mod adt;
+pub mod adt_dtree;
 mod adt_eval;
 mod adt_lower;
 pub mod verify;
