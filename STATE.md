@@ -1,45 +1,21 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M7 sessions)
-Phase: M7 in flight — frk.mem SHIPPED (first half); the Tier-0 grid
-remains (second half, the milestone exit).
-Tree: green — `make test` 27 blocks; `make diff`:
-diff[interp,jit,jit-rc,ocaml] 37 cases, 0 divergent; `make dashboard`:
-100% × 4 runners × 5 suites.
+Phase: M7 complete (tag m7-done); M8 not started.
+Tree: green — `make test` 27 blocks; diff[interp,jit,jit-rc,ocaml] 37
+cases 0 divergent; dashboard 100% × 4 × 5; `make grid` 37/37 on
+x86_64/aarch64/riscv64/wasm32-wasi × {arena,rc}; `make canary` 37/37
+on s390x (big-endian) × both.
 
 ## Next action
-M7 second half: the Tier-0 grid. DONE (first half): frk.mem K1-K7
-(box_new/get/set), Strategy ∈ {Arena, Rc} as a lowering parameter,
-strategy runtimes in frk-rt (arena_alloc; rc_alloc/retain/release with
-header at ptr-8), rc retains at owning stores with transfer elision
-(decided PRE-rewrite — see landmine), SlotKind::Ptr, Value::Box,
-jit-rc as a fourth default runner (both strategies enforced corpus-
-wide forever), mem golden suite, D-041 (⚑ rc-collects-nothing clause).
-Remaining, in order:
-1. AOT runner #5 ("aot"): translate lowered module to LLVM IR (melior
-   has mlirTranslateModuleToLLVMIR? check; else emit .ll via
-   mlir-translate binary from llvm-22 tools), clang/zig-cc link with
-   frk-rt staticlib (cargo build -p frk-rt --release staticlib — add
-   crate-type), run, capture stdout+exit → canon. Wrapper main: the
-   entry protocol needs a C main calling main() and printf("%lld") —
-   generate a tiny C shim per case or one fixed shim (entry=main
-   fixed).
-2. Cross grid: triples {x86_64-linux, aarch64-linux, riscv64-linux
-   (qemu-user), wasm32-wasi (wasmtime)}. zig cc as the cross driver
-   (D-018; NOT installed — vendor a pinned zig in versions.env +
-   setup doctor entry; check qemu-user/wasmtime presence too).
-   frk-rt cross builds: zig cc can compile a C shim but frk-rt is
-   Rust — cross-compile frk-rt staticlib needs rust targets added
-   (rustup target add). wasm32-wasi: frk-rt builds for
-   wasm32-wasip1 target. Grid = ml_core corpus × triples × {arena,
-   rc}; make grid target + scripts/grid.sh (POSIX).
-3. s390x nightly canary (D-017): scripts/grid.sh --canary s390x via
-   qemu-s390x; wire as a make target CI can schedule nightly (no
-   GitHub Actions file unless asked — local make target is the L6
-   deliverable).
-4. M7 exit: grid green both strategies, milestone note + extraction
-   (what the grid forced: relocation model? endianness in canon?),
-   m7-done tag.
+M8 per docs/SPEC.md §13: the frnksh shell — bare invocation becomes
+the REPL (D-002), `frnksh run FILE` executes a specimen source file
+end to end, `frnksh emit` grows a plain (non-stages) mode; frontends
+register by extension (.ml → ml_core). Read SPEC §9 for the surface
+contract before building; the REPL evaluates through the reference
+interpreter (D-008) with per-line incremental binding accumulation.
+Check DECISIONS for D-002/D-008 constraints; expect a D-entry for the
+REPL's binding-accumulation semantics (unruled).
 
 ## In flight
 Nothing.
@@ -69,6 +45,37 @@ Nothing.
   amended §4.1 wording itself adjusted.
 
 ## Milestone log
+m7-done — Shipped: the memory axis and the world. frk.mem (third
+kernel dialect, K1-K7): box_new/get/set over !frk_mem.box<T>;
+Strategy ∈ {Arena, Rc} as a LOWERING PARAMETER (D-041 ⚑ — rc v0
+retains at owning stores with SSA transfer elision, no releases until
+the M10 liveness pass); strategy runtimes behind the C ABI
+(arena_alloc; rc_alloc/retain/release, header at ptr-8); SlotKind::
+Ptr; Value::Box (shared cell, identity eq); jit-rc as fourth default
+runner. The Tier-0 grid (D-042): AOT via entry-rename + mlir-translate
++ pinned-clang IR→object + zig-cc link with the C runtime mirror;
+musl-static; qemu-user/wasmtime execution. RESULTS: every golden ×
+both strategies byte-exact on FIVE architectures — x86_64, aarch64,
+riscv64, wasm32-wasi, and the s390x big-endian canary, 37/37
+everywhere. Exit bar (grid green for ml_core under both strategies):
+exceeded — the whole corpus, plus the canary. Verifier finds this
+milestone: (1) retain sharing decided mid-rewrite always read as
+transfer (fixed: resolved pre-rewrite); (2) wasm signature_mismatch
+on size_t vs i64 allocator sizes (fixed: frk ABI says u64 sizes on
+every target). Learned: zig-on-PATH may be an anyzig shim (zigcc.sh
+handles both); LLVM-22 .ll needs llvm-22's clang for codegen (zig
+links only); wasm enforces exact import signatures — the grid's
+whole point, catching ABI drift the same-word-size hosts never see.
+
+M7 EXTRACTION: the grid forced (a) the u64-size ABI clause — a real
+portability law found by the narrowest target; (b) the C runtime
+mirror pattern (per-triple zig compile beats rust cross-toolchains at
+this runtime size; revisit when frk-rt grows past trivial); (c) the
+entry-rename protocol. Nothing else bent: the SAME lowered IR that
+JITs on x86_64 runs interpreted, JIT'd, and AOT'd on five targets
+with zero per-target conditionals in the lowering — the strategy/
+triple matrix is pure configuration.
+
 m6-done — Shipped: Promotion pass #1, light exactly as the M5
 extraction report predicted. The centerpiece: tree→dispatch-IR
 emission promoted from frk-front into frk_dialects::dtree_emit — the
@@ -251,6 +258,31 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (thirteenth entry)
+    Milestone/step: M7 complete, tagged m7-done
+    Green? yes — 27 blocks; 37 cases 0 divergent 4-way; grid 37/37 ×
+    4 triples × 2 strategies; canary s390x 37/37 × 2
+    Did:
+    - D-042; AotRunner (entry rename, mlir-translate, pinned-clang
+      object, zigcc.sh link, C runtime mirror); frnksh grid
+      [--canary|--native]; make grid/grid-native/canary; ci native
+      slice; doctor entries (mlir-translate/zig/qemu/wasmtime);
+      ZIG_VERSION=0.16.0 pin (user: 0.14 is ancient — 0.16.0 is
+      current stable, verified against ziglang.org)
+    - grid found the size_t/i64 ABI mismatch on wasm; frk ABI now u64
+      sizes everywhere
+    Next: M8 (the shell) per Next-action
+    Landmines:
+    - zig on PATH here is an anyzig shim: bare `zig version` FAILS;
+      zigcc.sh resolves plain-vs-shim against ZIG_VERSION — never
+      call zig directly in scripts
+    - .ll from LLVM 22 must be compiled by $MLIR_PREFIX/bin/clang
+      (zig's bundled LLVM may lag); zig only links
+    - AOT renames entry→frk_entry PRE-lowering; corpus entry symbols
+      must stay externally-invoked-only (goldens README notes it)
+    - wasmtime lives at ~/.wasmtime/bin if not on PATH (runner
+      resolves both)
 
     Session end: 2026-07-03 (twelfth entry)
     Milestone/step: M7 first half — frk.mem + strategy knob shipped

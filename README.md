@@ -15,7 +15,13 @@ route would have spelled it.
 Start here: `AGENTS.md` (law) → `docs/SPEC.md` (design) →
 `docs/DECISIONS.md` (ledger) → `STATE.md` (now).
 
-Status: M6 done — the extraction loop closed its first cycle: what ml_core forced now lives in the kernel library (decision-tree dispatch emission is a reusable component), the specimen is thin, and the type kit is documented for its next consumer. The first specimen compiles: ml_core (a
+Status: M7 done — the memory axis and the world. Memory strategy is
+a compiler knob, not a language feature: the same IR runs under arena
+and rc lowerings, byte-identically. And the grid proves it
+everywhere: every golden × both strategies × five architectures
+(x86_64, aarch64, riscv64, wasm32-wasi, s390x big-endian) — 37/37 on
+all of them, interpreter = JIT = AOT = upstream OCaml. The first
+specimen compiles: ml_core (a
 MinCaml-shaped core ML: HM inference, let-polymorphism, ADTs, nested
 match, closures, currying, mutual recursion) parses, type-checks, and
 compiles through the kernel dialects; its 18-program corpus runs
