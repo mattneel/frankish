@@ -1,29 +1,32 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-03 (M0..M5 sessions)
-Phase: M5 complete (tag m5-done); M6 not started.
-Tree: green — `make test` 25 blocks; clean-clone scripts/ci.sh exit 0;
+Updated: 2026-07-03 (M0..M6 sessions)
+Phase: M6 complete (tag m6-done); M7 not started.
+Tree: green — `make test` 26 blocks; clean-clone scripts/ci.sh exit 0;
 `make diff`: diff[interp,jit,ocaml] 33 cases, 0 divergent;
 `make dashboard`: ml_core 18 cases, 100% × 3 runners.
 
 ## Next action
-M6 Promotion pass #1 per docs/SPEC.md §13: promote M5 cheats, re-base
-ml_core thin, document the type kit as reusable. Exit: no private ops
-in ml_core (ALREADY TRUE — zero private ops existed); conformance not
-worse. The real M6 work, from the extraction report below:
-1. Promote tree→IR emission out of frk-front's emitter into a
-   reusable component next to adt_dtree (any frontend with matches
-   needs it; it is currently entangled with ml-specific typing —
-   design the seam: dtree + occurrence-typing callback → CFG).
-2. Type kit reusability pass: document + de-ml-ify what generalizes
-   (unification wrapper over ena, scheme/instantiate machinery);
-   spans/locations threading (§6.5) is the standing debt to schedule.
-3. Green-tree decision (SPEC §15, due at M5, deliberately deferred
-   with evidence): plain AST sufficed for this subset; rowan-vs-custom
-   gets decided when loanword (M9) or reprinting pressure arrives —
-   confirm or overrule with a D-entry at M6.
-4. D-009's revisit fires: "specimen order — revisit after M6
-   retrospective". Write the retrospective line.
+M7 frk.mem v0 + Tier-0 grid per docs/SPEC.md §13 (read SPEC §4.3,
+§10, §12 pins first). Two coupled fronts:
+1. frk.mem: one allocation/ownership surface with swappable lowerings
+   — arena + rc for v0 (gc/manual later); minimal rc elision. Design
+   under the packed/trait-free discipline (D-031/D-036). This is
+   where the ledgered M7 debts come due: frk_rt_alloc's leak gets its
+   arena discipline behind the same symbol (D-035); by-ref captures
+   become meaningful (D-035); recursive ADTs need the
+   nominal-indirection story (D-038); adt boxed representations
+   (D-032 revisit). Expect a real design session before code — the
+   surface shape (box/alloc/load/store? region handles?) is
+   unadjudicated: ledger it.
+2. Tier-0 grid: needs an AOT runner (runner #4 — compile per triple,
+   link frk-rt staticlib) + cross toolchain: zig cc (D-018; zig NOT
+   installed on this host — vendor per Makefile note), qemu-user +
+   wasmtime for execution (presence unknown — setup doctor grows).
+   Grid = ml_core corpus × {x86_64, aarch64, riscv64/qemu,
+   wasm32-wasi/wasmtime} under BOTH memory strategies; s390x nightly
+   canary (D-017).
+Exit: grid green for the ml_core corpus under both strategies.
 
 ## In flight
 Nothing.
@@ -48,6 +51,26 @@ Nothing.
   amended §4.1 wording itself adjusted.
 
 ## Milestone log
+m6-done — Shipped: Promotion pass #1, light exactly as the M5
+extraction report predicted. The centerpiece: tree→dispatch-IR
+emission promoted from frk-front into frk_dialects::dtree_emit — the
+seam is arm-emission-only because occurrence typing derives from the
+kernel types themselves (decode_sum/decode_product); bool dispatch
+and the single-variant-inline rule moved down with it; the component
+is verified frontend-free (hand-built module, callback arms,
+interpreted). frk-front shrank by five private fns. Exit bars: no
+private ops in ml_core (true before, truer now); conformance not
+worse (33 cases, 0 divergent, three-way; dashboard 100% × 3
+unchanged). docs/type-kit.md documents the kit split: what travels
+(ena unification pattern, schemes with recorded instantiations, the
+value-restriction predicate, zonking discipline) vs what stays
+per-frontend (the Ty language, constructor law, kernel spelling) —
+with the M9 rule: don't abstract the type language on one data point.
+Ledger: D-039 (green tree deferred with a named M9 trigger — one
+specimen's evidence is coin-flipping), D-040 (D-009 retrospective:
+specimen order CONFIRMED; abstraction risk retired; dragon still
+asleep). Cheats awaiting promotion: none — the queue is empty.
+
 m5-done — Shipped: the first specimen, end to end. frk-front: lexer +
 recursive-descent parser (pattern-let desugaring, multi-param → nested
 funs), HM over ena with real let-polymorphism (value restriction,
@@ -210,6 +233,24 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (eleventh entry)
+    Milestone/step: M6 complete, tagged m6-done
+    Green? yes — 26 blocks; 33 cases 0 divergent three-way; clean
+    clone verified at commit time
+    Did:
+    - promoted dtree emission (frk_dialects::dtree_emit) + its
+      frontend-free verifier; frk-front delegates
+    - docs/type-kit.md; D-039 (green tree, M9 trigger), D-040 (D-009
+      retrospective: order confirmed)
+    Next: M7 per the Next-action block — frk.mem surface design FIRST
+    (unadjudicated; ledger before code), grid second
+    Landmines:
+    - dtree_emit callbacks receive (arm_entry, arm, bindings) and must
+      return the EXIT block — nested matches inside arms split blocks
+    - four M7 debts are now due together (arena-behind-frk_rt_alloc,
+      by-ref captures, recursive ADTs, boxed reps) — resist solving
+      them piecemeal; one memory design covers all four
 
     Session end: 2026-07-03 (tenth entry)
     Milestone/step: M5 complete, tagged m5-done

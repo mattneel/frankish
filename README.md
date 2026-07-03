@@ -15,7 +15,7 @@ route would have spelled it.
 Start here: `AGENTS.md` (law) → `docs/SPEC.md` (design) →
 `docs/DECISIONS.md` (ledger) → `STATE.md` (now).
 
-Status: M5 done — the first specimen compiles. ml_core (a
+Status: M6 done — the extraction loop closed its first cycle: what ml_core forced now lives in the kernel library (decision-tree dispatch emission is a reusable component), the specimen is thin, and the type kit is documented for its next consumer. The first specimen compiles: ml_core (a
 MinCaml-shaped core ML: HM inference, let-polymorphism, ADTs, nested
 match, closures, currying, mutual recursion) parses, type-checks, and
 compiles through the kernel dialects; its 18-program corpus runs

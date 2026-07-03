@@ -193,6 +193,22 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-040 [specimens] M6 retrospective fires D-009's revisit: the order
+  is CONFIRMED. Evidence: ml_core-first retired the abstraction risk
+  exactly as intended — the M3/M4 dialects carried a full ML subset
+  with zero private ops and zero ad-hoc lowerings; the only forcings
+  were a slot-model widening and one component built a layer too high
+  (promoted at M6). The runtime dragon (femto_lua) still sleeps.
+  Next: TS-0 at M9 per D-009. Revisit: at M10 entry (femto_lua gate).
+- D-039 [front] Green-tree decision (SPEC §15, due M5, decided at M6
+  with evidence): DEFERRED with a named trigger. Plain AST + byte
+  offsets sufficed for ml_core — no reprinting, no incrementality, no
+  lossless-tree consumer existed. rowan-vs-custom gets decided when
+  loanword (M9) needs lossless trees or a reprinter appears,
+  whichever first; §6.5 span threading is scheduled with the same
+  milestone (docs/type-kit.md records the debt). Rationale: deciding
+  representation on one specimen's evidence would be coin-flipping;
+  M9 brings a second consumer. Revisit: M9, hard.
 - D-038 [ml_core] ⚑ M5 frontend rulings; items (1),(2),(6) touch the
   ratified manifest's surface and deserve human review. (1) FLOAT is
   fenced out of v0.1 by the manifest's own admission rule: it carries
