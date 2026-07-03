@@ -20,6 +20,29 @@ pub(crate) fn register_eval(interp: &mut Interp<'_, '_>) {
     interp.register_eval("frk_dyn.table_len", Box::new(TableLen));
     interp.register_eval("frk_dyn.set_meta", Box::new(SetMeta));
     interp.register_eval("frk_dyn.get_meta", Box::new(GetMeta));
+    interp.register_eval("frk_dyn.payload_word", Box::new(PayloadWord));
+}
+
+/// Raw payload word for IDENTITY comparison (D-056; __lua_eq's
+/// table arm). The numeric value is meaningless outside equality:
+/// reference types yield a stable per-object address, everything
+/// else the address of the payload cell.
+struct PayloadWord;
+impl Eval for PayloadWord {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let value = operand_value(frame, op, 0)?;
+        let (_, payload) = value.as_dyn()?;
+        let word = match payload {
+            Value::Table(table) => std::rc::Rc::as_ptr(table) as usize as u64,
+            other => other as *const Value as usize as u64,
+        };
+        continue_with_result(frame, op, Value::int(word, 64)?)
+    }
 }
 
 fn nil_dyn() -> Value {

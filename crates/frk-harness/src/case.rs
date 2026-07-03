@@ -26,6 +26,9 @@ pub enum SourceKind {
     /// A TypeScript TS-0 program (M9, D-047): compiled through the
     /// loanword producer; output is captured stdout, entry is void.
     Ts,
+    /// A femto_lua program (M11, D-052/D-054): native reader; output
+    /// is the print stream, entry is void; lua5.1 is the oracle.
+    Lua,
 }
 
 /// One golden case: a directory holding `case.mlir` + `expected.out`.
@@ -95,6 +98,7 @@ const MLIR_SOURCE: &str = "case.mlir";
 const ML_SOURCE: &str = "case.ml";
 const TRANSCRIPT_SOURCE: &str = "transcript.in";
 const TS_SOURCE: &str = "case.ts";
+const LUA_SOURCE: &str = "case.lua";
 const EXPECTED_FILE: &str = "expected.out";
 
 /// Walks `root` and returns every directory containing a `case.mlir`,
@@ -129,6 +133,11 @@ fn walk(root: &Path, dir: &Path, cases: &mut Vec<Case>) -> Result<(), CaseError>
     let ts_path = dir.join(TS_SOURCE);
     if ts_path.is_file() {
         cases.push(load(root, dir, ts_path, SourceKind::Ts)?);
+        return Ok(());
+    }
+    let lua_path = dir.join(LUA_SOURCE);
+    if lua_path.is_file() {
+        cases.push(load(root, dir, lua_path, SourceKind::Lua)?);
         return Ok(());
     }
     let entries = fs::read_dir(dir).map_err(|e| CaseError::Io(dir.to_path_buf(), e))?;

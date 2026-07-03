@@ -85,6 +85,12 @@ void frk_rt_dyn_check(int64_t actual, int64_t expected) {
     }
 }
 
+/* Lua runtime errors (D-056 helpers): print and abort. */
+void frk_rt_lua_error(int64_t code) {
+    fprintf(stderr, "frk: lua runtime error %lld (D-056)\n", (long long)code);
+    abort();
+}
+
 /* ---- tables (M11 bar 3; D-056): pure-hash dyn-keyed maps, mirror
  * of the Rust twin. Shell [cap,count,slots,meta] strategy-allocated
  * by the lowering; slots malloc'd. All-i64 ABI, out-pointer returns. */

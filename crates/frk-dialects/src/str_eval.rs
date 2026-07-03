@@ -4,7 +4,6 @@
 use frk_interp::eval_util::continue_with_result;
 use frk_interp::{Eval, EvalError, Frame, Interp, Step, Value};
 use melior::ir::OperationRef;
-use melior::ir::attribute::StringAttribute;
 use melior::ir::operation::OperationLike;
 
 pub(crate) fn register_eval(interp: &mut Interp<'_, '_>) {
@@ -33,13 +32,13 @@ impl Eval for Lit {
         frame: &mut Frame,
         op: OperationRef<'c, 'a>,
     ) -> Result<Step<'c, 'a>, EvalError> {
-        let text = op
+        let attribute = op
             .attribute("text")
-            .ok()
-            .and_then(|attribute| StringAttribute::try_from(attribute).ok())
-            .ok_or_else(|| EvalError::Malformed("frk_str.lit without text".into()))?
-            .value()
-            .to_string();
+            .map_err(|_| EvalError::Malformed("frk_str.lit without text".into()))?;
+        let bytes = crate::attr_util::string_attr_bytes(attribute)
+            .map_err(EvalError::Malformed)?;
+        let text = String::from_utf8(bytes)
+            .map_err(|_| EvalError::Malformed("non-UTF-8 str literal".into()))?;
         continue_with_result(frame, op, Value::str_from(&text))
     }
 }

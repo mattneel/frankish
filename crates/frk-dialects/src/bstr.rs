@@ -47,10 +47,10 @@ pub(crate) fn verify_op<'c>(
             let text = op
                 .attribute("text")
                 .map_err(|_| "frk_bstr.lit without a text attribute".to_string())?;
-            // v0.1 literal fence (D-056): decoded bytes are printable
-            // ASCII + \t \n — the attribute round-trips losslessly.
-            let printed = text.to_string();
-            if printed.bytes().any(|byte| byte >= 0x80) {
+            // v0.1 literal fence (D-056): ASCII bytes only. Read via
+            // the printed form — melior's raw read is UB on "".
+            let bytes = crate::attr_util::string_attr_bytes(text)?;
+            if bytes.iter().any(|&byte| byte >= 0x80) {
                 return Err(
                     "non-ASCII byte-string literal (fenced in v0.1, D-056)".to_string()
                 );

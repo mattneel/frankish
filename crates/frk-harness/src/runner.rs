@@ -105,6 +105,15 @@ fn parse_and_verify<'c>(
             frk_front::loanword::compile_loanword(context, &artifact)
                 .map_err(|e| RunError::Parse(format!("{}: {e}", case.source_path.display())))?
         }
+        SourceKind::Lua => {
+            let file = case
+                .source_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "case.lua".to_string());
+            frk_front::lua::compile_lua(context, &file, source)
+                .map_err(|e| RunError::Parse(format!("{}: {e}", case.source_path.display())))?
+        }
         SourceKind::Transcript => {
             return Err(RunError::Parse(format!(
                 "{}: transcripts run only under the repl runner",
@@ -134,8 +143,40 @@ pub fn default_runners() -> Vec<Box<dyn Runner>> {
         Box::new(JitRunner { strategy: frk_dialects::Strategy::Rc }),
         Box::new(OcamlOracle),
         Box::new(NodeOracle),
+        Box::new(LuaOracle),
         Box::new(ReplRunner),
     ]
+}
+
+/// The upstream oracle for femto_lua (M11): lua5.1 (the 5.1.5 pin IS
+/// the spec) runs the SAME .lua file, LC_ALL=C, through canon.
+pub struct LuaOracle;
+
+impl Runner for LuaOracle {
+    fn name(&self) -> &'static str {
+        "lua"
+    }
+
+    fn applicable(&self, case: &Case) -> bool {
+        case.kind == SourceKind::Lua
+    }
+
+    fn run(&self, case: &Case) -> Result<String, RunError> {
+        let output = std::process::Command::new("lua5.1")
+            .arg(&case.source_path)
+            .env("LC_ALL", "C")
+            .output()
+            .map_err(|e| RunError::Invoke(format!("running lua5.1: {e}")))?;
+        if !output.status.success() {
+            return Err(RunError::Invoke(format!(
+                "lua5.1 exited with {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        String::from_utf8(output.stdout)
+            .map_err(|_| RunError::Invoke("lua5.1 produced non-UTF-8 output".into()))
+    }
 }
 
 /// The upstream oracle for TS-0 (M9): node runs the SAME .ts file
@@ -234,8 +275,8 @@ fn interpret_case(case: &Case) -> Result<String, RunError> {
         frk_interp::Interp::new(&module).map_err(|e| RunError::Invoke(e.to_string()))?;
     frk_dialects::register_eval(&mut interp);
 
-    if case.kind == SourceKind::Ts {
-        // TS-0 protocol (D-047): void entry; output = the prints.
+    if matches!(case.kind, SourceKind::Ts | SourceKind::Lua) {
+        // TS-0/Lua protocol (D-047/D-054): void entry; output = prints.
         interp.register_builtin(
             frk_front::loanword::PRINT_F64,
             Box::new(|arguments, output| {
@@ -259,6 +300,32 @@ fn interpret_case(case: &Case) -> Result<String, RunError> {
                 output.push_str(&String::from_utf16_lossy(units));
                 output.push('\n');
                 Ok(vec![])
+            }),
+        );
+        interp.register_builtin(
+            "frk_rt_bstr_from_num",
+            Box::new(|arguments, _output| {
+                Ok(vec![frk_interp::Value::bytes(
+                    frk_rt::format_lua_num(arguments[0].as_float()?).into_bytes(),
+                )])
+            }),
+        );
+        interp.register_builtin(
+            "frk_rt_print_lua_str",
+            Box::new(|arguments, output| {
+                let bytes = arguments[0].as_bytes()?;
+                output.push_str(&String::from_utf8_lossy(bytes));
+                output.push('\n');
+                Ok(vec![])
+            }),
+        );
+        interp.register_builtin(
+            "frk_rt_lua_error",
+            Box::new(|arguments, _output| {
+                Err(frk_interp::EvalError::Trap(format!(
+                    "lua runtime error {} (D-056)",
+                    arguments[0].as_signed()?
+                )))
             }),
         );
         interp
@@ -380,12 +447,17 @@ impl Runner for JitRunner {
                 frk_rt::frk_rt_table_raw_set as *mut (),
             );
             engine.register_symbol("frk_rt_table_len", frk_rt::frk_rt_table_len as *mut ());
+            engine.register_symbol("frk_rt_lua_error", frk_rt::frk_rt_lua_error as *mut ());
+            engine.register_symbol(
+                "frk_rt_print_lua_str",
+                capture_print_lua_str as *mut (),
+            );
             engine.register_symbol(
                 frk_front::loanword::PRINT_STR,
                 capture_print_str as *mut (),
             );
         }
-        if case.kind == SourceKind::Ts {
+        if matches!(case.kind, SourceKind::Ts | SourceKind::Lua) {
             CAPTURE.with(|buffer| buffer.borrow_mut().clear());
             unsafe {
                 engine
@@ -425,6 +497,19 @@ extern "C" fn capture_print_bool(value: u8) {
     CAPTURE.with(|buffer| {
         let mut buffer = buffer.borrow_mut();
         buffer.push_str(if value != 0 { "true" } else { "false" });
+        buffer.push('\n');
+    });
+}
+
+extern "C" fn capture_print_lua_str(s: *const u8) {
+    let text = unsafe {
+        let len = *(s as *const u64) as usize;
+        let bytes = std::slice::from_raw_parts(s.add(8), len);
+        String::from_utf8_lossy(bytes).into_owned()
+    };
+    CAPTURE.with(|buffer| {
+        let mut buffer = buffer.borrow_mut();
+        buffer.push_str(&text);
         buffer.push('\n');
     });
 }
@@ -688,7 +773,7 @@ impl Runner for AotRunner {
             }
 
             let shim_path = work.join("shim.c");
-            let shim: &str = if case.kind == SourceKind::Ts {
+            let shim: &str = if matches!(case.kind, SourceKind::Ts | SourceKind::Lua) {
                 // TS entry protocol (D-047): void main; output happens
                 // through the linked C runtime's print functions.
                 "extern void frk_entry(void);\nint main(void) { frk_entry(); return 0; }\n"

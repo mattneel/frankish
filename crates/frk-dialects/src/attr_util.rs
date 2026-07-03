@@ -44,3 +44,40 @@ pub(crate) fn type_params<'c>(
     Attribute::parse(context, &source)
         .ok_or_else(|| format!("unparsable type parameters: {inner}"))
 }
+
+/// Reads a string attribute's bytes via its PRINTED form. melior
+/// 0.27.2's StringAttribute::value() calls slice::from_raw_parts on
+/// the raw StringRef, which is NULL for the empty string — UB caught
+/// by the runtime check (LANDSCAPE pin). The printed form
+/// (`"..."` with \HH escapes for quotes/backslashes/non-printables)
+/// is always safe to read.
+pub(crate) fn string_attr_bytes(attribute: melior::ir::Attribute<'_>) -> Result<Vec<u8>, String> {
+    let printed = attribute.to_string();
+    let inner = printed
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .ok_or_else(|| format!("not a string attribute: {printed}"))?;
+    let bytes = inner.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            let a = bytes.get(index + 1).copied().ok_or("dangling escape")?;
+            // MLIR prints \\ for backslash and \HH hex otherwise.
+            if a == b'\\' {
+                out.push(b'\\');
+                index += 2;
+            } else {
+                let b = bytes.get(index + 2).copied().ok_or("short hex escape")?;
+                let high = (a as char).to_digit(16).ok_or("bad hex escape")?;
+                let low = (b as char).to_digit(16).ok_or("bad hex escape")?;
+                out.push((high * 16 + low) as u8);
+                index += 3;
+            }
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    Ok(out)
+}

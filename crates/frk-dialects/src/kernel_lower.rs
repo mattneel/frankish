@@ -310,6 +310,9 @@ enum Planned<'c, 'a> {
     TableGetMeta {
         op: OperationRef<'c, 'a>,
     },
+    DynPayloadWord {
+        op: OperationRef<'c, 'a>,
+    },
 }
 
 /// Lowers every kernel op and type under `module` (the pipeline anchors
@@ -787,6 +790,7 @@ fn plan_dyn<'c, 'a>(
         "table_len" => Ok(Planned::TableLen { op }),
         "set_meta" => Ok(Planned::TableSetMeta { op }),
         "get_meta" => Ok(Planned::TableGetMeta { op }),
+        "payload_word" => Ok(Planned::DynPayloadWord { op }),
         other => Err(format!("no lowering for frk_dyn.{other}")),
     }
 }
@@ -798,13 +802,12 @@ fn plan_bstr<'c, 'a>(
 ) -> Result<Planned<'c, 'a>, String> {
     match suffix {
         "lit" => {
-            let text = op
+            let attribute = op
                 .attribute("text")
-                .ok()
-                .and_then(|attribute| StringAttribute::try_from(attribute).ok())
-                .ok_or_else(|| "frk_bstr.lit without text".to_string())?
-                .value()
-                .to_string();
+                .map_err(|_| "frk_bstr.lit without text".to_string())?;
+            let bytes = crate::attr_util::string_attr_bytes(attribute)?;
+            let text = String::from_utf8(bytes)
+                .map_err(|_| "non-UTF-8 bstr literal (ASCII fence, D-056)".to_string())?;
             let symbol = format!("__frk_bstr_{}", *str_counter);
             *str_counter += 1;
             Ok(Planned::BstrLit { op, text, symbol })
@@ -823,13 +826,11 @@ fn plan_str<'c, 'a>(
 ) -> Result<Planned<'c, 'a>, String> {
     match suffix {
         "lit" => {
-            let text = op
+            let attribute = op
                 .attribute("text")
-                .ok()
-                .and_then(|attribute| StringAttribute::try_from(attribute).ok())
-                .ok_or_else(|| "frk_str.lit without text".to_string())?
-                .value()
-                .to_string();
+                .map_err(|_| "frk_str.lit without text".to_string())?;
+            let text = String::from_utf8(crate::attr_util::string_attr_bytes(attribute)?)
+                .map_err(|_| "non-UTF-8 str literal".to_string())?;
             let symbol = format!("__frk_str_{}", *str_counter);
             *str_counter += 1;
             Ok(Planned::StrLit { op, text, symbol })
@@ -1766,6 +1767,12 @@ fn apply<'c, 'a>(
             ))?;
             let value = build_dyn_words(context, rewriter, tag, word, location)?;
             finish(rewriter, op, value)
+        }
+        Planned::DynPayloadWord { op } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let word = dyn_field(context, rewriter, operand(op, 0)?, 1, location)?;
+            finish(rewriter, op, word)
         }
         Planned::BstrLit { op, text, symbol } => {
             rewriter.set_insertion_point_before(op);

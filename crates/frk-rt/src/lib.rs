@@ -210,6 +210,17 @@ pub unsafe extern "C" fn frk_rt_print_str(s: *const u8) {
     println!("{text}");
 }
 
+/// Lua runtime errors (D-056 helpers): print and abort — the native
+/// analog of the interpreter's located traps. Codes are the fenced
+/// operations (1 = tostring on table/function, 2 = concat on a
+/// non-concatenable, 3 = length of a non-string/table, 4 = arithmetic
+/// coercion, 5 = attempt to index a non-table).
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_lua_error(code: i64) {
+    eprintln!("frk: lua runtime error {code} (D-056)");
+    std::process::abort();
+}
+
 // ---- tables (M11 bar 3; D-056): pure-hash dyn-keyed maps. The
 // 4-word object shell [cap, count, slots, meta] is STRATEGY-allocated
 // by the lowering (rc headers work); slots are rt-malloc'd until the
