@@ -1,37 +1,55 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-03 (M0..M6 sessions)
-Phase: M6 complete (tag m6-done); M7 not started.
-Tree: green — `make test` 26 blocks; clean-clone scripts/ci.sh exit 0;
-`make diff`: diff[interp,jit,ocaml] 33 cases, 0 divergent;
-`make dashboard`: ml_core 18 cases, 100% × 3 runners.
+Updated: 2026-07-03 (M0..M7 sessions)
+Phase: M7 in flight — frk.mem SHIPPED (first half); the Tier-0 grid
+remains (second half, the milestone exit).
+Tree: green — `make test` 27 blocks; `make diff`:
+diff[interp,jit,jit-rc,ocaml] 37 cases, 0 divergent; `make dashboard`:
+100% × 4 runners × 5 suites.
 
 ## Next action
-M7 frk.mem v0 + Tier-0 grid per docs/SPEC.md §13 (read SPEC §4.3,
-§10, §12 pins first). Two coupled fronts:
-1. frk.mem: one allocation/ownership surface with swappable lowerings
-   — arena + rc for v0 (gc/manual later); minimal rc elision. Design
-   under the packed/trait-free discipline (D-031/D-036). This is
-   where the ledgered M7 debts come due: frk_rt_alloc's leak gets its
-   arena discipline behind the same symbol (D-035); by-ref captures
-   become meaningful (D-035); recursive ADTs need the
-   nominal-indirection story (D-038); adt boxed representations
-   (D-032 revisit). Expect a real design session before code — the
-   surface shape (box/alloc/load/store? region handles?) is
-   unadjudicated: ledger it.
-2. Tier-0 grid: needs an AOT runner (runner #4 — compile per triple,
-   link frk-rt staticlib) + cross toolchain: zig cc (D-018; zig NOT
-   installed on this host — vendor per Makefile note), qemu-user +
-   wasmtime for execution (presence unknown — setup doctor grows).
-   Grid = ml_core corpus × {x86_64, aarch64, riscv64/qemu,
-   wasm32-wasi/wasmtime} under BOTH memory strategies; s390x nightly
-   canary (D-017).
-Exit: grid green for the ml_core corpus under both strategies.
+M7 second half: the Tier-0 grid. DONE (first half): frk.mem K1-K7
+(box_new/get/set), Strategy ∈ {Arena, Rc} as a lowering parameter,
+strategy runtimes in frk-rt (arena_alloc; rc_alloc/retain/release with
+header at ptr-8), rc retains at owning stores with transfer elision
+(decided PRE-rewrite — see landmine), SlotKind::Ptr, Value::Box,
+jit-rc as a fourth default runner (both strategies enforced corpus-
+wide forever), mem golden suite, D-041 (⚑ rc-collects-nothing clause).
+Remaining, in order:
+1. AOT runner #5 ("aot"): translate lowered module to LLVM IR (melior
+   has mlirTranslateModuleToLLVMIR? check; else emit .ll via
+   mlir-translate binary from llvm-22 tools), clang/zig-cc link with
+   frk-rt staticlib (cargo build -p frk-rt --release staticlib — add
+   crate-type), run, capture stdout+exit → canon. Wrapper main: the
+   entry protocol needs a C main calling main() and printf("%lld") —
+   generate a tiny C shim per case or one fixed shim (entry=main
+   fixed).
+2. Cross grid: triples {x86_64-linux, aarch64-linux, riscv64-linux
+   (qemu-user), wasm32-wasi (wasmtime)}. zig cc as the cross driver
+   (D-018; NOT installed — vendor a pinned zig in versions.env +
+   setup doctor entry; check qemu-user/wasmtime presence too).
+   frk-rt cross builds: zig cc can compile a C shim but frk-rt is
+   Rust — cross-compile frk-rt staticlib needs rust targets added
+   (rustup target add). wasm32-wasi: frk-rt builds for
+   wasm32-wasip1 target. Grid = ml_core corpus × triples × {arena,
+   rc}; make grid target + scripts/grid.sh (POSIX).
+3. s390x nightly canary (D-017): scripts/grid.sh --canary s390x via
+   qemu-s390x; wire as a make target CI can schedule nightly (no
+   GitHub Actions file unless asked — local make target is the L6
+   deliverable).
+4. M7 exit: grid green both strategies, milestone note + extraction
+   (what the grid forced: relocation model? endianness in canon?),
+   m7-done tag.
 
 ## In flight
 Nothing.
 
 ## For the human
+- Review ⚑ D-041 rc-v0 clause: rc allocates headers and retains (with
+  transfer elision) but inserts NO releases — collection needs the
+  liveness pass scheduled at the M10 GC gate. Strike the clause if
+  you want releases to gate M7 instead (adds a real dataflow pass to
+  the milestone).
 - Review ⚑ D-038 (M5 frontend rulings): three items touch the ratified
   ml_core manifest — float fenced OUT of v0.1 by the admission rule
   (the manifest listed it in scope; the corpus is float-free), match
@@ -233,6 +251,25 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-03 (twelfth entry)
+    Milestone/step: M7 first half — frk.mem + strategy knob shipped
+    Green? yes — 27 blocks; diff[interp,jit,jit-rc,ocaml] 37 cases 0
+    divergent; dashboard 100% × 4 × 5
+    Did:
+    - D-041 (⚑); frk_mem dialect K1-K7; Strategy{Arena,Rc} lowering
+      param; frk-rt strategy ABI (arena/rc); rc retain + transfer
+      elision; SlotKind::Ptr; Value::Box; jit-rc runner; mem goldens
+    - bug found by verifier: sharing decided mid-rewrite always read
+      as transfer; now resolved pre-rewrite
+    Next: the grid per Next-action (AOT runner first)
+    Landmines:
+    - retain sharing MUST be decided before any rewriting: op
+      replacement rewrites operands in place; mid-rewrite use-count
+      lookups miss and silently elide every retain
+    - retain assertions must match "llvm.call @frk_rt_rc_retain" —
+      the declaration alone contains the bare symbol name
+    - frk_rt_alloc is GONE; four strategy symbols registered in JIT
 
     Session end: 2026-07-03 (eleventh entry)
     Milestone/step: M6 complete, tagged m6-done
