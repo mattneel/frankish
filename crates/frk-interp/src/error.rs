@@ -20,6 +20,14 @@ pub enum EvalError {
     /// call-depth exhaustion, non-positive scf.for step).
     Trap(String),
     CalleeNotFound(String),
+    /// Control signal, not a failure (κ_frk, D-060): an in-flight
+    /// `frk_ctl.abort` unwinding to the prompt whose token matches.
+    /// Carries only the token — the aborted value rides an interp cell
+    /// (Value is not Eq; only one abort ever unwinds at a time). A
+    /// matching `frk_ctl.prompt` catches it; if one reaches the top of
+    /// `eval_function`, that is an interpreter bug (the verifier and
+    /// `ctl_prompt_live` guarantee a live target).
+    Abort { token: i64 },
 }
 
 impl fmt::Display for EvalError {
@@ -31,6 +39,7 @@ impl fmt::Display for EvalError {
             Self::TypeMismatch(what) => write!(f, "type mismatch: {what}"),
             Self::Trap(what) => write!(f, "trap: {what}"),
             Self::CalleeNotFound(name) => write!(f, "callee not found: @{name}"),
+            Self::Abort { token } => write!(f, "uncaught control abort to prompt {token}"),
         }
     }
 }

@@ -100,6 +100,16 @@ pub struct Interp<'c, 'a> {
     /// shell can OBSERVE effects, replay semantics must be revisited).
     output: std::cell::RefCell<String>,
     depth: Cell<usize>,
+    /// Live prompt tokens, innermost last (κ_frk, D-060). Strictly
+    /// LIFO — `frk_ctl.prompt` pushes on entry and pops on exit.
+    ctl_prompts: std::cell::RefCell<Vec<i64>>,
+    /// Monotonic prompt-token source. Never reused within a run, so a
+    /// stale escape can never alias a fresh prompt (no ABA).
+    ctl_next_token: Cell<i64>,
+    /// The value of the single in-flight abort. Safe as one slot: an
+    /// abort unwinds atomically (no user code runs between the abort
+    /// raising the signal and its prompt catching it).
+    ctl_aborted: std::cell::RefCell<Option<Value>>,
 }
 
 impl<'c, 'a> Interp<'c, 'a> {
@@ -127,6 +137,44 @@ impl<'c, 'a> Interp<'c, 'a> {
             builtins: HashMap::new(),
             output: std::cell::RefCell::new(String::new()),
             depth: Cell::new(0),
+            ctl_prompts: std::cell::RefCell::new(Vec::new()),
+            ctl_next_token: Cell::new(1),
+            ctl_aborted: std::cell::RefCell::new(None),
+        })
+    }
+
+    /// Installs a fresh prompt and returns its token (κ_frk §2).
+    pub fn ctl_push_prompt(&self) -> i64 {
+        let token = self.ctl_next_token.get();
+        self.ctl_next_token.set(token + 1);
+        self.ctl_prompts.borrow_mut().push(token);
+        token
+    }
+
+    /// Removes `token` and anything still nested above it (LIFO; the
+    /// truncate is defensive — a well-typed run pops the exact top).
+    pub fn ctl_pop_prompt(&self, token: i64) {
+        let mut prompts = self.ctl_prompts.borrow_mut();
+        if let Some(position) = prompts.iter().rposition(|&t| t == token) {
+            prompts.truncate(position);
+        }
+    }
+
+    /// Is `token` a live prompt? A dead token is the "escape past
+    /// extent" trap's trigger.
+    pub fn ctl_prompt_live(&self, token: i64) -> bool {
+        self.ctl_prompts.borrow().contains(&token)
+    }
+
+    /// Parks the aborting value for the catching prompt to collect.
+    pub fn ctl_set_aborted(&self, value: Value) {
+        *self.ctl_aborted.borrow_mut() = Some(value);
+    }
+
+    /// Collects the parked abort value (the prompt whose token matched).
+    pub fn ctl_take_aborted(&self) -> Result<Value, EvalError> {
+        self.ctl_aborted.borrow_mut().take().ok_or_else(|| {
+            EvalError::Malformed("caught an abort with no parked value (κ_frk)".into())
         })
     }
 
