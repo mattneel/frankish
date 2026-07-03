@@ -9,6 +9,7 @@
 
 pub mod adt;
 pub mod adt_dtree;
+pub mod dtree_emit;
 mod adt_eval;
 mod attr_util;
 pub mod closure;

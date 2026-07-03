@@ -36,9 +36,7 @@ use melior::ir::{
 use crate::ast::Pattern;
 use crate::infer::{TBinding, TExpr, TKind, TypedProgram};
 use crate::types::Ty;
-use frk_dialects::adt_dtree::{
-    self, Access, CompiledMatch, DecisionTree, Matrix, Occurrence, ValueType,
-};
+use frk_dialects::adt_dtree::{self, CompiledMatch, Matrix, ValueType};
 
 pub fn emit<'c>(context: &'c Context, program: &TypedProgram) -> Result<Module<'c>, String> {
     let location = Location::unknown(context);
@@ -679,7 +677,30 @@ impl<'c, 'p> Emitter<'c, 'p> {
             .region
             .append_block(Block::new(&[(result_ty, self.loc())]));
 
-        self.emit_tree(fcx, &tree, scrutinee_value, &scrutinee_ty, arms, merge_block)?;
+        // The promoted dispatch emitter (M6): occurrence typing walks
+        // the kernel types; we only supply arm bodies.
+        let scrutinee_mlir_ty = self.mlir_type(&scrutinee_ty)?;
+        let region = fcx.region;
+        let base_env = fcx.env.clone();
+        let entry = fcx.block;
+        frk_dialects::dtree_emit::emit_dispatch(
+            self.context,
+            region,
+            entry,
+            &tree,
+            scrutinee_value,
+            scrutinee_mlir_ty,
+            merge_block,
+            &mut |arm_entry, arm_index, bindings| {
+                let mut env = base_env.clone();
+                for (name, value) in bindings {
+                    env.insert(name.clone(), *value);
+                }
+                let mut arm_fcx = FnCtx { region, block: arm_entry, env };
+                let value = self.emit_expr(&mut arm_fcx, &arms[arm_index].1)?;
+                Ok((value, arm_fcx.block))
+            },
+        )?;
 
         fcx.block = merge_block;
         let raw = merge_block
@@ -689,243 +710,6 @@ impl<'c, 'p> Emitter<'c, 'p> {
         Ok(unsafe { Value::from_raw(raw) })
     }
 
-    /// Emits the decision tree into fresh blocks; every leaf branches to
-    /// `merge` with the arm's value. On entry `fcx.block` is where this
-    /// subtree's code goes.
-    fn emit_tree<'r>(
-        &mut self,
-        fcx: &mut FnCtx<'c, 'r>,
-        tree: &DecisionTree,
-        scrutinee: Value<'c, 'r>,
-        scrutinee_ty: &Ty,
-        arms: &[(Pattern, TExpr)],
-        merge: BlockRef<'c, 'r>,
-    ) -> Result<(), String> {
-        match tree {
-            DecisionTree::Fail => Err("FAIL reached emission (exhaustiveness bug)".to_string()),
-            DecisionTree::Leaf { arm, bindings } => {
-                let mut inner_env = fcx.env.clone();
-                for (name, occurrence) in bindings {
-                    let value =
-                        self.emit_occurrence(fcx, scrutinee, scrutinee_ty, occurrence)?;
-                    inner_env.insert(name.clone(), value);
-                }
-                let saved = std::mem::replace(&mut fcx.env, inner_env);
-                let body = &arms[*arm].1;
-                let value = self.emit_expr(fcx, body)?;
-                fcx.env = saved;
-                fcx.block
-                    .append_operation(melior::dialect::cf::br(&merge, &[value], self.loc()));
-                Ok(())
-            }
-            DecisionTree::SwitchTag { occurrence, cases, default } => {
-                let (occ_value, occ_ty) =
-                    self.occurrence_with_type(fcx, scrutinee, scrutinee_ty, occurrence)?;
-                // Bool "tags": select to i64; sums: tag_of.
-                let flag = match occ_ty {
-                    Ty::Bool => {
-                        let one = self.const_i64(fcx, 1)?;
-                        let zero = self.const_i64(fcx, 0)?;
-                        let i64_type: Type = IntegerType::new(self.context, 64).into();
-                        self.op_result(
-                            fcx.block,
-                            OperationBuilder::new("arith.select", self.loc())
-                                .add_operands(&[occ_value, one, zero])
-                                .add_results(&[i64_type])
-                                .build()
-                                .map_err(|e| e.to_string())?,
-                        )?
-                    }
-                    _ => {
-                        let i64_type: Type = IntegerType::new(self.context, 64).into();
-                        self.op_result(
-                            fcx.block,
-                            OperationBuilder::new("frk_adt.tag_of", self.loc())
-                                .add_operands(&[occ_value])
-                                .add_results(&[i64_type])
-                                .build()
-                                .map_err(|e| e.to_string())?,
-                        )?
-                    }
-                };
-                let case_values: Vec<i64> = cases.iter().map(|(tag, _)| *tag as i64).collect();
-                let subtrees: Vec<&DecisionTree> =
-                    cases.iter().map(|(_, subtree)| subtree).collect();
-                self.emit_switch(
-                    fcx,
-                    flag,
-                    &case_values,
-                    &subtrees,
-                    default.as_deref(),
-                    scrutinee,
-                    scrutinee_ty,
-                    arms,
-                    merge,
-                )
-            }
-            DecisionTree::SwitchInt { occurrence, cases, default } => {
-                let (occ_value, _) =
-                    self.occurrence_with_type(fcx, scrutinee, scrutinee_ty, occurrence)?;
-                let case_values: Vec<i64> = cases.iter().map(|(value, _)| *value).collect();
-                let subtrees: Vec<&DecisionTree> =
-                    cases.iter().map(|(_, subtree)| subtree).collect();
-                self.emit_switch(
-                    fcx,
-                    occ_value,
-                    &case_values,
-                    &subtrees,
-                    Some(default),
-                    scrutinee,
-                    scrutinee_ty,
-                    arms,
-                    merge,
-                )
-            }
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn emit_switch<'r>(
-        &mut self,
-        fcx: &mut FnCtx<'c, 'r>,
-        flag: Value<'c, 'r>,
-        case_values: &[i64],
-        subtrees: &[&DecisionTree],
-        default: Option<&DecisionTree>,
-        scrutinee: Value<'c, 'r>,
-        scrutinee_ty: &Ty,
-        arms: &[(Pattern, TExpr)],
-        merge: BlockRef<'c, 'r>,
-    ) -> Result<(), String> {
-        // cf.switch always needs a default successor. When the tree has
-        // none (complete tag coverage) the last case doubles as it.
-        let (switch_cases, default_tree): (Vec<(i64, &DecisionTree)>, &DecisionTree) =
-            match default {
-                Some(tree) => (
-                    case_values.iter().copied().zip(subtrees.iter().copied()).collect(),
-                    tree,
-                ),
-                None => {
-                    let last = subtrees.len() - 1;
-                    (
-                        case_values[..last]
-                            .iter()
-                            .copied()
-                            .zip(subtrees[..last].iter().copied())
-                            .collect(),
-                        subtrees[last],
-                    )
-                }
-            };
-
-        // A switch with zero explicit cases (single-variant dispatch)
-        // is no dispatch at all — emit the sole subtree inline.
-        if switch_cases.is_empty() {
-            return self.emit_tree(fcx, default_tree, scrutinee, scrutinee_ty, arms, merge);
-        }
-
-        let default_block = fcx.region.append_block(Block::new(&[]));
-        let case_blocks: Vec<BlockRef<'c, 'r>> = switch_cases
-            .iter()
-            .map(|_| fcx.region.append_block(Block::new(&[])))
-            .collect();
-
-        fcx.block.append_operation(self.switch_op(
-            flag,
-            &switch_cases.iter().map(|(v, _)| *v).collect::<Vec<_>>(),
-            default_block,
-            &case_blocks,
-        )?);
-
-        for ((_, subtree), block) in switch_cases.iter().zip(&case_blocks) {
-            fcx.block = *block;
-            self.emit_tree(fcx, subtree, scrutinee, scrutinee_ty, arms, merge)?;
-        }
-        fcx.block = default_block;
-        self.emit_tree(fcx, default_tree, scrutinee, scrutinee_ty, arms, merge)?;
-        Ok(())
-    }
-
-    /// Emits the access chain for an occurrence, returning the value.
-    fn emit_occurrence<'r>(
-        &mut self,
-        fcx: &FnCtx<'c, 'r>,
-        scrutinee: Value<'c, 'r>,
-        scrutinee_ty: &Ty,
-        occurrence: &Occurrence,
-    ) -> Result<Value<'c, 'r>, String> {
-        Ok(self
-            .occurrence_with_type(fcx, scrutinee, scrutinee_ty, occurrence)?
-            .0)
-    }
-
-    fn occurrence_with_type<'r>(
-        &mut self,
-        fcx: &FnCtx<'c, 'r>,
-        scrutinee: Value<'c, 'r>,
-        scrutinee_ty: &Ty,
-        occurrence: &Occurrence,
-    ) -> Result<(Value<'c, 'r>, Ty), String> {
-        let i64_type: Type = IntegerType::new(self.context, 64).into();
-        let mut value = scrutinee;
-        let mut ty = scrutinee_ty.clone();
-        for access in occurrence {
-            match access {
-                Access::SumField { variant, field } => {
-                    let Ty::Adt(name) = &ty else {
-                        return Err(format!("sum access into non-adt {ty}"));
-                    };
-                    let info = self
-                        .program
-                        .adts
-                        .get(name)
-                        .ok_or_else(|| format!("unknown adt {name}"))?;
-                    let field_ty = info.ctors[*variant].1[*field].clone();
-                    let result = self.mlir_type(&field_ty)?;
-                    value = self.op_result(
-                        fcx.block,
-                        OperationBuilder::new("frk_adt.extract", self.loc())
-                            .add_attributes(&[
-                                (
-                                    Identifier::new(self.context, "variant"),
-                                    IntegerAttribute::new(i64_type, *variant as i64).into(),
-                                ),
-                                (
-                                    Identifier::new(self.context, "field"),
-                                    IntegerAttribute::new(i64_type, *field as i64).into(),
-                                ),
-                            ])
-                            .add_operands(&[value])
-                            .add_results(&[result])
-                            .build()
-                            .map_err(|e| e.to_string())?,
-                    )?;
-                    ty = field_ty;
-                }
-                Access::ProductField { field } => {
-                    let Ty::Tuple(items) = &ty else {
-                        return Err(format!("product access into non-tuple {ty}"));
-                    };
-                    let field_ty = items[*field].clone();
-                    let result = self.mlir_type(&field_ty)?;
-                    value = self.op_result(
-                        fcx.block,
-                        OperationBuilder::new("frk_adt.get", self.loc())
-                            .add_attributes(&[(
-                                Identifier::new(self.context, "field"),
-                                IntegerAttribute::new(i64_type, *field as i64).into(),
-                            )])
-                            .add_operands(&[value])
-                            .add_results(&[result])
-                            .build()
-                            .map_err(|e| e.to_string())?,
-                    )?;
-                    ty = field_ty;
-                }
-            }
-        }
-        Ok((value, ty))
-    }
 
     fn to_dtree_pattern(
         &self,
@@ -1024,48 +808,6 @@ impl<'c, 'p> Emitter<'c, 'p> {
             .map_err(|e| e.to_string())
     }
 
-    fn switch_op<'r>(
-        &self,
-        flag: Value<'c, 'r>,
-        case_values: &[i64],
-        default: BlockRef<'c, 'r>,
-        cases: &[BlockRef<'c, 'r>],
-    ) -> Result<melior::ir::Operation<'c>, String> {
-        let case_values_text = case_values
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let dense = format!(
-            "dense<[{case_values_text}]> : vector<{}xi64>",
-            case_values.len()
-        );
-        let segments = vec![0i32; case_values.len()];
-        let mut successors: Vec<&Block<'c>> = vec![&default];
-        for case in cases {
-            successors.push(case);
-        }
-        OperationBuilder::new("cf.switch", self.loc())
-            .add_attributes(&[
-                (
-                    Identifier::new(self.context, "case_values"),
-                    Attribute::parse(self.context, &dense)
-                        .ok_or_else(|| format!("unparsable {dense}"))?,
-                ),
-                (
-                    Identifier::new(self.context, "case_operand_segments"),
-                    DenseI32ArrayAttribute::new(self.context, &segments).into(),
-                ),
-                (
-                    Identifier::new(self.context, "operandSegmentSizes"),
-                    DenseI32ArrayAttribute::new(self.context, &[1, 0, 0]).into(),
-                ),
-            ])
-            .add_operands(&[flag])
-            .add_successors(&successors)
-            .build()
-            .map_err(|e| e.to_string())
-    }
 }
 
 /// Free variables of a typed expression, accumulated with their types.
