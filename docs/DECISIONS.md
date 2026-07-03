@@ -193,6 +193,28 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-054 [m11] The human picked the recommended track (2026-07-03,
+  "Do it"): femto_lua implementation INTERLEAVED with the GC ladder,
+  named M11. Exit bars (L4-defined, this entry): (1) dyn K3 — the
+  fat-value lowering lands and the interp fence lifts from dyn
+  goldens; (2) GC ladder step 1 — block-local liveness releases in
+  the rc strategy (D-041's debt), a release counter in both twins,
+  and a leak assertion proving allocations die; (3) the femto_lua
+  v0.1 frontend over the D-052 manifest with a hand corpus ≥90%
+  conformant against lua5.1 across interp+jit×2 and the grid;
+  (4) the Lua number-print canon fence (%.14g) with three-way
+  byte agreement (Rust twin emulation, C twin native %.14g, the
+  lua oracle) inside the TS-0-precedent value fence.
+  Slice fences for v0.1 (documented divergences, D-038
+  stricter-is-deterministic precedent): call arity is EXACT (Lua's
+  nil-fill/drop adjustment is v0.2 — corpus law: arities match);
+  runtime type errors are traps, corpus stays in-fence; print takes
+  nil/bool/num/str only (table/function printing embeds addresses —
+  not canonizable). Parser: hand-rolled recursive descent again
+  (D-019 scaffolding stance, ml_core precedent; tree-sitter revisit
+  if grammar maintenance bites). Sequencing within M11: dyn K3 + GC
+  step 1 first (kernel-side, self-verifying), frontend second,
+  tables/metatables third, conformance close last.
 - D-053 [gc] The M10 GC gate is decided: rc + cycle collection
   (Bacon–Rajan trial deletion) over the shipped rc strategy; MMTk
   stays the Tier-2 slot. Full comparison in docs/gc-spike.md (the

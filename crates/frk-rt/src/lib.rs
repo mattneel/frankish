@@ -109,6 +109,18 @@ pub extern "C" fn frk_rt_print_bool(value: u8) {
     println!("{}", if value != 0 { "true" } else { "false" });
 }
 
+/// The dyn tag check (D-051/D-054): straight-line native total
+/// semantics — mismatch prints and aborts. Corpus law keeps
+/// mismatches out of in-process (JIT) golden runs; AOT verifies the
+/// abort path as a subprocess.
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_dyn_check(actual: i64, expected: i64) {
+    if actual != expected {
+        eprintln!("frk: dyn tag mismatch: expected {expected}, got {actual} (D-051)");
+        std::process::abort();
+    }
+}
+
 // ---- strings (M9, D-049): rt-owned immutable UTF-16 values. Layout
 // {len: u64, units: u16 × len}, one allocation, plain malloc-domain
 // (strategy-independent; revisit at the M10 GC gate). ----

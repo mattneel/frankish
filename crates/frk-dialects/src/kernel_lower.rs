@@ -131,6 +131,10 @@ fn slot_kind<'c>(context: &'c Context, r#type: Type<'c>) -> Result<SlotKind<'c>,
     if printed == "!frk_str.str" {
         return Ok(SlotKind::Ptr { managed: false });
     }
+    if printed == "!frk_dyn.dyn" {
+        // Fat value (D-051): two verbatim word slots.
+        return Ok(SlotKind::Words { slots: 2, mapped: map_type(context, r#type)? });
+    }
     if printed == "f64" {
         return Ok(SlotKind::F64);
     }
@@ -253,6 +257,20 @@ enum Planned<'c, 'a> {
         /// eq returns i64 from the rt and truncates to i1 here.
         trunc_to_i1: bool,
     },
+    DynWrap {
+        op: OperationRef<'c, 'a>,
+        tag: i64,
+        payload_kind: SlotKind<'c>,
+    },
+    DynUnwrap {
+        op: OperationRef<'c, 'a>,
+        tag: i64,
+        result_kind: SlotKind<'c>,
+        result_mapped: Type<'c>,
+    },
+    DynTagOf {
+        op: OperationRef<'c, 'a>,
+    },
 }
 
 /// Lowers every kernel op and type under `module` (the pipeline anchors
@@ -310,6 +328,9 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
         matches!(
             plan,
             Planned::MakeClosure { .. } | Planned::BoxNew { .. } | Planned::ArrayNew { .. }
+        ) || matches!(
+            plan,
+            Planned::DynWrap { payload_kind: SlotKind::Closure | SlotKind::Words { .. }, .. }
         )
     });
     if needs_allocator {
@@ -358,6 +379,8 @@ fn collect<'c, 'a>(
         plans.push(plan_mem(context, suffix, op)?);
     } else if let Some(suffix) = name.strip_prefix("frk_str.") {
         plans.push(plan_str(suffix, op, str_counter)?);
+    } else if let Some(suffix) = name.strip_prefix("frk_dyn.") {
+        plans.push(plan_dyn(context, suffix, op)?);
     } else {
         if name == "func.func" {
             if let Some(mapped) = mapped_signature(context, op)? {
@@ -621,6 +644,38 @@ fn plan_mem<'c, 'a>(
     }
 }
 
+fn plan_dyn<'c, 'a>(
+    context: &'c Context,
+    suffix: &str,
+    op: OperationRef<'c, 'a>,
+) -> Result<Planned<'c, 'a>, String> {
+    match suffix {
+        "wrap" => {
+            let tag = crate::dyn_dialect::tag_attr(op)?;
+            let payload = op
+                .operand(0)
+                .map_err(|_| "wrap without an operand".to_string())?
+                .r#type();
+            Ok(Planned::DynWrap { op, tag, payload_kind: slot_kind(context, payload)? })
+        }
+        "unwrap" => {
+            let tag = crate::dyn_dialect::tag_attr(op)?;
+            let result = op
+                .result(0)
+                .map_err(|_| "unwrap without a result".to_string())?
+                .r#type();
+            Ok(Planned::DynUnwrap {
+                op,
+                tag,
+                result_kind: slot_kind(context, result)?,
+                result_mapped: map_type(context, result)?,
+            })
+        }
+        "tag_of" => Ok(Planned::DynTagOf { op }),
+        other => Err(format!("no lowering for frk_dyn.{other}")),
+    }
+}
+
 fn plan_str<'c, 'a>(
     suffix: &str,
     op: OperationRef<'c, 'a>,
@@ -652,6 +707,7 @@ fn is_kernel_type(r#type: Type<'_>) -> bool {
         || printed.starts_with("!frk_closure.")
         || printed.starts_with("!frk_mem.")
         || printed.starts_with("!frk_str.")
+        || printed.starts_with("!frk_dyn.")
 }
 
 fn closure_struct(context: &Context) -> Type<'_> {
@@ -683,6 +739,8 @@ fn map_type<'c>(context: &'c Context, r#type: Type<'c>) -> Result<Type<'c>, Stri
         || printed == "!frk_str.str"
     {
         Ok(llvm::r#type::pointer(context, 0))
+    } else if printed == "!frk_dyn.dyn" {
+        Ok(slots_struct(context, 2))
     } else {
         Ok(r#type)
     }
@@ -753,6 +811,11 @@ fn declare_str_runtime(
             _ => {}
         }
     }
+    for plan in plans {
+        if matches!(plan, Planned::DynUnwrap { .. }) {
+            needed.push(("frk_rt_dyn_check", false));
+        }
+    }
     if needed.is_empty() {
         return Ok(());
     }
@@ -773,6 +836,9 @@ fn declare_str_runtime(
             "frk_rt_str_concat" => llvm::r#type::function(ptr, &[ptr, ptr], false),
             "frk_rt_str_eq" => llvm::r#type::function(i64_type, &[ptr, ptr], false),
             "frk_rt_str_len" => llvm::r#type::function(i64_type, &[ptr], false),
+            "frk_rt_dyn_check" => {
+                llvm::r#type::function(llvm::r#type::void(context), &[i64_type, i64_type], false)
+            }
             other => return Err(format!("unknown str runtime symbol {other}")),
         };
         let declaration = OperationBuilder::new("llvm.func", location)
@@ -1110,6 +1176,164 @@ fn apply<'c>(
     retain_shared: &HashMap<usize, bool>,
 ) -> Result<(), String> {
     match plan {
+        Planned::DynWrap { op, tag, payload_kind } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let payload = operand(op, 0)?;
+            // The payload WORD, by kind (D-051): scalars adapt in
+            // place; multi-word payloads (closures, adt structs)
+            // heap-box through the strategy allocator.
+            let word = match &payload_kind {
+                SlotKind::Int(width) => {
+                    if *width < 64 {
+                        result_value(rewriter.insert(cast_op(
+                            "arith.extui", payload, i64_type, location,
+                        )?))?
+                    } else {
+                        unsafe { Value::from_raw(payload.to_raw()) }
+                    }
+                }
+                SlotKind::F64 => result_value(rewriter.insert(cast_op(
+                    "arith.bitcast", payload, i64_type, location,
+                )?))?,
+                SlotKind::Ptr { .. } => result_value(rewriter.insert(cast_op(
+                    "llvm.ptrtoint", payload, i64_type, location,
+                )?))?,
+                SlotKind::Closure | SlotKind::Words { .. } => {
+                    let ptr = llvm::r#type::pointer(context, 0);
+                    let slots = payload_kind.slots();
+                    let size = result_value(rewriter.insert(
+                        melior::dialect::arith::constant(
+                            context,
+                            IntegerAttribute::new(i64_type, (slots * 8) as i64).into(),
+                            location,
+                        ),
+                    ))?;
+                    let boxed = result_value(rewriter.insert(direct_call(
+                        context,
+                        strategy.alloc_symbol(),
+                        &[size],
+                        ptr,
+                        location,
+                    )?))?;
+                    rewriter.insert(store_op(context, payload, boxed, location)?);
+                    result_value(rewriter.insert(cast_op(
+                        "llvm.ptrtoint", boxed, i64_type, location,
+                    )?))?
+                }
+            };
+            let dyn_struct = slots_struct(context, 2);
+            let mut acc = result_value(rewriter.insert(llvm::undef(dyn_struct, location)))?;
+            let tag_value = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, tag).into(),
+                location,
+            )))?;
+            acc = result_value(rewriter.insert(llvm::insert_value(
+                context,
+                acc,
+                DenseI64ArrayAttribute::new(context, &[0]),
+                tag_value,
+                location,
+            )))?;
+            acc = result_value(rewriter.insert(llvm::insert_value(
+                context,
+                acc,
+                DenseI64ArrayAttribute::new(context, &[1]),
+                word,
+                location,
+            )))?;
+            finish(rewriter, op, acc)
+        }
+        Planned::DynUnwrap { op, tag, result_kind, result_mapped } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let container = operand(op, 0)?;
+            let actual = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                container,
+                DenseI64ArrayAttribute::new(context, &[0]),
+                i64_type,
+                location,
+            )))?;
+            let expected = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, tag).into(),
+                location,
+            )))?;
+            // Straight-line native tag check (D-054): the rt aborts on
+            // mismatch — no CFG surgery mid-rewrite. In-process JIT
+            // corpus law keeps mismatches out of jit goldens; the trap
+            // contract is verified at interp (semantics) and AOT
+            // (subprocess) levels.
+            rewriter.insert(direct_call_void(
+                context,
+                "frk_rt_dyn_check",
+                &[actual, expected],
+                location,
+            )?);
+            let word = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                container,
+                DenseI64ArrayAttribute::new(context, &[1]),
+                i64_type,
+                location,
+            )))?;
+            let value = match &result_kind {
+                SlotKind::Int(width) => {
+                    if *width < 64 {
+                        result_value(rewriter.insert(cast_op(
+                            "arith.trunci", word, result_mapped, location,
+                        )?))?
+                    } else {
+                        word
+                    }
+                }
+                SlotKind::F64 => result_value(rewriter.insert(cast_op(
+                    "arith.bitcast", word, result_mapped, location,
+                )?))?,
+                SlotKind::Ptr { .. } => result_value(rewriter.insert(cast_op(
+                    "llvm.inttoptr",
+                    word,
+                    llvm::r#type::pointer(context, 0),
+                    location,
+                )?))?,
+                SlotKind::Closure | SlotKind::Words { .. } => {
+                    let ptr = llvm::r#type::pointer(context, 0);
+                    let boxed = result_value(rewriter.insert(cast_op(
+                        "llvm.inttoptr", word, ptr, location,
+                    )?))?;
+                    result_value(rewriter.insert(
+                        OperationBuilder::new("llvm.load", location)
+                            .add_attributes(&[(
+                                melior::ir::Identifier::new(context, "ordering"),
+                                Attribute::parse(context, "0 : i64").ok_or("ordering")?,
+                            )])
+                            .add_operands(&[boxed])
+                            .add_results(&[result_mapped])
+                            .build()
+                            .map_err(|e| e.to_string())?,
+                    ))?
+                }
+            };
+            finish(rewriter, op, value)
+        }
+        Planned::DynTagOf { op } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let container = operand(op, 0)?;
+            let tag = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                container,
+                DenseI64ArrayAttribute::new(context, &[0]),
+                i64_type,
+                location,
+            )))?;
+            finish(rewriter, op, tag)
+        }
         Planned::ArrayNew { op } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
@@ -1823,6 +2047,49 @@ fn maybe_retain<'c>(
             .map_err(|e| e.to_string())?,
     );
     Ok(())
+}
+
+/// Void direct llvm.call by symbol.
+fn direct_call_void<'c>(
+    context: &'c Context,
+    callee: &str,
+    arguments: &[Value<'c, '_>],
+    location: Location<'c>,
+) -> Result<Operation<'c>, String> {
+    OperationBuilder::new("llvm.call", location)
+        .add_attributes(&[
+            (
+                melior::ir::Identifier::new(context, "callee"),
+                FlatSymbolRefAttribute::new(context, callee).into(),
+            ),
+            (
+                melior::ir::Identifier::new(context, "CConv"),
+                Attribute::parse(context, "#llvm.cconv<ccc>").ok_or("CConv")?,
+            ),
+            (
+                melior::ir::Identifier::new(context, "TailCallKind"),
+                Attribute::parse(context, "#llvm.tailcallkind<none>").ok_or("TailCallKind")?,
+            ),
+            (
+                melior::ir::Identifier::new(context, "fastmathFlags"),
+                Attribute::parse(context, "#llvm.fastmath<none>").ok_or("fastmathFlags")?,
+            ),
+            (
+                melior::ir::Identifier::new(context, "op_bundle_sizes"),
+                Attribute::parse(context, "array<i32>").ok_or("op_bundle_sizes")?,
+            ),
+            (
+                melior::ir::Identifier::new(context, "operandSegmentSizes"),
+                Attribute::parse(
+                    context,
+                    &format!("array<i32: {}, 0>", arguments.len()),
+                )
+                .ok_or("operandSegmentSizes")?,
+            ),
+        ])
+        .add_operands(arguments)
+        .build()
+        .map_err(|e| e.to_string())
 }
 
 /// Direct llvm.call by symbol (the allocator).

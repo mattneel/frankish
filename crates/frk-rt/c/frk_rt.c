@@ -73,6 +73,16 @@ void frk_rt_print_bool(unsigned char value) {
     printf("%s\n", value ? "true" : "false");
 }
 
+/* The dyn tag check (D-051/D-054): mismatch prints and aborts. */
+void frk_rt_dyn_check(int64_t actual, int64_t expected) {
+    if (actual != expected) {
+        fprintf(stderr,
+                "frk: dyn tag mismatch: expected %lld, got %lld (D-051)\n",
+                (long long)expected, (long long)actual);
+        abort();
+    }
+}
+
 /* ---- strings (M9, D-049): {u64 len; u16 units[]}; plain malloc,
  * strategy-independent. UTF-16 code-unit semantics throughout. ---- */
 
