@@ -31,6 +31,8 @@ pub enum Value {
     Array(Rc<RefCell<Vec<Value>>>),
     /// A frk_str string: immutable UTF-16 code units (D-049).
     Str(Rc<Vec<u16>>),
+    /// A frk_dyn fat value (D-051): closed-enum tag + payload.
+    Dyn(u64, Rc<Value>),
 }
 
 impl PartialEq for Value {
@@ -50,6 +52,7 @@ impl PartialEq for Value {
             (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
             (Self::Array(a), Self::Array(b)) => Rc::ptr_eq(a, b),
             (Self::Str(a), Self::Str(b)) => a == b,
+            (Self::Dyn(ta, pa), Self::Dyn(tb, pb)) => ta == tb && pa == pb,
             _ => false,
         }
     }
@@ -120,6 +123,19 @@ impl Value {
             Self::Str(units) => Ok(units),
             other => Err(EvalError::TypeMismatch(format!(
                 "expected a string, got {other:?}"
+            ))),
+        }
+    }
+
+    pub fn dyn_value(tag: u64, payload: Value) -> Self {
+        Self::Dyn(tag, Rc::new(payload))
+    }
+
+    pub fn as_dyn(&self) -> Result<(u64, &Value), EvalError> {
+        match self {
+            Self::Dyn(tag, payload) => Ok((*tag, payload)),
+            other => Err(EvalError::TypeMismatch(format!(
+                "expected a dyn value, got {other:?}"
             ))),
         }
     }

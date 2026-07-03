@@ -193,6 +193,63 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-053 [gc] The M10 GC gate is decided: rc + cycle collection
+  (Bacon–Rajan trial deletion) over the shipped rc strategy; MMTk
+  stays the Tier-2 slot. Full comparison in docs/gc-spike.md (the
+  written spike report SPEC §13 demands). The deciding constraints:
+  the two-twin runtime (D-042 — no C-mirror story exists for MMTk)
+  and the five-triple grid (no practical MMTk on wasm32-wasi; s390x
+  untested) — the two properties this project treats as identity.
+  Sequencing: D-041's liveness/release pass first (its ratification
+  rider, frk_rt_alloc_count, is the waiting metric), then sized
+  releases, then the candidate buffer + trial deletion. Revisit:
+  a specimen with MEASURED GC-bound throughput, or MMTk-on-wasm
+  maturing, or a deliberate reach reduction.
+- D-052 [femto_lua] MANIFEST ratified (M10 exit item) + the Lua
+  string ruling. Strings: Lua 5.1 strings are 8-BIT-CLEAN BYTE
+  STRINGS, INTERNED at creation, equality = pointer identity after
+  intern (the PUC-Rio model, observable through table keys and ==
+  cost). They are NOT frk_str values — UTF-16 code-unit semantics is
+  TS's law, byte semantics is Lua's; one dialect faking both would
+  divert both oracles. Representation: a byte-string sibling surface
+  (or a unit-width parameter on frk_str) lands with the femto_lua
+  implementation milestone; THIS ruling fixes semantics only:
+  bytes, interned, identity-equal. v0.1 subset (ratified into the
+  MANIFEST): nil/boolean/number(f64)/string; locals; functions +
+  closures (upvalues by reference — frk_mem boxes); tables (array +
+  hash parts unified, the Lua way); if/while/numeric-for; metatable
+  __index ONLY; print + tostring for the oracle protocol. FENCED at
+  v0.1: coroutines (frk.ctl milestone), goto, varargs,
+  multiple-return-values beyond call-in-tail-position,
+  load/loadstring, weak tables, string library beyond ..
+  concatenation and #length, string-format exotica, __newindex and
+  the rest of the metamethod family. Oracle: lua5.1 (5.1.5 pinned,
+  versions.env) under LC_ALL=C through canon; number printing needs
+  its own canon fence (Lua %.14g vs our printers — rule at
+  implementation, the TS precedent applies). Revisit: fences per
+  admission rule as the corpus grows.
+- D-051 [dyn] The tagging fork (due at M10 per SPEC §4.5): frk.dyn
+  v0 uses FAT VALUES — a two-slot {tag: i64, payload: i64} pair,
+  riding the exact machinery closures proved (two-slot kinds,
+  word-verbatim copies, ptrtoint/bitcast payload adaptation per
+  tag). NaN-boxing and pointer tagging are REPRESENTATION
+  OPTIMIZATIONS behind the same dialect surface — the K-contract
+  makes representation a lowering detail, so the swap is a profile
+  knob later, decided on measurement (the fib-native rig pattern),
+  not aesthetics now. Fat values win v0 on: no bit games on the
+  big-endian canary, no 48-bit pointer assumptions (wasm32 is
+  32-bit; riscv64 sv48+ looms), trivially correct interp semantics
+  (Value::Dyn(tag, Box<Value>)), and honest-first debuggability.
+  v0 surface (K1/K2 land at M10 — "contract underway"; K3+ with the
+  implementation milestone): !frk_dyn.dyn; wrap(T){tag}→dyn;
+  unwrap(dyn){tag}→T traps on tag mismatch (total semantics,
+  D-029); tag_of(dyn)→i64. Tag space v0 = femto_lua's six: nil=0,
+  bool=1, num=2, str=3, table=4, fun=5; tags are a CLOSED enum per
+  profile (sealed-world D-014 interplay noted). Dispatch (itabs,
+  D-026) is deliberately NOT in v0's surface — metatable dispatch
+  design belongs to the implementation milestone with the table
+  design in hand. Revisit: representation at first measured
+  dyn-bound benchmark; tag space at TS-1 (unions want tags too).
 - D-050 [human-review] Second review integration (2026-07-03, arrived
   mid-implementation of the strings/arrays session):
   (1) noImplicitReturns: true joins the producer options — the

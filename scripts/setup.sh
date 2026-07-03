@@ -55,6 +55,9 @@ need "node >= $NODE_MIN_MAJOR (loanword producer + TS-0 oracle, M9)" \
 need "loanword-ts deps (tools/loanword-ts/node_modules)" \
 	"test -d tools/loanword-ts/node_modules/typescript" \
 	"cd tools/loanword-ts && npm install"
+need "lua5.1 (the femto_lua oracle, M10+; pin 5.1.5)" \
+	"command -v lua5.1" \
+	"apt: sudo apt-get install lua5.1"
 need "libPolly.a (tblgen links llvm-config --libs, which names Polly)" \
 	"test -f \"$MLIR_PREFIX/lib/libPolly.a\"" \
 	"apt: sudo apt-get install libpolly-$LLVM_MAJOR-dev | brew llvm@$LLVM_MAJOR already bundles it"
