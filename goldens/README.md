@@ -25,6 +25,15 @@ Optional `// frk-case: key=value` comment lines anywhere in case.mlir:
 Unknown keys and unsupported values are errors — a typo'd directive must
 never silently become a default.
 
+## UB is inadmissible
+
+Cases must be free of MLIR-level undefined behavior — division by zero,
+signed-division overflow, non-positive scf.for steps, and kin. The
+reference interpreter traps deterministically on these (D-029); native
+paths do whatever LLVM does; nothing comparable comes out. Wrap-around
+integer arithmetic (no overflow flags) is *defined* — modulo 2^n — and
+fair game.
+
 ## Entry protocol (v0)
 
 The entry function takes no arguments and returns one `i64`, rendered per

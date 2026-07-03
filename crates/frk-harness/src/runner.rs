@@ -44,19 +44,76 @@ impl fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
-/// Every runner applicable to the corpus today. This is the list
-/// `make diff` executes; M2 appends the interpreter (which then becomes
-/// the reference semantics, D-008), M7 the AOT path, specimens their
-/// oracles.
+/// Every runner applicable to the corpus today — the list `make diff`
+/// executes and the corpus tests hold in pairwise agreement (law L3).
+/// interp + jit since M2; M7 adds the AOT path, specimens their oracles.
 pub fn default_runners() -> Vec<Box<dyn Runner>> {
-    vec![Box::new(JitRunner)]
+    vec![Box::new(InterpRunner), Box::new(JitRunner)]
 }
 
-/// The runner blessing writes goldens from. jit for now; the moment the
-/// derived interpreter exists it takes this role — it *is* the reference
-/// semantics (D-008), everything else must agree with it (L3).
+/// The runner blessing writes goldens from: the derived interpreter,
+/// which *is* the reference semantics (D-008) — everything else must
+/// agree with it byte-exactly (L3).
 pub fn reference_runner() -> Box<dyn Runner> {
-    Box::new(JitRunner)
+    Box::new(InterpRunner)
+}
+
+/// The derived-interpreter runner (SPEC §7.1) — reference semantics
+/// since M2 (D-008). Interpretation runs on a `frk_interp::STACK_SIZE`
+/// thread so depth-ceiling programs trap per D-029 instead of exhausting
+/// a skinny caller stack.
+pub struct InterpRunner;
+
+impl Runner for InterpRunner {
+    fn name(&self) -> &'static str {
+        "interp"
+    }
+
+    fn run(&self, case: &Case) -> Result<String, RunError> {
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(frk_interp::STACK_SIZE)
+                .spawn_scoped(scope, || interpret_case(case))
+                .map_err(|e| RunError::Io(format!("spawning interpreter thread: {e}")))?
+                .join()
+                .map_err(|_| RunError::Invoke("interpreter thread panicked".into()))?
+        })
+    }
+}
+
+fn interpret_case(case: &Case) -> Result<String, RunError> {
+    let source = fs::read_to_string(&case.source_path)
+        .map_err(|e| RunError::Io(format!("{}: {e}", case.source_path.display())))?;
+
+    let context = frk_core::context();
+    let module = Module::parse(&context, &source)
+        .ok_or_else(|| RunError::Parse(format!("{}", case.source_path.display())))?;
+    if !module.as_operation().verify() {
+        return Err(RunError::Verify(format!(
+            "{}: module failed MLIR verification",
+            case.source_path.display()
+        )));
+    }
+
+    let results = frk_interp::interpret_entry(&module, &case.entry, &[])
+        .map_err(|e| RunError::Invoke(e.to_string()))?;
+    match case.result {
+        ResultKind::I64 => {
+            let [value] = results.as_slice() else {
+                return Err(RunError::Invoke(format!(
+                    "entry returned {} value(s); the protocol expects one i64",
+                    results.len()
+                )));
+            };
+            if value.width() != 64 {
+                return Err(RunError::Invoke(format!(
+                    "entry returned i{}, protocol expects i64",
+                    value.width()
+                )));
+            }
+            Ok(canon::render_i64(value.as_signed()))
+        }
+    }
 }
 
 /// The ORC JIT runner: parse → verify → shared lowering pipeline →
