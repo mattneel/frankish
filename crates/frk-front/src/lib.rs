@@ -13,6 +13,7 @@
 pub mod ast;
 pub mod loanword;
 pub mod lua;
+pub mod scheme;
 pub mod emit;
 pub mod infer;
 pub mod lex;
