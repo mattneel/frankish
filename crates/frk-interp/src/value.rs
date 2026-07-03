@@ -26,6 +26,11 @@ pub enum Value {
     /// An f64 (M9, TS-0). Equality is BIT equality — deterministic
     /// under diffing, NaN == NaN by bits.
     Float(f64),
+    /// A frk_mem array: shared mutable, identity equality — JS
+    /// reference semantics (D-049). Out-of-bounds access TRAPS.
+    Array(Rc<RefCell<Vec<Value>>>),
+    /// A frk_str string: immutable UTF-16 code units (D-049).
+    Str(Rc<Vec<u16>>),
 }
 
 impl PartialEq for Value {
@@ -43,6 +48,8 @@ impl PartialEq for Value {
             ) => a == b && ca == cb,
             (Self::Box(a), Self::Box(b)) => Rc::ptr_eq(a, b),
             (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
+            (Self::Array(a), Self::Array(b)) => Rc::ptr_eq(a, b),
+            (Self::Str(a), Self::Str(b)) => a == b,
             _ => false,
         }
     }
@@ -91,6 +98,32 @@ impl Value {
         }
     }
 
+    pub fn array(items: Vec<Value>) -> Self {
+        Self::Array(Rc::new(RefCell::new(items)))
+    }
+
+    pub fn as_array(&self) -> Result<&Rc<RefCell<Vec<Value>>>, EvalError> {
+        match self {
+            Self::Array(items) => Ok(items),
+            other => Err(EvalError::TypeMismatch(format!(
+                "expected an array, got {other:?}"
+            ))),
+        }
+    }
+
+    pub fn str_from(text: &str) -> Self {
+        Self::Str(Rc::new(text.encode_utf16().collect()))
+    }
+
+    pub fn as_str_units(&self) -> Result<&Rc<Vec<u16>>, EvalError> {
+        match self {
+            Self::Str(units) => Ok(units),
+            other => Err(EvalError::TypeMismatch(format!(
+                "expected a string, got {other:?}"
+            ))),
+        }
+    }
+
     pub fn boxed(value: Value) -> Self {
         Self::Box(Rc::new(RefCell::new(value)))
     }
@@ -107,18 +140,9 @@ impl Value {
     pub(crate) fn int_parts(&self) -> Result<(u64, u32), EvalError> {
         match self {
             Self::Int { bits, width } => Ok((*bits, *width)),
-            Self::Adt { .. } => Err(EvalError::TypeMismatch(
-                "expected an integer, got an adt value".into(),
-            )),
-            Self::Closure { .. } => Err(EvalError::TypeMismatch(
-                "expected an integer, got a closure".into(),
-            )),
-            Self::Box(_) => Err(EvalError::TypeMismatch(
-                "expected an integer, got a box".into(),
-            )),
-            Self::Float(_) => Err(EvalError::TypeMismatch(
-                "expected an integer, got an f64".into(),
-            )),
+            other => Err(EvalError::TypeMismatch(format!(
+                "expected an integer, got {other:?}"
+            ))),
         }
     }
 
@@ -155,15 +179,9 @@ impl Value {
             Self::Int { width, .. } => Err(EvalError::TypeMismatch(format!(
                 "expected an adt value, got i{width}"
             ))),
-            Self::Closure { .. } => Err(EvalError::TypeMismatch(
-                "expected an adt value, got a closure".into(),
-            )),
-            Self::Box(_) => Err(EvalError::TypeMismatch(
-                "expected an adt value, got a box".into(),
-            )),
-            Self::Float(_) => Err(EvalError::TypeMismatch(
-                "expected an adt value, got an f64".into(),
-            )),
+            other => Err(EvalError::TypeMismatch(format!(
+                "expected an adt value, got {other:?}"
+            ))),
         }
     }
 
@@ -173,15 +191,9 @@ impl Value {
             Self::Int { width, .. } => Err(EvalError::TypeMismatch(format!(
                 "expected a closure, got i{width}"
             ))),
-            Self::Adt { .. } => Err(EvalError::TypeMismatch(
-                "expected a closure, got an adt value".into(),
-            )),
-            Self::Box(_) => Err(EvalError::TypeMismatch(
-                "expected a closure, got a box".into(),
-            )),
-            Self::Float(_) => Err(EvalError::TypeMismatch(
-                "expected a closure, got an f64".into(),
-            )),
+            other => Err(EvalError::TypeMismatch(format!(
+                "expected a closure, got {other:?}"
+            ))),
         }
     }
 }

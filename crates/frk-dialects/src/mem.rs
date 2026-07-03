@@ -25,6 +25,35 @@ irdl.dialect @frk_mem {
     %elem = irdl.any
     irdl.parameters(elem: %elem)
   }
+  irdl.type @arr {
+    %elem = irdl.any
+    irdl.parameters(elem: %elem)
+  }
+  irdl.operation @array_new {
+    %len = irdl.is i64
+    %a = irdl.base @frk_mem::@arr
+    irdl.operands(len: %len)
+    irdl.results(arr: %a)
+  }
+  irdl.operation @array_get {
+    %a = irdl.base @frk_mem::@arr
+    %i = irdl.is i64
+    %v = irdl.any
+    irdl.operands(arr: %a, index: %i)
+    irdl.results(value: %v)
+  }
+  irdl.operation @array_set {
+    %a = irdl.base @frk_mem::@arr
+    %i = irdl.is i64
+    %v = irdl.any
+    irdl.operands(arr: %a, index: %i, value: %v)
+  }
+  irdl.operation @array_len {
+    %a = irdl.base @frk_mem::@arr
+    %n = irdl.is i64
+    irdl.operands(arr: %a)
+    irdl.results(len: %n)
+  }
   irdl.operation @box_new {
     %v = irdl.any
     %b = irdl.base @frk_mem::@box
@@ -51,6 +80,14 @@ pub(crate) fn decode_box<'c>(context: &'c Context, r#type: Type<'c>) -> Result<T
     TypeAttribute::try_from(param)
         .map(|attribute| attribute.value())
         .map_err(|_| format!("box parameter must be a type: {type}", type = r#type))
+}
+
+/// Decodes `!frk_mem.arr<T>` to T.
+pub(crate) fn decode_arr<'c>(context: &'c Context, r#type: Type<'c>) -> Result<Type<'c>, String> {
+    let param = type_params(context, r#type, "!frk_mem.arr<", false)?;
+    TypeAttribute::try_from(param)
+        .map(|attribute| attribute.value())
+        .map_err(|_| format!("arr parameter must be a type: {type}", type = r#type))
 }
 
 pub(crate) fn verify_op<'c>(
@@ -98,6 +135,40 @@ pub(crate) fn verify_op<'c>(
             } else {
                 Err(format!("box_set stores a {value} into a box<{elem}>"))
             }
+        }
+        "array_new" => {
+            decode_arr(
+                context,
+                op.result(0)
+                    .map_err(|_| "array_new without a result".to_string())?
+                    .r#type(),
+            )?;
+            Ok(())
+        }
+        "array_get" => {
+            let elem = decode_arr(context, operand_type(0)?)?;
+            let result = op
+                .result(0)
+                .map_err(|_| "array_get without a result".to_string())?
+                .r#type();
+            if result == elem {
+                Ok(())
+            } else {
+                Err(format!("array_get yields {result} from an arr<{elem}>"))
+            }
+        }
+        "array_set" => {
+            let elem = decode_arr(context, operand_type(0)?)?;
+            let value = operand_type(2)?;
+            if value == elem {
+                Ok(())
+            } else {
+                Err(format!("array_set stores a {value} into an arr<{elem}>"))
+            }
+        }
+        "array_len" => {
+            decode_arr(context, operand_type(0)?)?;
+            Ok(())
         }
         other => Err(format!("no semantic verifier for frk_mem.{other}")),
     }

@@ -31,6 +31,56 @@ pub(crate) fn register(registry: &mut HashMap<&'static str, Box<dyn Eval>>) {
     registry.insert("arith.cmpf", Box::new(CmpF));
     registry.insert("arith.bitcast", Box::new(Bitcast));
     registry.insert("arith.xori", Box::new(XorI));
+    registry.insert("arith.extui", Box::new(ExtUI));
+    registry.insert("arith.sitofp", Box::new(SiToFp));
+    registry.insert("arith.fptosi", Box::new(FpToSi));
+}
+
+struct ExtUI;
+impl Eval for ExtUI {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let values = operand_values(frame, op, 0, 1)?;
+        let (bits, _) = values[0].int_parts()?;
+        let width = int_width(
+            op.result(0)
+                .map_err(|_| EvalError::Malformed("extui without result".into()))?
+                .r#type(),
+        )?;
+        continue_with_result(frame, op, Value::int(bits, width)?)
+    }
+}
+
+/// i64 → f64 (JS .length is a number; D-049).
+struct SiToFp;
+impl Eval for SiToFp {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let values = operand_values(frame, op, 0, 1)?;
+        continue_with_result(frame, op, Value::float(values[0].as_signed()? as f64))
+    }
+}
+
+/// f64 → i64, truncating (array indices; corpus fence: integral).
+struct FpToSi;
+impl Eval for FpToSi {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let values = operand_values(frame, op, 0, 1)?;
+        continue_with_result(frame, op, Value::int(values[0].as_float()? as i64 as u64, 64)?)
+    }
 }
 
 /// Two operands with no integer-width insistence (float ops).

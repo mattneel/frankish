@@ -109,6 +109,85 @@ pub extern "C" fn frk_rt_print_bool(value: u8) {
     println!("{}", if value != 0 { "true" } else { "false" });
 }
 
+// ---- strings (M9, D-049): rt-owned immutable UTF-16 values. Layout
+// {len: u64, units: u16 × len}, one allocation, plain malloc-domain
+// (strategy-independent; revisit at the M10 GC gate). ----
+
+fn str_alloc(len_units: u64) -> *mut u8 {
+    let bytes = 8u64.saturating_add(len_units.saturating_mul(2));
+    let base = raw_alloc(bytes);
+    if !base.is_null() {
+        unsafe { (base as *mut u64).write(len_units) };
+    }
+    base
+}
+
+unsafe fn str_parts<'a>(s: *const u8) -> (u64, &'a [u16]) {
+    unsafe {
+        let len = *(s as *const u64);
+        let units = std::slice::from_raw_parts(s.add(8) as *const u16, len as usize);
+        (len, units)
+    }
+}
+
+/// # Safety
+/// `units` must point at `len` valid u16s (or be unused when len=0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_str_from_units(units: *const u16, len: u64) -> *mut u8 {
+    let base = str_alloc(len);
+    if base.is_null() || len == 0 {
+        return base;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(units, base.add(8) as *mut u16, len as usize);
+    }
+    base
+}
+
+/// # Safety
+/// Both operands must be live strings from this runtime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_str_concat(a: *const u8, b: *const u8) -> *mut u8 {
+    unsafe {
+        let (alen, aunits) = str_parts(a);
+        let (blen, bunits) = str_parts(b);
+        let base = str_alloc(alen + blen);
+        if base.is_null() {
+            return base;
+        }
+        let data = base.add(8) as *mut u16;
+        std::ptr::copy_nonoverlapping(aunits.as_ptr(), data, alen as usize);
+        std::ptr::copy_nonoverlapping(bunits.as_ptr(), data.add(alen as usize), blen as usize);
+        base
+    }
+}
+
+/// # Safety
+/// Both operands must be live strings from this runtime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_str_eq(a: *const u8, b: *const u8) -> i64 {
+    unsafe {
+        let (alen, aunits) = str_parts(a);
+        let (blen, bunits) = str_parts(b);
+        (alen == blen && aunits == bunits) as i64
+    }
+}
+
+/// # Safety
+/// The operand must be a live string from this runtime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_str_len(s: *const u8) -> u64 {
+    unsafe { str_parts(s).0 }
+}
+
+/// # Safety
+/// The operand must be a live string from this runtime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_print_str(s: *const u8) {
+    let text = unsafe { String::from_utf16_lossy(str_parts(s).1) };
+    println!("{text}");
+}
+
 /// Test/introspection helper (not part of the lowering ABI).
 pub fn rc_count(payload: *mut u8) -> i64 {
     unsafe { *(payload.sub(8) as *const i64) }
@@ -179,6 +258,26 @@ mod tests {
         let _ = frk_rt_arena_alloc(8);
         let _ = frk_rt_rc_alloc(8);
         assert!(frk_rt_alloc_count() >= before + 2);
+    }
+
+    #[test]
+    fn strings_roundtrip_concat_and_compare() {
+        let hello: Vec<u16> = "héllo".encode_utf16().collect();
+        let world: Vec<u16> = " wörld".encode_utf16().collect();
+        unsafe {
+            let a = frk_rt_str_from_units(hello.as_ptr(), hello.len() as u64);
+            let b = frk_rt_str_from_units(world.as_ptr(), world.len() as u64);
+            let ab = frk_rt_str_concat(a, b);
+            assert_eq!(frk_rt_str_len(ab), (hello.len() + world.len()) as u64);
+            let again = frk_rt_str_concat(a, b);
+            assert_eq!(frk_rt_str_eq(ab, again), 1);
+            assert_eq!(frk_rt_str_eq(ab, a), 0);
+            // Surrogate pairs count 2 (JS .length semantics).
+            let emoji: Vec<u16> = "😀".encode_utf16().collect();
+            assert_eq!(emoji.len(), 2);
+            let e = frk_rt_str_from_units(emoji.as_ptr(), 2);
+            assert_eq!(frk_rt_str_len(e), 2);
+        }
     }
 
     #[test]

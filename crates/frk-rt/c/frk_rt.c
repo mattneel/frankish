@@ -73,6 +73,77 @@ void frk_rt_print_bool(unsigned char value) {
     printf("%s\n", value ? "true" : "false");
 }
 
+/* ---- strings (M9, D-049): {u64 len; u16 units[]}; plain malloc,
+ * strategy-independent. UTF-16 code-unit semantics throughout. ---- */
+
+static unsigned char *frk_str_alloc(uint64_t len_units) {
+    unsigned char *base = malloc(8 + (size_t)len_units * 2);
+    if (base) *(uint64_t *)base = len_units;
+    return base;
+}
+
+void *frk_rt_str_from_units(const uint16_t *units, uint64_t len) {
+    unsigned char *base = frk_str_alloc(len);
+    if (base && len) memcpy(base + 8, units, (size_t)len * 2);
+    return base;
+}
+
+void *frk_rt_str_concat(const unsigned char *a, const unsigned char *b) {
+    uint64_t alen = *(const uint64_t *)a, blen = *(const uint64_t *)b;
+    unsigned char *base = frk_str_alloc(alen + blen);
+    if (!base) return base;
+    memcpy(base + 8, a + 8, (size_t)alen * 2);
+    memcpy(base + 8 + (size_t)alen * 2, b + 8, (size_t)blen * 2);
+    return base;
+}
+
+int64_t frk_rt_str_eq(const unsigned char *a, const unsigned char *b) {
+    uint64_t alen = *(const uint64_t *)a, blen = *(const uint64_t *)b;
+    if (alen != blen) return 0;
+    return memcmp(a + 8, b + 8, (size_t)alen * 2) == 0;
+}
+
+uint64_t frk_rt_str_len(const unsigned char *s) { return *(const uint64_t *)s; }
+
+/* UTF-16 → UTF-8, lone surrogates to U+FFFD (matches Rust's
+ * from_utf16_lossy — the two printers must agree byte-for-byte). */
+static void put_code_point(uint32_t cp) {
+    if (cp < 0x80) putchar(cp);
+    else if (cp < 0x800) {
+        putchar(0xC0 | (cp >> 6));
+        putchar(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        putchar(0xE0 | (cp >> 12));
+        putchar(0x80 | ((cp >> 6) & 0x3F));
+        putchar(0x80 | (cp & 0x3F));
+    } else {
+        putchar(0xF0 | (cp >> 18));
+        putchar(0x80 | ((cp >> 12) & 0x3F));
+        putchar(0x80 | ((cp >> 6) & 0x3F));
+        putchar(0x80 | (cp & 0x3F));
+    }
+}
+
+void frk_rt_print_str(const unsigned char *s) {
+    uint64_t len = *(const uint64_t *)s;
+    const uint16_t *units = (const uint16_t *)(s + 8);
+    for (uint64_t i = 0; i < len; i++) {
+        uint16_t unit = units[i];
+        if (unit >= 0xD800 && unit <= 0xDBFF && i + 1 < len &&
+            units[i + 1] >= 0xDC00 && units[i + 1] <= 0xDFFF) {
+            uint32_t cp = 0x10000 + (((uint32_t)(unit - 0xD800)) << 10) +
+                          (units[i + 1] - 0xDC00);
+            put_code_point(cp);
+            i++;
+        } else if (unit >= 0xD800 && unit <= 0xDFFF) {
+            put_code_point(0xFFFD);
+        } else {
+            put_code_point(unit);
+        }
+    }
+    putchar('\n');
+}
+
 void frk_rt_rc_retain(void *payload) {
     if (!payload) return;
     int64_t *header = (int64_t *)((unsigned char *)payload - 8);

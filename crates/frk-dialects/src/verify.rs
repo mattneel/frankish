@@ -134,6 +134,9 @@ fn check<'c>(
     } else if let Some(suffix) = name.strip_prefix("frk_mem.") {
         crate::mem::verify_op(context, suffix, op)
             .map_err(|message| format!("frk_mem.{suffix}: {message}"))
+    } else if let Some(suffix) = name.strip_prefix("frk_str.") {
+        crate::str_dialect::verify_op(context, suffix, op)
+            .map_err(|message| format!("frk_str.{suffix}: {message}"))
     } else {
         Ok(())
     };

@@ -193,6 +193,77 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-050 [human-review] Second review integration (2026-07-03, arrived
+  mid-implementation of the strings/arrays session):
+  (1) noImplicitReturns: true joins the producer options — the
+  checker-as-oracle COROLLARY is now law: when the oracle offers a
+  flag that eliminates a divergence class, set the flag. The reader's
+  fall-off zero-synthesis demotes to defensive dead code, commented
+  as such.
+  (2) The freeze contract's MUSTs are refused as well as obeyed: a
+  bit-flipped artifact fixture is rejected naming BOTH hashes
+  (tests/loanword_contract.rs) — the M8 error-path treatment applied
+  to D-046.
+  (3) §6.5 has its witness: the source-mapped OOB trap
+  ("...out of bounds... at oob.ts:4:13") — TS-0's first genuine
+  runtime trap, threaded producer-span → line table → FileLineColLoc
+  → interpreter message. OOB-as-trap is stricter-than-JS by ruling
+  (D-049; D-038 stricter-is-deterministic precedent) — JS undefined
+  has no representation in a pure-f64 world.
+  (4) The strings steer and the implementation CROSSED IN FLIGHT: the
+  review recommended deferring the UTF-16 ruling until .length makes
+  representation observable — but the shipped slice already included
+  .length and the surrogate-counting golden, i.e. the named trigger
+  fired at implementation time. The ruling stands as what the
+  trigger would have produced: true UTF-16 in both runtime twins,
+  decided on the evidence the review asked for ("😀".length === 2
+  diffed against V8 across every runner). Recorded rather than
+  unwound — ripping out .length to restore deferability would be
+  theater.
+  (5) Startup-number framing corrected to the Static Hermes claim
+  already in LANDSCAPE: predictable performance and INSTANT STARTUP
+  on a boot-dominated microbenchmark — not "beats V8 at compute";
+  V8 closes on steady-state hot loops. The grid proves the former.
+  (6) Noted for the ts0 fuzzing arrival: the canon §6 print fence
+  must be baked into VALUE GENERATION or false print divergences
+  bury real signal (recorded in canon.md).
+  (7) Acknowledged as future refinements, not current debt:
+  assignment-driven let-boxing (one line, using facts tsc computes)
+  when the box count ever matters; it does not today.
+- D-049 [ts0/mem/str] Strings + arrays for TS-0 manifest completion
+  (M9 second half). ARRAYS are an allocation shape, so they live in
+  frk.mem: !frk_mem.arr<T> + array_new(len)/array_get/array_set/
+  array_len (packed, trait-free; literals lower to new + set chain —
+  no variadics, D-036). Elements are one-slot kinds only until a case
+  demands more. Representation: {len: i64, data: word × len} behind
+  the STRATEGY allocator (arrays are user heap). Out-of-bounds is
+  OUTSIDE the v0 contract: the interpreter traps deterministically
+  (D-029), native is unchecked (UB), JS neither — corpus law:
+  in-bounds only; a checked profile is frk.contract territory later.
+  JS reference semantics: interp arrays are shared mutable
+  (Value::Array, identity equality), aliases observe writes.
+  STRINGS are immutable rt values with UTF-16 code-unit semantics
+  (JS .length, surrogate pairs count 2 — interp stores Vec<u16>, not
+  Rust String). New kernel dialect frk_str: type @str; ops lit
+  (UTF-8 attr, lowered to a UTF-16 global) / concat / eq / len. All
+  lower to rt calls: frk_rt_str_from_units / _concat / _eq / _len /
+  frk_rt_print_str (UTF-16→UTF-8 out), layout {len: u64, units:
+  u16×len}, one allocation. v0 strings allocate via plain malloc
+  INSIDE the rt, uniform across strategies — strings are rt-owned
+  values, not user allocations; revisit at the M10 GC gate when
+  tracing wants them. CORRECTNESS corollary: SlotKind::Ptr splits
+  into managed (boxes/arrays — rc header at ptr-8, retain legal) and
+  unmanaged (strings — NO header; a retain would corrupt ptr-8), so
+  the rc lowering retains only managed pointers.
+  .length returns i64 at kernel level; TS emission converts sitofp
+  (JS lengths are numbers). Loanword vocabulary: ADDITIVE within v1
+  per D-046's extension rule (str/arr type rows; str literal, arr
+  literal, index, iset, len nodes); the reader's own type synthesis
+  disambiguates + (addf vs concat) and === — no producer type
+  annotations needed. console.log(string) prints raw (JS). Fences:
+  no push/methods, no string relationals, no templates, no holes,
+  integer indices only. Revisit: push at the first corpus case that
+  needs it; string tracing at M10.
 - D-048 [front] D-039's hard M9 trigger fires and resolves: the green
   tree is NOT adopted. Evidence: loanword v1 shipped without lossless
   trees — self-contained artifacts (embedded source + byte spans)

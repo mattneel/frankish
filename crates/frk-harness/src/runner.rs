@@ -252,6 +252,15 @@ fn interpret_case(case: &Case) -> Result<String, RunError> {
                 Ok(vec![])
             }),
         );
+        interp.register_builtin(
+            frk_front::loanword::PRINT_STR,
+            Box::new(|arguments, output| {
+                let units = arguments[0].as_str_units()?;
+                output.push_str(&String::from_utf16_lossy(units));
+                output.push('\n');
+                Ok(vec![])
+            }),
+        );
         interp
             .eval_function(&case.entry, &[])
             .map_err(|e| RunError::Invoke(e.to_string()))?;
@@ -341,6 +350,17 @@ impl Runner for JitRunner {
                 frk_front::loanword::PRINT_BOOL,
                 capture_print_bool as *mut (),
             );
+            engine.register_symbol(
+                "frk_rt_str_from_units",
+                frk_rt::frk_rt_str_from_units as *mut (),
+            );
+            engine.register_symbol("frk_rt_str_concat", frk_rt::frk_rt_str_concat as *mut ());
+            engine.register_symbol("frk_rt_str_eq", frk_rt::frk_rt_str_eq as *mut ());
+            engine.register_symbol("frk_rt_str_len", frk_rt::frk_rt_str_len as *mut ());
+            engine.register_symbol(
+                frk_front::loanword::PRINT_STR,
+                capture_print_str as *mut (),
+            );
         }
         if case.kind == SourceKind::Ts {
             CAPTURE.with(|buffer| buffer.borrow_mut().clear());
@@ -382,6 +402,19 @@ extern "C" fn capture_print_bool(value: u8) {
     CAPTURE.with(|buffer| {
         let mut buffer = buffer.borrow_mut();
         buffer.push_str(if value != 0 { "true" } else { "false" });
+        buffer.push('\n');
+    });
+}
+
+extern "C" fn capture_print_str(s: *const u8) {
+    let text = unsafe {
+        let len = *(s as *const u64) as usize;
+        let units = std::slice::from_raw_parts(s.add(8) as *const u16, len);
+        String::from_utf16_lossy(units)
+    };
+    CAPTURE.with(|buffer| {
+        let mut buffer = buffer.borrow_mut();
+        buffer.push_str(&text);
         buffer.push('\n');
     });
 }

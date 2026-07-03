@@ -43,6 +43,7 @@ use sha2::{Digest, Sha256};
 
 pub const PRINT_F64: &str = "frk_rt_print_f64";
 pub const PRINT_BOOL: &str = "frk_rt_print_bool";
+pub const PRINT_STR: &str = "frk_rt_print_str";
 
 #[derive(Debug)]
 pub struct LoanwordError(pub String);
@@ -118,11 +119,13 @@ fn verify_sha(document: &Json) -> Result<()> {
 
 // ---- typed AST ----
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 enum TsTy {
     Num,
     Bool,
     Void,
+    Str,
+    Arr(Box<TsTy>),
 }
 
 struct TsFn {
@@ -183,7 +186,35 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
             "num" => Ok(TsTy::Num),
             "bool" => Ok(TsTy::Bool),
             "void" => Ok(TsTy::Void),
+            "str" => Ok(TsTy::Str),
+            // arr rows reference an earlier interned row (producers
+            // intern elem first); resolved in a second pass below.
+            "arr" => Ok(TsTy::Void),
             other => err(format!("unsupported interned type {other:?}")),
+        })
+        .collect::<Result<_>>()?;
+    // Second pass: resolve arr rows now that scalars exist.
+    let types: Vec<TsTy> = field(&document, "types")?
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            if kind(row)? == "arr" {
+                let elem = field(row, "elem")?
+                    .as_u64()
+                    .ok_or_else(|| LoanwordError("arr elem ref".into()))?;
+                let elem = types
+                    .get(elem as usize)
+                    .cloned()
+                    .ok_or_else(|| LoanwordError("arr elem out of range".into()))?;
+                if matches!(elem, TsTy::Arr(_)) {
+                    return err("nested arrays are fenced in TS-0 (D-049)");
+                }
+                Ok(TsTy::Arr(Box::new(elem)))
+            } else {
+                Ok(types[index].clone())
+            }
         })
         .collect::<Result<_>>()?;
     let type_at = |node: &Json, key: &str| -> Result<TsTy> {
@@ -192,7 +223,7 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
             .ok_or_else(|| LoanwordError("type ref must be an index".into()))?;
         types
             .get(index as usize)
-            .copied()
+            .cloned()
             .ok_or_else(|| LoanwordError(format!("type ref {index} out of range")))
     };
 
@@ -258,7 +289,12 @@ pub fn compile_loanword<'c>(context: &'c Context, text: &str) -> Result<Module<'
     // resolves them its own way — D-047).
     let f64_type = Type::parse(context, "f64").ok_or(LoanwordError("f64".into()))?;
     let i1_type: Type = IntegerType::new(context, 1).into();
-    for (symbol, param) in [(PRINT_F64, f64_type), (PRINT_BOOL, i1_type)] {
+    let str_type = Type::parse(context, "!frk_str.str").ok_or(LoanwordError("str".into()))?;
+    for (symbol, param) in [
+        (PRINT_F64, f64_type),
+        (PRINT_BOOL, i1_type),
+        (PRINT_STR, str_type),
+    ] {
         let declaration = OperationBuilder::new("func.func", Location::unknown(context))
             .add_attributes(&[
                 (
@@ -300,7 +336,7 @@ struct Emitter<'c, 'p> {
 }
 
 /// One local: parameters bind values, `let` locals bind boxes.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Binding<'c, 'r> {
     Value(Value<'c, 'r>, TsTy),
     Boxed(Value<'c, 'r>, TsTy),
@@ -342,10 +378,18 @@ impl<'c, 'p> Emitter<'c, 'p> {
         )
     }
 
-    fn mlir_ty(&self, ty: TsTy) -> Result<Type<'c>> {
+    fn mlir_ty(&self, ty: &TsTy) -> Result<Type<'c>> {
         match ty {
             TsTy::Num => Type::parse(self.context, "f64").ok_or(LoanwordError("f64".into())),
             TsTy::Bool => Ok(IntegerType::new(self.context, 1).into()),
+            TsTy::Str => {
+                Type::parse(self.context, "!frk_str.str").ok_or(LoanwordError("str".into()))
+            }
+            TsTy::Arr(elem) => {
+                let inner = self.mlir_ty(elem)?;
+                Type::parse(self.context, &format!("!frk_mem.arr<{inner}>"))
+                    .ok_or(LoanwordError("arr".into()))
+            }
             TsTy::Void => err("void has no value type"),
         }
     }
@@ -354,9 +398,9 @@ impl<'c, 'p> Emitter<'c, 'p> {
         let params: Vec<Type> = function
             .params
             .iter()
-            .map(|(_, ty)| self.mlir_ty(*ty))
+            .map(|(_, ty)| self.mlir_ty(ty))
             .collect::<Result<_>>()?;
-        let results: Vec<Type> = match function.ret {
+        let results: Vec<Type> = match &function.ret {
             TsTy::Void => vec![],
             other => vec![self.mlir_ty(other)?],
         };
@@ -370,12 +414,12 @@ impl<'c, 'p> Emitter<'c, 'p> {
         let param_types: Vec<(Type, Location)> = function
             .params
             .iter()
-            .map(|(_, ty)| Ok((self.mlir_ty(*ty)?, location)))
+            .map(|(_, ty)| Ok((self.mlir_ty(ty)?, location)))
             .collect::<Result<_>>()?;
         let entry = region.append_block(Block::new(&param_types));
 
         // Exit block carries the return value (void: no args).
-        let exit = match function.ret {
+        let exit = match &function.ret {
             TsTy::Void => region.append_block(Block::new(&[])),
             other => region.append_block(Block::new(&[(self.mlir_ty(other)?, location)])),
         };
@@ -388,7 +432,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 .to_raw();
             env.insert(
                 name.clone(),
-                Binding::Value(unsafe { Value::from_raw(raw) }, *ty),
+                Binding::Value(unsafe { Value::from_raw(raw) }, ty.clone()),
             );
         }
         let mut fcx = Fcx {
@@ -396,16 +440,19 @@ impl<'c, 'p> Emitter<'c, 'p> {
             block: entry,
             env,
             exit,
-            ret: function.ret,
+            ret: function.ret.clone(),
             terminated: false,
         };
         for statement in &function.body {
             self.emit_stmt(&mut fcx, statement)?;
         }
-        // Fall-off-the-end: void returns; value functions return zero
-        // (tsc without noImplicitReturns allows this; D-047 fence note).
+        // Fall-off-the-end: void returns. For value functions this is
+        // DEFENSIVE DEAD CODE since D-050: the producer sets
+        // noImplicitReturns, so tsc rejects fall-off before we ever
+        // see it; the zero synthesis remains as belt-and-suspenders
+        // against hand-written artifacts.
         if !fcx.terminated {
-            match function.ret {
+            match &function.ret {
                 TsTy::Void => {
                     fcx.block
                         .append_operation(self.br(fcx.exit, None, location)?);
@@ -420,11 +467,19 @@ impl<'c, 'p> Emitter<'c, 'p> {
                     fcx.block
                         .append_operation(self.br(fcx.exit, Some(value), location)?);
                 }
+                other => {
+                    // Str/Arr functions must return on every path — no
+                    // zero value exists to synthesize (D-049 fence).
+                    return err(format!(
+                        "function {:?} can fall off the end but returns {other:?} —                          add a return on every path",
+                        function.name
+                    ));
+                }
             }
         }
 
         // exit: func.return its argument (if any).
-        let operands: Vec<Value> = match function.ret {
+        let operands: Vec<Value> = match &function.ret {
             TsTy::Void => vec![],
             _ => {
                 let raw = exit
@@ -503,10 +558,11 @@ impl<'c, 'p> Emitter<'c, 'p> {
         match kind(node)? {
             "log" => {
                 let (value, ty) = self.emit_expr(fcx, field(node, "e")?)?;
-                let symbol = match ty {
+                let symbol = match &ty {
                     TsTy::Num => PRINT_F64,
                     TsTy::Bool => PRINT_BOOL,
-                    TsTy::Void => return err("console.log of void"),
+                    TsTy::Str => PRINT_STR,
+                    other => return err(format!("console.log of {other:?}")),
                 };
                 fcx.block.append_operation(
                     OperationBuilder::new("func.call", location)
@@ -527,7 +583,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
                     .ok_or_else(|| LoanwordError("let name".into()))?;
                 let boxed_ty = Type::parse(
                     self.context,
-                    &format!("!frk_mem.box<{}>", self.mlir_ty(ty)?),
+                    &format!("!frk_mem.box<{}>", self.mlir_ty(&ty)?),
                 )
                 .ok_or_else(|| LoanwordError("box type".into()))?;
                 let boxed = self.op_result(
@@ -562,6 +618,21 @@ impl<'c, 'p> Emitter<'c, 'p> {
                     )),
                     None => err(format!("assignment to unknown {name:?}")),
                 }
+            }
+            "iset" => {
+                let (array, array_ty) = self.emit_expr(fcx, field(node, "a")?)?;
+                if !matches!(array_ty, TsTy::Arr(_)) {
+                    return err("indexed assignment to a non-array");
+                }
+                let index = self.index_value(fcx, field(node, "i")?, location)?;
+                let (value, _) = self.emit_expr(fcx, field(node, "e")?)?;
+                fcx.block.append_operation(
+                    OperationBuilder::new("frk_mem.array_set", location)
+                        .add_operands(&[array, index, value])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                );
+                Ok(())
             }
             "if" => {
                 let (condition, _) = self.emit_expr(fcx, field(node, "c")?)?;
@@ -628,7 +699,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
                     Some(expr) => Some(self.emit_expr(fcx, expr)?.0),
                     None => None,
                 };
-                match (fcx.ret, value) {
+                match (fcx.ret.clone(), value) {
                     (TsTy::Void, None) => {
                         fcx.block
                             .append_operation(self.br(fcx.exit, None, location)?);
@@ -708,14 +779,14 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 let name = field(node, "name")?
                     .as_str()
                     .ok_or_else(|| LoanwordError("var name".into()))?;
-                match fcx.env.get(name).copied() {
+                match fcx.env.get(name).cloned() {
                     Some(Binding::Value(value, ty)) => Ok((value, ty)),
                     Some(Binding::Boxed(cell, ty)) => {
                         let value = self.op_result(
                             fcx.block,
                             OperationBuilder::new("frk_mem.box_get", location)
                                 .add_operands(&[cell])
-                                .add_results(&[self.mlir_ty(ty)?])
+                                .add_results(&[self.mlir_ty(&ty)?])
                                 .build()
                                 .map_err(|e| LoanwordError(e.to_string()))?,
                         )?;
@@ -724,14 +795,127 @@ impl<'c, 'p> Emitter<'c, 'p> {
                     None => err(format!("unbound variable {name:?}")),
                 }
             }
+            "str" => {
+                let text = field(node, "v")?
+                    .as_str()
+                    .ok_or_else(|| LoanwordError("str literal".into()))?;
+                let value = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_str.lit", location)
+                        .add_attributes(&[(
+                            Identifier::new(self.context, "text"),
+                            StringAttribute::new(self.context, text).into(),
+                        )])
+                        .add_results(&[self.mlir_ty(&TsTy::Str)?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                Ok((value, TsTy::Str))
+            }
+            "arr" => {
+                let items = field(node, "items")?
+                    .as_array()
+                    .ok_or_else(|| LoanwordError("arr items".into()))?;
+                if items.is_empty() {
+                    return err("empty array literals need an annotation (fenced in TS-0)");
+                }
+                let mut values = Vec::new();
+                let mut elem_ty = None;
+                for item in items {
+                    let (value, ty) = self.emit_expr(fcx, item)?;
+                    if elem_ty.get_or_insert_with(|| ty.clone()) != &ty {
+                        return err("heterogeneous array literal");
+                    }
+                    values.push(value);
+                }
+                let elem = elem_ty.unwrap();
+                let arr_ty = TsTy::Arr(Box::new(elem));
+                let i64_type: Type = IntegerType::new(self.context, 64).into();
+                let len = self.op_result(
+                    fcx.block,
+                    melior::dialect::arith::constant(
+                        self.context,
+                        IntegerAttribute::new(i64_type, values.len() as i64).into(),
+                        location,
+                    ),
+                )?;
+                let array = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_mem.array_new", location)
+                        .add_operands(&[len])
+                        .add_results(&[self.mlir_ty(&arr_ty)?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                for (position, value) in values.into_iter().enumerate() {
+                    let index = self.op_result(
+                        fcx.block,
+                        melior::dialect::arith::constant(
+                            self.context,
+                            IntegerAttribute::new(i64_type, position as i64).into(),
+                            location,
+                        ),
+                    )?;
+                    fcx.block.append_operation(
+                        OperationBuilder::new("frk_mem.array_set", location)
+                            .add_operands(&[array, index, value])
+                            .build()
+                            .map_err(|e| LoanwordError(e.to_string()))?,
+                    );
+                }
+                Ok((array, arr_ty))
+            }
+            "index" => {
+                let (array, array_ty) = self.emit_expr(fcx, field(node, "a")?)?;
+                let TsTy::Arr(elem) = array_ty else {
+                    return err("indexing a non-array");
+                };
+                let index = self.index_value(fcx, field(node, "i")?, location)?;
+                let value = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_mem.array_get", location)
+                        .add_operands(&[array, index])
+                        .add_results(&[self.mlir_ty(&elem)?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                Ok((value, *elem))
+            }
+            "len" => {
+                let (value, ty) = self.emit_expr(fcx, field(node, "e")?)?;
+                let op_name = match ty {
+                    TsTy::Str => "frk_str.len",
+                    TsTy::Arr(_) => "frk_mem.array_len",
+                    other => return err(format!(".length of {other:?}")),
+                };
+                let i64_type: Type = IntegerType::new(self.context, 64).into();
+                let raw = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new(op_name, location)
+                        .add_operands(&[value])
+                        .add_results(&[i64_type])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                // JS lengths are numbers (D-049).
+                let as_f64 = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("arith.sitofp", location)
+                        .add_operands(&[raw])
+                        .add_results(&[self.mlir_ty(&TsTy::Num)?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                Ok((as_f64, TsTy::Num))
+            }
             "bin" => {
                 let op = field(node, "op")?
                     .as_str()
                     .ok_or_else(|| LoanwordError("bin op".into()))?;
                 let (lhs, lhs_ty) = self.emit_expr(fcx, field(node, "l")?)?;
                 let (rhs, _) = self.emit_expr(fcx, field(node, "r")?)?;
-                let f64_type = self.mlir_ty(TsTy::Num)?;
-                let i1_type = self.mlir_ty(TsTy::Bool)?;
+                let f64_type = self.mlir_ty(&TsTy::Num)?;
+                let i1_type = self.mlir_ty(&TsTy::Bool)?;
                 let block = fcx.block;
                 let arith = |name: &str| -> Result<(Value<'c, 'r>, TsTy)> {
                     Ok((
@@ -765,6 +949,32 @@ impl<'c, 'p> Emitter<'c, 'p> {
                     ))
                 };
                 match op {
+                    "+" if lhs_ty == TsTy::Str => {
+                        let value = self.op_result(
+                            block,
+                            OperationBuilder::new("frk_str.concat", location)
+                                .add_operands(&[lhs, rhs])
+                                .add_results(&[self.mlir_ty(&TsTy::Str)?])
+                                .build()
+                                .map_err(|e| LoanwordError(e.to_string()))?,
+                        )?;
+                        Ok((value, TsTy::Str))
+                    }
+                    "===" | "!==" if lhs_ty == TsTy::Str => {
+                        let equal = self.op_result(
+                            block,
+                            OperationBuilder::new("frk_str.eq", location)
+                                .add_operands(&[lhs, rhs])
+                                .add_results(&[i1_type])
+                                .build()
+                                .map_err(|e| LoanwordError(e.to_string()))?,
+                        )?;
+                        if op == "===" {
+                            Ok((equal, TsTy::Bool))
+                        } else {
+                            Ok((self.bool_not_at(block, equal, location)?, TsTy::Bool))
+                        }
+                    }
                     "+" => arith("arith.addf"),
                     "-" => arith("arith.subf"),
                     "*" => arith("arith.mulf"),
@@ -826,7 +1036,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
                             fcx.block,
                             OperationBuilder::new("arith.negf", location)
                                 .add_operands(&[value])
-                                .add_results(&[self.mlir_ty(TsTy::Num)?])
+                                .add_results(&[self.mlir_ty(&TsTy::Num)?])
                                 .build()
                                 .map_err(|e| LoanwordError(e.to_string()))?,
                         )?,
@@ -856,7 +1066,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
 
                 let join = fcx
                     .region
-                    .append_block(Block::new(&[(self.mlir_ty(ty)?, location)]));
+                    .append_block(Block::new(&[(self.mlir_ty(&ty)?, location)]));
                 true_exit.append_operation(self.br(join, Some(true_value), location)?);
                 false_exit.append_operation(self.br(join, Some(false_value), location)?);
                 fcx.block = join;
@@ -896,11 +1106,11 @@ impl<'c, 'p> Emitter<'c, 'p> {
                             FlatSymbolRefAttribute::new(self.context, name).into(),
                         )])
                         .add_operands(&operands)
-                        .add_results(&[self.mlir_ty(target.ret)?])
+                        .add_results(&[self.mlir_ty(&target.ret)?])
                         .build()
                         .map_err(|e| LoanwordError(e.to_string()))?,
                 )?;
-                Ok((value, target.ret))
+                Ok((value, target.ret.clone()))
             }
             other => err(format!("unsupported expression kind {other:?}")),
         }
@@ -933,7 +1143,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
             fcx.block,
             OperationBuilder::new("arith.constant", location)
                 .add_attributes(&[(Identifier::new(self.context, "value"), attribute)])
-                .add_results(&[self.mlir_ty(TsTy::Num)?])
+                .add_results(&[self.mlir_ty(&TsTy::Num)?])
                 .build()
                 .map_err(|e| LoanwordError(e.to_string()))?,
         )
@@ -967,7 +1177,52 @@ impl<'c, 'p> Emitter<'c, 'p> {
             fcx.block,
             OperationBuilder::new("arith.xori", location)
                 .add_operands(&[lhs, rhs])
-                .add_results(&[self.mlir_ty(TsTy::Bool)?])
+                .add_results(&[self.mlir_ty(&TsTy::Bool)?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )
+    }
+
+    /// JS index (a number) → i64 via fptosi; corpus fence: integral,
+    /// in-bounds (D-049).
+    fn index_value<'r>(
+        &self,
+        fcx: &mut Fcx<'c, 'r>,
+        node: &Json,
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        let (raw, _) = self.emit_expr(fcx, node)?;
+        let i64_type: Type = IntegerType::new(self.context, 64).into();
+        self.op_result(
+            fcx.block,
+            OperationBuilder::new("arith.fptosi", location)
+                .add_operands(&[raw])
+                .add_results(&[i64_type])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )
+    }
+
+    fn bool_not_at<'r>(
+        &self,
+        block: BlockRef<'c, 'r>,
+        value: Value<'c, 'r>,
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        let i1_type: Type = IntegerType::new(self.context, 1).into();
+        let one = self.op_result(
+            block,
+            melior::dialect::arith::constant(
+                self.context,
+                IntegerAttribute::new(i1_type, 1).into(),
+                location,
+            ),
+        )?;
+        self.op_result(
+            block,
+            OperationBuilder::new("arith.xori", location)
+                .add_operands(&[value, one])
+                .add_results(&[i1_type])
                 .build()
                 .map_err(|e| LoanwordError(e.to_string()))?,
         )

@@ -38,4 +38,14 @@ Curated test262 slice per stage (license: BSD) + tsc baseline-derived cases
 + hand corpus per idiom. node/V8 is ground truth through canon filter.
 
 ## Status
-Not started. TS-0 gated on M9 (loanword freeze).
+TS-0 SHIPPED (2026-07-03): the full stage scope — monomorphic
+functions, number/boolean/string, arrays, control flow — compiles
+through loanword v1 (frozen, D-046) into the kernel dialects and runs
+byte-identical to node across interp, jit×{arena,rc}, and the five-
+architecture AOT grid. Conventions and fences: D-047 (entry protocol,
+JS semantic mappings, canon §6 print fence), D-049 (arrays in
+frk.mem, OOB traps stricter-than-JS with source locations, strings
+as rt-owned UTF-16 — the code-unit ruling fired at .length), D-050
+(noImplicitReturns as checker-as-oracle corollary; tamper-refusal
+and §6.5 witnesses). TS-1 (discriminated unions + narrowing) is the
+next stage, unscheduled.

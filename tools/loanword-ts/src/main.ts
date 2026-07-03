@@ -32,12 +32,38 @@ if (!file) {
 }
 const source = readFileSync(file, "utf8");
 
-// Minimal ambient prelude instead of a lib: TS-0 slice-1 speaks
-// number/boolean and console.log only.
-const PRELUDE = "declare const console: { log(x: number | boolean): void };\n";
+// Minimal ambient prelude instead of a lib: the classic noLib global
+// set plus exactly the members TS-0 speaks (.length on string/array,
+// console.log). The checker still owns all the typing.
+const PRELUDE = `
+interface Object {}
+interface Function {}
+interface CallableFunction extends Function {}
+interface NewableFunction extends Function {}
+interface IArguments {}
+interface RegExp {}
+interface Symbol {}
+interface Number {}
+interface Boolean {}
+interface String { readonly length: number; }
+interface Array<T> { readonly length: number; [n: number]: T; }
+interface ReadonlyArray<T> { readonly length: number; readonly [n: number]: T; }
+interface ConcatArray<T> {}
+interface TemplateStringsArray {}
+declare const console: { log(x: number | boolean | string): void };
+`;
 const preludeName = "__frk_prelude.d.ts";
 
-const options: ts.CompilerOptions = { strict: true, noEmit: true, noLib: true };
+// noImplicitReturns: checker-as-oracle corollary (D-050) — when the
+// oracle offers a flag that eliminates a divergence class (fall-off
+// returning frankish-0 vs node-undefined), SET THE FLAG. The reader's
+// zero-synthesis is defensive dead code from here on.
+const options: ts.CompilerOptions = {
+  strict: true,
+  noEmit: true,
+  noLib: true,
+  noImplicitReturns: true,
+};
 const host = ts.createCompilerHost(options);
 const baseGet = host.getSourceFile.bind(host);
 host.getSourceFile = (name, lang, ...rest) => {
@@ -93,7 +119,11 @@ function annotationType(node: ts.TypeNode | undefined, owner: ts.Node): number {
   const text = node.getText(sourceFile);
   if (text === "number") return internType({ k: "num" });
   if (text === "boolean") return internType({ k: "bool" });
+  if (text === "string") return internType({ k: "str" });
   if (text === "void") return internType({ k: "void" });
+  if (text === "number[]") return internType({ k: "arr", elem: internType({ k: "num" }) });
+  if (text === "boolean[]") return internType({ k: "arr", elem: internType({ k: "bool" }) });
+  if (text === "string[]") return internType({ k: "arr", elem: internType({ k: "str" }) });
   fail(node, `type annotation \`${text}\``);
 }
 
@@ -118,6 +148,24 @@ function expr(node: ts.Expression): Json {
   if (ts.isNumericLiteral(node)) {
     // Bit-exact via JS ToString: shortest round-trip digits.
     return { k: "num", v: String(Number(node.text)), span: span(node) };
+  }
+  if (ts.isStringLiteral(node)) return { k: "str", v: node.text, span: span(node) };
+  if (ts.isArrayLiteralExpression(node)) {
+    return { k: "arr", items: node.elements.map((e) => expr(e)), span: span(node) };
+  }
+  if (ts.isElementAccessExpression(node)) {
+    return {
+      k: "index",
+      a: expr(node.expression),
+      i: expr(node.argumentExpression),
+      span: span(node),
+    };
+  }
+  if (ts.isPropertyAccessExpression(node)) {
+    if (node.name.text === "length") {
+      return { k: "len", e: expr(node.expression), span: span(node) };
+    }
+    fail(node, `property \`${node.name.text}\``);
   }
   if (node.kind === ts.SyntaxKind.TrueKeyword) return { k: "bool", v: true, span: span(node) };
   if (node.kind === ts.SyntaxKind.FalseKeyword) return { k: "bool", v: false, span: span(node) };
@@ -170,6 +218,7 @@ function logKind(node: ts.Expression): string {
   const type = checker.getTypeAtLocation(node);
   if (type.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) return "num";
   if (type.flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) return "bool";
+  if (type.flags & (ts.TypeFlags.String | ts.TypeFlags.StringLiteral)) return "str";
   fail(node, `console.log of type \`${checker.typeToString(type)}\``);
 }
 
@@ -186,6 +235,15 @@ function stmt(node: ts.Statement): Json {
       node.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
     ) {
       const target = node.expression.left;
+      if (ts.isElementAccessExpression(target)) {
+        return {
+          k: "iset",
+          a: expr(target.expression),
+          i: expr(target.argumentExpression),
+          e: expr(node.expression.right),
+          span: span(node),
+        };
+      }
       if (!ts.isIdentifier(target)) fail(node, "assignment to a non-identifier");
       return {
         k: "assign",
