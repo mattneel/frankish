@@ -193,6 +193,39 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-061 [m15/ctl] The frk.ctl v0 native lowering, settled after a
+  3-designer+judge panel (transcript in the session; judge chose
+  PASS-OVER-LLVM). Decision, reconciling the panel:
+  (1) The ctl OPS lower inside lower-frk-kernel (all three designers
+  + judge agreed): CtlPrompt → enter/apply-body/exit/resolve/load
+  (branchless — resolve OVERWRITES a 2-word alloca out-slot iff this
+  prompt is the target, reusing the grid-proven TableRawGet
+  out-pointer recipe, which the judge scored "Tier-0 strongest");
+  CtlAbort → extract dyn words + frk_rt_ctl_abort call; CtlPending →
+  the real runtime flag. The body-apply carries a frk.ctl_body unit
+  attr (its result is caught locally by resolve, never propagated).
+  (2) Runtime twins: the pending cell (D-060 rt commit) — enter/exit/
+  abort/pending/resolve, identical Rust+C, no unwinder.
+  (3) GUARD PLACEMENT — the one divergence from the judge's chosen
+  base: guards go in the FRONTEND (emit pending-check + cf.cond_br
+  after every non-tail user call; abort → abort-call + return-dummy),
+  NOT a post-LLVM block-splitting pass. Rationale: (a) melior
+  block-splitting was the panel's unanimous top risk; the emitter
+  builds guard blocks naturally, sidestepping it; (b) the judge's
+  verifier-first objection to frontend-explicit ("hand-written native
+  goldens must author guards") does NOT bind here — the hand-written
+  ctl goldens are INTERP-ONLY (real unwind, no guards), and native
+  verification is entirely the scheme differential (L3); (c) the
+  interp evaluates the emitted guards harmlessly (frk_ctl.pending
+  returns 0 in the oracle; the interp has already unwound before any
+  guard is reached, so ^propagate is dead interp-side and the
+  observable matches native). Heeded panel catches (all in
+  ctl-calculus.md §3 fence): tokens stay OPAQUE (never printed/
+  compared); aborts never cross frk_entry or a twin callback; the
+  alloca-in-prompt hazard is fenced (prompts stay out of loop bodies
+  in v0; hoist to entry block if forced). L1 verifier landing WITH
+  the lowering: goldens/ctl/escape_direct (a direct-abort case needing
+  no guards) — interp+jit+jit-rc+AOT-grid(4×2) all yield 42.
 - D-060 [m15/ctl] The Rocq-anchor delegation, resolved by the human:
   "Why do I need to provide the calculus? You can do it just fine."
   §4.4's anchor is satisfied IN-REPO: docs/ctl-calculus.md (κ_frk) is

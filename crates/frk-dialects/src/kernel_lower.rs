@@ -399,6 +399,22 @@ enum Planned<'c, 'a> {
     BstrRep {
         op: OperationRef<'c, 'a>,
     },
+    /// frk_ctl.prompt (κ_frk, D-060): enter → apply body(token) →
+    /// exit → resolve-overwrites → yield. `param_kinds` is the body
+    /// closure's parameter kinds (v0: a single Int token).
+    CtlPrompt {
+        op: OperationRef<'c, 'a>,
+        result: Type<'c>,
+    },
+    /// frk_ctl.abort: park the dyn value + set pending. Control
+    /// diversion (early return) is the frk-ctl-guard pass's job.
+    CtlAbort {
+        op: OperationRef<'c, 'a>,
+    },
+    /// frk_ctl.pending: read the result-passing carrier.
+    CtlPending {
+        op: OperationRef<'c, 'a>,
+    },
 }
 
 /// Lowers every kernel op and type under `module` (the pipeline anchors
@@ -634,6 +650,8 @@ fn collect<'c, 'a>(
         plans.push(plan_dyn(context, suffix, op)?);
     } else if let Some(suffix) = name.strip_prefix("frk_bstr.") {
         plans.push(plan_bstr(suffix, op, str_counter)?);
+    } else if let Some(suffix) = name.strip_prefix("frk_ctl.") {
+        plans.push(plan_ctl(context, suffix, op)?);
     } else {
         if name == "func.func" {
             if let Some(mapped) = mapped_signature(context, op)? {
@@ -932,6 +950,27 @@ fn plan_mem<'c, 'a>(
     }
 }
 
+fn plan_ctl<'c, 'a>(
+    context: &'c Context,
+    suffix: &str,
+    op: OperationRef<'c, 'a>,
+) -> Result<Planned<'c, 'a>, String> {
+    match suffix {
+        "prompt" => {
+            let result = map_type(
+                context,
+                op.result(0)
+                    .map_err(|_| "prompt without a result".to_string())?
+                    .r#type(),
+            )?;
+            Ok(Planned::CtlPrompt { op, result })
+        }
+        "abort" => Ok(Planned::CtlAbort { op }),
+        "pending" => Ok(Planned::CtlPending { op }),
+        other => Err(format!("no lowering for frk_ctl.{other}")),
+    }
+}
+
 fn plan_dyn<'c, 'a>(
     context: &'c Context,
     suffix: &str,
@@ -1148,6 +1187,13 @@ fn declare_str_runtime(
             Planned::TableNext { .. } => needed.push(("frk_rt_table_next", false)),
             Planned::BstrSub { .. } => needed.push(("frk_rt_bstr_sub", true)),
             Planned::BstrRep { .. } => needed.push(("frk_rt_bstr_rep", true)),
+            Planned::CtlPrompt { .. } => {
+                needed.push(("frk_rt_ctl_prompt_enter", false));
+                needed.push(("frk_rt_ctl_prompt_exit", false));
+                needed.push(("frk_rt_ctl_resolve", false));
+            }
+            Planned::CtlAbort { .. } => needed.push(("frk_rt_ctl_abort", false)),
+            Planned::CtlPending { .. } => needed.push(("frk_rt_ctl_pending", false)),
             _ => {}
         }
     }
@@ -1199,6 +1245,19 @@ fn declare_str_runtime(
                 llvm::r#type::function(ptr, &[ptr, i64_type, i64_type], false)
             }
             "frk_rt_bstr_rep" => llvm::r#type::function(ptr, &[ptr, i64_type], false),
+            "frk_rt_ctl_prompt_enter" => llvm::r#type::function(i64_type, &[], false),
+            "frk_rt_ctl_prompt_exit" => {
+                llvm::r#type::function(llvm::r#type::void(context), &[i64_type], false)
+            }
+            "frk_rt_ctl_abort" => llvm::r#type::function(
+                llvm::r#type::void(context),
+                &[i64_type, i64_type, i64_type],
+                false,
+            ),
+            "frk_rt_ctl_pending" => llvm::r#type::function(i64_type, &[], false),
+            "frk_rt_ctl_resolve" => {
+                llvm::r#type::function(i64_type, &[i64_type, ptr], false)
+            }
             other => return Err(format!("unknown str runtime symbol {other}")),
         };
         let declaration = OperationBuilder::new("llvm.func", location)
@@ -2177,6 +2236,146 @@ fn apply<'c, 'a>(
             let location = op.location();
             let word = dyn_field(context, rewriter, operand(op, 0)?, 1, location)?;
             finish(rewriter, op, word)
+        }
+        Planned::CtlPrompt { op, result } => {
+            // κ_frk §2 as a branchless sequence (D-060): enter → apply
+            // body(token) → exit → resolve-overwrites → load. The body
+            // apply carries `frk.ctl_body` so the guard pass leaves it
+            // alone — its result is caught locally by `resolve`, never
+            // propagated past `prompt`.
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
+
+            let closure = operand(op, 0)?;
+            let fn_ptr = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                closure,
+                DenseI64ArrayAttribute::new(context, &[0]),
+                ptr,
+                location,
+            )))?;
+            let env_ptr = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                closure,
+                DenseI64ArrayAttribute::new(context, &[1]),
+                ptr,
+                location,
+            )))?;
+            let token = result_value(rewriter.insert(direct_call(
+                context,
+                "frk_rt_ctl_prompt_enter",
+                &[],
+                i64_type,
+                location,
+            )?))?;
+            let body_call = rewriter.insert(
+                OperationBuilder::new("llvm.call", location)
+                    .add_attributes(&[
+                        (
+                            melior::ir::Identifier::new(context, "CConv"),
+                            Attribute::parse(context, "#llvm.cconv<ccc>").ok_or("CConv")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "TailCallKind"),
+                            Attribute::parse(context, "#llvm.tailcallkind<none>")
+                                .ok_or("TailCallKind")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "fastmathFlags"),
+                            Attribute::parse(context, "#llvm.fastmath<none>")
+                                .ok_or("fastmathFlags")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "op_bundle_sizes"),
+                            Attribute::parse(context, "array<i32>").ok_or("op_bundle_sizes")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "operandSegmentSizes"),
+                            Attribute::parse(context, "array<i32: 3, 0>")
+                                .ok_or("operandSegmentSizes")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "frk.ctl_body"),
+                            Attribute::parse(context, "unit").ok_or("ctl_body")?,
+                        ),
+                    ])
+                    .add_operands(&[fn_ptr, env_ptr, token])
+                    .add_results(&[result])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            );
+            let body_result = result_value(body_call)?;
+            rewriter.insert(direct_call_void(
+                context,
+                "frk_rt_ctl_prompt_exit",
+                &[token],
+                location,
+            )?);
+            let two = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, 2).into(),
+                location,
+            )))?;
+            let out = result_value(rewriter.insert(
+                OperationBuilder::new("llvm.alloca", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "elem_type"),
+                        TypeAttribute::new(i64_type).into(),
+                    )])
+                    .add_operands(&[two])
+                    .add_results(&[ptr])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            let body_tag = dyn_field(context, rewriter, body_result, 0, location)?;
+            let body_pay = dyn_field(context, rewriter, body_result, 1, location)?;
+            store_slot_at(context, rewriter, out, 0, body_tag, location)?;
+            store_slot_at(context, rewriter, out, 1, body_pay, location)?;
+            // resolve OVERWRITES out with the parked value iff this
+            // prompt is the abort's target; its return is unused.
+            rewriter.insert(direct_call(
+                context,
+                "frk_rt_ctl_resolve",
+                &[token, out],
+                i64_type,
+                location,
+            )?);
+            let yield_tag = load_slot_at(context, rewriter, out, 0, location)?;
+            let yield_pay = load_slot_at(context, rewriter, out, 1, location)?;
+            let yielded = build_dyn_words(context, rewriter, yield_tag, yield_pay, location)?;
+            finish(rewriter, op, yielded)
+        }
+        Planned::CtlAbort { op } => {
+            // Park the value + set pending. The early return that
+            // diverts control is the frk-ctl-guard pass's job.
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let token = operand(op, 0)?;
+            let tag = dyn_field(context, rewriter, operand(op, 1)?, 0, location)?;
+            let payload = dyn_field(context, rewriter, operand(op, 1)?, 1, location)?;
+            rewriter.insert(direct_call_void(
+                context,
+                "frk_rt_ctl_abort",
+                &[token, tag, payload],
+                location,
+            )?);
+            rewriter.erase_op(op);
+            Ok(())
+        }
+        Planned::CtlPending { op } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let pending = result_value(rewriter.insert(direct_call(
+                context,
+                "frk_rt_ctl_pending",
+                &[],
+                i64_type,
+                location,
+            )?))?;
+            finish(rewriter, op, pending)
         }
         Planned::BstrLit { op, text, symbol } => {
             rewriter.set_insertion_point_before(op);
@@ -3181,6 +3380,41 @@ fn load_slot_at<'c>(
             .build()
             .map_err(|e| e.to_string())?,
     ))
+}
+
+/// Stores i64 `value` into slot `index` at `base` (mirror of
+/// [`load_slot_at`]).
+fn store_slot_at<'c>(
+    context: &'c Context,
+    rewriter: &RewriterBase<'c, '_>,
+    base: Value<'c, '_>,
+    index: usize,
+    value: Value<'c, '_>,
+    location: Location<'c>,
+) -> Result<(), String> {
+    let i64_type: Type = IntegerType::new(context, 64).into();
+    let ptr = llvm::r#type::pointer(context, 0);
+    let address = if index == 0 {
+        unsafe { Value::from_raw(base.to_raw()) }
+    } else {
+        let base_word =
+            result_value(rewriter.insert(cast_op("llvm.ptrtoint", base, i64_type, location)?))?;
+        let offset = result_value(rewriter.insert(melior::dialect::arith::constant(
+            context,
+            IntegerAttribute::new(i64_type, (index * 8) as i64).into(),
+            location,
+        )))?;
+        let sum = result_value(rewriter.insert(
+            OperationBuilder::new("arith.addi", location)
+                .add_operands(&[base_word, offset])
+                .add_results(&[i64_type])
+                .build()
+                .map_err(|e| e.to_string())?,
+        ))?;
+        result_value(rewriter.insert(cast_op("llvm.inttoptr", sum, ptr, location)?))?
+    };
+    rewriter.insert(store_op(context, value, address, location)?);
+    Ok(())
 }
 
 /// Void direct llvm.call by symbol.

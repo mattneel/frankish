@@ -454,6 +454,24 @@ impl Runner for JitRunner {
             );
             engine.register_symbol("frk_rt_bstr_sub", frk_rt::frk_rt_bstr_sub as *mut ());
             engine.register_symbol("frk_rt_bstr_rep", frk_rt::frk_rt_bstr_rep as *mut ());
+            // Control effects (κ_frk, D-060): the pending-cell carrier.
+            engine.register_symbol(
+                "frk_rt_ctl_prompt_enter",
+                frk_rt::frk_rt_ctl_prompt_enter as *mut (),
+            );
+            engine.register_symbol(
+                "frk_rt_ctl_prompt_exit",
+                frk_rt::frk_rt_ctl_prompt_exit as *mut (),
+            );
+            engine.register_symbol("frk_rt_ctl_abort", frk_rt::frk_rt_ctl_abort as *mut ());
+            engine.register_symbol(
+                "frk_rt_ctl_pending",
+                frk_rt::frk_rt_ctl_pending as *mut (),
+            );
+            engine.register_symbol(
+                "frk_rt_ctl_resolve",
+                frk_rt::frk_rt_ctl_resolve as *mut (),
+            );
             engine.register_symbol(
                 "frk_rt_print_lua_str",
                 capture_print_lua_str as *mut (),
