@@ -502,6 +502,28 @@ rework flag, not a knob.
 
 ## Session log
 
+    Session end: 2026-07-13 (twenty-fourth entry)
+    Milestone/step: the Book — deep docs on GitHub Pages (interview artifact)
+    Green? yes — mdbook builds clean, 0 broken links; CI build+deploy green;
+    https://mattneel.github.io/frankish/ serves 200
+    Did:
+    - book/ mdbook (0.5.2 pinned in versions.env; make book / book-serve);
+      .github/workflows/book.yml (download-pinned-mdbook → build → Pages);
+      GitHub Pages set to Actions source (gh api); README + AGENTS.md map
+      updated. 34 chapters, ~35k words: method / architecture / dialects /
+      memory / control effects / specimens / provenance / 3 appendices
+      (incl. the full D-001..D-061 ledger table, generated exact).
+    - Fact-checked GC bit layout, dyn tags, decision numbers, version pins.
+    Next: kernel queue unchanged (femto_lua v0.3 / uniform-sig convention /
+    r7rs v0.1 / effects-v1) — the book is orthogonal to M15's queue.
+    Landmines:
+    - four Fable-5 subagents hit the account usage limit mid-run; they wrote
+      16 chapters before dying, the rest were written directly. If drafting
+      fleets again, checkpoint per-file — a mid-run credit death loses
+      unwritten files silently.
+    - book/book/ is gitignored; CI rebuilds from book/src/. The Pages
+      workflow downloads mdbook by MDBOOK_VERSION — bump both together.
+
     Session end: 2026-07-03 (twenty-third entry)
     Milestone/step: M15 complete, tagged m15-done
     Green? yes — 38 blocks; 77/0 (8 runners); scheme grid 6/6 × 5 × 2
