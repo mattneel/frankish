@@ -1,0 +1,10 @@
+[book]
+title = "The frankish Book"
+authors = ["Matt Neel"]
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "ayu"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/mattneel/frankish"

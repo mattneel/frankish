@@ -90,6 +90,8 @@ Mn red.
     specimens/           per-specimen MANIFESTs (frozen subsets, oracles)
     crates/              Rust workspace (created in M0; layout in SPEC §12)
     tools/loanword-ts/   TypeScript frontend package (created in M9)
+    book/                the mdbook (deep docs; `make book`; CI deploys
+                         to GitHub Pages via .github/workflows/book.yml)
 
 ## Escalation
 

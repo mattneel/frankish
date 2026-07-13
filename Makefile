@@ -19,7 +19,7 @@ export TABLEGEN_220_PREFIX ?= $(MLIR_PREFIX)
 CARGO ?= cargo
 CARGOFLAGS ?=
 
-.PHONY: setup build test bless diff dashboard grid grid-native canary ci clean
+.PHONY: setup build test bless diff dashboard grid grid-native canary ci clean book book-serve
 
 # Verify the pinned toolchain is present; names anything missing. Never
 # mutates the system.
@@ -63,6 +63,14 @@ canary:
 # Exactly what CI runs; plain shell all the way down.
 ci:
 	sh scripts/ci.sh
+
+# The book (mdbook, pinned in versions.env; .github/workflows/book.yml
+# deploys it to GitHub Pages on every master push).
+book:
+	mdbook build book
+
+book-serve:
+	mdbook serve book --open
 
 clean:
 	$(CARGO) clean

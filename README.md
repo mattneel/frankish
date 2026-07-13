@@ -12,10 +12,29 @@ Named for the language that survives only as loanwords inside other
 languages. `frnksh` is frankish written the way the other end of the trade
 route would have spelled it.
 
+**Read the Book:** deep documentation lives at
+[mattneel.github.io/frankish](https://mattneel.github.io/frankish/) —
+the method, the architecture, every kernel dialect, the GC, the κ_frk
+control calculus, and all four specimens. Built from `book/` by
+`make book`; deployed by CI on every push.
+
 Start here: `AGENTS.md` (law) → `docs/SPEC.md` (design) →
 `docs/DECISIONS.md` (ledger) → `STATE.md` (now).
 
-Status: M12 done — the rc strategy COLLECTS: sized releases, layout
+Status: M15 done — control effects are live. frk.ctl v0 (escape
+continuations per κ_frk, the handler calculus promoted from atli):
+the reference interpreter REALLY unwinds aborts; native lowers them
+to result-passing through a runtime pending cell — no unwinder, so
+the same escapes run on wasm32 — and the two agree byte-for-byte
+against chibi-scheme on every golden. r7rs_core is the fourth
+specimen (lambda-lifted procedures, real tail calls, call/cc
+escape-wise), joining the matrix at
+diff[interp,jit,jit-rc,ocaml,node,lua,scheme,repl]: 77 cases,
+0 divergent. Before that, M14 made proper tail calls LAW (interp
+trampoline + native musttail, verified by 500k-frame fixed-stack
+goldens on all five architectures) and M13 dissolved Lua's arity
+fence with the pack convention. Before that, M12 — the rc strategy
+COLLECTS: sized releases, layout
 descriptors the compiler writes and the runtime walks, and
 Bacon–Rajan cycle collection, in both runtime twins, byte-agreeing —
 proven by hand-built cycle drills, a cross-twin zigcc rig, and the

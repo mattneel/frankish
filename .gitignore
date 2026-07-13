@@ -22,3 +22,4 @@ zig-out/
 .vscode/
 # local env (never commit machine paths)
 versions.local.env
+book/book/
