@@ -94,12 +94,15 @@ fields. Filed as a first-rank finding; the response is explicit packing:
 - `frk_closure.make` takes its captures as one env product;
   `frk_closure.apply` takes one args product and yields exactly one result.
 
-At most two operands and at most one result per op means every IRDL variable
-sits in one position — sound by construction. Packing chains are honest
-ANF-style kernel IR that frontends produce mechanically. The one op with two
-results, `frk_dyn.table_next`, stays inside the ceiling because every operand
-and result is the parameter-free `!frk_dyn.dyn` — a reused IRDL variable
-unifies values, and there is only one value to unify.
+The entry's rationale for those surfaces: at ≤2 operands and ≤1 result per
+op, every IRDL variable sits in one position — sound by construction. The
+durable law for every later dialect is the general form: no variadic
+operand/result groups, fixed arities only, and one constraint variable per
+independently-typed position. Packing chains are honest ANF-style kernel IR
+that frontends produce mechanically. The one op with two results,
+`frk_dyn.table_next`, stays inside the ceiling because every operand and
+result is the parameter-free `!frk_dyn.dyn` — a reused IRDL variable unifies
+values, and there is only one value to unify.
 
 ## The roster
 
