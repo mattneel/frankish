@@ -125,6 +125,17 @@ fn check<'c>(
     let Ok(name) = name.as_string_ref().as_str() else {
         return;
     };
+    // The registered-ABI declaration check (M17, D-062): any func.func
+    // DECLARATION (bodyless) named frk_rt_* — hand-written in a
+    // frontend or carried by an intrinsics module — must project to
+    // the frk-abi registry row. Catches signature drift at verify
+    // time, before any execution.
+    if name == "func.func" {
+        if let Err(message) = check_rt_declaration(op) {
+            findings.push(Finding { op: op.to_string(), message });
+            return;
+        }
+    }
     let outcome = if let Some(suffix) = name.strip_prefix("frk_adt.") {
         crate::adt::verify_op(context, suffix, op)
             .map_err(|message| format!("frk_adt.{suffix}: {message}"))
@@ -152,4 +163,116 @@ fn check<'c>(
     if let Err(message) = outcome {
         findings.push(Finding { op: op.to_string(), message });
     }
+}
+
+/// Projects a pre-lowering declaration type onto the ABI vocabulary
+/// and compares with the registry (D-062). Classes, not exact types:
+/// every `!frk_*` kernel type and `!llvm.ptr` are pointer-class; i64
+/// matches I64/U64; i1/i8 match U8 (the widening rule); f64 matches
+/// F64. A declaration for an UNREGISTERED frk_rt_* symbol is itself a
+/// finding — the registry is the roster.
+fn check_rt_declaration(op: OperationRef<'_, '_>) -> Result<(), String> {
+    let name = match op
+        .attribute("sym_name")
+        .ok()
+        .and_then(|a| StringAttribute::try_from(a).ok())
+    {
+        Some(attribute) => attribute.value().to_string(),
+        None => return Ok(()),
+    };
+    if !name.starts_with("frk_rt_") {
+        return Ok(());
+    }
+    // Declarations only: a bodyless first region.
+    let is_declaration = op
+        .region(0)
+        .map(|region| region.first_block().is_none())
+        .unwrap_or(true);
+    if !is_declaration {
+        return Ok(());
+    }
+    let entry = frk_abi::find(&name)
+        .ok_or_else(|| format!("{name} is declared but not in the frk-abi registry (D-062)"))?;
+    let function_type = op
+        .attribute("function_type")
+        .ok()
+        .and_then(|a| TypeAttribute::try_from(a).ok())
+        .map(|a| a.value())
+        .and_then(|t| FunctionType::try_from(t).ok())
+        .ok_or_else(|| format!("{name}: declaration without a function type"))?;
+
+    let class_of = |printed: &str| -> &'static str {
+        if printed.starts_with("!frk_") || printed.starts_with("!llvm.ptr") {
+            "ptr"
+        } else if printed == "i64" {
+            "i64"
+        } else if printed == "i1" || printed == "i8" {
+            "u8"
+        } else if printed == "f64" {
+            "f64"
+        } else {
+            "other"
+        }
+    };
+    let abi_class = |ty: frk_abi::AbiTy| -> &'static str {
+        if ty.is_pointer() {
+            "ptr"
+        } else {
+            match ty {
+                frk_abi::AbiTy::F64 => "f64",
+                frk_abi::AbiTy::U8 => "u8",
+                _ => "i64",
+            }
+        }
+    };
+    // u8-class registry rows accept i64-class declarations too (the
+    // widening direction is always safe; the twins take the narrow
+    // type only on legacy print flags).
+    let matches = |declared: &str, registered: &'static str| {
+        declared == registered || (registered == "u8" && declared == "i64") ||
+            (registered == "i64" && declared == "u8")
+    };
+
+    let declared_inputs = function_type.input_count();
+    if declared_inputs != entry.args.len() {
+        return Err(format!(
+            "{name}: declared with {declared_inputs} argument(s); the registry says {}",
+            entry.args.len()
+        ));
+    }
+    for index in 0..declared_inputs {
+        let input = function_type
+            .input(index)
+            .map_err(|_| format!("{name}: unreadable input {index}"))?;
+        let declared = class_of(&input.to_string());
+        let registered = abi_class(entry.args[index]);
+        if !matches(declared, registered) {
+            return Err(format!(
+                "{name}: argument {index} is {declared}-class; the registry says {registered} (D-062)"
+            ));
+        }
+    }
+    let declared_results = function_type.result_count();
+    match (declared_results, entry.ret) {
+        (0, None) => {}
+        (1, Some(ret)) => {
+            let result = function_type
+                .result(0)
+                .map_err(|_| format!("{name}: unreadable result"))?;
+            let declared = class_of(&result.to_string());
+            let registered = abi_class(ret);
+            if !matches(declared, registered) {
+                return Err(format!(
+                    "{name}: result is {declared}-class; the registry says {registered} (D-062)"
+                ));
+            }
+        }
+        (got, expected) => {
+            return Err(format!(
+                "{name}: declared with {got} result(s); the registry says {}",
+                if expected.is_some() { 1 } else { 0 }
+            ));
+        }
+    }
+    Ok(())
 }

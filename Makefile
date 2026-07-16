@@ -19,7 +19,7 @@ export TABLEGEN_220_PREFIX ?= $(MLIR_PREFIX)
 CARGO ?= cargo
 CARGOFLAGS ?=
 
-.PHONY: setup build test bless diff dashboard grid grid-native canary ci clean book book-serve
+.PHONY: setup build test bless diff dashboard grid grid-native canary ci clean book book-serve abi
 
 # Verify the pinned toolchain is present; names anything missing. Never
 # mutates the system.
@@ -63,6 +63,12 @@ canary:
 # Exactly what CI runs; plain shell all the way down.
 ci:
 	sh scripts/ci.sh
+
+# Regenerate the C twin's ABI contract from the registry (M17, D-062).
+# A frk-rt test asserts the checked-in header matches; run this after
+# any frk-abi change.
+abi:
+	$(CARGO) run -q -p frk-abi --bin gen-header > crates/frk-rt/c/frk_rt_abi.h
 
 # The book (mdbook, pinned in versions.env; .github/workflows/book.yml
 # deploys it to GitHub Pages on every master push).

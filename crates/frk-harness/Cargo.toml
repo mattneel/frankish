@@ -6,7 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[build-dependencies]
+frk-abi.workspace = true
+
 [dependencies]
+frk-abi.workspace = true
 frk-core.workspace = true
 frk-dialects.workspace = true
 frk-front.workspace = true

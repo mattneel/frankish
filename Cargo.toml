@@ -4,6 +4,7 @@
 resolver = "3"
 members = [
     "crates/frnksh",
+    "crates/frk-abi",
     "crates/frk-core",
     "crates/frk-dialects",
     "crates/frk-interp",
@@ -34,6 +35,7 @@ sha2 = "0.10"
 
 frk-core = { path = "crates/frk-core" }
 frk-dialects = { path = "crates/frk-dialects" }
+frk-abi = { path = "crates/frk-abi" }
 frk-interp = { path = "crates/frk-interp" }
 frk-repl = { path = "crates/frk-repl" }
 frk-front = { path = "crates/frk-front" }

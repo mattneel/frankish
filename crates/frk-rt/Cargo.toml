@@ -8,3 +8,9 @@ publish.workspace = true
 
 [lib]
 crate-type = ["rlib", "staticlib"]
+
+[build-dependencies]
+frk-abi = { path = "../frk-abi" }
+
+[dev-dependencies]
+frk-abi = { path = "../frk-abi" }

@@ -1,0 +1,8 @@
+[package]
+name = "frk-abi"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "gen-header"
+path = "src/bin/gen_header.rs"

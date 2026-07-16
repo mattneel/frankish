@@ -1158,6 +1158,58 @@ fn rewrite_signatures(module: OperationRef<'_, '_>, signatures: &HashMap<usize, 
     }
 }
 
+
+
+/// The set of symbols the module already declares or defines (any op
+/// carrying a `sym_name`). Declaration sites skip these — an
+/// intrinsics module (D-062 §6.6) may legitimately carry its own
+/// `func.func private` declarations for registered runtime symbols,
+/// and a duplicate llvm.func would fail verification.
+fn declared_symbols(module: OperationRef<'_, '_>) -> Result<std::collections::HashSet<String>, String> {
+    let mut names = std::collections::HashSet::new();
+    let body = module
+        .region(0)
+        .map_err(|e| e.to_string())?
+        .first_block()
+        .ok_or_else(|| "module without a body".to_string())?;
+    let mut next = body.first_operation();
+    while let Some(op) = next {
+        if let Ok(attribute) = op.attribute("sym_name") {
+            if let Ok(name) = StringAttribute::try_from(attribute) {
+                names.insert(name.value().to_string());
+            }
+        }
+        next = op.next_in_block();
+    }
+    Ok(names)
+}
+
+/// The LLVM function type for a REGISTERED runtime symbol (M17,
+/// D-062): derived from frk-abi instead of a hand-written table, so
+/// the lowering's extern declarations cannot drift from the twins.
+/// LLVM-level mapping: pointers → opaque ptr, I64/U64 → i64, F64 →
+/// f64, U8 → i8 (unused by kernel-lowered calls today).
+fn registered_fn_type<'c>(context: &'c Context, name: &str) -> Result<Type<'c>, String> {
+    let entry = frk_abi::find(name)
+        .ok_or_else(|| format!("{name} is not in the frk-abi registry (D-062)"))?;
+    let map = |ty: frk_abi::AbiTy| -> Type<'c> {
+        if ty.is_pointer() {
+            llvm::r#type::pointer(context, 0)
+        } else {
+            match ty {
+                frk_abi::AbiTy::F64 => Type::parse(context, "f64").expect("f64"),
+                frk_abi::AbiTy::U8 => IntegerType::new(context, 8).into(),
+                _ => IntegerType::new(context, 64).into(),
+            }
+        }
+    };
+    let args: Vec<Type> = entry.args.iter().map(|t| map(*t)).collect();
+    Ok(match entry.ret {
+        Some(ret) => llvm::r#type::function(map(ret), &args, false),
+        None => llvm::r#type::function(llvm::r#type::void(context), &args, false),
+    })
+}
+
 /// Declares the string runtime's symbols when str plans exist
 /// (strategy-independent: strings are rt-owned, D-049).
 fn declare_str_runtime(
@@ -1203,63 +1255,18 @@ fn declare_str_runtime(
     needed.sort();
     needed.dedup();
 
+    let existing = declared_symbols(module)?;
     let location = module.location();
-    let i64_type: Type = IntegerType::new(context, 64).into();
-    let ptr = llvm::r#type::pointer(context, 0);
     let body = module
         .region(0)
         .map_err(|e| e.to_string())?
         .first_block()
         .ok_or_else(|| "module without a body".to_string())?;
     for (symbol, _) in needed {
-        let function_type = match symbol {
-            "frk_rt_str_from_units" => llvm::r#type::function(ptr, &[ptr, i64_type], false),
-            "frk_rt_str_concat" => llvm::r#type::function(ptr, &[ptr, ptr], false),
-            "frk_rt_str_eq" => llvm::r#type::function(i64_type, &[ptr, ptr], false),
-            "frk_rt_str_len" => llvm::r#type::function(i64_type, &[ptr], false),
-            "frk_rt_dyn_check" => {
-                llvm::r#type::function(llvm::r#type::void(context), &[i64_type, i64_type], false)
-            }
-            "frk_rt_bstr_intern" => llvm::r#type::function(ptr, &[ptr, i64_type], false),
-            "frk_rt_bstr_concat" => llvm::r#type::function(ptr, &[ptr, ptr], false),
-            "frk_rt_table_init" => {
-                llvm::r#type::function(llvm::r#type::void(context), &[i64_type], false)
-            }
-            "frk_rt_table_raw_get" => llvm::r#type::function(
-                llvm::r#type::void(context),
-                &[i64_type, i64_type, i64_type, ptr],
-                false,
-            ),
-            "frk_rt_table_raw_set" => llvm::r#type::function(
-                llvm::r#type::void(context),
-                &[i64_type; 5],
-                false,
-            ),
-            "frk_rt_table_len" => llvm::r#type::function(i64_type, &[i64_type], false),
-            "frk_rt_table_next" => llvm::r#type::function(
-                llvm::r#type::void(context),
-                &[i64_type, i64_type, i64_type, ptr],
-                false,
-            ),
-            "frk_rt_bstr_sub" => {
-                llvm::r#type::function(ptr, &[ptr, i64_type, i64_type], false)
-            }
-            "frk_rt_bstr_rep" => llvm::r#type::function(ptr, &[ptr, i64_type], false),
-            "frk_rt_ctl_prompt_enter" => llvm::r#type::function(i64_type, &[], false),
-            "frk_rt_ctl_prompt_exit" => {
-                llvm::r#type::function(llvm::r#type::void(context), &[i64_type], false)
-            }
-            "frk_rt_ctl_abort" => llvm::r#type::function(
-                llvm::r#type::void(context),
-                &[i64_type, i64_type, i64_type],
-                false,
-            ),
-            "frk_rt_ctl_pending" => llvm::r#type::function(i64_type, &[], false),
-            "frk_rt_ctl_resolve" => {
-                llvm::r#type::function(i64_type, &[i64_type, ptr], false)
-            }
-            other => return Err(format!("unknown str runtime symbol {other}")),
-        };
+        if existing.contains(symbol) {
+            continue;
+        }
+        let function_type = registered_fn_type(context, symbol)?;
         let declaration = OperationBuilder::new("llvm.func", location)
             .add_attributes(&[
                 (
@@ -1288,8 +1295,6 @@ fn declare_runtime(
     strategy: Strategy,
 ) -> Result<(), String> {
     let location = module.location();
-    let i64_type: Type = IntegerType::new(context, 64).into();
-    let ptr = llvm::r#type::pointer(context, 0);
     let body = module
         .region(0)
         .map_err(|e| e.to_string())?
@@ -1315,26 +1320,20 @@ fn declare_runtime(
         Ok(())
     };
 
-    match strategy {
-        Strategy::Arena => declare(
+    let existing = declared_symbols(module)?;
+    if !existing.contains(strategy.alloc_symbol()) {
+        declare(
             strategy.alloc_symbol(),
-            llvm::r#type::function(ptr, &[i64_type], false),
-        )?,
-        // D-057: rc allocations carry their layout descriptor.
-        Strategy::Rc => declare(
-            strategy.alloc_symbol(),
-            llvm::r#type::function(ptr, &[i64_type, i64_type], false),
-        )?,
+            registered_fn_type(context, strategy.alloc_symbol())?,
+        )?;
     }
     if strategy == Strategy::Rc {
-        declare(
-            "frk_rt_rc_retain",
-            llvm::r#type::function(llvm::r#type::void(context), &[ptr], false),
-        )?;
-        declare(
-            "frk_rt_rc_release",
-            llvm::r#type::function(llvm::r#type::void(context), &[ptr], false),
-        )?;
+        if !existing.contains("frk_rt_rc_retain") {
+            declare("frk_rt_rc_retain", registered_fn_type(context, "frk_rt_rc_retain")?)?;
+        }
+        if !existing.contains("frk_rt_rc_release") {
+            declare("frk_rt_rc_release", registered_fn_type(context, "frk_rt_rc_release")?)?;
+        }
     }
     Ok(())
 }

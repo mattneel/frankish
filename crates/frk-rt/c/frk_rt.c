@@ -17,6 +17,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The registered ABI (M17, D-062): including the generated contract
+ * makes THIS compiler enforce every frk_rt_* signature, at every
+ * compile, on every grid triple. `make abi` regenerates. */
+#include "frk_rt_abi.h"
+
 /* Allocation counter (D-041 ratification rider): the M10 pass's
  * measurable target. Tier-0 targets run single-threaded; a plain
  * increment suffices until a threaded target joins the grid. */
