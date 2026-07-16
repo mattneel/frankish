@@ -84,7 +84,20 @@ distinct from TS-0's UTF-16 `frk_str`. Two languages, two genuinely
 different string semantics, two dialects — see [the string
 chapter](../dialects/str-bstr.md).
 
-femto_lua shipped v0.2. Its legacy: the `frk_dyn` fat-value core, `frk_bstr`,
+At v0.3 the arity story completed: the **explist adjustment engine**
+implements Lua's rule (non-final expressions truncate to one value,
+the final call or `...` expands) once, and returns, destructuring,
+call arguments, constructor tails, and the generic-for explist all
+consume it — which makes varargs, multi-expression RHS, and explicit
+`(f, s, ctrl)` iterator triples one feature, not three. `__newindex`
+joined `__index` as an IR intrinsic (existing keys raw-assign; the
+table form re-enters settable as a tail call, so metatable chains
+ride the trampoline). The corpus grew to 18 cases — and forced two
+kernel ownership findings (a created-pack borrow-locality gap and an
+unsound sole-use retain elision), both caught as jit-rc segfaults by
+the differential law before any commit.
+
+femto_lua shipped v0.3. Its legacy: the `frk_dyn` fat-value core, `frk_bstr`,
 the table runtime, the real garbage collector (its debugging is [its own
 chapter](../memory/war-stories.md)), and the pack convention — which the
 tail-call law would later name as the seed of the uniform-signature

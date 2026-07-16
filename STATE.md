@@ -1,19 +1,21 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M22 complete (tag m22-done). The pack terminal-count ruling
-(D-067): packs are CALLEE-OWNED — frk_mem.dispose + the frk.borrows
-attribute + received-pack die_at behind the derived-borrow locality
-gate. The 1000-call rc leak: 2026 → 24 (stdlib seeding only);
-per-call leak zero; D-064's observation closed.
-Tree: green — `make test` 45 blocks; diff 79 cases 0 divergent (8
-runners); grid 74/74 × BOTH strategies × 4 triples + s390x canary.
+Phase: M23 complete (tag m23-done). femto_lua v0.3 (D-068): the
+explist adjustment engine — varargs, multi-expression RHS, explicit
+iterator triples, constructor tails, one mechanism — plus __newindex
+as an IR intrinsic. Two kernel ownership findings fixed en route.
+Tree: green — `make test` 45 blocks; diff 84 cases 0 divergent (8
+runners); grid 79/79 × BOTH strategies × 4 triples + s390x canary.
 
 ## Next action
-M22 closed; no open ledger observations remain. The queue:
-1. femto_lua v0.3 (varargs, iterator triples, __newindex).
-2. r7rs_core v0.1 (pairs/lists, dynamic-wind, macros).
-3. effects-v1 (handle/perform/resume; resume closures born uniform).
+M23 closed. The queue:
+1. r7rs_core v0.1 (pairs/lists as adt/bstr carriers; the dynamic-wind
+   OPEN ruling comes due; macros still fenced behind the expander).
+2. effects-v1 (frk_ctl handle/perform/resume; resume closures born
+   uniform; the one-shot violation trap golden).
+3. femto_lua v0.4 (select(), string.format, colon methods) — only if
+   an idiom demands it (L5: the admission rule, not completeness).
 
 ## In flight
 Nothing.
@@ -39,6 +41,38 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m23-done — Shipped: femto_lua v0.3 (D-068). The explist ADJUSTMENT
+engine: one emitter mechanism (non-final truncates, final call/`...`
+expands, single-call forwarding preserved for the tail law) consumed
+by returns, destructuring, call args, constructor tails, and the
+generic-for explist — so varargs, multi-RHS, and explicit iterator
+triples fell out of one design. Varargs are pack-native (`...` tail
+copied at the prologue BEFORE the D-067 dispose; __lua_pack_tail /
+__lua_pack_copy_into as frk.borrows IR intrinsics — rc discipline
+inherited from the kernel, zero hand-written retains). __newindex =
+__lua_setindex: luaV_settable faithful (existing keys raw; table
+form re-enters as a TAIL call — chains ride the trampoline/musttail
+like __index). Expansion made pack LENGTHS observable: print() went
+multi-value (tab-joined) and next() returns ONE nil at exhaustion —
+both oracle-ruled. arith.maxsi joined the interp registry with test.
+Corpus 18/18 vs lua5.1; suite 45; diff 84/0; grid 79/79 × 5 × 2.
+
+M23 EXTRACTION — two kernel ownership theorems the corpus forced,
+both jit-rc segfaults caught by the differential law pre-commit:
+(1) THE BORROW GATE IS ABOUT SHAPE, NOT PROVENANCE: D-067 gated
+received packs; the explicit GenFor triple proved CREATED packs with
+cross-block borrowed-out reads need the identical gate (ArrayNew now
+gated). Any container whose reads are borrows must not die while a
+borrow lives — regardless of where the container came from.
+(2) TRANSFER REQUIRES AN OWNED PRODUCER: sole-use retain elision is
+only sound when the stored value's producer FORFEITS ownership
+(wrap/array_new/box_new/table_new/apply/make). A borrow (box_get,
+array_get, a frk.borrows call, a block arg) leaves its source
+owning — its store must retain. produces_owned() is now the rule;
+the elision keeps its wins on the fresh-allocation fast path.
+Together they harden the same lesson as M22: ownership facts attach
+to EDGES (who produced, who borrowed), never to op categories.
+
 m22-done — Shipped: the pack terminal-count ruling (D-067; closes
 D-064's observation). Ruled OWNED: frk_mem.dispose (K2 no-op; Rc
 release; Arena erased) ends the callee's ownership of its incoming
@@ -638,6 +672,29 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-16 (twenty-fifth entry)
+    Milestone/step: M23 complete, tagged m23-done
+    Green? yes — 45 blocks; 84/0 (8 runners); grid 79/79 × 5 × 2
+    Did:
+    - D-068; lexer Dots; parser explists + vararg capability stack;
+      the explist engine + pack_with_tail; vararg prologue copy;
+      __lua_pack_tail/copy_into/ctor_append/setindex intrinsics;
+      multi-value print; next() exhaustion arity; arith.maxsi eval;
+      5 oracle-validated corpus cases; TWO kernel ownership fixes
+      (created-pack borrow gate; produces_owned transfer rule)
+    Next: queue to the user (r7rs v0.1 / effects-v1 / lua v0.4)
+    Landmines:
+    - pack LENGTHS are surface semantics now: any _v wrapper that
+      builds a return pack fixes an arity the oracle can observe —
+      check lua5.1 before choosing 1-pack vs 2-pack returns
+    - retain elision: NEVER add an op to produces_owned() unless its
+      result truly carries a forfeitable +1; when unsure, retain
+      (over-retain balances; under-retain frees live objects)
+    - gated packs LEAK by design (conservative D-067 posture); a
+      corpus case putting a GenFor in a 1000-call hot loop would put
+      an O(calls) term back in pack_reclamation — the release-at-
+      function-exit rung is the named fix if that day comes
 
     Session end: 2026-07-16 (thirtieth entry)
     Milestone/step: M22 complete, tagged m22-done

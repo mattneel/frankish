@@ -39,7 +39,22 @@ canon fence at implementation (Lua spells %.14g — the TS-0 §6
 precedent applies).
 
 ## Status
-v0.2 SHIPPED (2026-07-03, M13/D-058): the pack calling convention —
+v0.3 SHIPPED (M23/D-068): the explist ADJUSTMENT engine — one
+mechanism for varargs (`...` pack-native, prologue copy before the
+D-067 dispose), mid-explist truncation/final expansion, multi-
+expression RHS destructuring, explicit generic-for iterator triples,
+and constructor tails — plus __newindex (luaV_settable in
+intrinsics.mlir: existing keys raw, absent keys walk the metamethod,
+table form re-enters as a tail call). print() went multi-value
+(tab-joined) and next() returns one nil at exhaustion — pack LENGTHS
+became observable under expansion and the oracle ruled both. Corpus:
+18 cases, 100% vs lua5.1, all runners, all five triples. Two
+jit-rc-segfault kernel findings fixed en route (created-pack borrow
+gate; transfer-requires-owned-producer retain rule). Still fenced
+(v0.4+): select(), `...` at top level, string.format, rawset/rawget,
+method declarations/colon calls, coroutines, goto, weak tables.
+
+Previously — v0.2 SHIPPED (2026-07-03, M13/D-058): the pack calling convention —
 fn<[arr<dyn>], [arr<dyn>]>, one fn type for every function — brings
 multiple return values (return explists, destructuring locals and
 assignments, tail-position pack forwarding) and DISSOLVES the exact-
