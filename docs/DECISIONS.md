@@ -193,6 +193,19 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-065 [m20/surfaces] THE LUA INTRINSICS MIGRATION COMPLETES
+  (D-062's named follow-up, unfenced by D-063, picked by the human).
+  The _v pack wrappers, the iterator protocol (next/pairs/ipairs +
+  iter), the string module wrappers (sub/rep), and __lua_index — all
+  emitter-built since their births — move into lua/intrinsics.mlir
+  as kernel IR (their signatures stabilized at (envref, pack) -> pack
+  by the uniform convention, exactly as D-062's sequencing rule
+  planned). emit_helpers is DELETED: the lua emitter builds ZERO
+  helper IR — it parses the seed module and appends the program.
+  Dead builder utilities (lua switch/pack_dyns, scheme switch)
+  removed. The lua protocol library is now 442 lines of reviewable,
+  diffable IR carrying its own runtime declarations, verified like
+  any module. Revisit: never — the surface is the design.
 - D-064 [m19/gc] TAIL-AWARE RELEASE SCHEDULING (D-063's fence,
   resolved; picked by the human). The problem: the rc discipline
   anchors frame releases at the block TERMINATOR, which in a

@@ -41,13 +41,17 @@ not builder code that constructs it.
 
 Two migrations landed with the surface: scheme's display protocol
 (fully — the builder code is deleted), and femto_lua's nine plain-dyn
-protocol helpers (`__lua_truthy`, `__lua_tostring`, `__lua_print`,
-equality, coercion, length, the pack nil-fill, metatable get/set). The
-panel contributed the **sequencing rule**: the `_v` pack wrappers and
-iterator protocol stay emitter-built, because their signatures ride the
-closure calling convention that the uniform-signature work (D-059's
-ledgered gap) will rewrite — freezing them into text one milestone
-early would mean re-editing that text one milestone later.
+protocol helpers. The panel contributed the **sequencing rule**: the
+`_v` pack wrappers and iterator protocol stayed emitter-built at first,
+because their signatures rode the closure calling convention that the
+uniform-signature work (D-059's gap) was about to rewrite. The rule
+paid off exactly as written: M18 rewrote those signatures once, in
+builder code — and M20 (D-065) then completed the migration, moving
+the wrappers, the iterator protocol, the string module, and the
+metatable index helper into the intrinsics file and **deleting
+`emit_helpers` entirely**. The lua emitter now builds zero helper IR:
+the protocol library is ~440 lines of reviewable kernel IR that seeds
+every compilation.
 
 ## Surface B — the runtime ABI registry
 

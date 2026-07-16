@@ -1,28 +1,24 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M19 complete (tag m19-done). Tail-aware release scheduling
-(D-064): in a tail block, a frame release with a paired in-block
-retain relocates to before the call. D-063's rc fence is GONE — the
-rc grid column equals arena for the first time; the tail-call law
-is total across both memory strategies.
+Phase: M20 complete (tag m20-done). The lua intrinsics migration is
+COMPLETE (D-065): the _v wrappers, iterator protocol, string module,
+and __lua_index moved to intrinsics.mlir; emit_helpers is DELETED —
+the lua emitter builds zero helper IR.
 Tree: green — `make test` 43 blocks; diff 79 cases 0 divergent (8
-runners); grid 74/74 × BOTH strategies × 4 triples + s390x canary —
-100k rc musttail frames everywhere, fences dropped.
+runners); grid 74/74 × BOTH strategies × 4 triples + s390x canary.
 
 ## Next action
-M19 closed. The queue returns to the user:
-1. femto_lua v0.3 (varargs, iterator triples, __newindex).
-2. r7rs_core v0.1 (pairs/lists, then dynamic-wind, then macros);
-   optional: scheme call/cc receivers onto the uniform convention.
-3. effects-v1 (handle/perform/resume + one-shot violation trap;
-   resume closures born uniform per M18's extraction note).
-4. D-062 follow-ups: _v wrappers into lua's intrinsics.mlir (now
-   signature-stable); registry-driven JIT/builtin registration;
-   dead-export cleanup (print_lua_num/bool/nil).
-5. Pack terminal-count audit: packs cross calls at a terminal count
-   of 1 that nobody releases (pre-existing, observed during D-064's
-   evidence pass) — decide owned-params vs accepted-leak in writing.
+M20 closed. The queue returns to the user:
+1. femto_lua v0.3 (varargs, iterator triples, __newindex) — new
+   protocol helpers now land as intrinsics.mlir edits, not builder
+   code.
+2. r7rs_core v0.1 (pairs/lists, dynamic-wind, macros).
+3. effects-v1 (handle/perform/resume; resume closures born uniform).
+4. Registry-driven JIT/builtin registration + dead-export cleanup
+   (the remaining D-062 follow-ups).
+5. Pack terminal-count ruling (owned-params vs accepted-leak, D-064's
+   ledgered observation).
 
 ## In flight
 Nothing.
@@ -48,6 +44,22 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m20-done — Shipped: the lua intrinsics migration completes (D-065;
+D-062's follow-up, unfenced by D-063 exactly as the sequencing rule
+planned). The _v pack wrappers, next/pairs/ipairs(+iter), string
+sub/rep, and __lua_index moved from emitter builder code into
+lua/intrinsics.mlir — 442 lines of reviewable kernel IR carrying the
+whole lua protocol library and its runtime declarations. emit_helpers
+DELETED; dead builder utilities (lua switch/pack_dyns, scheme switch)
+removed. The lua emitter now: parse seed → append program. Suite 43
+blocks; diff 79/0; grid 74/74 × both strategies × 5 triples.
+
+M20 EXTRACTION: the sequencing-rule bet from the M17 panel settled at
+full value — signatures were rewritten ONCE (in builder code at M18)
+and frozen into text ONCE (here). Rule of thumb for the ladder:
+migrate representation-stable code to data immediately; migrate
+convention-riding code only after the convention lands.
+
 m19-done — Shipped: tail-aware release scheduling (D-064; D-063's
 fence resolved). Evidence-first: the rc-lowered lua tail loop showed
 exactly ONE release between call and return, and it was half of a
@@ -590,6 +602,21 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-16 (twenty-eighth entry)
+    Milestone/step: M20 complete, tagged m20-done
+    Green? yes — 43 blocks; 79/0 (8 runners); grid 74/74 × 2 × 5
+    Did:
+    - D-065; wrappers/iterators/string/__lua_index into
+      intrinsics.mlir (dump-extract, same as M17); emit_helpers +
+      dead utilities deleted; book authoring-surfaces chapter updated
+    Next: queue to the user (see Next action)
+    Landmines:
+    - lua protocol changes are now EDITS TO intrinsics.mlir — do not
+      reintroduce builder helpers; the file carries its own rt decls
+      (kernel_lower dedups against them)
+    - brace-scan deletions of emitter methods: cut EXACTLY the method
+      (the neighboring-method over-cut cost one revert this session)
 
     Session end: 2026-07-16 (twenty-seventh entry)
     Milestone/step: M19 complete, tagged m19-done

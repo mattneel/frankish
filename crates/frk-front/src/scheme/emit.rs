@@ -342,45 +342,6 @@ impl<'c> Emitter<'c> {
         );
         Ok(())
     }
-    fn switch<'r>(
-        &self,
-        b: BlockRef<'c, 'r>,
-        flag: Value<'c, 'r>,
-        cases: &[(i64, BlockRef<'c, 'r>)],
-        default: BlockRef<'c, 'r>,
-        l: Location<'c>,
-    ) -> R<()> {
-        let case_text =
-            cases.iter().map(|(v, _)| v.to_string()).collect::<Vec<_>>().join(", ");
-        let dense = format!("dense<[{case_text}]> : vector<{}xi64>", cases.len());
-        let mut successors: Vec<&Block<'c>> = vec![&default];
-        for (_, t) in cases {
-            successors.push(t);
-        }
-        b.append_operation(
-            OperationBuilder::new("cf.switch", l)
-                .add_attributes(&[
-                    (
-                        Identifier::new(self.context, "case_values"),
-                        Attribute::parse(self.context, &dense).ok_or("switch values")?,
-                    ),
-                    (
-                        Identifier::new(self.context, "case_operand_segments"),
-                        DenseI32ArrayAttribute::new(self.context, &vec![0; cases.len()]).into(),
-                    ),
-                    (
-                        Identifier::new(self.context, "operandSegmentSizes"),
-                        DenseI32ArrayAttribute::new(self.context, &[1, 0, 0]).into(),
-                    ),
-                ])
-                .add_operands(&[flag])
-                .add_successors(&successors)
-                .build()
-                .map_err(|e| e.to_string())?,
-        );
-        Ok(())
-    }
-
     fn call<'r>(
         &self,
         b: BlockRef<'c, 'r>,
