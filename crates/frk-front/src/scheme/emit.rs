@@ -78,7 +78,13 @@ pub fn emit<'c>(
     source: &str,
     program: &Program,
 ) -> R<Module<'c>> {
-    let module = Module::new(Location::unknown(context));
+    // The seed module (M17, D-062): scheme's intrinsics are kernel IR
+    // in intrinsics.mlir; the emitter appends the program around them.
+    let module = crate::intrinsics::seed_module(
+        context,
+        "scheme",
+        include_str!("intrinsics.mlir"),
+    )?;
     let mut line_starts = vec![0usize];
     for (offset, byte) in source.bytes().enumerate() {
         if byte == b'\n' {
@@ -92,8 +98,6 @@ pub fn emit<'c>(
         job_queue: Vec::new(),
         next_fn: 0,
     };
-    emitter.declare_runtime(&module)?;
-    emitter.emit_display_helper(&module)?;
 
     // Top-level procedures see each other (mutual recursion). Bind all
     // before emitting any body.
@@ -464,64 +468,6 @@ impl<'c> Emitter<'c> {
         self.br(btrue, join, &[t], l)?;
         fcx.block = join;
         block_arg(join, 0)
-    }
-
-    /// Bodyless declarations for the display runtime — answered by
-    /// interp builtins, JIT capture symbols, and the AOT twin.
-    fn declare_runtime(&self, module: &Module<'c>) -> R<()> {
-        for (name, inputs, outputs) in [
-            ("frk_rt_scm_display_num", vec![self.f64_ty()], vec![]),
-            ("frk_rt_scm_display_bool", vec![self.i64_ty()], vec![]),
-            ("frk_rt_scm_newline", vec![], vec![]),
-        ] {
-            let declaration =
-                OperationBuilder::new("func.func", Location::unknown(self.context))
-                    .add_attributes(&[
-                        (
-                            Identifier::new(self.context, "sym_name"),
-                            StringAttribute::new(self.context, name).into(),
-                        ),
-                        (
-                            Identifier::new(self.context, "function_type"),
-                            TypeAttribute::new(
-                                FunctionType::new(self.context, &inputs, &outputs).into(),
-                            )
-                            .into(),
-                        ),
-                        (
-                            Identifier::new(self.context, "sym_visibility"),
-                            StringAttribute::new(self.context, "private").into(),
-                        ),
-                    ])
-                    .add_regions([Region::new()])
-                    .build()
-                    .map_err(|e| e.to_string())?;
-            module.body().append_operation(declaration);
-        }
-        Ok(())
-    }
-
-    // ---- __scm_display: tag-dispatched, no trailing newline ----
-
-    fn emit_display_helper(&mut self, module: &Module<'c>) -> R<()> {
-        let l = Location::unknown(self.context);
-        let dynt = self.dyn_ty();
-        let region = Region::new();
-        let entry = region.append_block(Block::new(&[(dynt, l)]));
-        let value = block_arg(entry, 0)?;
-        let bnum = region.append_block(Block::new(&[]));
-        let bbool = region.append_block(Block::new(&[]));
-        let tag = self.tag_of(entry, value, l)?;
-        self.switch(entry, tag, &[(TAG_NUM, bnum), (TAG_BOOL, bbool)], bnum, l)?;
-        let n = self.unwrap(bnum, TAG_NUM, self.f64_ty(), value, l)?;
-        self.call(bnum, "frk_rt_scm_display_num", &[n], &[], l)?;
-        self.ret(bnum, &[], l)?;
-        let b1 = self.unwrap(bbool, TAG_BOOL, self.i1_ty(), value, l)?;
-        let bext = self.op1(bbool, melior::dialect::arith::extui(b1, self.i64_ty(), l))?;
-        self.call(bbool, "frk_rt_scm_display_bool", &[bext], &[], l)?;
-        self.ret(bbool, &[], l)?;
-        self.func(module, "__scm_display", &[dynt], &[], region, false);
-        Ok(())
     }
 
     // ---- deferred lambda-lifting ----

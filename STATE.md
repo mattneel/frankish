@@ -1,29 +1,28 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M15 complete (tag m15-done). frk.ctl v0 — escape continuations
-(prompt/abort, κ_frk/D-060/D-061) — and the r7rs_core specimen that
-forced them. call/ec + proper tail calls load-bearing; the reference
-interpreter unwinds for real, native uses result-passing through a
-runtime pending-cell, and they agree byte-for-byte against chibi.
-Tree: green — `make test` 38 blocks; diff 77 cases 0 divergent (8
-runners incl. scheme); scheme grid 6/6 × 4 triples × 2 + s390x
-canary.
+Phase: M17 complete (tag m17-done). Intrinsics and runtimes are
+FIRST-CLASS AUTHORING SURFACES (D-062): intrinsics as kernel-IR seed
+modules (scheme fully migrated + lua's nine plain-dyn helpers); the
+runtime ABI as ONE registry (crates/frk-abi) that both twins, the JIT
+capture shims, the kernel lowering's declarations, and every module's
+frk_rt_* declarations are compile-time checked against or derived
+from. M16 was the Book (mattneel.github.io/frankish).
+Tree: green — `make test` 43 blocks; diff 77 cases 0 divergent (8
+runners); grid 72/72 × 4 triples × 2 strategies + s390x canary — the
+generated ABI header compiling in the C twin on every triple.
 
 ## Next action
-M15 closed. The queue returns to the user. Available next:
-1. femto_lua v0.3 (varargs, iterator triples, __newindex) — queued.
-2. The uniform-signature convention (D-059 gap): musttail for
-   indirect/cross-signature tails, unfencing deep scheme/lua tail
-   recursion through closure-applies (v0 scheme TCO covers direct
-   func.call chains only — the interp trampoline does not yet cover
-   closure-apply tails, so a MILLION-deep scheme loop is interp-
-   fenced; the corpus stays shallow by design).
-3. r7rs_core v0.1: pairs/lists (frk_adt/bstr carriers), then
-   dynamic-wind (OPEN κ_frk ruling), then hygienic macros (the
-   sets-of-scopes expander — flexlang precedent).
-4. effects v1 (handle/perform/resume — the resume clause + one-shot
-   violation trap); TS-1; frk.stage; GC thresholds.
+M17 closed. The queue returns to the user:
+1. femto_lua v0.3 (varargs, iterator triples, __newindex).
+2. The uniform-signature convention (D-059 gap) — ALSO unfences the
+   rest of the lua intrinsics migration (the _v wrappers, D-062's
+   sequencing rule) and deep closure-apply tail recursion.
+3. r7rs_core v0.1 (pairs/lists, then dynamic-wind, then macros).
+4. effects-v1 (handle/perform/resume + one-shot violation trap).
+5. D-062 follow-ups: registry-driven JIT/builtin registration;
+   dead-export cleanup (print_lua_num/bool/nil); u8→i64 migration for
+   the two legacy print flags.
 
 ## In flight
 Nothing.
@@ -49,6 +48,39 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m17-done — Shipped: intrinsics + runtimes as first-class authoring
+surfaces (D-062; the human's directive), panel-reviewed (3 adversarial
+lenses; strongest finding — the type-erased JIT capture shims — fixed
+with generated typed assertions). SURFACE A: intrinsics modules —
+language primitives as kernel IR in .mlir seed files (include_str!,
+L6); scheme migrated fully (builder code deleted), lua's nine
+plain-dyn protocol helpers migrated (the _v wrappers wait on D-059
+per the sequencing rule). SURFACE B: crates/frk-abi, the runtime ABI
+registry — 39 symbols, 8-variant vocabulary incl. PtrPayload
+(void*/mut-u8 asymmetric rendering); enforcement at five layers, all
+L1-witnessed: Rust twin (build.rs fn-pointer assertions), C twin
+(generated frk_rt_abi.h included by frk_rt.c — the tamper test
+REPLAYS the M15 display_bool bug and proves compiler refusal), capture
+shims, derived kernel_lower declarations (hand tables deleted, dedup
+vs module-declared symbols), and the semantic verifier's declaration
+projection (i1/i8↔u8 widening pinned; 5 witnesses). Day-one catches:
+11 fns of latent void*/uint8_t* drift; 3 dead print exports;
+loanword's unchecked declarations now guarded. INCIDENTAL FIRST-RANK
+FIND (L3): node 26 colorizes PIPED console.log under COLORTERM, and
+FORCE_COLOR (ambient in agent shells) overrides NO_COLOR — the node
+oracle env now pins color off unconditionally (NO_COLOR=1 +
+env_remove FORCE_COLOR/COLORTERM). Book gains the authoring-surfaces
+chapter. Suite 43 blocks; diff 77/0; grid 72/72 × 5 × 2.
+
+M17 EXTRACTION: the two surfaces are the same idea at two levels —
+author once as DATA (a .mlir file, a const table), then derive or
+compile-time-check every consumer. The registry's day-one catches
+(latent drift, dead exports) repeated the M12 lesson: the value of a
+contract is what it finds the day you write it down. Promotable next:
+the seed-module pattern generalizes to any frontend-supplied IR
+(prelude modules, user dialects at v2); the registry's lane column is
+the hook for specimen twin extensions.
+
 m15-done — Shipped: frk.ctl v0 (escape continuations) + the
 r7rs_core specimen, closing the Rocq-anchor escalation by delegation
 (the human: "you can do it just fine" — atli IS his handler calculus;
@@ -501,6 +533,32 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-13 (twenty-fifth entry)
+    Milestone/step: M17 complete, tagged m17-done
+    Green? yes — 43 blocks; 77/0 (8 runners); grid 72/72 × 5 × 2
+    Did:
+    - D-062 + SPEC K4 amendment + §6.6; crates/frk-abi (registry +
+      generators + gen-header bin + make abi); both twins compile-time
+      pinned (build.rs assertions / generated header); capture-shim
+      assertions (frk-harness build.rs); kernel_lower declarations
+      derived + dedup'd; verifier declaration projection + 5
+      witnesses; scheme + lua intrinsics.mlir seed modules (builder
+      code deleted); node-oracle color pinning; book chapter
+    Next: queue to the user (see Next action)
+    Landmines:
+    - node >= 25 colorizes PIPED console.log when COLORTERM is set,
+      and FORCE_COLOR (set ambiently by agent shells) OVERRIDES
+      NO_COLOR — any subprocess whose stdout is protocol bytes must
+      env_remove both. Found as 8 phantom diff divergences.
+    - intrinsics .mlir files are SEED modules: emitters append into
+      them; kernel_lower skips re-declaring their symbols. Do not
+      re-add declare_runtime-style builders to frontends.
+    - the _v pack wrappers stay emitter-built until D-059 (their
+      signatures ride the closure convention) — do not migrate them
+      to intrinsics files yet.
+    - frk-rt/frk-harness have build.rs deps on frk-abi; a registry
+      edit rebuilds both (by design — that IS the enforcement).
 
     Session end: 2026-07-13 (twenty-fourth entry)
     Milestone/step: the Book — deep docs on GitHub Pages (interview artifact)

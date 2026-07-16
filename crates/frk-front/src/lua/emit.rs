@@ -49,7 +49,13 @@ pub fn emit<'c>(
     source: &str,
     chunk: &LBlock,
 ) -> Result<Module<'c>> {
-    let module = Module::new(Location::unknown(context));
+    // The seed module (M17, D-062): the plain-dyn protocol helpers are
+    // kernel IR in intrinsics.mlir; the emitter appends around them.
+    let module = crate::intrinsics::seed_module(
+        context,
+        "femto_lua",
+        include_str!("intrinsics.mlir"),
+    )?;
     let mut line_starts = vec![0usize];
     for (offset, byte) in source.bytes().enumerate() {
         if byte == b'\n' {
@@ -64,7 +70,6 @@ pub fn emit<'c>(
         next_fn: 0,
     };
 
-    emitter.declare_runtime(&module)?;
     emitter.emit_helpers(&module)?;
     emitter.emit_main(&module, chunk)?;
     while let Some(job) = emitter.lift_queue.pop() {
@@ -440,272 +445,17 @@ impl<'c> Emitter<'c> {
         module.body().append_operation(function);
     }
 
-    fn declare_runtime(&self, module: &Module<'c>) -> Result<()> {
-        // Bodyless declarations answered by builtins (interp), capture
-        // symbols (JIT), and the real runtime (AOT).
-        for (name, inputs, outputs) in [
-            ("frk_rt_bstr_from_num", vec![self.f64_ty()], vec![self.bstr_ty()]),
-            ("frk_rt_print_lua_str", vec![self.bstr_ty()], vec![]),
-            ("frk_rt_lua_error", vec![self.i64_ty()], vec![]),
-        ] {
-            let declaration = OperationBuilder::new("func.func", Location::unknown(self.context))
-                .add_attributes(&[
-                    (
-                        Identifier::new(self.context, "sym_name"),
-                        StringAttribute::new(self.context, name).into(),
-                    ),
-                    (
-                        Identifier::new(self.context, "function_type"),
-                        TypeAttribute::new(
-                            FunctionType::new(self.context, &inputs, &outputs).into(),
-                        )
-                        .into(),
-                    ),
-                    (
-                        Identifier::new(self.context, "sym_visibility"),
-                        StringAttribute::new(self.context, "private").into(),
-                    ),
-                ])
-                .add_regions([Region::new()])
-                .build()
-                .map_err(|e| e.to_string())?;
-            module.body().append_operation(declaration);
-        }
-        Ok(())
-    }
-
     // ---- the synthesized protocol helpers (D-056.2) ----
 
     fn emit_helpers(&mut self, module: &Module<'c>) -> Result<()> {
         let location = Location::unknown(self.context);
         let dynt = self.dyn_ty();
 
-        // __lua_truthy(v) -> i1: nil/false falsy, everything else true.
-        {
-            let region = Region::new();
-            let entry = region.append_block(Block::new(&[(dynt, location)]));
-            let value = block_arg(entry, 0)?;
-            let bfalse = region.append_block(Block::new(&[]));
-            let btrue = region.append_block(Block::new(&[]));
-            let bbool = region.append_block(Block::new(&[]));
-            let tag = self.tag_of(entry, value, location)?;
-            self.switch(entry, tag, &[(TAG_NIL, bfalse), (TAG_BOOL, bbool)], btrue, location)?;
-            let f = self.const_bool(bfalse, false, location)?;
-            ret(bfalse, &[f], location)?;
-            let t = self.const_bool(btrue, true, location)?;
-            ret(btrue, &[t], location)?;
-            let b = self.unwrap(bbool, TAG_BOOL, self.i1_ty(), value, location)?;
-            ret(bbool, &[b], location)?;
-            self.func(module, "__lua_truthy", &[dynt], &[self.i1_ty()], region, false);
-        }
-
-        // __lua_tostring(v) -> dyn (a string dyn).
-        {
-            let region = Region::new();
-            let entry = region.append_block(Block::new(&[(dynt, location)]));
-            let value = block_arg(entry, 0)?;
-            let bnil = region.append_block(Block::new(&[]));
-            let bbool = region.append_block(Block::new(&[]));
-            let bnum = region.append_block(Block::new(&[]));
-            let bself = region.append_block(Block::new(&[]));
-            let berr = region.append_block(Block::new(&[]));
-            let tag = self.tag_of(entry, value, location)?;
-            self.switch(
-                entry,
-                tag,
-                &[(TAG_NIL, bnil), (TAG_BOOL, bbool), (TAG_NUM, bnum), (TAG_STR, bself)],
-                berr,
-                location,
-            )?;
-            let s = self.str_lit(bnil, "nil", location)?;
-            let d = self.wrap(bnil, TAG_STR, s, location)?;
-            ret(bnil, &[d], location)?;
-
-            let b = self.unwrap(bbool, TAG_BOOL, self.i1_ty(), value, location)?;
-            let btrue = region.append_block(Block::new(&[]));
-            let bfalse = region.append_block(Block::new(&[]));
-            self.cond_br(bbool, b, btrue, bfalse, location)?;
-            for (block, text) in [(btrue, "true"), (bfalse, "false")] {
-                let s = self.str_lit(block, text, location)?;
-                let d = self.wrap(block, TAG_STR, s, location)?;
-                ret(block, &[d], location)?;
-            }
-
-            let n = self.unwrap(bnum, TAG_NUM, self.f64_ty(), value, location)?;
-            let s = self
-                .call(bnum, "frk_rt_bstr_from_num", &[n], &[self.bstr_ty()], location)?
-                .expect("result");
-            let d = self.wrap(bnum, TAG_STR, s, location)?;
-            ret(bnum, &[d], location)?;
-
-            ret(bself, &[value], location)?;
-
-            let one = self.const_i64(berr, 1, location)?;
-            self.call(berr, "frk_rt_lua_error", &[one], &[], location)?;
-            let n = self.nil_dyn(berr, location)?;
-            ret(berr, &[n], location)?;
-            self.func(module, "__lua_tostring", &[dynt], &[dynt], region, false);
-        }
-
-        // __lua_print(v) -> dyn (nil).
-        {
-            let region = Region::new();
-            let entry = region.append_block(Block::new(&[(dynt, location)]));
-            let value = block_arg(entry, 0)?;
-            let s = self
-                .call(entry, "__lua_tostring", &[value], &[dynt], location)?
-                .expect("result");
-            let raw = self.unwrap(entry, TAG_STR, self.bstr_ty(), s, location)?;
-            self.call(entry, "frk_rt_print_lua_str", &[raw], &[], location)?;
-            let nil = self.nil_dyn(entry, location)?;
-            ret(entry, &[nil], location)?;
-            self.func(module, "__lua_print", &[dynt], &[dynt], region, false);
-        }
-
-        // __lua_eq(a, b) -> i1.
-        {
-            let region = Region::new();
-            let entry = region.append_block(Block::new(&[(dynt, location), (dynt, location)]));
-            let a = block_arg(entry, 0)?;
-            let b = block_arg(entry, 1)?;
-            let bsame = region.append_block(Block::new(&[]));
-            let bdiff = region.append_block(Block::new(&[]));
-            let ta = self.tag_of(entry, a, location)?;
-            let tb = self.tag_of(entry, b, location)?;
-            let same = self.cmpi(entry, 0, ta, tb, location)?;
-            self.cond_br(entry, same, bsame, bdiff, location)?;
-            let f = self.const_bool(bdiff, false, location)?;
-            ret(bdiff, &[f], location)?;
-
-            let btrue = region.append_block(Block::new(&[]));
-            let bb = region.append_block(Block::new(&[]));
-            let bn = region.append_block(Block::new(&[]));
-            let bs = region.append_block(Block::new(&[]));
-            let bref = region.append_block(Block::new(&[]));
-            self.switch(
-                bsame,
-                ta,
-                &[(TAG_NIL, btrue), (TAG_BOOL, bb), (TAG_NUM, bn), (TAG_STR, bs)],
-                bref,
-                location,
-            )?;
-            let t = self.const_bool(btrue, true, location)?;
-            ret(btrue, &[t], location)?;
-            let xa = self.unwrap(bb, TAG_BOOL, self.i1_ty(), a, location)?;
-            let xb = self.unwrap(bb, TAG_BOOL, self.i1_ty(), b, location)?;
-            let e = self.cmpi(bb, 0, xa, xb, location)?;
-            ret(bb, &[e], location)?;
-            let na = self.unwrap(bn, TAG_NUM, self.f64_ty(), a, location)?;
-            let nb = self.unwrap(bn, TAG_NUM, self.f64_ty(), b, location)?;
-            let e = self.cmpf(bn, 1, na, nb, location)?; // oeq
-            ret(bn, &[e], location)?;
-            let sa = self.unwrap(bs, TAG_STR, self.bstr_ty(), a, location)?;
-            let sb = self.unwrap(bs, TAG_STR, self.bstr_ty(), b, location)?;
-            let e = self.build(bs, "frk_bstr.eq", &[sa, sb], &[self.i1_ty()], &[], location)?;
-            ret(bs, &[e], location)?;
-            let pa = self.build(bref, "frk_dyn.payload_word", &[a], &[self.i64_ty()], &[], location)?;
-            let pb = self.build(bref, "frk_dyn.payload_word", &[b], &[self.i64_ty()], &[], location)?;
-            let e = self.cmpi(bref, 0, pa, pb, location)?;
-            ret(bref, &[e], location)?;
-            self.func(module, "__lua_eq", &[dynt, dynt], &[self.i1_ty()], region, false);
-        }
-
-        // __lua_costr(v) -> !frk_bstr.str (concat coercion: str | num).
-        {
-            let region = Region::new();
-            let entry = region.append_block(Block::new(&[(dynt, location)]));
-            let value = block_arg(entry, 0)?;
-            let bstr = region.append_block(Block::new(&[]));
-            let bnum = region.append_block(Block::new(&[]));
-            let berr = region.append_block(Block::new(&[]));
-            let tag = self.tag_of(entry, value, location)?;
-            self.switch(entry, tag, &[(TAG_STR, bstr), (TAG_NUM, bnum)], berr, location)?;
-            let s = self.unwrap(bstr, TAG_STR, self.bstr_ty(), value, location)?;
-            ret(bstr, &[s], location)?;
-            let n = self.unwrap(bnum, TAG_NUM, self.f64_ty(), value, location)?;
-            let s = self
-                .call(bnum, "frk_rt_bstr_from_num", &[n], &[self.bstr_ty()], location)?
-                .expect("result");
-            ret(bnum, &[s], location)?;
-            let two = self.const_i64(berr, 2, location)?;
-            self.call(berr, "frk_rt_lua_error", &[two], &[], location)?;
-            let dummy = self.str_lit(berr, "", location)?;
-            ret(berr, &[dummy], location)?;
-            self.func(module, "__lua_costr", &[dynt], &[self.bstr_ty()], region, false);
-        }
-
-        // __lua_len(v) -> dyn (a number dyn).
-        {
-            let region = Region::new();
-            let entry = region.append_block(Block::new(&[(dynt, location)]));
-            let value = block_arg(entry, 0)?;
-            let bstr = region.append_block(Block::new(&[]));
-            let btab = region.append_block(Block::new(&[]));
-            let berr = region.append_block(Block::new(&[]));
-            let tag = self.tag_of(entry, value, location)?;
-            self.switch(entry, tag, &[(TAG_STR, bstr), (4, btab)], berr, location)?;
-            let s = self.unwrap(bstr, TAG_STR, self.bstr_ty(), value, location)?;
-            let n = self.build(bstr, "frk_bstr.len", &[s], &[self.i64_ty()], &[], location)?;
-            let d = self.num_from_i64(bstr, n, location)?;
-            ret(bstr, &[d], location)?;
-            let n = self.build(btab, "frk_dyn.table_len", &[value], &[self.i64_ty()], &[], location)?;
-            let d = self.num_from_i64(btab, n, location)?;
-            ret(btab, &[d], location)?;
-            let three = self.const_i64(berr, 3, location)?;
-            self.call(berr, "frk_rt_lua_error", &[three], &[], location)?;
-            let n = self.nil_dyn(berr, location)?;
-            ret(berr, &[n], location)?;
-            self.func(module, "__lua_len", &[dynt], &[dynt], region, false);
-        }
-
-        // __lua_arg(pack, i) -> dyn: bounds-checked nil-fill read —
-        // the pack convention's adjuster (D-058).
-        {
-            let region = Region::new();
-            let entry = region
-                .append_block(Block::new(&[(self.pack_ty(), location), (self.i64_ty(), location)]));
-            let pack = block_arg(entry, 0)?;
-            let index = block_arg(entry, 1)?;
-            let len = self.build(entry, "frk_mem.array_len", &[pack], &[self.i64_ty()], &[], location)?;
-            let in_range = self.cmpi(entry, 2, index, len, location)?; // slt
-            let bget = region.append_block(Block::new(&[]));
-            let bnil = region.append_block(Block::new(&[]));
-            self.cond_br(entry, in_range, bget, bnil, location)?;
-            let value =
-                self.build(bget, "frk_mem.array_get", &[pack, index], &[self.dyn_ty()], &[], location)?;
-            ret(bget, &[value], location)?;
-            let nil = self.nil_dyn(bnil, location)?;
-            ret(bnil, &[nil], location)?;
-            self.func(
-                module,
-                "__lua_arg",
-                &[self.pack_ty(), self.i64_ty()],
-                &[self.dyn_ty()],
-                region,
-                false,
-            );
-        }
-
-        // __lua_setmetatable(t, mt) -> dyn: sets and returns t (Lua).
-        {
-            let region = Region::new();
-            let entry = region.append_block(Block::new(&[(dynt, location), (dynt, location)]));
-            let table = block_arg(entry, 0)?;
-            let meta = block_arg(entry, 1)?;
-            self.build0(entry, "frk_dyn.set_meta", &[table, meta], &[], location)?;
-            ret(entry, &[table], location)?;
-            self.func(module, "__lua_setmetatable", &[dynt, dynt], &[dynt], region, false);
-        }
-
-        // __lua_getmetatable(t) -> dyn.
-        {
-            let region = Region::new();
-            let entry = region.append_block(Block::new(&[(dynt, location)]));
-            let table = block_arg(entry, 0)?;
-            let meta = self.build(entry, "frk_dyn.get_meta", &[table], &[dynt], &[], location)?;
-            ret(entry, &[meta], location)?;
-            self.func(module, "__lua_getmetatable", &[dynt], &[dynt], region, false);
-        }
+        // The plain-dyn protocol helpers (__lua_truthy/tostring/print/
+        // eq/costr/len/arg/setmetatable/getmetatable) live in
+        // intrinsics.mlir (M17, D-062) — the seed module carries them;
+        // only the convention-riding wrappers below are still built
+        // here (the D-059 sequencing rule).
 
         // Pack-convention wrappers for the seeded stdlib (D-058): one
         // pack in, one pack out, delegating to the typed helpers.

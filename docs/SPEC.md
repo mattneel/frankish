@@ -65,7 +65,12 @@ live on branches, not main.
   (upstream or kernel), with named strategy variants where the design calls
   for them (e.g. mem: arena|rc|gc). Lowerings preserve locations (§6.5).
 - **K4 Runtime component.** Whatever the lowering requires at run time ships
-  in `frk-rt` behind a documented C ABI, freestanding-first (§10).
+  in `frk-rt` behind the REGISTERED C ABI (crates/frk-abi, D-062):
+  machine-enforced against both runtime twins at compile time — generated
+  header for the C twin, generated typed fn-pointer assertions for the
+  Rust twin and the JIT capture shims, declaration checks in the semantic
+  verifier. Freestanding-first (§10). "Documented" is not enough; the
+  registry is the single source and everything else derives or is checked.
 - **K5 Goldens.** A golden corpus exercising every op and every lowering
   strategy, green under the differential law (L3).
 - **K6 Docs.** One page: semantics, lowering contracts, interaction-matrix
@@ -182,6 +187,24 @@ Every green-tree span threads into MLIR Location attributes at emission.
 Every MLIR verifier/pass diagnostic must surface as a source-mapped report
 (ariadne/miette) against original source. A diagnostic that points at IR
 instead of source is a bug with a regression test.
+
+### §6.6 Intrinsics modules (D-062)
+A language's intrinsics — its primitive operations above the kernel ops
+but below user code (print protocols, truthiness, coercions, stdlib
+seeds) — are an AUTHORING SURFACE, not emitter internals. They are
+written once, as kernel IR, in `.mlir` files shipped with the frontend
+(embedded `include_str!`; no runtime file paths, L6). Compilation parses
+the intrinsics file as the SEED MODULE and the emitter appends the
+program's functions into it. Consequences, all by construction: the
+intrinsics are reviewable/diffable as IR; they pass MLIR + frankish
+semantic verification like any module (including the D-062 check that
+every `frk_rt_*` declaration they carry matches the ABI registry); they
+run under K2 and lower under K3 with zero new machinery. Symbols are
+namespaced `__<lang>_…`; the kernel lowering's declarers skip symbols an
+intrinsics file already declares. Fences: monomorphic/dyn intrinsics
+only until a monomorphization story exists; helpers whose signatures
+ride the closure calling convention stay emitter-built until the
+uniform-signature convention (D-059) lands.
 
 ## §7 Harness
 
@@ -306,6 +329,8 @@ Workspace layout (M0 creates):
     crates/frk-interp    eval interface + derived interpreter
     crates/frk-front     readers, binder, type kit, loanword consumer
     crates/frk-harness   golden/diff runners, stage dumps, dashboard emit
+    crates/frk-abi       THE runtime ABI registry (D-062): pure data +
+                         generators; every ABI consumer derives/checks
     crates/frk-rt        runtime staticlib (freestanding-first, C ABI)
     tools/loanword-ts    TypeScript frontend package (M9)
     sandbox/             xDSL prototypes, spikes (never gates CI)

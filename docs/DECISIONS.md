@@ -193,6 +193,58 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-062 [m17/surfaces] Intrinsics and runtimes become FIRST-CLASS
+  AUTHORING SURFACES (the human's directive: "we've forgotten two very
+  important parts of defining programming languages"). Until now both
+  were conventions buried in code: intrinsics as D-056.2 emitter
+  builder-code, the runtime ABI "documented" (K4) but enforced by
+  nothing — every rt function authored 2–4× (Rust twin, C twin, interp
+  builtin, JIT capture shim), the M15 display_bool bug the witnessed
+  cost. TWO SURFACES, adversarially panel-reviewed before landing:
+  (A) INTRINSICS MODULES (SPEC §6.6): a language's primitives are
+  kernel IR in .mlir files shipped with the frontend (include_str!,
+  L6-clean), parsed as the SEED MODULE the emitter appends into.
+  Ordinary funcs ⇒ K2/K3 for free; verified like any module INCLUDING
+  the new declaration check. Migrated at ratification: scheme fully
+  (__scm_display + decls; builder code deleted); femto_lua's nine
+  plain-dyn protocol helpers (truthy/tostring/print/eq/costr/len/arg/
+  set+getmetatable). SEQUENCING RULE (panel): the _v pack wrappers and
+  iterator protocol stay emitter-built until D-059's uniform-signature
+  convention lands — their signatures ride the closure convention.
+  Fences: monomorphic/dyn intrinsics only (typed instantiation waits
+  for a monomorphization story); __lua_index + remaining emitter IR =
+  mechanical follow-up.
+  (B) THE RUNTIME ABI REGISTRY (crates/frk-abi; K4 amended): ONE
+  declarative table of every frk_rt_* symbol — args/ret in an
+  8-variant ABI vocabulary (incl. PtrPayload: the opaque managed-
+  payload pointer, rendered void* in C / *mut u8 in Rust — the one
+  deliberate asymmetric mapping), lane (per-language runtime
+  extensions are first-class rows), JIT binding (Real/Capture/
+  NotLinked), interp disposition. Enforcement, all L1-witnessed:
+  Rust twin via build.rs-generated typed fn-pointer assertions
+  (compile error on drift); C twin via generated frk_rt_abi.h
+  included by frk_rt.c (every compile on every triple enforces; make
+  abi regenerates; drift test asserts equality; the tamper test
+  REPLAYS the display_bool bug and proves refusal); JIT capture shims
+  via generated assertions (the panel's strongest finding — the one
+  remaining type-erased layer); kernel_lower declarations DERIVED
+  from the registry (hand tables deleted) with dedup against module-
+  declared symbols; and a semantic-verifier check projecting every
+  bodyless frk_rt_* declaration onto the registry (class-level;
+  i1/i8↔u8 widening pinned). First compile of the header caught real
+  latent drift (void*/uint8_t* on 11 fns). The registry also exposed
+  print_lua_num/bool/nil as linked-by-nothing (dead twin exports) —
+  cleanup follow-up. Lane ruling: Lane = owning runtime module;
+  consumers filter by lane; c_header grows a lane filter when the
+  first specimen twin-extension lands. Deliberately omitted (say so
+  once): no varargs flag (nothing needs it), no code-pointer AbiTy
+  (frk.stage will add it). NAMED FOLLOW-UPS (panel lens 3):
+  registry-DRIVEN JIT/builtin registration (today the typed layers are
+  enforced but the registration sets are imperative; refactor the
+  runner to iterate RT_ABI rows, then coverage is a table walk);
+  dead-export cleanup (print_lua_num/bool/nil). Revisit: intrinsics
+  DSL only if raw .mlir authoring demonstrably hurts; full lua
+  migration at the uniform-signature milestone.
 - D-061 [m15/ctl] The frk.ctl v0 native lowering, settled after a
   3-designer+judge panel (transcript in the session; judge chose
   PASS-OVER-LLVM). Decision, reconciling the panel:

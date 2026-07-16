@@ -77,6 +77,9 @@ fn produce_loanword(case: &Case) -> Result<String, RunError> {
         .arg(root.join("tools/loanword-ts/src/main.ts"))
         .arg(&case.source_path)
         .env("LC_ALL", "C")
+        .env("NO_COLOR", "1")
+        .env_remove("FORCE_COLOR")
+        .env_remove("COLORTERM")
         .output()
         .map_err(|e| RunError::Invoke(format!("node (loanword producer): {e}")))?;
     if !output.status.success() {
@@ -242,6 +245,13 @@ impl Runner for NodeOracle {
         let output = std::process::Command::new("node")
             .arg(&case.source_path)
             .env("LC_ALL", "C")
+            // node >= 25 colorizes piped console.log under COLORTERM,
+            // and FORCE_COLOR (if the ambient shell sets it) overrides
+            // NO_COLOR. The oracle protocol is bytes: color is pinned
+            // off unconditionally.
+            .env("NO_COLOR", "1")
+            .env_remove("FORCE_COLOR")
+            .env_remove("COLORTERM")
             .output()
             .map_err(|e| RunError::Invoke(format!("running node: {e}")))?;
         if !output.status.success() {

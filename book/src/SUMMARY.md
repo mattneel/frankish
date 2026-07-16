@@ -18,6 +18,7 @@
 - [The Reference Interpreter](architecture/interpreter.md)
 - [The Two-Twin Runtime](architecture/runtime.md)
 - [The Tier-0 Grid](architecture/grid.md)
+- [Authoring Surfaces: Intrinsics and the Runtime ABI](architecture/authoring-surfaces.md)
 
 # The Kernel Dialects
 
