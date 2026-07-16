@@ -171,7 +171,16 @@ pub const RT_ABI: &[RtFn] = &[
     RtFn { name: "frk_rt_table_next", args: &[I64, I64, I64, PtrMutI64], ret: None, lane: Lane::Dyn, jit: Real, interp: DialectEval },
     RtFn { name: "frk_rt_table_raw_get", args: &[I64, I64, I64, PtrMutI64], ret: None, lane: Lane::Dyn, jit: Real, interp: DialectEval },
     RtFn { name: "frk_rt_table_raw_set", args: &[I64, I64, I64, I64, I64], ret: None, lane: Lane::Dyn, jit: Real, interp: DialectEval },
-    // ---- Ctl: the κ_frk pending cell (D-060/D-061) ----
+    // ---- Ctl: the κ_frk pending cell (D-060/D-061) + the v1
+    // evidence stack (D-069): labels are interned bstr pointers
+    // passed as words, so find is a pointer compare; perform_end does
+    // the consumed-else-abort decision IN the runtime (no block
+    // surgery in the lowering). ----
+    RtFn { name: "frk_rt_ctl_handler_push", args: &[I64, I64, I64, I64], ret: None, lane: Lane::Ctl, jit: Real, interp: DialectEval },
+    RtFn { name: "frk_rt_ctl_handler_pop", args: &[], ret: None, lane: Lane::Ctl, jit: Real, interp: DialectEval },
+    RtFn { name: "frk_rt_ctl_perform_begin", args: &[I64, PtrMutI64], ret: Some(I64), lane: Lane::Ctl, jit: Real, interp: DialectEval },
+    RtFn { name: "frk_rt_ctl_perform_end", args: &[I64, I64, I64, I64, PtrMutI64], ret: Some(I64), lane: Lane::Ctl, jit: Real, interp: DialectEval },
+    RtFn { name: "frk_rt_ctl_resume_mark", args: &[I64], ret: None, lane: Lane::Ctl, jit: Real, interp: DialectEval },
     RtFn { name: "frk_rt_ctl_abort", args: &[I64, I64, I64], ret: None, lane: Lane::Ctl, jit: Real, interp: DialectEval },
     RtFn { name: "frk_rt_ctl_pending", args: &[], ret: Some(I64), lane: Lane::Ctl, jit: Real, interp: DialectEval },
     RtFn { name: "frk_rt_ctl_prompt_enter", args: &[], ret: Some(I64), lane: Lane::Ctl, jit: Real, interp: DialectEval },

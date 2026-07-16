@@ -599,6 +599,117 @@ pub extern "C" fn frk_rt_ctl_abort(token: i64, tag: i64, payload: i64) {
     CTL_PENDING.store(1, Ordering::Relaxed);
 }
 
+// ---- effects-v1 (M24, D-069): the evidence stack. Entries are
+// (label word = interned bstr ptr, fn word, env word, handle token,
+// masked). Masking implements the handler-free-for-ℓ dispatch rule;
+// markers are one-shot — the second resume_mark TRAPS (the κ_frk
+// one-shot violation, real native state). Single-threaded like all
+// twin globals. ----
+
+fn ctl_handlers() -> &'static std::sync::Mutex<Vec<(i64, i64, i64, i64, bool)>> {
+    static HANDLERS: std::sync::OnceLock<std::sync::Mutex<Vec<(i64, i64, i64, i64, bool)>>> =
+        std::sync::OnceLock::new();
+    HANDLERS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+fn ctl_consumed() -> &'static std::sync::Mutex<std::collections::HashSet<i64>> {
+    static CONSUMED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<i64>>> =
+        std::sync::OnceLock::new();
+    CONSUMED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_ctl_handler_push(label: i64, function: i64, env: i64, token: i64) {
+    ctl_handlers().lock().unwrap().push((label, function, env, token, false));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_ctl_handler_pop() {
+    ctl_handlers().lock().unwrap().pop();
+}
+
+/// Innermost UNMASKED handler for `label`: masks it and writes
+/// out[0..5] = fn, env, fresh marker, token, entry index; returns 1.
+/// No handler ⇒ the unhandled-effect trap (prints the label bytes —
+/// bstr layout {u64 len; bytes}).
+///
+/// # Safety
+/// `out` must point to five writable i64 slots.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_ctl_perform_begin(label: i64, out: *mut i64) -> i64 {
+    let mut handlers = ctl_handlers().lock().unwrap();
+    for index in (0..handlers.len()).rev() {
+        let (l, function, env, token, masked) = handlers[index];
+        if !masked && l == label {
+            handlers[index].4 = true;
+            let marker = CTL_NEXT_TOKEN.fetch_add(1, Ordering::Relaxed) as i64;
+            unsafe {
+                *out = function;
+                *out.add(1) = env;
+                *out.add(2) = marker;
+                *out.add(3) = token;
+                *out.add(4) = index as i64;
+            }
+            return 1;
+        }
+    }
+    let name = unsafe {
+        let base = label as usize as *const u8;
+        let len = *(base as *const u64) as usize;
+        String::from_utf8_lossy(std::slice::from_raw_parts(base.add(8), len)).into_owned()
+    };
+    eprintln!("frk: unhandled effect \"{name}\" (κ_frk, D-069)");
+    std::process::abort();
+}
+
+/// Unmasks the entry, reads the clause-return pack's HEAD (nil-filled
+/// — the runtime knows the arr layout, so an empty pack is safe), and
+/// decides consumed-else-abort IN the runtime (κ_frk v1): writes the
+/// head dyn to out[0..2]; consumed ⇒ 1 (perform yields it); else
+/// parks it as an abort to `token` and returns 0.
+///
+/// # Safety
+/// `rpack` must be a live values pack; `out` two writable i64 slots.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_ctl_perform_end(
+    entry: i64,
+    marker: i64,
+    token: i64,
+    rpack: i64,
+    out: *mut i64,
+) -> i64 {
+    if let Some(handler) = ctl_handlers().lock().unwrap().get_mut(entry as usize) {
+        handler.4 = false;
+    }
+    let (rtag, rpay) = unsafe {
+        let words = rpack as usize as *const i64;
+        if *words > 0 {
+            (*words.add(1), *words.add(2))
+        } else {
+            (0, 0) // nil
+        }
+    };
+    unsafe {
+        *out = rtag;
+        *out.add(1) = rpay;
+    }
+    if ctl_consumed().lock().unwrap().contains(&marker) {
+        1
+    } else {
+        frk_rt_ctl_abort(token, rtag, rpay);
+        0
+    }
+}
+
+/// One-shot consumption; the second call is the κ_frk trap.
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_ctl_resume_mark(marker: i64) {
+    if !ctl_consumed().lock().unwrap().insert(marker) {
+        eprintln!("frk: one-shot violation (κ_frk, D-069)");
+        std::process::abort();
+    }
+}
+
 /// The result-passing carrier read after a call: is an abort pending?
 #[unsafe(no_mangle)]
 pub extern "C" fn frk_rt_ctl_pending() -> i64 {

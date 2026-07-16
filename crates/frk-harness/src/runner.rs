@@ -623,6 +623,11 @@ fn jit_symbol(name: &str) -> Option<*mut ()> {
         "frk_rt_ctl_abort" => frk_rt::frk_rt_ctl_abort as *mut (),
         "frk_rt_ctl_pending" => frk_rt::frk_rt_ctl_pending as *mut (),
         "frk_rt_ctl_resolve" => frk_rt::frk_rt_ctl_resolve as *mut (),
+        "frk_rt_ctl_handler_push" => frk_rt::frk_rt_ctl_handler_push as *mut (),
+        "frk_rt_ctl_handler_pop" => frk_rt::frk_rt_ctl_handler_pop as *mut (),
+        "frk_rt_ctl_perform_begin" => frk_rt::frk_rt_ctl_perform_begin as *mut (),
+        "frk_rt_ctl_perform_end" => frk_rt::frk_rt_ctl_perform_end as *mut (),
+        "frk_rt_ctl_resume_mark" => frk_rt::frk_rt_ctl_resume_mark as *mut (),
         // Lua errors bind REAL (stderr + abort — not captured output).
         "frk_rt_lua_error" => frk_rt::frk_rt_lua_error as *mut (),
         // Capture shims (stdout is protocol output, D-047).

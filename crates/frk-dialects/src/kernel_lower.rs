@@ -438,6 +438,25 @@ enum Planned<'c, 'a> {
     CtlPending {
         op: OperationRef<'c, 'a>,
     },
+    /// frk_ctl.handle (κ_frk v1, D-069): prompt + evidence push/pop.
+    CtlHandle {
+        op: OperationRef<'c, 'a>,
+        result: Type<'c>,
+        label_text: String,
+        label_symbol: String,
+    },
+    /// frk_ctl.perform: evidence dispatch, clause at the perform
+    /// site, consumed-else-abort decided in the runtime.
+    CtlPerform {
+        op: OperationRef<'c, 'a>,
+        result: Type<'c>,
+        label_text: String,
+        label_symbol: String,
+    },
+    /// frk_ctl.resume: one-shot mark + identity.
+    CtlResume {
+        op: OperationRef<'c, 'a>,
+    },
 }
 
 /// Lowers every kernel op and type under `module` (the pipeline anchors
@@ -643,11 +662,14 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
         ) || matches!(
             plan,
             Planned::DynWrap { payload_kind: SlotKind::Closure | SlotKind::Words { .. }, .. }
-        ) || matches!(plan, Planned::TableNew { .. })
+        ) || matches!(plan, Planned::TableNew { .. } | Planned::CtlPerform { .. })
     });
     if needs_allocator {
         declare_runtime(context, module, strategy)?;
         synthesize_thunks(context, module, &plans)?;
+    }
+    if plans.iter().any(|plan| matches!(plan, Planned::CtlPerform { .. })) {
+        synthesize_resumer(context, module)?;
     }
     declare_str_runtime(context, module, &plans)?;
 
@@ -840,7 +862,7 @@ fn collect<'c, 'a>(
     } else if let Some(suffix) = name.strip_prefix("frk_bstr.") {
         plans.push(plan_bstr(suffix, op, str_counter)?);
     } else if let Some(suffix) = name.strip_prefix("frk_ctl.") {
-        plans.push(plan_ctl(context, suffix, op)?);
+        plans.push(plan_ctl(context, suffix, op, str_counter)?);
     } else {
         if name == "func.func" {
             if let Some(mapped) = mapped_signature(context, op)? {
@@ -1248,8 +1270,40 @@ fn plan_ctl<'c, 'a>(
     context: &'c Context,
     suffix: &str,
     op: OperationRef<'c, 'a>,
+    str_counter: &mut usize,
 ) -> Result<Planned<'c, 'a>, String> {
+    let label = |op: OperationRef<'c, 'a>, str_counter: &mut usize| -> Result<(String, String), String> {
+        let attribute = op
+            .attribute("label")
+            .map_err(|_| "frk_ctl op without a label".to_string())?;
+        let text = String::from_utf8(crate::attr_util::string_attr_bytes(attribute)?)
+            .map_err(|_| "non-UTF-8 effect label".to_string())?;
+        let symbol = format!("__frk_str_{}", *str_counter);
+        *str_counter += 1;
+        Ok((text, symbol))
+    };
     match suffix {
+        "handle" => {
+            let (label_text, label_symbol) = label(op, str_counter)?;
+            let result = map_type(
+                context,
+                op.result(0)
+                    .map_err(|_| "handle without a result".to_string())?
+                    .r#type(),
+            )?;
+            Ok(Planned::CtlHandle { op, result, label_text, label_symbol })
+        }
+        "perform" => {
+            let (label_text, label_symbol) = label(op, str_counter)?;
+            let result = map_type(
+                context,
+                op.result(0)
+                    .map_err(|_| "perform without a result".to_string())?
+                    .r#type(),
+            )?;
+            Ok(Planned::CtlPerform { op, result, label_text, label_symbol })
+        }
+        "resume" => Ok(Planned::CtlResume { op }),
         "prompt" => {
             let result = map_type(
                 context,
@@ -1540,6 +1594,21 @@ fn declare_str_runtime(
             }
             Planned::CtlAbort { .. } => needed.push(("frk_rt_ctl_abort", false)),
             Planned::CtlPending { .. } => needed.push(("frk_rt_ctl_pending", false)),
+            Planned::CtlHandle { .. } => {
+                needed.push(("frk_rt_bstr_intern", true));
+                needed.push(("frk_rt_ctl_prompt_enter", false));
+                needed.push(("frk_rt_ctl_prompt_exit", false));
+                needed.push(("frk_rt_ctl_resolve", false));
+                needed.push(("frk_rt_ctl_handler_push", false));
+                needed.push(("frk_rt_ctl_handler_pop", false));
+            }
+            Planned::CtlPerform { .. } => {
+                needed.push(("frk_rt_bstr_intern", true));
+                needed.push(("frk_rt_ctl_perform_begin", false));
+                needed.push(("frk_rt_ctl_perform_end", false));
+                needed.push(("frk_rt_ctl_resume_mark", false));
+            }
+            Planned::CtlResume { .. } => needed.push(("frk_rt_ctl_resume_mark", false)),
             _ => {}
         }
     }
@@ -2767,6 +2836,363 @@ fn apply<'c, 'a>(
             rewriter.erase_op(op);
             Ok(())
         }
+        Planned::CtlHandle { op, result, label_text, label_symbol } => {
+            // handle = prompt + evidence push/pop (κ_frk v1, D-069):
+            // enter → push(label, clause fn/env, token) → apply
+            // body(token) → pop → exit → resolve-overwrites → yield.
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
+
+            let label_w =
+                intern_label(context, rewriter, op, &label_symbol, &label_text, location)?;
+            let token = result_value(rewriter.insert(direct_call(
+                context,
+                "frk_rt_ctl_prompt_enter",
+                &[],
+                i64_type,
+                location,
+            )?))?;
+            let clause = operand(op, 0)?;
+            let clause_fn = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                clause,
+                DenseI64ArrayAttribute::new(context, &[0]),
+                ptr,
+                location,
+            )))?;
+            let clause_env = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                clause,
+                DenseI64ArrayAttribute::new(context, &[1]),
+                ptr,
+                location,
+            )))?;
+            let clause_fn_w = result_value(
+                rewriter.insert(cast_op("llvm.ptrtoint", clause_fn, i64_type, location)?),
+            )?;
+            let clause_env_w = result_value(
+                rewriter.insert(cast_op("llvm.ptrtoint", clause_env, i64_type, location)?),
+            )?;
+            rewriter.insert(direct_call_void(
+                context,
+                "frk_rt_ctl_handler_push",
+                &[label_w, clause_fn_w, clause_env_w, token],
+                location,
+            )?);
+
+            let body = operand(op, 1)?;
+            let body_fn = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                body,
+                DenseI64ArrayAttribute::new(context, &[0]),
+                ptr,
+                location,
+            )))?;
+            let body_env = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                body,
+                DenseI64ArrayAttribute::new(context, &[1]),
+                ptr,
+                location,
+            )))?;
+            let body_call = rewriter.insert(
+                OperationBuilder::new("llvm.call", location)
+                    .add_attributes(&[
+                        (
+                            melior::ir::Identifier::new(context, "CConv"),
+                            Attribute::parse(context, "#llvm.cconv<ccc>").ok_or("CConv")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "TailCallKind"),
+                            Attribute::parse(context, "#llvm.tailcallkind<none>")
+                                .ok_or("TailCallKind")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "fastmathFlags"),
+                            Attribute::parse(context, "#llvm.fastmath<none>")
+                                .ok_or("fastmathFlags")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "op_bundle_sizes"),
+                            Attribute::parse(context, "array<i32>").ok_or("op_bundle_sizes")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "operandSegmentSizes"),
+                            Attribute::parse(context, "array<i32: 3, 0>")
+                                .ok_or("operandSegmentSizes")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "frk.ctl_body"),
+                            Attribute::parse(context, "unit").ok_or("ctl_body")?,
+                        ),
+                    ])
+                    .add_operands(&[body_fn, body_env, token])
+                    .add_results(&[result])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            );
+            let body_result = result_value(body_call)?;
+            rewriter.insert(direct_call_void(context, "frk_rt_ctl_handler_pop", &[], location)?);
+            rewriter.insert(direct_call_void(
+                context,
+                "frk_rt_ctl_prompt_exit",
+                &[token],
+                location,
+            )?);
+            let two = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, 2).into(),
+                location,
+            )))?;
+            let out = result_value(rewriter.insert(
+                OperationBuilder::new("llvm.alloca", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "elem_type"),
+                        TypeAttribute::new(i64_type).into(),
+                    )])
+                    .add_operands(&[two])
+                    .add_results(&[ptr])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            let body_tag = dyn_field(context, rewriter, body_result, 0, location)?;
+            let body_pay = dyn_field(context, rewriter, body_result, 1, location)?;
+            store_slot_at(context, rewriter, out, 0, body_tag, location)?;
+            store_slot_at(context, rewriter, out, 1, body_pay, location)?;
+            rewriter.insert(direct_call(
+                context,
+                "frk_rt_ctl_resolve",
+                &[token, out],
+                i64_type,
+                location,
+            )?);
+            let yield_tag = load_slot_at(context, rewriter, out, 0, location)?;
+            let yield_pay = load_slot_at(context, rewriter, out, 1, location)?;
+            let yielded = build_dyn_words(context, rewriter, yield_tag, yield_pay, location)?;
+            finish(rewriter, op, yielded)
+        }
+        Planned::CtlPerform { op, result, label_text, label_symbol } => {
+            // Branch-free dispatch (D-069): begin masks + allocates
+            // the marker; the clause applies through the uniform
+            // convention with κ born uniform; end unmasks, reads the
+            // clause pack's head, and decides consumed-else-abort IN
+            // the runtime.
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
+            let const_i64 = |rewriter: &RewriterBase<'c, '_>, value: i64| {
+                result_value(rewriter.insert(melior::dialect::arith::constant(
+                    context,
+                    IntegerAttribute::new(i64_type, value).into(),
+                    location,
+                )))
+            };
+
+            let label_w =
+                intern_label(context, rewriter, op, &label_symbol, &label_text, location)?;
+            let five = const_i64(rewriter, 5)?;
+            let out5 = result_value(rewriter.insert(
+                OperationBuilder::new("llvm.alloca", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "elem_type"),
+                        TypeAttribute::new(i64_type).into(),
+                    )])
+                    .add_operands(&[five])
+                    .add_results(&[ptr])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            rewriter.insert(direct_call(
+                context,
+                "frk_rt_ctl_perform_begin",
+                &[label_w, out5],
+                i64_type,
+                location,
+            )?);
+            let clause_fn_w = load_slot_at(context, rewriter, out5, 0, location)?;
+            let clause_env_w = load_slot_at(context, rewriter, out5, 1, location)?;
+            let marker = load_slot_at(context, rewriter, out5, 2, location)?;
+            let token = load_slot_at(context, rewriter, out5, 3, location)?;
+            let entry = load_slot_at(context, rewriter, out5, 4, location)?;
+
+            // κ born uniform: env = [marker]; closure box =
+            // {resumer ptr, env ptr} (wordmap: word0 skip, word1 ptr).
+            let eight = const_i64(rewriter, 8)?;
+            let k_env = strategy_alloc(context, rewriter, strategy, eight, 0, location)?;
+            store_slot_at(context, rewriter, k_env, 0, marker, location)?;
+            // Resumer address: func.constant + unrealized cast (the
+            // MakeClosure recipe — folded after FuncToLLVM).
+            let resumer_type = FunctionType::new(context, &[ptr, ptr], &[ptr]);
+            let resumer_const = result_value(rewriter.insert(
+                OperationBuilder::new("func.constant", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "value"),
+                        FlatSymbolRefAttribute::new(context, "__frk_ctl_resume__").into(),
+                    )])
+                    .add_results(&[resumer_type.into()])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            let resumer = result_value(rewriter.insert(
+                OperationBuilder::new("builtin.unrealized_conversion_cast", location)
+                    .add_operands(&[resumer_const])
+                    .add_results(&[ptr])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            // The κ closure box holds the NATIVE {ptr, ptr} struct
+            // (the DynWrap-Closure recipe) — hand-rolled i64 slot
+            // stores put the env at word 1 where 32-bit unwrap reads
+            // byte 4: wasm32 caught that as a silent abortive (40 vs
+            // 42) on the grid's first run.
+            let k_struct_ty = closure_struct(context);
+            let k_undef =
+                result_value(rewriter.insert(llvm::undef(k_struct_ty, location)))?;
+            let k_with_fn = result_value(rewriter.insert(llvm::insert_value(
+                context,
+                k_undef,
+                DenseI64ArrayAttribute::new(context, &[0]),
+                resumer,
+                location,
+            )))?;
+            let k_struct = result_value(rewriter.insert(llvm::insert_value(
+                context,
+                k_with_fn,
+                DenseI64ArrayAttribute::new(context, &[1]),
+                k_env,
+                location,
+            )))?;
+            let sixteen = const_i64(rewriter, 16)?;
+            let k_box =
+                strategy_alloc(context, rewriter, strategy, sixteen, 1 << 6, location)?;
+            rewriter.insert(store_op(context, k_struct, k_box, location)?);
+            let k_box_w = result_value(
+                rewriter.insert(cast_op("llvm.ptrtoint", k_box, i64_type, location)?),
+            )?;
+
+            // The clause's argument pack [v, κ]: arr<dyn> with
+            // two-slot elements (D-058) — [len, vtag, vpay, ktag, kpay].
+            let forty = const_i64(rewriter, 40)?;
+            let pack = strategy_alloc(
+                context,
+                rewriter,
+                strategy,
+                forty,
+                2 | (2 << 2), // LAYOUT_ARRAY_DYN
+                location,
+            )?;
+            let two_len = const_i64(rewriter, 2)?;
+            store_slot_at(context, rewriter, pack, 0, two_len, location)?;
+            let value = operand(op, 0)?;
+            let value_tag = dyn_field(context, rewriter, value, 0, location)?;
+            let value_pay = dyn_field(context, rewriter, value, 1, location)?;
+            // The performed value is a BORROW from this frame stored
+            // into a transferred pack: retain it (M23's owned-producer
+            // rule, applied by hand where the plan machinery can't see).
+            maybe_retain(
+                context,
+                rewriter,
+                strategy,
+                RetainKind::DynPair,
+                value,
+                true,
+                location,
+            )?;
+            store_slot_at(context, rewriter, pack, 1, value_tag, location)?;
+            store_slot_at(context, rewriter, pack, 2, value_pay, location)?;
+            let k_tag = const_i64(rewriter, 5)?;
+            store_slot_at(context, rewriter, pack, 3, k_tag, location)?;
+            store_slot_at(context, rewriter, pack, 4, k_box_w, location)?;
+
+            // Apply the clause through the uniform convention.
+            let clause_fn = result_value(
+                rewriter.insert(cast_op("llvm.inttoptr", clause_fn_w, ptr, location)?),
+            )?;
+            let clause_env = result_value(
+                rewriter.insert(cast_op("llvm.inttoptr", clause_env_w, ptr, location)?),
+            )?;
+            let clause_call = rewriter.insert(
+                OperationBuilder::new("llvm.call", location)
+                    .add_attributes(&[
+                        (
+                            melior::ir::Identifier::new(context, "CConv"),
+                            Attribute::parse(context, "#llvm.cconv<ccc>").ok_or("CConv")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "TailCallKind"),
+                            Attribute::parse(context, "#llvm.tailcallkind<none>")
+                                .ok_or("TailCallKind")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "fastmathFlags"),
+                            Attribute::parse(context, "#llvm.fastmath<none>")
+                                .ok_or("fastmathFlags")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "op_bundle_sizes"),
+                            Attribute::parse(context, "array<i32>").ok_or("op_bundle_sizes")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "operandSegmentSizes"),
+                            Attribute::parse(context, "array<i32: 3, 0>")
+                                .ok_or("operandSegmentSizes")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "frk.ctl_body"),
+                            Attribute::parse(context, "unit").ok_or("ctl_body")?,
+                        ),
+                    ])
+                    .add_operands(&[clause_fn, clause_env, pack])
+                    .add_results(&[ptr])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            );
+            let clause_pack = result_value(clause_call)?;
+            let clause_pack_w = result_value(
+                rewriter.insert(cast_op("llvm.ptrtoint", clause_pack, i64_type, location)?),
+            )?;
+            let two = const_i64(rewriter, 2)?;
+            let out2 = result_value(rewriter.insert(
+                OperationBuilder::new("llvm.alloca", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "elem_type"),
+                        TypeAttribute::new(i64_type).into(),
+                    )])
+                    .add_operands(&[two])
+                    .add_results(&[ptr])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            rewriter.insert(direct_call(
+                context,
+                "frk_rt_ctl_perform_end",
+                &[entry, marker, token, clause_pack_w, out2],
+                i64_type,
+                location,
+            )?);
+            let out_tag = load_slot_at(context, rewriter, out2, 0, location)?;
+            let out_pay = load_slot_at(context, rewriter, out2, 1, location)?;
+            let result_dyn =
+                build_dyn_words(context, rewriter, out_tag, out_pay, location)?;
+            let _ = result;
+            finish(rewriter, op, result_dyn)
+        }
+        Planned::CtlResume { op } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let marker = operand(op, 0)?;
+            rewriter.insert(direct_call_void(
+                context,
+                "frk_rt_ctl_resume_mark",
+                &[marker],
+                location,
+            )?);
+            let value = operand(op, 1)?;
+            finish(rewriter, op, value)
+        }
         Planned::CtlPending { op } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
@@ -3679,6 +4105,153 @@ fn masked_dyn_ptr<'c>(
 
 /// Strategy allocation call: arena takes bytes; rc takes
 /// (bytes, layout) — the D-057 descriptor rides every allocation.
+/// Synthesizes the uniform resumer thunk (κ_frk v1, D-069):
+/// `@__frk_ctl_resume__(ptr env, ptr pack) -> ptr` — loads its
+/// one-shot marker from env[0], marks it (the runtime traps a second
+/// consumption), and returns the received pack unchanged: the
+/// identity-on-pack thunk the interpreter's Apply special-case
+/// mirrors exactly.
+fn synthesize_resumer(context: &Context, module: OperationRef<'_, '_>) -> Result<(), String> {
+    let module_block = module
+        .region(0)
+        .map_err(|e| e.to_string())?
+        .first_block()
+        .ok_or_else(|| "module without a body".to_string())?;
+    let location = module.location();
+    let ptr = llvm::r#type::pointer(context, 0);
+    let i64_type: Type = IntegerType::new(context, 64).into();
+
+    let block = Block::new(&[(ptr, location), (ptr, location)]);
+    let env: Value = block.argument(0).map_err(|e| e.to_string())?.into();
+    let pack: Value = block.argument(1).map_err(|e| e.to_string())?.into();
+    let marker_op = block.append_operation(
+        OperationBuilder::new("llvm.load", location)
+            .add_attributes(&[(
+                melior::ir::Identifier::new(context, "ordering"),
+                Attribute::parse(context, "0 : i64").ok_or("ordering")?,
+            )])
+            .add_operands(&[env])
+            .add_results(&[i64_type])
+            .build()
+            .map_err(|e| e.to_string())?,
+    );
+    let marker: Value = marker_op.result(0).map_err(|e| e.to_string())?.into();
+    block.append_operation(direct_call_void(
+        context,
+        "frk_rt_ctl_resume_mark",
+        &[marker],
+        location,
+    )?);
+    block.append_operation(
+        OperationBuilder::new("func.return", location)
+            .add_operands(&[pack])
+            .build()
+            .map_err(|e| e.to_string())?,
+    );
+    let region = Region::new();
+    region.append_block(block);
+    let function = melior::dialect::func::func(
+        context,
+        StringAttribute::new(context, "__frk_ctl_resume__"),
+        TypeAttribute::new(FunctionType::new(context, &[ptr, ptr], &[ptr]).into()),
+        region,
+        &[],
+        location,
+    );
+    module_block.append_operation(function);
+    Ok(())
+}
+
+/// Interns an effect label's bytes (the BstrLit recipe): a module
+/// global + frk_rt_bstr_intern, yielding the canonical pointer AS A
+/// WORD — evidence-stack find is then a pointer compare.
+fn intern_label<'c>(
+    context: &'c Context,
+    rewriter: &RewriterBase<'c, '_>,
+    op: OperationRef<'c, '_>,
+    symbol: &str,
+    text: &str,
+    location: Location<'c>,
+) -> Result<Value<'c, 'c>, String> {
+    let i64_type: Type = IntegerType::new(context, 64).into();
+    let ptr = llvm::r#type::pointer(context, 0);
+    let bytes = text.as_bytes();
+    let module = root_module(op)?;
+    let body = module
+        .region(0)
+        .map_err(|e| e.to_string())?
+        .first_block()
+        .ok_or_else(|| "module without a body".to_string())?;
+    let count = bytes.len().max(1);
+    let elements = if bytes.is_empty() {
+        "0".to_string()
+    } else {
+        bytes.iter().map(|byte| byte.to_string()).collect::<Vec<_>>().join(", ")
+    };
+    let dense = format!("dense<[{elements}]> : tensor<{count}xi8>");
+    let array_type = Type::parse(context, &format!("!llvm.array<{count} x i8>"))
+        .ok_or("byte array type")?;
+    let global = OperationBuilder::new("llvm.mlir.global", location)
+        .add_attributes(&[
+            (
+                melior::ir::Identifier::new(context, "sym_name"),
+                StringAttribute::new(context, symbol).into(),
+            ),
+            (
+                melior::ir::Identifier::new(context, "global_type"),
+                TypeAttribute::new(array_type).into(),
+            ),
+            (
+                melior::ir::Identifier::new(context, "value"),
+                Attribute::parse(context, &dense).ok_or_else(|| format!("unparsable {dense}"))?,
+            ),
+            (
+                melior::ir::Identifier::new(context, "linkage"),
+                Attribute::parse(context, "#llvm.linkage<internal>").ok_or("linkage")?,
+            ),
+            (
+                melior::ir::Identifier::new(context, "constant"),
+                Attribute::unit(context),
+            ),
+            (
+                melior::ir::Identifier::new(context, "addr_space"),
+                Attribute::parse(context, "0 : i32").ok_or("addr_space")?,
+            ),
+            (
+                melior::ir::Identifier::new(context, "visibility_"),
+                Attribute::parse(context, "0 : i64").ok_or("visibility")?,
+            ),
+        ])
+        .add_regions([Region::new()])
+        .build()
+        .map_err(|e| e.to_string())?;
+    body.insert_operation(0, global);
+
+    let address = result_value(rewriter.insert(
+        OperationBuilder::new("llvm.mlir.addressof", location)
+            .add_attributes(&[(
+                melior::ir::Identifier::new(context, "global_name"),
+                FlatSymbolRefAttribute::new(context, symbol).into(),
+            )])
+            .add_results(&[ptr])
+            .build()
+            .map_err(|e| e.to_string())?,
+    ))?;
+    let len = result_value(rewriter.insert(melior::dialect::arith::constant(
+        context,
+        IntegerAttribute::new(i64_type, bytes.len() as i64).into(),
+        location,
+    )))?;
+    let interned = result_value(rewriter.insert(direct_call(
+        context,
+        "frk_rt_bstr_intern",
+        &[address, len],
+        ptr,
+        location,
+    )?))?;
+    result_value(rewriter.insert(cast_op("llvm.ptrtoint", interned, i64_type, location)?))
+}
+
 fn strategy_alloc<'c>(
     context: &'c Context,
     rewriter: &RewriterBase<'c, '_>,

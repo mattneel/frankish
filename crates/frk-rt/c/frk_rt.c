@@ -390,6 +390,91 @@ void frk_rt_ctl_abort(int64_t token, int64_t tag, int64_t payload) {
 
 int64_t frk_rt_ctl_pending(void) { return frk_ctl_pending; }
 
+/* ---- effects-v1 (M24, D-069): the evidence stack, mirroring the
+ * Rust twin. Labels are interned bstr pointers passed as words;
+ * markers are one-shot (second resume_mark traps). ---- */
+
+typedef struct {
+    int64_t label, fn, env, token;
+    int masked;
+} frk_ctl_handler;
+
+static frk_ctl_handler *frk_ctl_hs;
+static uint64_t frk_ctl_hs_len, frk_ctl_hs_cap;
+static int64_t *frk_ctl_used;
+static uint64_t frk_ctl_used_len, frk_ctl_used_cap;
+
+void frk_rt_ctl_handler_push(int64_t label, int64_t fn, int64_t env, int64_t token) {
+    if (frk_ctl_hs_len == frk_ctl_hs_cap) {
+        frk_ctl_hs_cap = frk_ctl_hs_cap ? frk_ctl_hs_cap * 2 : 8;
+        frk_ctl_hs = realloc(frk_ctl_hs, (size_t)frk_ctl_hs_cap * sizeof *frk_ctl_hs);
+    }
+    frk_ctl_handler h = { label, fn, env, token, 0 };
+    frk_ctl_hs[frk_ctl_hs_len++] = h;
+}
+
+void frk_rt_ctl_handler_pop(void) {
+    if (frk_ctl_hs_len) frk_ctl_hs_len -= 1;
+}
+
+static int frk_ctl_was_consumed(int64_t marker) {
+    for (uint64_t i = 0; i < frk_ctl_used_len; i += 1)
+        if (frk_ctl_used[i] == marker) return 1;
+    return 0;
+}
+
+int64_t frk_rt_ctl_perform_begin(int64_t label, int64_t *out) {
+    uint64_t i = frk_ctl_hs_len;
+    while (i > 0) {
+        i -= 1;
+        if (!frk_ctl_hs[i].masked && frk_ctl_hs[i].label == label) {
+            frk_ctl_hs[i].masked = 1;
+            int64_t marker = frk_ctl_next_token++;
+            out[0] = frk_ctl_hs[i].fn;
+            out[1] = frk_ctl_hs[i].env;
+            out[2] = marker;
+            out[3] = frk_ctl_hs[i].token;
+            out[4] = (int64_t)i;
+            return 1;
+        }
+    }
+    {
+        const unsigned char *base = (const unsigned char *)(intptr_t)label;
+        uint64_t len = *(const uint64_t *)base;
+        fprintf(stderr, "frk: unhandled effect \"");
+        fwrite(base + 8, 1, (size_t)len, stderr);
+        fprintf(stderr, "\" (Îº_frk, D-069)\n");
+        abort();
+    }
+}
+
+int64_t frk_rt_ctl_perform_end(int64_t entry, int64_t marker, int64_t token,
+                               int64_t rpack, int64_t *out) {
+    if ((uint64_t)entry < frk_ctl_hs_len) frk_ctl_hs[entry].masked = 0;
+    {
+        const int64_t *words = (const int64_t *)(intptr_t)rpack;
+        int64_t rtag = 0, rpay = 0;
+        if (words[0] > 0) { rtag = words[1]; rpay = words[2]; }
+        out[0] = rtag;
+        out[1] = rpay;
+        if (frk_ctl_was_consumed(marker)) return 1;
+        frk_rt_ctl_abort(token, rtag, rpay);
+        return 0;
+    }
+}
+
+void frk_rt_ctl_resume_mark(int64_t marker) {
+    if (frk_ctl_was_consumed(marker)) {
+        fprintf(stderr, "frk: one-shot violation (Îº_frk, D-069)\n");
+        abort();
+    }
+    if (frk_ctl_used_len == frk_ctl_used_cap) {
+        frk_ctl_used_cap = frk_ctl_used_cap ? frk_ctl_used_cap * 2 : 16;
+        frk_ctl_used = realloc(frk_ctl_used, (size_t)frk_ctl_used_cap * sizeof *frk_ctl_used);
+    }
+    frk_ctl_used[frk_ctl_used_len++] = marker;
+}
+
 /* If an abort targets `token`, clear pending, write the parked dyn to
  * out[0]=tag,out[1]=payload, return 1; else return 0. */
 int64_t frk_rt_ctl_resolve(int64_t token, int64_t *out) {
