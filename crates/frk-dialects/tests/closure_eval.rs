@@ -144,6 +144,10 @@ fn runaway_closure_recursion_still_traps_at_the_depth_ceiling() {
     // By-value capture cannot tie a self-referential knot (that's the
     // D-035 point) — but a function can re-make a captureless closure of
     // itself every level, which recurses forever all the same.
+    // NON-TAIL by construction (the result is consumed): a TAIL-shaped
+    // runaway apply is a legitimate infinite loop under D-063's
+    // trampoline — the M14 lesson, replayed for closures — so the
+    // depth cap only governs the non-tail world.
     let error = std::thread::Builder::new()
         .stack_size(frk_interp::STACK_SIZE)
         .spawn(|| {
@@ -153,7 +157,9 @@ fn runaway_closure_recursion_still_traps_at_the_depth_ceiling() {
                     %self = "frk_closure.make"(%e) {{callee = @spin}} : ({P_EMPTY}) -> {FN_I64}
                     %args = "frk_adt.product_snoc"(%e, %x) : ({P_EMPTY}, i64) -> {P_I64}
                     %r = "frk_closure.apply"(%self, %args) : ({FN_I64}, {P_I64}) -> i64
-                    return %r : i64
+                    %one = arith.constant 1 : i64
+                    %used = arith.addi %r, %one : i64
+                    return %used : i64
                 }}
                 func.func @main() -> i64 {{
                     %x = arith.constant 1 : i64

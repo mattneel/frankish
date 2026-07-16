@@ -185,18 +185,32 @@ fn qualifies(
             let Some((caller_ret, caller_args)) = split_llvm_fn_type(caller_type) else {
                 return false;
             };
+            // Standalone types print with the "!llvm." prefix, but
+            // inside !llvm.func<…> they print in bare LLVM shorthand
+            // ("ptr", "struct<(i64, i64)>") — normalize before
+            // comparing.
+            let norm = |printed: String| -> String {
+                printed
+                    .strip_prefix("!llvm.")
+                    .map(str::to_string)
+                    .unwrap_or(printed)
+            };
             let callsite_args = (1..op.operand_count())
                 .map(|index| {
-                    op.operand(index)
-                        .map(|operand| operand.r#type().to_string())
-                        .unwrap_or_default()
+                    norm(
+                        op.operand(index)
+                            .map(|operand| operand.r#type().to_string())
+                            .unwrap_or_default(),
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
             let callsite_ret = if op.result_count() == 1 {
-                op.result(0)
-                    .map(|result| result.r#type().to_string())
-                    .unwrap_or_default()
+                norm(
+                    op.result(0)
+                        .map(|result| result.r#type().to_string())
+                        .unwrap_or_default(),
+                )
             } else {
                 "void".to_string()
             };

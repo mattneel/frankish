@@ -1,28 +1,29 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M17 complete (tag m17-done). Intrinsics and runtimes are
-FIRST-CLASS AUTHORING SURFACES (D-062): intrinsics as kernel-IR seed
-modules (scheme fully migrated + lua's nine plain-dyn helpers); the
-runtime ABI as ONE registry (crates/frk-abi) that both twins, the JIT
-capture shims, the kernel lowering's declarations, and every module's
-frk_rt_* declarations are compile-time checked against or derived
-from. M16 was the Book (mattneel.github.io/frankish).
-Tree: green — `make test` 43 blocks; diff 77 cases 0 divergent (8
-runners); grid 72/72 × 4 triples × 2 strategies + s390x canary — the
-generated ABI header compiling in the C twin on every triple.
+Phase: M18 complete (tag m18-done). The uniform-signature convention
+(D-063): closure callees may take (envref, params…) reading captures
+via closure.env_load; no thunks for uniform callees; indirect
+musttail when the callsite prototype equals the caller's type.
+femto_lua adopted it wholesale — its tail-call law is now TRUE at
+depth, against PUC lua5.1, on every architecture.
+Tree: green — `make test` 43 blocks; diff 79 cases 0 divergent (8
+runners); grid 74/74 arena + 72/72 rc × 4 triples + s390x canary
+(100k-deep tail cases riding wasm return_call_indirect).
 
 ## Next action
-M17 closed. The queue returns to the user:
+M18 closed. The queue returns to the user:
 1. femto_lua v0.3 (varargs, iterator triples, __newindex).
-2. The uniform-signature convention (D-059 gap) — ALSO unfences the
-   rest of the lua intrinsics migration (the _v wrappers, D-062's
-   sequencing rule) and deep closure-apply tail recursion.
-3. r7rs_core v0.1 (pairs/lists, then dynamic-wind, then macros).
-4. effects-v1 (handle/perform/resume + one-shot violation trap).
-5. D-062 follow-ups: registry-driven JIT/builtin registration;
-   dead-export cleanup (print_lua_num/bool/nil); u8→i64 migration for
-   the two legacy print flags.
+2. r7rs_core v0.1 (pairs/lists, then dynamic-wind, then macros) — the
+   scheme frontend could ALSO adopt the uniform convention for its
+   call/cc receivers now (optional; direct lifting already covers its
+   corpus).
+3. effects-v1 (handle/perform/resume + one-shot violation trap).
+4. rc release scheduling (D-063's fence): release-before-tail-call so
+   deep recursion holds under rc natively.
+5. D-062 follow-ups: migrate the _v wrappers to lua's intrinsics.mlir
+   (their signatures are now stable under D-063); registry-driven JIT/
+   builtin registration; dead-export cleanup.
 
 ## In flight
 Nothing.
@@ -48,6 +49,38 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m18-done — Shipped: the uniform-signature convention (D-063,
+D-059's gap closed). KERNEL: !frk_closure.envref + closure.env_load
+(index + carried env product; verifier + interp eval + lowering that
+reuses the exact thunk-prologue slot math); closure.make skips thunk
+synthesis for uniform callees (the closure struct holds the callee's
+address); the two conventions coexist per-callee. INTERP: the tail
+law generalized with ZERO frk-interp changes — Apply returns
+Step::TailCall on the tail shape (both conventions, every frontend).
+NATIVE: frk-tail-calls marks INDIRECT tail calls whose callsite
+prototype equals the caller's type — found and fixed the type-
+spelling trap (standalone "!llvm.ptr" vs bare "ptr" inside
+!llvm.func<…>; x86 masked the miss via opportunistic sibcall, wasm
+exposed it with stack exhaustion). LUA: lifted fns are (envref, pack)
+via env_load, _v wrappers gained the ignored envref param (exactly
+the rewrite D-062's sequencing rule predicted), zero thunks anywhere.
+Goldens: closure/uniform_tail (100k apply-tails, kernel-level) +
+lua/tail_recursion (100k frames vs PUC lua5.1) — which required
+widening the frk-case directive to lua/scheme comment forms (`--`,
+`;;`) since the oracle runs the same file. The M14 depth-cap lesson
+replayed ON SCHEDULE: the runaway-closure fixture was tail-shaped,
+became a legitimate infinite loop, now consumes its result. FENCED
+(D-063): rc-native TCO — block-exit releases break the tail shape;
+release scheduling is its own rung; deep goldens fence rc runners.
+
+M18 EXTRACTION: Step::TailCall as the interp's tail channel proved to
+be THE right abstraction — closure tails cost zero interpreter
+changes because evaluators already speak Step. The uniform convention
+is the pack convention's logical completion: M13 unified the ARGS,
+M18 unified the FUNCTIONS. Promotable: scheme's call/cc receivers can
+adopt uniformity for free; effects-v1's resume closures should be
+born uniform.
+
 m17-done — Shipped: intrinsics + runtimes as first-class authoring
 surfaces (D-062; the human's directive), panel-reviewed (3 adversarial
 lenses; strongest finding — the type-erased JIT capture shims — fixed
@@ -533,6 +566,28 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-16 (twenty-sixth entry)
+    Milestone/step: M18 complete, tagged m18-done
+    Green? yes — 43 blocks; 79/0 (8 runners); grid 74/74+72/72 × 5
+    Did:
+    - D-063; envref + env_load (dialect/verify/eval/lowering); uniform
+      make path (no thunks); Apply Step::TailCall; indirect musttail
+      (+ the type-spelling normalization); lua on the convention;
+      directive comment forms for .lua/.scm; two 100k law goldens;
+      runaway-closure fixture non-tail; book chapter updated
+    Next: queue to the user (see Next action)
+    Landmines:
+    - !llvm.func<…> prints types in BARE LLVM shorthand ("ptr") while
+      standalone types print "!llvm.ptr" — never string-compare across
+      those contexts without normalizing (cost: wasm-only stack
+      exhaustion that x86 masked via opportunistic sibcall)
+    - a TAIL-SHAPED runaway closure apply is now an infinite loop, not
+      a depth trap — depth-cap tests must consume the apply result
+    - deep-recursion goldens fence rc-native runners (D-063); when
+      adding one, list runners explicitly incl. aot-* arena names
+    - frk-case directives: `--` (.lua) and `;;` (.scm) forms exist now;
+      a directive in an unrecognized comment form is SILENTLY ignored
 
     Session end: 2026-07-13 (twenty-fifth entry)
     Milestone/step: M17 complete, tagged m17-done

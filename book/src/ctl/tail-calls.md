@@ -3,7 +3,7 @@
 Proper tail calls are not an optimization in frankish; they are a
 semantic guarantee — *the law* — established at M14 (D-059) and verified
 by goldens that fail without them. This chapter covers both halves of the
-implementation and the one honest gap.
+implementation, and the gap that M18 closed.
 
 ## Why a law, not a flag
 
@@ -83,23 +83,36 @@ grid architectures under both memory strategies — half a million
 `musttail` frames on big-endian s390x and through wasm's tail-call
 instruction included.
 
-## The honest gap
+## The gap, closed: the uniform-signature convention (M18)
 
-Indirect calls and cross-signature tails are **not** rewritten in v1 —
-the pass cannot verify an indirect callee's type, and cross-signature
-`musttail` is exactly where stack-argument ABIs break promises. The
-ledger records the gap and its resolution path: the *uniform-signature
-convention* (every function in a language one LLVM type — the logical
-completion of femto_lua's pack convention), which would make `musttail`
-legal by construction for closure-carried calls too.
+Indirect and cross-signature tails were v1's ledgered gap — and D-063
+closed it. The **uniform-signature convention**: a closure callee may
+take `(!frk_closure.envref, params…)` — one opaque env pointer, its
+captures read via `closure.env_load` — instead of unpacked capture
+parameters. Uniform callees get no synthesized thunk (the closure holds
+their address directly), so every function of a pack-convention
+language shares ONE native signature. The tail-call pass gained the
+indirect case: a tail-shaped indirect call whose callsite prototype
+equals the caller's function type is `musttail` — which, under the
+convention, holds by construction.
 
-Until then the division of labor is explicit: the interpreter trampoline
-covers **all** tail shapes (it resolves closure targets dynamically), the
-native pass covers the identical-signature subset, and specimen corpora
-are sized so the difference is unobservable — deep-loop cases run at
-depths native can absorb, with the law's full-depth witnesses living in
-the kernel goldens above. Reference semantics leads; native follows; the
-gap is measured, ledgered, and fenced rather than papered over.
+femto_lua adopted it wholesale: every lua function is natively
+`(ptr, ptr) -> ptr`, zero thunks, and `return f(x)` finally does what
+the Lua 5.1 manual mandates. The witness is `lua/tail_recursion` —
+100,000 tail frames at fixed stack, byte-checked against PUC `lua5.1`
+itself, green on every grid architecture including wasm (whose
+`return_call_indirect` carries it) and big-endian s390x. The
+interpreter side needed no new machinery at all: closure-apply
+evaluators return the same `Step::TailCall` the M14 trampoline already
+speaks.
+
+One fence remains, recorded in D-063: native TCO under the **rc
+strategy** — block-exit releases sit between a tail call and its
+return, breaking the tail shape. Release scheduling is its own future
+rung; the deep goldens fence rc-native runners meanwhile, and the M14
+depth-cap lesson replayed on schedule (the runaway-closure test's
+tail-shaped fixture became a legitimate infinite loop and now consumes
+its result to stay non-tail).
 
 The payoff for the next chapter: because a guarded call cannot be a tail
 call (a pending-check is code *after* the call), the tail-call law and

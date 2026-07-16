@@ -115,6 +115,47 @@ struct Fcx<'c, 'r> {
 impl<'c> Emitter<'c> {
     // ---- types & locations ----
 
+    fn envref_ty(&self) -> Type<'c> {
+        Type::parse(self.context, "!frk_closure.envref").expect("envref type")
+    }
+
+    /// The env product type a lifted function's env_loads carry
+    /// (D-063): [_G, capture boxes...].
+    fn env_product_ty(&self, capture_count: usize) -> Type<'c> {
+        let mut fields = vec!["!frk_dyn.dyn".to_string()];
+        fields.extend(
+            std::iter::repeat_n("!frk_mem.box<!frk_dyn.dyn>".to_string(), capture_count),
+        );
+        Type::parse(
+            self.context,
+            &format!("!frk_adt.product<[{}]>", fields.join(", ")),
+        )
+        .expect("env product type")
+    }
+
+    /// closure.env_load %env {index, env = <product>} -> T (D-063).
+    fn env_load<'r>(
+        &self,
+        block: BlockRef<'c, 'r>,
+        env: Value<'c, 'r>,
+        index: i64,
+        env_ty: Type<'c>,
+        result: Type<'c>,
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        self.build(
+            block,
+            "frk_closure.env_load",
+            &[env],
+            &[result],
+            &[
+                ("index", IntegerAttribute::new(self.i64_ty(), index).into()),
+                ("env", TypeAttribute::new(env_ty).into()),
+            ],
+            location,
+        )
+    }
+
     fn dyn_ty(&self) -> Type<'c> {
         Type::parse(self.context, "!frk_dyn.dyn").expect("dyn type")
     }
@@ -466,8 +507,8 @@ impl<'c> Emitter<'c> {
             ("__lua_getmetatable_v", "__lua_getmetatable", 1),
         ] {
             let region = Region::new();
-            let entry = region.append_block(Block::new(&[(self.pack_ty(), location)]));
-            let pack = block_arg(entry, 0)?;
+            let entry = region.append_block(Block::new(&[(self.envref_ty(), location), (self.pack_ty(), location)]));
+            let pack = block_arg(entry, 1)?;
             let mut arguments = Vec::new();
             for index in 0..arity {
                 arguments.push(self.pack_get(entry, pack, index, location)?);
@@ -477,7 +518,7 @@ impl<'c> Emitter<'c> {
                 .expect("result");
             let out = self.make_pack(entry, &[result], location)?;
             ret(entry, &[out], location)?;
-            self.func(module, name, &[self.pack_ty()], &[self.pack_ty()], region, false);
+            self.func(module, name, &[self.envref_ty(), self.pack_ty()], &[self.pack_ty()], region, false);
         }
 
         // __lua_next_v: the pairs iterator (D-058) — table_next over
@@ -485,8 +526,8 @@ impl<'c> Emitter<'c> {
         // order-independent.
         {
             let region = Region::new();
-            let entry = region.append_block(Block::new(&[(self.pack_ty(), location)]));
-            let pack = block_arg(entry, 0)?;
+            let entry = region.append_block(Block::new(&[(self.envref_ty(), location), (self.pack_ty(), location)]));
+            let pack = block_arg(entry, 1)?;
             let table = self.pack_get(entry, pack, 0, location)?;
             let key = self.pack_get(entry, pack, 1, location)?;
             let tt = self.tag_of(entry, table, location)?;
@@ -515,27 +556,27 @@ impl<'c> Emitter<'c> {
             };
             let out = self.make_pack(bok, &[next_key, next_value], location)?;
             ret(bok, &[out], location)?;
-            self.func(module, "__lua_next_v", &[self.pack_ty()], &[self.pack_ty()], region, false);
+            self.func(module, "__lua_next_v", &[self.envref_ty(), self.pack_ty()], &[self.pack_ty()], region, false);
         }
 
         // __lua_pairs_v: returns (next, t, nil).
         {
             let region = Region::new();
-            let entry = region.append_block(Block::new(&[(self.pack_ty(), location)]));
-            let pack = block_arg(entry, 0)?;
+            let entry = region.append_block(Block::new(&[(self.envref_ty(), location), (self.pack_ty(), location)]));
+            let pack = block_arg(entry, 1)?;
             let table = self.pack_get(entry, pack, 0, location)?;
             let next_fun = self.helper_fun(entry, "__lua_next_v", location)?;
             let nil = self.nil_dyn(entry, location)?;
             let out = self.make_pack(entry, &[next_fun, table, nil], location)?;
             ret(entry, &[out], location)?;
-            self.func(module, "__lua_pairs_v", &[self.pack_ty()], &[self.pack_ty()], region, false);
+            self.func(module, "__lua_pairs_v", &[self.envref_ty(), self.pack_ty()], &[self.pack_ty()], region, false);
         }
 
         // __lua_ipairs_iter_v(t, i) -> (i+1, t[i+1]) | (nil).
         {
             let region = Region::new();
-            let entry = region.append_block(Block::new(&[(self.pack_ty(), location)]));
-            let pack = block_arg(entry, 0)?;
+            let entry = region.append_block(Block::new(&[(self.envref_ty(), location), (self.pack_ty(), location)]));
+            let pack = block_arg(entry, 1)?;
             let table = self.pack_get(entry, pack, 0, location)?;
             let index = self.pack_get(entry, pack, 1, location)?;
             let n = self.unwrap(entry, TAG_NUM, self.f64_ty(), index, location)?;
@@ -564,7 +605,7 @@ impl<'c> Emitter<'c> {
             self.func(
                 module,
                 "__lua_ipairs_iter_v",
-                &[self.pack_ty()],
+                &[self.envref_ty(), self.pack_ty()],
                 &[self.pack_ty()],
                 region,
                 false,
@@ -574,23 +615,23 @@ impl<'c> Emitter<'c> {
         // __lua_ipairs_v: returns (iter, t, 0).
         {
             let region = Region::new();
-            let entry = region.append_block(Block::new(&[(self.pack_ty(), location)]));
-            let pack = block_arg(entry, 0)?;
+            let entry = region.append_block(Block::new(&[(self.envref_ty(), location), (self.pack_ty(), location)]));
+            let pack = block_arg(entry, 1)?;
             let table = self.pack_get(entry, pack, 0, location)?;
             let iter = self.helper_fun(entry, "__lua_ipairs_iter_v", location)?;
             let zero = self.const_f64(entry, 0.0, location)?;
             let zero_dyn = self.wrap(entry, TAG_NUM, zero, location)?;
             let out = self.make_pack(entry, &[iter, table, zero_dyn], location)?;
             ret(entry, &[out], location)?;
-            self.func(module, "__lua_ipairs_v", &[self.pack_ty()], &[self.pack_ty()], region, false);
+            self.func(module, "__lua_ipairs_v", &[self.envref_ty(), self.pack_ty()], &[self.pack_ty()], region, false);
         }
 
         // string.sub / string.rep (D-058): 1-based negative-tolerant
         // sub with a defaulted j; rep by count.
         {
             let region = Region::new();
-            let entry = region.append_block(Block::new(&[(self.pack_ty(), location)]));
-            let pack = block_arg(entry, 0)?;
+            let entry = region.append_block(Block::new(&[(self.envref_ty(), location), (self.pack_ty(), location)]));
+            let pack = block_arg(entry, 1)?;
             let s = self.pack_get(entry, pack, 0, location)?;
             let raw = self.unwrap(entry, TAG_STR, self.bstr_ty(), s, location)?;
             let i_dyn = self.pack_get(entry, pack, 1, location)?;
@@ -619,7 +660,7 @@ impl<'c> Emitter<'c> {
             self.func(
                 module,
                 "__lua_string_sub_v",
-                &[self.pack_ty()],
+                &[self.envref_ty(), self.pack_ty()],
                 &[self.pack_ty()],
                 region,
                 false,
@@ -627,8 +668,8 @@ impl<'c> Emitter<'c> {
         }
         {
             let region = Region::new();
-            let entry = region.append_block(Block::new(&[(self.pack_ty(), location)]));
-            let pack = block_arg(entry, 0)?;
+            let entry = region.append_block(Block::new(&[(self.envref_ty(), location), (self.pack_ty(), location)]));
+            let pack = block_arg(entry, 1)?;
             let s = self.pack_get(entry, pack, 0, location)?;
             let raw = self.unwrap(entry, TAG_STR, self.bstr_ty(), s, location)?;
             let n_dyn = self.pack_get(entry, pack, 1, location)?;
@@ -642,7 +683,7 @@ impl<'c> Emitter<'c> {
             self.func(
                 module,
                 "__lua_string_rep_v",
-                &[self.pack_ty()],
+                &[self.envref_ty(), self.pack_ty()],
                 &[self.pack_ty()],
                 region,
                 false,
@@ -958,23 +999,36 @@ impl<'c> Emitter<'c> {
 
     fn emit_lifted(&mut self, module: &Module<'c>, job: LiftJob) -> Result<()> {
         let location = Location::unknown(self.context);
-        // D-058 pack convention: (_G, capture boxes..., args-pack).
-        let mut inputs = vec![self.dyn_ty()];
-        inputs.extend(std::iter::repeat_n(self.box_ty(), job.captures.len()));
-        inputs.push(self.pack_ty());
+        // D-063 uniform convention over the D-058 packs: EVERY lua
+        // function is (envref, args-pack) -> values-pack. The env
+        // product is [_G, capture boxes...], read via env_load — so
+        // every lua function shares ONE native signature and tail
+        // applies musttail by construction.
+        let inputs = vec![self.envref_ty(), self.pack_ty()];
 
         let region = Region::new();
         let entry = region.append_block(Block::new(
             &inputs.iter().map(|ty| (*ty, location)).collect::<Vec<_>>(),
         ));
-        let globals = block_arg(entry, 0)?;
+        let envref = block_arg(entry, 0)?;
+        let env_ty = self.env_product_ty(job.captures.len());
+        let globals =
+            self.env_load(entry, envref, 0, env_ty, self.dyn_ty(), location)?;
         let mut env = HashMap::new();
         for (index, name) in job.captures.iter().enumerate() {
-            env.insert(name.clone(), block_arg(entry, 1 + index)?);
+            let capture = self.env_load(
+                entry,
+                envref,
+                1 + index as i64,
+                env_ty,
+                self.box_ty(),
+                location,
+            )?;
+            env.insert(name.clone(), capture);
         }
         // Params: nil-filled reads from the pack (extras drop by
         // never being read) — Lua's arity adjustment, for free.
-        let pack = block_arg(entry, 1 + job.captures.len())?;
+        let pack = block_arg(entry, 1)?;
         for (index, name) in job.params.iter().enumerate() {
             let value = self.pack_get(entry, pack, index as i64, location)?;
             let boxed = self.build(

@@ -41,6 +41,10 @@ Optional `// frk-case: key=value` comment lines anywhere in case.mlir:
     // frk-case: result=i64      return rendering        (default: i64; v0's only type)
     // frk-case: runners=a,b     applicable runners      (default: all — SPEC §7.2)
 
+Directive comment forms per language (each stays a valid comment so the
+oracle runs the same file): `//` (.mlir/.ts), `(* … *)` (.ml), `--`
+(.lua), `;;` or `;` (.scm).
+
 Unknown keys and unsupported values are errors — a typo'd directive must
 never silently become a default. `runners=` exists for op sets that are
 ahead of some execution path (adt before its lowering); skips are

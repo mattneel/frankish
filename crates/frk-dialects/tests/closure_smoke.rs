@@ -141,7 +141,7 @@ fn make_checks_the_captures_plus_params_convention() {
                 return %c : {FN_I64}
             }}"#
         ),
-        "takes 1 input(s); 1 capture(s) + 1 param(s) = 2 expected",
+        "takes 1 input(s); 1 leading + 1 param(s) = 2 expected",
     );
     // Capture type must equal the callee's leading input.
     expect_finding(

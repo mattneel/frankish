@@ -174,13 +174,21 @@ fn load(
     let mut runners = None;
 
     for line in source.lines() {
-        // `// frk-case:` in .mlir files; `(* frk-case: ... *)` in .ml
-        // files (which must stay valid OCaml for the oracle).
+        // `// frk-case:` in .mlir/.ts files; `(* frk-case: ... *)` in
+        // .ml; `-- frk-case:` in .lua; `;; frk-case:` (or one `;`) in
+        // .scm — each stays a valid comment in its language, because
+        // the oracle runs the same file (D-027, amended M18).
         let trimmed = line.trim();
         let directive = if let Some(rest) = trimmed.strip_prefix("// frk-case:") {
             rest
         } else if let Some(rest) = trimmed.strip_prefix("(* frk-case:") {
             rest.trim_end().trim_end_matches("*)")
+        } else if let Some(rest) = trimmed.strip_prefix("-- frk-case:") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix(";; frk-case:") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("; frk-case:") {
+            rest
         } else {
             continue;
         };
