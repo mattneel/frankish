@@ -193,6 +193,48 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-068 [m23/lua] femto_lua v0.3 ("Continue" ⇒ queue order): the
+  four D-058 fences fall — varargs, mid-explist spreads, explicit
+  iterator triples, multi-expression RHS — plus __newindex from the
+  queue. THE MECHANISM IS ONE: Lua's explist ADJUSTMENT rule (every
+  non-final expression truncates to one value; the final call or
+  `...` expands to all its values), implemented once in the emitter
+  (the explist engine) and consumed by returns, local/assign
+  destructuring, call arguments, table-constructor array parts, and
+  the generic-for iterator explist — which makes explicit (f, s,
+  ctrl) triples just another explist. Rulings:
+  (1) VARARGS are pack-native: a vararg function's `...` tail is
+  pack[nparams..], COPIED at the prologue into a private arr BEFORE
+  the D-067 dispose — the callee-owned-pack invariant is untouched,
+  and `...` reads the private arr thereafter (Lua also materializes
+  varargs; one alloc per vararg call). Copy/append are IR intrinsics
+  in intrinsics.mlir (__lua_pack_tail borrows its source arr —
+  frk.borrows; __lua_pack_copy_into writes through frk_mem.array_set
+  so the rc retain discipline is INHERITED from the kernel lowering,
+  not hand-written — the M17 authoring surface paying rent).
+  (2) `...` is a parse-time capability: legal only in the body of a
+  vararg function, rejected inside nested non-vararg closures (Lua
+  5.1 semantics) and FENCED at top level (our chunk takes no args).
+  (3) The single-tail-call return keeps its no-copy pack-forwarding
+  fast path (load-bearing for the D-063 tail-call law); the engine
+  handles every other shape.
+  (4) __NEWINDEX mirrors __lua_index as a new IR intrinsic
+  __lua_setindex implementing luaV_settable: an EXISTING key raw-
+  assigns without consulting metamethods; an absent key walks
+  __newindex — function form calls (t,k,v) through the uniform
+  convention, table form re-enters settable on the target (a TAIL
+  call, so metatable chains ride the trampoline/musttail machinery
+  like __lua_index's). Constructor writes stay raw (Lua semantics).
+  Emitter's AssignIndex switches from frk_dyn.raw_set to the
+  intrinsic; rawset/rawget stay fenced.
+  Exit bars: regression 12/12; ≥5 new corpus cases 100% vs lua5.1
+  (varargs basics/forwarding, multi-RHS adjustment incl. nil-fill,
+  a user-authored stateless iterator triple, __newindex both forms
+  + existing-key bypass); suite/diff/grid green both strategies;
+  pack_reclamation stays flat (vararg copies are collected, not
+  leaked). Remaining fences named in the manifest: select(), `...`
+  at top level, string.format, rawset/rawget, coroutines, goto,
+  weak tables.
 - D-067 [m22/gc] THE PACK TERMINAL-COUNT RULING (D-064's ledgered
   observation, picked by the human): OWNED, not accepted-leak. The
   evidence: 1000 rc calls leaked 2026 allocations — one arg pack
