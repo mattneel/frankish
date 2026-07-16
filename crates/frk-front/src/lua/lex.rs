@@ -1,6 +1,6 @@
 //! Lua 5.1 lexer for the femto_lua v0.1 subset (D-052; hand-rolled per
-//! D-054's D-019 scaffolding stance). Long strings/comments and `...`
-//! are fenced; `--` line comments pass.
+//! D-054's D-019 scaffolding stance). Long strings/comments are
+//! fenced; `--` line comments pass; `...` lexes as Dots (v0.3, D-068).
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Token {
@@ -14,7 +14,7 @@ pub enum Token {
     Plus, Minus, Star, Slash, Percent, Caret, Hash,
     EqEq, NotEq, LessEq, GreaterEq, Less, Greater, Assign,
     LParen, RParen, LBrace, RBrace, LBracket, RBracket,
-    Semi, Colon, Comma, Dot, Concat,
+    Semi, Colon, Comma, Dot, Concat, Dots,
 }
 
 #[derive(Debug)]
@@ -106,10 +106,13 @@ pub fn lex(source: &str) -> Result<Vec<Spanned>, LexError> {
             b'.' => {
                 if bytes.get(i + 1) == Some(&b'.') {
                     if bytes.get(i + 2) == Some(&b'.') {
-                        return Err(err(i, "varargs are fenced in v0.1 (D-052)"));
+                        // `...` — varargs (v0.3, D-068).
+                        tokens.push(Spanned { token: Token::Dots, start: i });
+                        i += 3;
+                    } else {
+                        tokens.push(Spanned { token: Token::Concat, start: i });
+                        i += 2;
                     }
-                    tokens.push(Spanned { token: Token::Concat, start: i });
-                    i += 2;
                 } else if bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
                     let (value, next) = lex_number(source, i)?;
                     tokens.push(Spanned { token: Token::Number(value), start: i });

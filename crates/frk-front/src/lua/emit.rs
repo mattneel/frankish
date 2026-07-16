@@ -88,6 +88,7 @@ struct LiftJob {
     symbol: String,
     captures: Vec<String>,
     params: Vec<String>,
+    is_vararg: bool,
     body: LBlock,
 }
 
@@ -109,6 +110,10 @@ struct Fcx<'c, 'r> {
     terminated: bool,
     /// Enclosing loop exits, innermost last (`break`, D-058).
     break_targets: Vec<BlockRef<'c, 'r>>,
+    /// The vararg tail (D-068): a PRIVATE arr copied from
+    /// pack[nparams..] at the prologue, before the D-067 dispose.
+    /// None in non-vararg functions and in main.
+    varargs: Option<Value<'c, 'r>>,
 }
 
 impl<'c> Emitter<'c> {
@@ -540,8 +545,19 @@ impl<'c> Emitter<'c> {
         arguments: &[Value<'c, 'r>],
         location: Location<'c>,
     ) -> Result<Value<'c, 'r>> {
-        let function = self.unwrap(block, TAG_FUN, self.lua_fn_ty(), callee_dyn, location)?;
         let pack = self.make_pack(block, arguments, location)?;
+        self.call_lua_pack(block, callee_dyn, pack, location)
+    }
+
+    /// The apply half of call_lua, for a pre-built argument pack.
+    fn call_lua_pack<'r>(
+        &self,
+        block: BlockRef<'c, 'r>,
+        callee_dyn: Value<'c, 'r>,
+        pack: Value<'c, 'r>,
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        let function = self.unwrap(block, TAG_FUN, self.lua_fn_ty(), callee_dyn, location)?;
         let empty = Type::parse(self.context, "!frk_adt.product<[]>").ok_or("empty product")?;
         let product = self.build(block, "frk_adt.product_new", &[], &[empty], &[], location)?;
         let wrapped_ty = Type::parse(
@@ -565,6 +581,103 @@ impl<'c> Emitter<'c> {
             &[],
             location,
         )
+    }
+
+    /// The values pack of an explist under Lua ADJUSTMENT (D-068):
+    /// every non-final expression truncates to one value; a final
+    /// Call forwards/appends its whole pack; a final `...` appends
+    /// the vararg tail (always copied — the private arr stays owned
+    /// by this frame). Empty explist = empty pack.
+    fn emit_explist_pack<'r>(
+        &mut self,
+        fcx: &mut Fcx<'c, 'r>,
+        exprs: &[Expr],
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        let Some((last, init)) = exprs.split_last() else {
+            return self.make_pack(fcx.block, &[], location);
+        };
+        let mut prefix = Vec::new();
+        for expression in init {
+            prefix.push(self.emit_expr(fcx, expression)?);
+        }
+        match last {
+            Expr::Call(callee, arguments, _) => {
+                let tail = self.emit_call_pack(fcx, callee, arguments, location)?;
+                if prefix.is_empty() {
+                    // Whole-pack forwarding: the no-copy fast path the
+                    // D-063 tail-call law rides.
+                    return Ok(tail);
+                }
+                self.pack_with_tail(fcx, &prefix, tail, location)
+            }
+            Expr::Vararg(_) => {
+                let tail = fcx.varargs.ok_or_else(|| {
+                    "internal: `...` survived parsing outside a vararg function".to_string()
+                })?;
+                self.pack_with_tail(fcx, &prefix, tail, location)
+            }
+            other => {
+                prefix.push(self.emit_expr(fcx, other)?);
+                self.make_pack(fcx.block, &prefix, location)
+            }
+        }
+    }
+
+    /// prefix values + every element of `tail`, as a fresh pack of
+    /// runtime length (the copy loop is the __lua_pack_copy_into
+    /// intrinsic — IR-authored, so the rc retain discipline is the
+    /// kernel lowering's, not hand-written).
+    fn pack_with_tail<'r>(
+        &mut self,
+        fcx: &mut Fcx<'c, 'r>,
+        prefix: &[Value<'c, 'r>],
+        tail: Value<'c, 'r>,
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        let tail_len = self.build(
+            fcx.block,
+            "frk_mem.array_len",
+            &[tail],
+            &[self.i64_ty()],
+            &[],
+            location,
+        )?;
+        let prefix_len = self.const_i64(fcx.block, prefix.len() as i64, location)?;
+        let total = self.build(
+            fcx.block,
+            "arith.addi",
+            &[prefix_len, tail_len],
+            &[self.i64_ty()],
+            &[],
+            location,
+        )?;
+        let pack = self.build(
+            fcx.block,
+            "frk_mem.array_new",
+            &[total],
+            &[self.pack_ty()],
+            &[],
+            location,
+        )?;
+        for (index, value) in prefix.iter().enumerate() {
+            let index_value = self.const_i64(fcx.block, index as i64, location)?;
+            self.build0(
+                fcx.block,
+                "frk_mem.array_set",
+                &[pack, index_value, *value],
+                &[],
+                location,
+            )?;
+        }
+        self.call(
+            fcx.block,
+            "__lua_pack_copy_into",
+            &[pack, prefix_len, tail],
+            &[],
+            location,
+        )?;
+        Ok(pack)
     }
 
     /// pack[i] with nil-fill (the __lua_arg helper).
@@ -643,6 +756,7 @@ impl<'c> Emitter<'c> {
             globals,
             terminated: false,
             break_targets: Vec::new(),
+            varargs: None,
         };
         self.emit_block(&mut fcx, chunk)?;
         if !fcx.terminated {
@@ -700,6 +814,25 @@ impl<'c> Emitter<'c> {
             )?;
             env.insert(name.clone(), boxed);
         }
+        // Varargs (D-068): the `...` tail is pack[nparams..], COPIED
+        // into a private arr BEFORE the dispose below — the callee-
+        // owned-pack invariant (D-067) is untouched, and `...` reads
+        // the private copy thereafter.
+        let varargs = if job.is_vararg {
+            let start = self.const_i64(entry, job.params.len() as i64, location)?;
+            Some(
+                self.call(
+                    entry,
+                    "__lua_pack_tail",
+                    &[pack, start],
+                    &[self.pack_ty()],
+                    location,
+                )?
+                .expect("result"),
+            )
+        } else {
+            None
+        };
         // Packs are CALLEE-OWNED (D-067): all params are boxed above,
         // so the incoming pack's ownership ends here — long before any
         // tail call, so the D-064 tail shape is never disturbed.
@@ -712,6 +845,7 @@ impl<'c> Emitter<'c> {
             globals,
             terminated: false,
             break_targets: Vec::new(),
+            varargs,
         };
         self.emit_block(&mut fcx, &job.body)?;
         if !fcx.terminated {
@@ -728,6 +862,7 @@ impl<'c> Emitter<'c> {
         &mut self,
         fcx: &mut Fcx<'c, 'r>,
         params: &[String],
+        is_vararg: bool,
         body: &LBlock,
         location: Location<'c>,
     ) -> Result<Value<'c, 'r>> {
@@ -745,6 +880,7 @@ impl<'c> Emitter<'c> {
             symbol: symbol.clone(),
             captures: captures.clone(),
             params: params.to_vec(),
+            is_vararg,
             body: body.clone(),
         });
 
@@ -810,7 +946,7 @@ impl<'c> Emitter<'c> {
                 fcx.env.insert(name.clone(), boxed);
                 Ok(())
             }
-            Stat::LocalFunction(name, params, body, span) => {
+            Stat::LocalFunction(name, params, is_vararg, body, span) => {
                 let location = self.loc_at(*span);
                 // Box first, bind, then build: recursion through the box.
                 let nil = self.nil_dyn(fcx.block, location)?;
@@ -823,13 +959,13 @@ impl<'c> Emitter<'c> {
                     location,
                 )?;
                 fcx.env.insert(name.clone(), boxed);
-                let closure = self.emit_closure(fcx, params, body, location)?;
+                let closure = self.emit_closure(fcx, params, *is_vararg, body, location)?;
                 self.build0(fcx.block, "frk_mem.box_set", &[boxed, closure], &[], location)?;
                 Ok(())
             }
-            Stat::GlobalFunction(name, params, body, span) => {
+            Stat::GlobalFunction(name, params, is_vararg, body, span) => {
                 let location = self.loc_at(*span);
-                let closure = self.emit_closure(fcx, params, body, location)?;
+                let closure = self.emit_closure(fcx, params, *is_vararg, body, location)?;
                 let key_lit = self.str_lit(fcx.block, name, location)?;
                 let key = self.wrap(fcx.block, TAG_STR, key_lit, location)?;
                 let globals = fcx.globals;
@@ -866,12 +1002,14 @@ impl<'c> Emitter<'c> {
                 Ok(())
             }
             Stat::AssignIndex(table, key, value, span) => {
+                // v0.3 (D-068): writes go through the __newindex
+                // protocol — existing keys raw-assign, absent keys
+                // walk the metamethod (function and table forms).
                 let location = self.loc_at(*span);
                 let table = self.emit_expr(fcx, table)?;
                 let key = self.emit_expr(fcx, key)?;
                 let value = self.emit_expr(fcx, value)?;
-                // v0.1: raw set (__newindex fenced, D-052).
-                self.build0(fcx.block, "frk_dyn.raw_set", &[table, key, value], &[], location)?;
+                self.call(fcx.block, "__lua_setindex", &[table, key, value], &[], location)?;
                 Ok(())
             }
             Stat::Call(expression, _) => {
@@ -921,15 +1059,7 @@ impl<'c> Emitter<'c> {
             }
             Stat::LocalMulti(names, value, span) => {
                 let location = self.loc_at(*span);
-                let pack = match value {
-                    Expr::Call(callee, arguments, _) => {
-                        self.emit_call_pack(fcx, callee, arguments, location)?
-                    }
-                    other => {
-                        let single = self.emit_expr(fcx, other)?;
-                        self.make_pack(fcx.block, &[single], location)?
-                    }
-                };
+                let pack = self.emit_explist_pack(fcx, value, location)?;
                 for (index, name) in names.iter().enumerate() {
                     let value = self.pack_get(fcx.block, pack, index as i64, location)?;
                     let boxed = self.build(
@@ -946,15 +1076,7 @@ impl<'c> Emitter<'c> {
             }
             Stat::AssignMulti(names, value, span) => {
                 let location = self.loc_at(*span);
-                let pack = match value {
-                    Expr::Call(callee, arguments, _) => {
-                        self.emit_call_pack(fcx, callee, arguments, location)?
-                    }
-                    other => {
-                        let single = self.emit_expr(fcx, other)?;
-                        self.make_pack(fcx.block, &[single], location)?
-                    }
-                };
+                let pack = self.emit_explist_pack(fcx, value, location)?;
                 for (index, name) in names.iter().enumerate() {
                     let value = self.pack_get(fcx.block, pack, index as i64, location)?;
                     match fcx.env.get(name) {
@@ -986,16 +1108,9 @@ impl<'c> Emitter<'c> {
             }
             Stat::GenFor(names, iterator, body, span) => {
                 let location = self.loc_at(*span);
-                // for n1, n2 in EXPR do: EXPR yields (f, s, ctrl).
-                let triple = match iterator {
-                    Expr::Call(callee, arguments, _) => {
-                        self.emit_call_pack(fcx, callee, arguments, location)?
-                    }
-                    other => {
-                        let single = self.emit_expr(fcx, other)?;
-                        self.make_pack(fcx.block, &[single], location)?
-                    }
-                };
+                // for n1, n2 in EXPLIST do: adjusts to (f, s, ctrl) —
+                // explicit triples are just an explist (D-068).
+                let triple = self.emit_explist_pack(fcx, iterator, location)?;
                 let iter_fn = self.pack_get(fcx.block, triple, 0, location)?;
                 let state = self.pack_get(fcx.block, triple, 1, location)?;
                 let control0 = self.pack_get(fcx.block, triple, 2, location)?;
@@ -1044,21 +1159,10 @@ impl<'c> Emitter<'c> {
             }
             Stat::Return(values, span) => {
                 let location = self.loc_at(*span);
-                let pack = match values.as_slice() {
-                    [] => self.make_pack(fcx.block, &[], location)?,
-                    // A single bare call forwards its whole pack
-                    // (Lua tail-position multi).
-                    [Expr::Call(callee, arguments, _)] => {
-                        self.emit_call_pack(fcx, callee, arguments, location)?
-                    }
-                    many => {
-                        let mut emitted = Vec::new();
-                        for expression in many {
-                            emitted.push(self.emit_expr(fcx, expression)?);
-                        }
-                        self.make_pack(fcx.block, &emitted, location)?
-                    }
-                };
+                // The engine keeps the single-call no-copy forwarding
+                // (the D-063 tail-call fast path) and adds `...` and
+                // mixed explists (D-068).
+                let pack = self.emit_explist_pack(fcx, values, location)?;
                 ret(fcx.block, &[pack], location)?;
                 fcx.terminated = true;
                 Ok(())
@@ -1200,11 +1304,8 @@ impl<'c> Emitter<'c> {
         location: Location<'c>,
     ) -> Result<Value<'c, 'r>> {
         let callee = self.emit_expr(fcx, callee)?;
-        let mut values = Vec::new();
-        for argument in arguments {
-            values.push(self.emit_expr(fcx, argument)?);
-        }
-        self.call_lua(fcx.block, callee, &values, location)
+        let pack = self.emit_explist_pack(fcx, arguments, location)?;
+        self.call_lua_pack(fcx.block, callee, pack, location)
     }
 
     // ---- expressions (every result is a dyn) ----
@@ -1213,6 +1314,14 @@ impl<'c> Emitter<'c> {
         let location = self.loc_at(expression.span());
         match expression {
             Expr::Nil(_) => self.nil_dyn(fcx.block, location),
+            Expr::Vararg(_) => {
+                // Expression context: `...` adjusts to ONE value
+                // (nil-filled when the tail is empty).
+                let varargs = fcx.varargs.ok_or_else(|| {
+                    "internal: `...` survived parsing outside a vararg function".to_string()
+                })?;
+                self.pack_get(fcx.block, varargs, 0, location)
+            }
             Expr::True(_) => {
                 let value = self.const_bool(fcx.block, true, location)?;
                 self.wrap(fcx.block, TAG_BOOL, value, location)
@@ -1259,13 +1368,45 @@ impl<'c> Emitter<'c> {
                 let pack = self.emit_call_pack(fcx, callee, arguments, location)?;
                 self.pack_get(fcx.block, pack, 0, location)
             }
-            Expr::Function(params, body, _) => self.emit_closure(fcx, params, body, location),
+            Expr::Function(params, is_vararg, body, _) => {
+                self.emit_closure(fcx, params, *is_vararg, body, location)
+            }
             Expr::Table(fields, _) => {
                 let table =
                     self.build(fcx.block, "frk_dyn.table_new", &[], &[self.dyn_ty()], &[], location)?;
                 let mut position = 0i64;
-                for field in fields {
+                let count = fields.len();
+                for (field_index, field) in fields.iter().enumerate() {
                     match field {
+                        // The FINAL positional field expands when it is
+                        // a call or `...` (Lua constructor adjustment,
+                        // D-068): elements append from position+1 with
+                        // runtime number keys.
+                        Field::Positional(value)
+                            if field_index + 1 == count
+                                && matches!(value, Expr::Call(..) | Expr::Vararg(_)) =>
+                        {
+                            let tail = match value {
+                                Expr::Call(callee, arguments, _) => {
+                                    self.emit_call_pack(fcx, callee, arguments, location)?
+                                }
+                                Expr::Vararg(_) => fcx.varargs.ok_or_else(|| {
+                                    "internal: `...` survived parsing outside a vararg \
+                                     function"
+                                        .to_string()
+                                })?,
+                                _ => unreachable!(),
+                            };
+                            let first =
+                                self.const_f64(fcx.block, (position + 1) as f64, location)?;
+                            self.call(
+                                fcx.block,
+                                "__lua_ctor_append",
+                                &[table, first, tail],
+                                &[],
+                                location,
+                            )?;
+                        }
                         Field::Positional(value) => {
                             position += 1;
                             let value = self.emit_expr(fcx, value)?;
@@ -1511,14 +1652,14 @@ fn free_names_stat(statement: &Stat, bound: &mut HashSet<String>, out: &mut BTre
             free_names_expr(value, bound, out);
             bound.insert(name.clone());
         }
-        Stat::LocalFunction(name, params, body, _) => {
+        Stat::LocalFunction(name, params, _, body, _) => {
             bound.insert(name.clone());
             let mut inner = bound.clone();
             inner.extend(params.iter().cloned());
             let mut inner_set = inner;
             free_names_block(body, &mut inner_set, out);
         }
-        Stat::GlobalFunction(_, params, body, _) => {
+        Stat::GlobalFunction(_, params, _, body, _) => {
             let mut inner = bound.clone();
             inner.extend(params.iter().cloned());
             free_names_block(body, &mut inner, out);
@@ -1551,14 +1692,18 @@ fn free_names_stat(statement: &Stat, bound: &mut HashSet<String>, out: &mut BTre
             }
             free_names_expr(condition, &inner, out);
         }
-        Stat::LocalMulti(names, value, _) => {
-            free_names_expr(value, bound, out);
+        Stat::LocalMulti(names, values, _) => {
+            for value in values {
+                free_names_expr(value, bound, out);
+            }
             for name in names {
                 bound.insert(name.clone());
             }
         }
-        Stat::AssignMulti(names, value, _) => {
-            free_names_expr(value, bound, out);
+        Stat::AssignMulti(names, values, _) => {
+            for value in values {
+                free_names_expr(value, bound, out);
+            }
             for name in names {
                 if !bound.contains(name) {
                     out.insert(name.clone());
@@ -1566,7 +1711,9 @@ fn free_names_stat(statement: &Stat, bound: &mut HashSet<String>, out: &mut BTre
             }
         }
         Stat::GenFor(names, iterator, body, _) => {
-            free_names_expr(iterator, bound, out);
+            for expression in iterator {
+                free_names_expr(expression, bound, out);
+            }
             let mut inner = bound.clone();
             inner.extend(names.iter().cloned());
             free_names_block(body, &mut inner, out);
@@ -1600,6 +1747,7 @@ fn free_names_stat(statement: &Stat, bound: &mut HashSet<String>, out: &mut BTre
 
 fn free_names_expr(expression: &Expr, bound: &HashSet<String>, out: &mut BTreeSet<String>) {
     match expression {
+        Expr::Vararg(_) => {}
         Expr::Nil(_) | Expr::True(_) | Expr::False(_) | Expr::Num(..) | Expr::Str(..) => {}
         Expr::Name(name, _) => {
             if !bound.contains(name) {
@@ -1616,7 +1764,7 @@ fn free_names_expr(expression: &Expr, bound: &HashSet<String>, out: &mut BTreeSe
                 free_names_expr(argument, bound, out);
             }
         }
-        Expr::Function(params, body, _) => {
+        Expr::Function(params, _, body, _) => {
             let mut inner = bound.clone();
             inner.extend(params.iter().cloned());
             free_names_block(body, &mut inner, out);

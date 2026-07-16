@@ -365,3 +365,19 @@ fn missing_entry_is_callee_not_found() {
     .unwrap_err();
     assert_eq!(error, EvalError::CalleeNotFound("nonexistent".into()));
 }
+
+#[test]
+fn maxsi_picks_the_signed_maximum() {
+    // M23: arith.maxsi joins the upstream registry (the vararg
+    // tail-length clamp); signedness matters — -1 < 0.
+    let picked = interpret_i64(
+        r#"func.func @main() -> i64 {
+            %a = arith.constant -1 : i64
+            %b = arith.constant 0 : i64
+            %m = arith.maxsi %a, %b : i64
+            return %m : i64
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(picked, 0);
+}

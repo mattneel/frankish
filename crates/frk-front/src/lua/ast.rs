@@ -14,7 +14,10 @@ pub enum Expr {
     Name(String, usize),
     Index(Box<Expr>, Box<Expr>, usize),
     Call(Box<Expr>, Vec<Expr>, usize),
-    Function(Vec<String>, Block, usize),
+    /// `...` — legal only inside a vararg function (v0.3, D-068).
+    Vararg(usize),
+    /// params, is_vararg, body.
+    Function(Vec<String>, bool, Block, usize),
     Table(Vec<Field>, usize),
     Binary(BinOp, Box<Expr>, Box<Expr>, usize),
     Unary(UnOp, Box<Expr>, usize),
@@ -25,7 +28,8 @@ impl Expr {
         match self {
             Expr::Nil(s) | Expr::True(s) | Expr::False(s) | Expr::Num(_, s)
             | Expr::Str(_, s) | Expr::Name(_, s) | Expr::Index(_, _, s)
-            | Expr::Call(_, _, s) | Expr::Function(_, _, s) | Expr::Table(_, s)
+            | Expr::Call(_, _, s) | Expr::Function(_, _, _, s) | Expr::Table(_, s)
+            | Expr::Vararg(s)
             | Expr::Binary(_, _, _, s) | Expr::Unary(_, _, s) => *s,
         }
     }
@@ -52,15 +56,18 @@ pub enum UnOp {
 #[derive(Clone, Debug)]
 pub enum Stat {
     Local(String, Expr, usize),
-    /// `local a, b, c = f()` — names beyond the pack nil-fill (D-058).
-    LocalMulti(Vec<String>, Expr, usize),
-    /// `a, b = f()` — existing locals/globals only, names only.
-    AssignMulti(Vec<String>, Expr, usize),
+    /// `local a, b, c = e1, e2, …` — the RHS explist adjusts (D-068):
+    /// non-final expressions truncate to one value, the final call or
+    /// `...` expands, shortfall nil-fills.
+    LocalMulti(Vec<String>, Vec<Expr>, usize),
+    /// `a, b = e1, e2, …` — same adjustment; names only.
+    AssignMulti(Vec<String>, Vec<Expr>, usize),
     Repeat(Block, Expr, usize),
     Break(usize),
-    /// `for n1, n2 in e do` — e is the iterator-producing expression.
-    GenFor(Vec<String>, Expr, Block, usize),
-    LocalFunction(String, Vec<String>, Block, usize),
+    /// `for n1, n2 in explist do` — the explist adjusts to the
+    /// (f, s, ctrl) triple (explicit triples, v0.3 D-068).
+    GenFor(Vec<String>, Vec<Expr>, Block, usize),
+    LocalFunction(String, Vec<String>, bool, Block, usize),
     AssignName(String, Expr, usize),
     AssignIndex(Expr, Expr, Expr, usize),
     Call(Expr, usize),
@@ -70,7 +77,7 @@ pub enum Stat {
     Return(Vec<Expr>, usize),
     Do(Block, usize),
     /// `function name(...)` — a global function declaration.
-    GlobalFunction(String, Vec<String>, Block, usize),
+    GlobalFunction(String, Vec<String>, bool, Block, usize),
 }
 
 pub type Block = Vec<Stat>;
@@ -92,7 +99,7 @@ pub fn parse(source: &str) -> Result<Block, ParseError> {
         offset,
         message,
     })?;
-    let mut parser = Parser { tokens, position: 0 };
+    let mut parser = Parser { tokens, position: 0, vararg_stack: vec![false] };
     let block = parser.block()?;
     if parser.position < parser.tokens.len() {
         return Err(parser.error("trailing input after chunk"));
@@ -103,6 +110,10 @@ pub fn parse(source: &str) -> Result<Block, ParseError> {
 struct Parser {
     tokens: Vec<Spanned>,
     position: usize,
+    /// Innermost-function vararg capability (D-068): `...` parses only
+    /// when the top is true. The chunk entry is false — top-level
+    /// varargs are fenced (our main takes no arguments).
+    vararg_stack: Vec<bool>,
 }
 
 impl Parser {
@@ -201,8 +212,8 @@ impl Parser {
                 if self.peek() == Some(&Token::Function) {
                     self.position += 1;
                     let name = self.name()?;
-                    let (params, body) = self.function_body()?;
-                    return Ok(Stat::LocalFunction(name, params, body, span));
+                    let (params, is_vararg, body) = self.function_body()?;
+                    return Ok(Stat::LocalFunction(name, params, is_vararg, body, span));
                 }
                 let name = self.name()?;
                 if self.peek() == Some(&Token::Comma) {
@@ -214,13 +225,8 @@ impl Parser {
                         names.push(self.name()?);
                     }
                     self.expect(Token::Assign, "=")?;
-                    let value = self.expression()?;
-                    if self.peek() == Some(&Token::Comma) {
-                        return Err(self.error(
-                            "multi-expression RHS is fenced in v0.2 (D-058)",
-                        ));
-                    }
-                    return Ok(Stat::LocalMulti(names, value, span));
+                    let values = self.explist()?;
+                    return Ok(Stat::LocalMulti(names, values, span));
                 }
                 self.expect(Token::Assign, "= (locals require an initializer)")?;
                 let value = self.expression()?;
@@ -232,8 +238,8 @@ impl Parser {
                 if matches!(self.peek(), Some(Token::Dot) | Some(Token::Colon)) {
                     return Err(self.error("method declarations are fenced in v0.1 (D-052)"));
                 }
-                let (params, body) = self.function_body()?;
-                Ok(Stat::GlobalFunction(name, params, body, span))
+                let (params, is_vararg, body) = self.function_body()?;
+                Ok(Stat::GlobalFunction(name, params, is_vararg, body, span))
             }
             Some(Token::If) => {
                 self.position += 1;
@@ -301,12 +307,7 @@ impl Parser {
                             names.push(self.name()?);
                         }
                         self.expect(Token::In, "in")?;
-                        let iterator = self.expression()?;
-                        if self.peek() == Some(&Token::Comma) {
-                            return Err(self.error(
-                                "explicit iterator triples are fenced in v0.2 (D-058)",
-                            ));
-                        }
+                        let iterator = self.explist()?;
                         self.expect(Token::Do, "do")?;
                         let body = self.block()?;
                         self.expect(Token::End, "end")?;
@@ -347,8 +348,8 @@ impl Parser {
                         names.push(self.name()?);
                     }
                     self.expect(Token::Assign, "=")?;
-                    let value = self.expression()?;
-                    return Ok(Stat::AssignMulti(names, value, span));
+                    let values = self.explist()?;
+                    return Ok(Stat::AssignMulti(names, values, span));
                 }
                 if self.peek() == Some(&Token::Assign) {
                     self.position += 1;
@@ -369,11 +370,18 @@ impl Parser {
         }
     }
 
-    fn function_body(&mut self) -> Result<(Vec<String>, Block), ParseError> {
+    fn function_body(&mut self) -> Result<(Vec<String>, bool, Block), ParseError> {
         self.expect(Token::LParen, "(")?;
         let mut params = Vec::new();
+        let mut is_vararg = false;
         if self.peek() != Some(&Token::RParen) {
             loop {
+                if self.peek() == Some(&Token::Dots) {
+                    // `...` closes the parameter list (Lua 5.1).
+                    self.position += 1;
+                    is_vararg = true;
+                    break;
+                }
                 params.push(self.name()?);
                 if self.peek() == Some(&Token::Comma) {
                     self.position += 1;
@@ -383,9 +391,21 @@ impl Parser {
             }
         }
         self.expect(Token::RParen, ")")?;
+        self.vararg_stack.push(is_vararg);
         let body = self.block()?;
+        self.vararg_stack.pop();
         self.expect(Token::End, "end")?;
-        Ok((params, body))
+        Ok((params, is_vararg, body))
+    }
+
+    /// A comma-separated expression list (explist), one or more.
+    fn explist(&mut self) -> Result<Vec<Expr>, ParseError> {
+        let mut values = vec![self.expression()?];
+        while self.peek() == Some(&Token::Comma) {
+            self.position += 1;
+            values.push(self.expression()?);
+        }
+        Ok(values)
     }
 
     // Precedence climbing, Lua 5.1 table: or < and < comparisons <
@@ -466,8 +486,20 @@ impl Parser {
             }
             Some(Token::Function) => {
                 self.position += 1;
-                let (params, body) = self.function_body()?;
-                Ok(Expr::Function(params, body, span))
+                let (params, is_vararg, body) = self.function_body()?;
+                Ok(Expr::Function(params, is_vararg, body, span))
+            }
+            Some(Token::Dots) => {
+                self.position += 1;
+                if self.vararg_stack.last().copied() != Some(true) {
+                    return Err(ParseError {
+                        offset: span,
+                        message: "cannot use `...` outside a vararg function (D-068: \
+                                  top-level varargs are fenced)"
+                            .to_string(),
+                    });
+                }
+                Ok(Expr::Vararg(span))
             }
             Some(Token::LBrace) => self.table_constructor(),
             _ => self.prefix_expression(),

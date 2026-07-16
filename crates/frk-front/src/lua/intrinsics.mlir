@@ -190,16 +190,45 @@
 // ---- the pack-convention wrappers and iterator protocol (D-058,
 // uniform since D-063; migrated from emitter builder code at M20) ----
 
+  // print(...) — MULTI-VALUE since v0.3 (D-068): every argument
+  // tostring'd, tab-joined, one trailing newline (lua5.1 semantics).
   func.func @__lua_print_v(%arg0: !frk_closure.envref, %arg1: !frk_mem.arr<!frk_dyn.dyn>) -> !frk_mem.arr<!frk_dyn.dyn> {
-    %c0_i64 = arith.constant 0 : i64
-    %0 = call @__lua_arg(%arg1, %c0_i64) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
-    %1 = call @__lua_print(%0) : (!frk_dyn.dyn) -> !frk_dyn.dyn
-    %c1_i64 = arith.constant 1 : i64
-    %2 = "frk_mem.array_new"(%c1_i64) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
-    %c0_i64_0 = arith.constant 0 : i64
-    "frk_mem.array_set"(%2, %c0_i64_0, %1) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    %n = "frk_mem.array_len"(%arg1) : (!frk_mem.arr<!frk_dyn.dyn>) -> i64
+    %pv_c0 = arith.constant 0 : i64
+    %pv_c1 = arith.constant 1 : i64
+    %pv_empty = arith.cmpi eq, %n, %pv_c0 : i64
+    cf.cond_br %pv_empty, ^pv_blank, ^pv_first
+  ^pv_blank:
+    %pv_nothing = "frk_bstr.lit"() {text = ""} : () -> !frk_bstr.str
+    call @frk_rt_print_lua_str(%pv_nothing) : (!frk_bstr.str) -> ()
+    cf.br ^pv_done
+  ^pv_first:
+    %pv_v0 = "frk_mem.array_get"(%arg1, %pv_c0) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
+    %pv_d0 = call @__lua_tostring(%pv_v0) : (!frk_dyn.dyn) -> !frk_dyn.dyn
+    %pv_s0 = "frk_dyn.unwrap"(%pv_d0) {tag = 3 : i64} : (!frk_dyn.dyn) -> !frk_bstr.str
+    cf.br ^pv_head(%pv_c1, %pv_s0 : i64, !frk_bstr.str)
+  ^pv_head(%pv_i: i64, %pv_acc: !frk_bstr.str):
+    %pv_more = arith.cmpi slt, %pv_i, %n : i64
+    cf.cond_br %pv_more, ^pv_body(%pv_i, %pv_acc : i64, !frk_bstr.str), ^pv_flush(%pv_acc : !frk_bstr.str)
+  ^pv_body(%pv_j: i64, %pv_a: !frk_bstr.str):
+    %pv_tab = "frk_bstr.lit"() {text = "\09"} : () -> !frk_bstr.str
+    %pv_a1 = "frk_bstr.concat"(%pv_a, %pv_tab) : (!frk_bstr.str, !frk_bstr.str) -> !frk_bstr.str
+    %pv_vj = "frk_mem.array_get"(%arg1, %pv_j) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
+    %pv_dj = call @__lua_tostring(%pv_vj) : (!frk_dyn.dyn) -> !frk_dyn.dyn
+    %pv_sj = "frk_dyn.unwrap"(%pv_dj) {tag = 3 : i64} : (!frk_dyn.dyn) -> !frk_bstr.str
+    %pv_a2 = "frk_bstr.concat"(%pv_a1, %pv_sj) : (!frk_bstr.str, !frk_bstr.str) -> !frk_bstr.str
+    %pv_j1 = arith.addi %pv_j, %pv_c1 : i64
+    cf.br ^pv_head(%pv_j1, %pv_a2 : i64, !frk_bstr.str)
+  ^pv_flush(%pv_line: !frk_bstr.str):
+    call @frk_rt_print_lua_str(%pv_line) : (!frk_bstr.str) -> ()
+    cf.br ^pv_done
+  ^pv_done:
+    %pv_ret = "frk_mem.array_new"(%pv_c1) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
+    %pv_nil_w = arith.constant 0 : i64
+    %pv_nil = "frk_dyn.wrap"(%pv_nil_w) {tag = 0 : i64} : (i64) -> !frk_dyn.dyn
+    "frk_mem.array_set"(%pv_ret, %pv_c0, %pv_nil) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
     "frk_mem.dispose"(%arg1) : (!frk_mem.arr<!frk_dyn.dyn>) -> ()
-    return %2 : !frk_mem.arr<!frk_dyn.dyn>
+    return %pv_ret : !frk_mem.arr<!frk_dyn.dyn>
   }
   func.func @__lua_tostring_v(%arg0: !frk_closure.envref, %arg1: !frk_mem.arr<!frk_dyn.dyn>) -> !frk_mem.arr<!frk_dyn.dyn> {
     %c0_i64 = arith.constant 0 : i64
@@ -247,6 +276,20 @@
     cf.cond_br %3, ^bb1, ^bb2
   ^bb1:  // pred: ^bb0
     %4:2 = "frk_dyn.table_next"(%0, %1) : (!frk_dyn.dyn, !frk_dyn.dyn) -> (!frk_dyn.dyn, !frk_dyn.dyn)
+    // Exhaustion returns ONE nil, not (nil, nil) — the pack length is
+    // observable under D-068's explist expansion (lua5.1 semantics).
+    %nv_ktag = "frk_dyn.tag_of"(%4#0) : (!frk_dyn.dyn) -> i64
+    %nv_c0 = arith.constant 0 : i64
+    %nv_done = arith.cmpi eq, %nv_ktag, %nv_c0 : i64
+    cf.cond_br %nv_done, ^nv_end, ^nv_pair
+  ^nv_end:
+    %c1_i64_e = arith.constant 1 : i64
+    %nv_one = "frk_mem.array_new"(%c1_i64_e) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
+    %nv_c0b = arith.constant 0 : i64
+    "frk_mem.array_set"(%nv_one, %nv_c0b, %4#0) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    "frk_mem.dispose"(%arg1) : (!frk_mem.arr<!frk_dyn.dyn>) -> ()
+    return %nv_one : !frk_mem.arr<!frk_dyn.dyn>
+  ^nv_pair:
     %c2_i64 = arith.constant 2 : i64
     %5 = "frk_mem.array_new"(%c2_i64) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
     %c0_i64_0 = arith.constant 0 : i64
@@ -451,4 +494,130 @@
     %c0_i64_6 = arith.constant 0 : i64
     %21 = "frk_dyn.wrap"(%c0_i64_6) {tag = 0 : i64} : (i64) -> !frk_dyn.dyn
     return %21 : !frk_dyn.dyn
+  }
+
+  // ---- v0.3 (D-068): varargs plumbing + the settable protocol ----
+
+  // pack[start..] as a FRESH arr (the vararg prologue copy — before
+  // the D-067 dispose). Borrows its source; owns its result.
+  func.func @__lua_pack_tail(%src: !frk_mem.arr<!frk_dyn.dyn>, %start: i64) -> !frk_mem.arr<!frk_dyn.dyn> attributes {frk.borrows} {
+    %pt_len = "frk_mem.array_len"(%src) : (!frk_mem.arr<!frk_dyn.dyn>) -> i64
+    %pt_diff = arith.subi %pt_len, %start : i64
+    %pt_c0 = arith.constant 0 : i64
+    %pt_c1 = arith.constant 1 : i64
+    %pt_n = arith.maxsi %pt_diff, %pt_c0 : i64
+    %pt_dst = "frk_mem.array_new"(%pt_n) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
+    cf.br ^pt_head(%pt_c0 : i64)
+  ^pt_head(%pt_i: i64):
+    %pt_more = arith.cmpi slt, %pt_i, %pt_n : i64
+    cf.cond_br %pt_more, ^pt_body(%pt_i : i64), ^pt_exit
+  ^pt_body(%pt_j: i64):
+    %pt_k = arith.addi %pt_j, %start : i64
+    %pt_v = "frk_mem.array_get"(%src, %pt_k) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
+    "frk_mem.array_set"(%pt_dst, %pt_j, %pt_v) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    %pt_j1 = arith.addi %pt_j, %pt_c1 : i64
+    cf.br ^pt_head(%pt_j1 : i64)
+  ^pt_exit:
+    return %pt_dst : !frk_mem.arr<!frk_dyn.dyn>
+  }
+
+  // Copies every element of src into dst starting at dst[at] (the
+  // explist-engine tail append). The rc retain discipline is the
+  // kernel lowering's array_set rule — nothing hand-written here.
+  func.func @__lua_pack_copy_into(%dst: !frk_mem.arr<!frk_dyn.dyn>, %at: i64, %src: !frk_mem.arr<!frk_dyn.dyn>) attributes {frk.borrows} {
+    %pc_len = "frk_mem.array_len"(%src) : (!frk_mem.arr<!frk_dyn.dyn>) -> i64
+    %pc_c0 = arith.constant 0 : i64
+    %pc_c1 = arith.constant 1 : i64
+    cf.br ^pc_head(%pc_c0 : i64)
+  ^pc_head(%pc_i: i64):
+    %pc_more = arith.cmpi slt, %pc_i, %pc_len : i64
+    cf.cond_br %pc_more, ^pc_body(%pc_i : i64), ^pc_exit
+  ^pc_body(%pc_j: i64):
+    %pc_v = "frk_mem.array_get"(%src, %pc_j) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
+    %pc_k = arith.addi %at, %pc_j : i64
+    "frk_mem.array_set"(%dst, %pc_k, %pc_v) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    %pc_j1 = arith.addi %pc_j, %pc_c1 : i64
+    cf.br ^pc_head(%pc_j1 : i64)
+  ^pc_exit:
+    return
+  }
+
+  // Table-constructor tail expansion (D-068): appends src[j] at
+  // number keys first+j — `{ a, b, f(...) }` array semantics.
+  func.func @__lua_ctor_append(%t: !frk_dyn.dyn, %first: f64, %src: !frk_mem.arr<!frk_dyn.dyn>) attributes {frk.borrows} {
+    %ca_len = "frk_mem.array_len"(%src) : (!frk_mem.arr<!frk_dyn.dyn>) -> i64
+    %ca_c0 = arith.constant 0 : i64
+    %ca_c1 = arith.constant 1 : i64
+    cf.br ^ca_head(%ca_c0 : i64)
+  ^ca_head(%ca_i: i64):
+    %ca_more = arith.cmpi slt, %ca_i, %ca_len : i64
+    cf.cond_br %ca_more, ^ca_body(%ca_i : i64), ^ca_exit
+  ^ca_body(%ca_j: i64):
+    %ca_v = "frk_mem.array_get"(%src, %ca_j) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
+    %ca_jf = arith.sitofp %ca_j : i64 to f64
+    %ca_kf = arith.addf %first, %ca_jf : f64
+    %ca_key = "frk_dyn.wrap"(%ca_kf) {tag = 2 : i64} : (f64) -> !frk_dyn.dyn
+    "frk_dyn.raw_set"(%t, %ca_key, %ca_v) : (!frk_dyn.dyn, !frk_dyn.dyn, !frk_dyn.dyn) -> ()
+    %ca_j1 = arith.addi %ca_j, %ca_c1 : i64
+    cf.br ^ca_head(%ca_j1 : i64)
+  ^ca_exit:
+    return
+  }
+
+  // luaV_settable (D-068): an EXISTING key raw-assigns without
+  // consulting metamethods; an absent key walks __newindex — nil
+  // handler raw-assigns, table handler RE-ENTERS settable on the
+  // target (a tail call: metatable chains ride the trampoline and
+  // musttail like __lua_index's), function handler is called (t,k,v)
+  // through the uniform convention.
+  func.func @__lua_setindex(%t: !frk_dyn.dyn, %k: !frk_dyn.dyn, %v: !frk_dyn.dyn) {
+    %si_tag = "frk_dyn.tag_of"(%t) : (!frk_dyn.dyn) -> i64
+    %si_c4 = arith.constant 4 : i64
+    %si_is_table = arith.cmpi eq, %si_tag, %si_c4 : i64
+    cf.cond_br %si_is_table, ^si_check, ^si_err
+  ^si_err:
+    %si_code = arith.constant 5 : i64
+    call @frk_rt_lua_error(%si_code) : (i64) -> ()
+    return
+  ^si_check:
+    %si_existing = "frk_dyn.raw_get"(%t, %k) : (!frk_dyn.dyn, !frk_dyn.dyn) -> !frk_dyn.dyn
+    %si_etag = "frk_dyn.tag_of"(%si_existing) : (!frk_dyn.dyn) -> i64
+    %si_c0 = arith.constant 0 : i64
+    %si_absent = arith.cmpi eq, %si_etag, %si_c0 : i64
+    cf.cond_br %si_absent, ^si_meta, ^si_raw
+  ^si_raw:
+    "frk_dyn.raw_set"(%t, %k, %v) : (!frk_dyn.dyn, !frk_dyn.dyn, !frk_dyn.dyn) -> ()
+    return
+  ^si_meta:
+    %si_m = "frk_dyn.get_meta"(%t) : (!frk_dyn.dyn) -> !frk_dyn.dyn
+    %si_mtag = "frk_dyn.tag_of"(%si_m) : (!frk_dyn.dyn) -> i64
+    %si_no_meta = arith.cmpi eq, %si_mtag, %si_c0 : i64
+    cf.cond_br %si_no_meta, ^si_raw, ^si_handler
+  ^si_handler:
+    %si_key_lit = "frk_bstr.lit"() {text = "__newindex"} : () -> !frk_bstr.str
+    %si_key = "frk_dyn.wrap"(%si_key_lit) {tag = 3 : i64} : (!frk_bstr.str) -> !frk_dyn.dyn
+    %si_h = "frk_dyn.raw_get"(%si_m, %si_key) : (!frk_dyn.dyn, !frk_dyn.dyn) -> !frk_dyn.dyn
+    %si_htag = "frk_dyn.tag_of"(%si_h) : (!frk_dyn.dyn) -> i64
+    cf.switch %si_htag : i64, [
+      default: ^si_err,
+      0: ^si_raw,
+      4: ^si_redirect,
+      5: ^si_call
+    ]
+  ^si_redirect:
+    call @__lua_setindex(%si_h, %k, %v) : (!frk_dyn.dyn, !frk_dyn.dyn, !frk_dyn.dyn) -> ()
+    return
+  ^si_call:
+    %si_f = "frk_dyn.unwrap"(%si_h) {tag = 5 : i64} : (!frk_dyn.dyn) -> !frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>
+    %si_c3 = arith.constant 3 : i64
+    %si_pack = "frk_mem.array_new"(%si_c3) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
+    "frk_mem.array_set"(%si_pack, %si_c0, %t) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    %si_c1 = arith.constant 1 : i64
+    "frk_mem.array_set"(%si_pack, %si_c1, %k) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    %si_c2 = arith.constant 2 : i64
+    "frk_mem.array_set"(%si_pack, %si_c2, %v) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    %si_p0 = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
+    %si_p1 = "frk_adt.product_snoc"(%si_p0, %si_pack) : (!frk_adt.product<[]>, !frk_mem.arr<!frk_dyn.dyn>) -> !frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>
+    %si_r = "frk_closure.apply"(%si_f, %si_p1) : (!frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>, !frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>) -> !frk_mem.arr<!frk_dyn.dyn>
+    return
   }

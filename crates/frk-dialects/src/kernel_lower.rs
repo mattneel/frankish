@@ -524,9 +524,15 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
         }
 
         for plan in &mut plans {
-            let (op, die_at, applies) = match plan {
+            let (op, die_at, gated) = match plan {
                 Planned::BoxNew { op, die_at, .. } => (*op, die_at, false),
-                Planned::ArrayNew { op, die_at, .. } => (*op, die_at, false),
+                // M23 (D-068 corpus finding): CREATED packs need the
+                // derived-borrow gate exactly like received ones — the
+                // explicit GenFor triple was the first ArrayNew whose
+                // __lua_arg-borrowed reads cross blocks, and die_at
+                // freed the pack (and its transferred closure) in the
+                // preheader while the loop still held the borrow.
+                Planned::ArrayNew { op, die_at, .. } => (*op, die_at, true),
                 // D-067: received ownership (a returned pack/box)
                 // dies like created ownership.
                 Planned::ApplyClosure { op, die_at, result_managed: true, .. } => {
@@ -578,7 +584,7 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
                     }
                 })
             };
-            if local && (!applies || derived_local()) {
+            if local && (!gated || derived_local()) {
                 *die_at = block_terminator(op);
             }
         }
@@ -613,7 +619,19 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
                     .get(&(value.to_raw().ptr as usize))
                     .copied()
                     .unwrap_or(0);
-                retain_shared.insert((op.to_raw().ptr as usize, *index), count > 1);
+                // M23 (D-068 corpus finding): sole-use elision is a
+                // TRANSFER, and a transfer needs a producer that
+                // forfeits ownership — a fresh allocation or an apply
+                // result. A BORROW (box_get/array_get/raw_get, a
+                // borrowing call like __lua_arg, a block argument)
+                // leaves its source owning the reference, so storing
+                // it MUST retain: the explicit-GenFor-triple corpus
+                // case freed a live closure through exactly this hole
+                // (jit-rc segfault; fn_ptr read back as a dyn tag).
+                retain_shared.insert(
+                    (op.to_raw().ptr as usize, *index),
+                    count > 1 || !produces_owned(value),
+                );
             }
         }
     }
@@ -3356,6 +3374,34 @@ fn apply<'c, 'a>(
             }
             finish(rewriter, op, call_result)
         }
+    }
+}
+
+/// Is `value` produced by an op that FORFEITS ownership to a sole
+/// consumer (M23, D-068)? Fresh allocations and apply results carry a
+/// +1 their single owning store may take over (the D-041 transfer);
+/// anything else — box/array/table reads, borrowing calls, block
+/// arguments — is a borrow, and its owning store must retain.
+fn produces_owned(value: Value<'_, '_>) -> bool {
+    unsafe {
+        let raw = value.to_raw();
+        if !mlir_sys::mlirValueIsAOpResult(raw) {
+            return false; // a block argument — always a borrow here
+        }
+        let owner = mlir_sys::mlirOpResultGetOwner(raw);
+        let identifier = mlir_sys::mlirOperationGetName(owner);
+        let string = mlir_sys::mlirIdentifierStr(identifier);
+        let bytes =
+            std::slice::from_raw_parts(string.data as *const u8, string.length);
+        matches!(
+            bytes,
+            b"frk_dyn.wrap"
+                | b"frk_mem.array_new"
+                | b"frk_mem.box_new"
+                | b"frk_dyn.table_new"
+                | b"frk_closure.apply"
+                | b"frk_closure.make"
+        )
     }
 }
 

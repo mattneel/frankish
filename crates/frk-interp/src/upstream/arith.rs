@@ -34,6 +34,7 @@ pub(crate) fn register(registry: &mut HashMap<&'static str, Box<dyn Eval>>) {
     registry.insert("arith.extui", Box::new(ExtUI));
     registry.insert("arith.sitofp", Box::new(SiToFp));
     registry.insert("arith.fptosi", Box::new(FpToSi));
+    registry.insert("arith.maxsi", Box::new(MaxSI));
 }
 
 struct ExtUI;
@@ -270,6 +271,21 @@ macro_rules! wrapping_binary {
 wrapping_binary!(AddI, wrapping_add);
 wrapping_binary!(SubI, wrapping_sub);
 wrapping_binary!(MulI, wrapping_mul);
+
+/// Signed maximum (M23: the vararg tail-length clamp).
+struct MaxSI;
+impl Eval for MaxSI {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let (lhs, rhs) = binary_operands(frame, op)?;
+        let picked = lhs.as_signed()?.max(rhs.as_signed()?);
+        continue_with_result(frame, op, Value::int(picked as u64, lhs.width()?)?)
+    }
+}
 
 struct DivSI;
 impl Eval for DivSI {
