@@ -193,6 +193,36 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-064 [m19/gc] TAIL-AWARE RELEASE SCHEDULING (D-063's fence,
+  resolved; picked by the human). The problem: the rc discipline
+  anchors frame releases at the block TERMINATOR, which in a
+  tail-shaped block lands between the call and its return — the tail
+  shape musttail needs is destroyed exactly where it matters, so
+  D-063 fenced rc-native runners off the deep goldens. The evidence
+  (rc-lowered lua tail loop) showed precisely ONE offending release,
+  and it was HALF OF A PAIR: retain(pack) at the owning snoc into the
+  args product, release(pack) at the terminator — the frame's
+  reference, dropped after the call. THE RULE: in a tail-shaped block
+  (func.return fed by the immediately preceding call), a frame
+  release whose value carries a PAIRED in-block retain relocates to
+  BEFORE the call. Soundness, two legs: (1) the pair witnesses a
+  second owner (the consumer's retain), so the value still crosses
+  the call at count >= 1 and nothing between the relocated release
+  and the call can free it (only pure ops sit there); (2) no caller
+  code runs after a tail call — the frame's references are dead the
+  moment the call starts, so dropping them early is observationally
+  invisible. Unpaired releases stay at the terminator (conservative:
+  that block keeps its frame; correct, just not TCO'd). SSA identity
+  makes the pair mechanically checkable: retain and release were
+  planned against the same lowered value. Terminal refcounts are
+  IDENTICAL to the old schedule (+1/-1 in a different order), so no
+  leak/free accounting changes. RESULT: the deep goldens run
+  UNFENCED — 100k tail frames under jit-rc and the rc grid columns
+  on all five triples; grid 74/74 × BOTH strategies. The rc column
+  equals arena for the first time since the fence existed. Revisit:
+  if a future discipline releases callee-visible references mid-call
+  (finalizers, weak refs), the crossing-count argument must be
+  re-proven.
 - D-063 [m18/closure] THE UNIFORM-SIGNATURE CONVENTION (D-059's
   ledgered gap, picked by the human). Problem: femto_lua's tail-call
   law is VIOLATED — every lua call is a closure-apply, which neither

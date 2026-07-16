@@ -595,8 +595,22 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
     }
     // GC step 1: the planned block-end releases. Terminators survive
     // the rewrite, so the anchors are still valid here.
+    //
+    // TAIL-AWARE SCHEDULING (M19, D-064): in a tail-shaped block —
+    // func.return fed by the immediately preceding call — a release
+    // anchored at the terminator would land BETWEEN the call and its
+    // return, destroying the tail shape musttail needs. When the
+    // released value carries a PAIRED in-block retain (an owning
+    // consumer holds a second reference across the call — SSA identity
+    // makes the pair visible), the frame's release relocates to BEFORE
+    // the call: the value still crosses at count >= 1, and no caller
+    // code runs after a tail call, so its frame references are dead
+    // the moment the call starts. Unpaired releases stay at the
+    // terminator (conservative — that block simply keeps its frame).
     for (terminator, pointer) in releases {
-        rewriter.set_insertion_point_before(terminator);
+        let anchor =
+            tail_release_anchor(terminator, pointer).unwrap_or(terminator);
+        rewriter.set_insertion_point_before(anchor);
         rewriter.insert(direct_call_void(
             context,
             "frk_rt_rc_release",
@@ -605,6 +619,78 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
         )?);
     }
     Ok(())
+}
+
+/// The earlier anchor for a frame release in a tail-shaped block
+/// (D-064): the call feeding the return, IF the released value has a
+/// paired in-block retain proving a second owner across the call.
+fn tail_release_anchor<'c, 'a>(
+    terminator: OperationRef<'c, 'a>,
+    pointer: Value<'c, 'a>,
+) -> Option<OperationRef<'c, 'a>> {
+    let is_return = terminator
+        .name()
+        .as_string_ref()
+        .as_str()
+        .is_ok_and(|name| name == "func.return");
+    if !is_return || terminator.operand_count() != 1 {
+        return None;
+    }
+    let returned = terminator.operand(0).ok()?;
+
+    // The op immediately before the terminator (no previous_in_block
+    // in melior 0.27 — scan from the block head).
+    let block = terminator.block()?;
+    let mut prev: Option<OperationRef> = None;
+    let mut current = block.first_operation();
+    while let Some(op) = current {
+        let next = op.next_in_block();
+        if next.map(|n| n.to_raw().ptr) == Some(terminator.to_raw().ptr) {
+            prev = Some(op);
+            break;
+        }
+        current = next;
+    }
+    let call = prev?;
+    let is_call = call
+        .name()
+        .as_string_ref()
+        .as_str()
+        .is_ok_and(|name| name == "llvm.call" || name == "func.call");
+    if !is_call || call.result_count() != 1 {
+        return None;
+    }
+    if call.result(0).ok()?.to_raw().ptr != returned.to_raw().ptr {
+        return None;
+    }
+
+    // The paired retain: an llvm.call @frk_rt_rc_retain over the SAME
+    // SSA pointer, earlier in this block.
+    let mut current = block.first_operation();
+    while let Some(op) = current {
+        if op.to_raw().ptr == call.to_raw().ptr {
+            break;
+        }
+        let is_retain = op
+            .name()
+            .as_string_ref()
+            .as_str()
+            .is_ok_and(|name| name == "llvm.call")
+            && op
+                .attribute("callee")
+                .ok()
+                .and_then(|a| FlatSymbolRefAttribute::try_from(a).ok())
+                .is_some_and(|a| a.value() == "frk_rt_rc_retain");
+        if is_retain
+            && op
+                .operand(0)
+                .is_ok_and(|operand| operand.to_raw().ptr == pointer.to_raw().ptr)
+        {
+            return Some(call);
+        }
+        current = op.next_in_block();
+    }
+    None
 }
 
 fn collect<'c, 'a>(

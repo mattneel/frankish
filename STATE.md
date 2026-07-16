@@ -1,29 +1,28 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M18 complete (tag m18-done). The uniform-signature convention
-(D-063): closure callees may take (envref, params…) reading captures
-via closure.env_load; no thunks for uniform callees; indirect
-musttail when the callsite prototype equals the caller's type.
-femto_lua adopted it wholesale — its tail-call law is now TRUE at
-depth, against PUC lua5.1, on every architecture.
+Phase: M19 complete (tag m19-done). Tail-aware release scheduling
+(D-064): in a tail block, a frame release with a paired in-block
+retain relocates to before the call. D-063's rc fence is GONE — the
+rc grid column equals arena for the first time; the tail-call law
+is total across both memory strategies.
 Tree: green — `make test` 43 blocks; diff 79 cases 0 divergent (8
-runners); grid 74/74 arena + 72/72 rc × 4 triples + s390x canary
-(100k-deep tail cases riding wasm return_call_indirect).
+runners); grid 74/74 × BOTH strategies × 4 triples + s390x canary —
+100k rc musttail frames everywhere, fences dropped.
 
 ## Next action
-M18 closed. The queue returns to the user:
+M19 closed. The queue returns to the user:
 1. femto_lua v0.3 (varargs, iterator triples, __newindex).
-2. r7rs_core v0.1 (pairs/lists, then dynamic-wind, then macros) — the
-   scheme frontend could ALSO adopt the uniform convention for its
-   call/cc receivers now (optional; direct lifting already covers its
-   corpus).
-3. effects-v1 (handle/perform/resume + one-shot violation trap).
-4. rc release scheduling (D-063's fence): release-before-tail-call so
-   deep recursion holds under rc natively.
-5. D-062 follow-ups: migrate the _v wrappers to lua's intrinsics.mlir
-   (their signatures are now stable under D-063); registry-driven JIT/
-   builtin registration; dead-export cleanup.
+2. r7rs_core v0.1 (pairs/lists, then dynamic-wind, then macros);
+   optional: scheme call/cc receivers onto the uniform convention.
+3. effects-v1 (handle/perform/resume + one-shot violation trap;
+   resume closures born uniform per M18's extraction note).
+4. D-062 follow-ups: _v wrappers into lua's intrinsics.mlir (now
+   signature-stable); registry-driven JIT/builtin registration;
+   dead-export cleanup (print_lua_num/bool/nil).
+5. Pack terminal-count audit: packs cross calls at a terminal count
+   of 1 that nobody releases (pre-existing, observed during D-064's
+   evidence pass) — decide owned-params vs accepted-leak in writing.
 
 ## In flight
 Nothing.
@@ -49,6 +48,31 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m19-done — Shipped: tail-aware release scheduling (D-064; D-063's
+fence resolved). Evidence-first: the rc-lowered lua tail loop showed
+exactly ONE release between call and return, and it was half of a
+retain/release pair — the args pack retained by its owning snoc,
+released by the frame at the terminator. The rule: in a tail-shaped
+block, a paired frame release relocates to before the call. Soundness
+in two legs: the pair witnesses a second owner (crossing count >= 1;
+only pure ops sit between the relocated release and the call), and no
+caller code runs after a tail call. Unpaired releases stay put
+(conservative). Terminal counts unchanged — no accounting drift.
+Implementation: one anchor function in the releases loop
+(tail_release_anchor: return-fed-by-previous-call + SSA-identity
+retain scan). Both deep goldens unfenced; jit-rc runs 100k tail
+frames in-process; grid 74/74 × BOTH strategies × 5 triples.
+
+M19 EXTRACTION: the fix was 80 lines because the evidence pass came
+first — dumping the actual rc IR showed the offending release was
+PAIRED, which turned a scary ownership-convention redesign
+(Perceus-style callee-owned params) into a local scheduling rule with
+a mechanical soundness check. Record for the ladder: when the next
+discipline change looks like it needs a convention rewrite, dump the
+IR first. Also surfaced (ledgered, not fixed): packs terminally leak
+at count 1 under rc — the owned-params question is now a named
+follow-up rather than an unknown.
+
 m18-done — Shipped: the uniform-signature convention (D-063,
 D-059's gap closed). KERNEL: !frk_closure.envref + closure.env_load
 (index + carried env product; verifier + interp eval + lowering that
@@ -566,6 +590,24 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-16 (twenty-seventh entry)
+    Milestone/step: M19 complete, tagged m19-done
+    Green? yes — 43 blocks; 79/0 (8 runners); grid 74/74 × 2 × 5
+    Did:
+    - D-064; tail_release_anchor in the releases loop (paired-retain
+      relocation); deep goldens unfenced (directives dropped); book
+      tail-calls chapter fence paragraph -> resolution; ledgered the
+      pack terminal-count follow-up
+    Next: queue to the user (see Next action)
+    Landmines:
+    - the relocation rule REQUIRES the paired retain: never widen it
+      to unpaired releases without re-proving the crossing count
+      (a borrowed operand released early = use-after-free)
+    - the pair check is SSA-identity on the LOWERED values — masked
+      dyn retains (different SSA value) deliberately do not match
+    - packs cross calls at terminal count 1 that nobody releases
+      (pre-existing rc leak, now written down; see Next action 5)
 
     Session end: 2026-07-16 (twenty-sixth entry)
     Milestone/step: M18 complete, tagged m18-done

@@ -106,13 +106,20 @@ interpreter side needed no new machinery at all: closure-apply
 evaluators return the same `Step::TailCall` the M14 trampoline already
 speaks.
 
-One fence remains, recorded in D-063: native TCO under the **rc
-strategy** — block-exit releases sit between a tail call and its
-return, breaking the tail shape. Release scheduling is its own future
-rung; the deep goldens fence rc-native runners meanwhile, and the M14
-depth-cap lesson replayed on schedule (the runaway-closure test's
-tail-shaped fixture became a legitimate infinite loop and now consumes
-its result to stay non-tail).
+The last fence fell at M19 (D-064): under the **rc strategy**,
+block-exit releases used to land between a tail call and its return,
+breaking the shape. The fix is a scheduling rule with a two-leg
+soundness argument: in a tail block, a frame release whose value
+carries a *paired in-block retain* relocates to before the call — the
+pair witnesses a second owner (the value crosses at count ≥ 1), and no
+caller code runs after a tail call, so the frame's references are dead
+the moment it starts. Terminal refcounts are unchanged; unpaired
+releases conservatively stay put. With that, the deep goldens run
+unfenced and the rc grid column equals arena — 100,000 rc `musttail`
+frames on every architecture. (The M14 depth-cap lesson also replayed
+on schedule at M18: the runaway-closure test's tail-shaped fixture
+became a legitimate infinite loop and now consumes its result to stay
+non-tail.)
 
 The payoff for the next chapter: because a guarded call cannot be a tail
 call (a pending-check is code *after* the call), the tail-call law and

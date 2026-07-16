@@ -2,11 +2,9 @@
 // closure-apply tail iterations at FIXED stack. Fails without the
 // apply trampoline (interp depth cap 1024) and without INDIRECT
 // musttail (the callsite prototype equals the caller's type only
-// under the uniform convention). rc runners are fenced: block-exit
-// releases between the tail apply and its return break the tail
-// shape natively — D-063's recorded fence (release scheduling is a
-// future rung).
-// frk-case: runners=interp,jit,aot-x86_64,aot-aarch64,aot-riscv64,aot-wasm32,aot-s390x
+// under the uniform convention). rc runs UNFENCED since D-064: the tail-aware
+// release scheduler relocates paired frame releases to before the
+// call, so the tail shape survives the rc discipline.
 func.func @spin(%env: !frk_closure.envref, %n: i64) -> i64 {
   %zero = arith.constant 0 : i64
   %done = arith.cmpi eq, %n, %zero : i64
