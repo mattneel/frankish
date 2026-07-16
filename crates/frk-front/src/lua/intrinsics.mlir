@@ -166,7 +166,7 @@
     %8 = "frk_dyn.wrap"(%c0_i64) {tag = 0 : i64} : (i64) -> !frk_dyn.dyn
     return %8 : !frk_dyn.dyn
   }
-  func.func @__lua_arg(%arg0: !frk_mem.arr<!frk_dyn.dyn>, %arg1: i64) -> !frk_dyn.dyn {
+  func.func @__lua_arg(%arg0: !frk_mem.arr<!frk_dyn.dyn>, %arg1: i64) -> !frk_dyn.dyn attributes {frk.borrows} {
     %0 = "frk_mem.array_len"(%arg0) : (!frk_mem.arr<!frk_dyn.dyn>) -> i64
     %1 = arith.cmpi slt, %arg1, %0 : i64
     cf.cond_br %1, ^bb1, ^bb2
@@ -198,6 +198,7 @@
     %2 = "frk_mem.array_new"(%c1_i64) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
     %c0_i64_0 = arith.constant 0 : i64
     "frk_mem.array_set"(%2, %c0_i64_0, %1) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    "frk_mem.dispose"(%arg1) : (!frk_mem.arr<!frk_dyn.dyn>) -> ()
     return %2 : !frk_mem.arr<!frk_dyn.dyn>
   }
   func.func @__lua_tostring_v(%arg0: !frk_closure.envref, %arg1: !frk_mem.arr<!frk_dyn.dyn>) -> !frk_mem.arr<!frk_dyn.dyn> {
@@ -208,6 +209,7 @@
     %2 = "frk_mem.array_new"(%c1_i64) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
     %c0_i64_0 = arith.constant 0 : i64
     "frk_mem.array_set"(%2, %c0_i64_0, %1) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    "frk_mem.dispose"(%arg1) : (!frk_mem.arr<!frk_dyn.dyn>) -> ()
     return %2 : !frk_mem.arr<!frk_dyn.dyn>
   }
   func.func @__lua_setmetatable_v(%arg0: !frk_closure.envref, %arg1: !frk_mem.arr<!frk_dyn.dyn>) -> !frk_mem.arr<!frk_dyn.dyn> {
@@ -220,6 +222,7 @@
     %3 = "frk_mem.array_new"(%c1_i64_0) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
     %c0_i64_1 = arith.constant 0 : i64
     "frk_mem.array_set"(%3, %c0_i64_1, %2) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    "frk_mem.dispose"(%arg1) : (!frk_mem.arr<!frk_dyn.dyn>) -> ()
     return %3 : !frk_mem.arr<!frk_dyn.dyn>
   }
   func.func @__lua_getmetatable_v(%arg0: !frk_closure.envref, %arg1: !frk_mem.arr<!frk_dyn.dyn>) -> !frk_mem.arr<!frk_dyn.dyn> {
@@ -230,6 +233,7 @@
     %2 = "frk_mem.array_new"(%c1_i64) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
     %c0_i64_0 = arith.constant 0 : i64
     "frk_mem.array_set"(%2, %c0_i64_0, %1) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    "frk_mem.dispose"(%arg1) : (!frk_mem.arr<!frk_dyn.dyn>) -> ()
     return %2 : !frk_mem.arr<!frk_dyn.dyn>
   }
   func.func @__lua_next_v(%arg0: !frk_closure.envref, %arg1: !frk_mem.arr<!frk_dyn.dyn>) -> !frk_mem.arr<!frk_dyn.dyn> {
@@ -249,6 +253,7 @@
     "frk_mem.array_set"(%5, %c0_i64_0, %4#0) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
     %c1_i64_1 = arith.constant 1 : i64
     "frk_mem.array_set"(%5, %c1_i64_1, %4#1) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    "frk_mem.dispose"(%arg1) : (!frk_mem.arr<!frk_dyn.dyn>) -> ()
     return %5 : !frk_mem.arr<!frk_dyn.dyn>
   ^bb2:  // pred: ^bb0
     %c5_i64 = arith.constant 5 : i64
@@ -259,6 +264,7 @@
     %7 = "frk_mem.array_new"(%c1_i64_3) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
     %c0_i64_4 = arith.constant 0 : i64
     "frk_mem.array_set"(%7, %c0_i64_4, %6) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    "frk_mem.dispose"(%arg1) : (!frk_mem.arr<!frk_dyn.dyn>) -> ()
     return %7 : !frk_mem.arr<!frk_dyn.dyn>
   }
   func.func @__lua_pairs_v(%arg0: !frk_closure.envref, %arg1: !frk_mem.arr<!frk_dyn.dyn>) -> !frk_mem.arr<!frk_dyn.dyn> {
@@ -277,6 +283,7 @@
     "frk_mem.array_set"(%5, %c1_i64, %0) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
     %c2_i64 = arith.constant 2 : i64
     "frk_mem.array_set"(%5, %c2_i64, %4) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    "frk_mem.dispose"(%arg1) : (!frk_mem.arr<!frk_dyn.dyn>) -> ()
     return %5 : !frk_mem.arr<!frk_dyn.dyn>
   }
   func.func @__lua_ipairs_iter_v(%arg0: !frk_closure.envref, %arg1: !frk_mem.arr<!frk_dyn.dyn>) -> !frk_mem.arr<!frk_dyn.dyn> {
@@ -300,6 +307,7 @@
     %9 = "frk_mem.array_new"(%c1_i64_2) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
     %c0_i64_3 = arith.constant 0 : i64
     "frk_mem.array_set"(%9, %c0_i64_3, %8) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    "frk_mem.dispose"(%arg1) : (!frk_mem.arr<!frk_dyn.dyn>) -> ()
     return %9 : !frk_mem.arr<!frk_dyn.dyn>
   ^bb2:  // pred: ^bb0
     %c2_i64 = arith.constant 2 : i64
@@ -308,6 +316,7 @@
     "frk_mem.array_set"(%10, %c0_i64_4, %4) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
     %c1_i64_5 = arith.constant 1 : i64
     "frk_mem.array_set"(%10, %c1_i64_5, %5) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    "frk_mem.dispose"(%arg1) : (!frk_mem.arr<!frk_dyn.dyn>) -> ()
     return %10 : !frk_mem.arr<!frk_dyn.dyn>
   }
   func.func @__lua_ipairs_v(%arg0: !frk_closure.envref, %arg1: !frk_mem.arr<!frk_dyn.dyn>) -> !frk_mem.arr<!frk_dyn.dyn> {
@@ -326,6 +335,7 @@
     "frk_mem.array_set"(%5, %c1_i64, %0) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
     %c2_i64 = arith.constant 2 : i64
     "frk_mem.array_set"(%5, %c2_i64, %4) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    "frk_mem.dispose"(%arg1) : (!frk_mem.arr<!frk_dyn.dyn>) -> ()
     return %5 : !frk_mem.arr<!frk_dyn.dyn>
   }
   func.func @__lua_string_sub_v(%arg0: !frk_closure.envref, %arg1: !frk_mem.arr<!frk_dyn.dyn>) -> !frk_mem.arr<!frk_dyn.dyn> {
@@ -356,6 +366,7 @@
     %13 = "frk_mem.array_new"(%c1_i64_1) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
     %c0_i64_2 = arith.constant 0 : i64
     "frk_mem.array_set"(%13, %c0_i64_2, %12) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    "frk_mem.dispose"(%arg1) : (!frk_mem.arr<!frk_dyn.dyn>) -> ()
     return %13 : !frk_mem.arr<!frk_dyn.dyn>
   }
   func.func @__lua_string_rep_v(%arg0: !frk_closure.envref, %arg1: !frk_mem.arr<!frk_dyn.dyn>) -> !frk_mem.arr<!frk_dyn.dyn> {
@@ -372,6 +383,7 @@
     %7 = "frk_mem.array_new"(%c1_i64_0) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
     %c0_i64_1 = arith.constant 0 : i64
     "frk_mem.array_set"(%7, %c0_i64_1, %6) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+    "frk_mem.dispose"(%arg1) : (!frk_mem.arr<!frk_dyn.dyn>) -> ()
     return %7 : !frk_mem.arr<!frk_dyn.dyn>
   }
   func.func @__lua_index(%arg0: !frk_dyn.dyn, %arg1: !frk_dyn.dyn) -> !frk_dyn.dyn {

@@ -15,6 +15,7 @@ pub(crate) fn register_eval(interp: &mut Interp<'_, '_>) {
     interp.register_eval("frk_mem.array_get", Box::new(ArrayGet));
     interp.register_eval("frk_mem.array_set", Box::new(ArraySet));
     interp.register_eval("frk_mem.array_len", Box::new(ArrayLen));
+    interp.register_eval("frk_mem.dispose", Box::new(Dispose));
 }
 
 /// Bounds discipline (D-049): OOB traps deterministically here; the
@@ -160,6 +161,23 @@ impl Eval for BoxSet {
         let boxed = operand_value(frame, op, 0)?;
         let value = operand_value(frame, op, 1)?;
         *boxed.as_box()?.borrow_mut() = value;
+        continue_with_results(frame, op, &[])
+    }
+}
+
+/// D-067: end-of-ownership marker. The reference interpreter does not
+/// count references, so dispose is a semantic no-op — its meaning is
+/// entirely a strategy-lowering fact (Rc: release; Arena: erased).
+struct Dispose;
+impl Eval for Dispose {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        // Validate the operand is bound (catches malformed IR), then continue.
+        operand_value(frame, op, 0)?;
         continue_with_results(frame, op, &[])
     }
 }

@@ -288,7 +288,7 @@ pub fn compile_loanword<'c>(context: &'c Context, text: &str) -> Result<Module<'
     // Print runtime declarations (bodyless; every execution path
     // resolves them its own way — D-047).
     let f64_type = Type::parse(context, "f64").ok_or(LoanwordError("f64".into()))?;
-    let i1_type: Type = IntegerType::new(context, 1).into();
+    let _ = IntegerType::new(context, 1);
     let str_type = Type::parse(context, "!frk_str.str").ok_or(LoanwordError("str".into()))?;
     let i64_type: Type = IntegerType::new(context, 64).into();
     for (symbol, param) in [

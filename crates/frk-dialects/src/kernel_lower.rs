@@ -287,6 +287,12 @@ enum Planned<'c, 'a> {
     },
     ApplyClosure {
         op: OperationRef<'c, 'a>,
+        /// D-067: a managed apply result (a returned pack/box) is
+        /// frame-owned in the caller; when block-local and
+        /// non-escaping it dies at the terminator like any owned
+        /// allocation.
+        die_at: Option<OperationRef<'c, 'a>>,
+        result_managed: bool,
         param_kinds: Vec<SlotKind<'c>>,
         result: Type<'c>,
     },
@@ -404,6 +410,11 @@ enum Planned<'c, 'a> {
     BstrRep {
         op: OperationRef<'c, 'a>,
     },
+    /// frk_mem.dispose (D-067): end-of-ownership for a received
+    /// managed value — Rc releases it; Arena erases the op.
+    Dispose {
+        op: OperationRef<'c, 'a>,
+    },
     /// closure.env_load (D-063): reload ONE env field from the envref
     /// pointer, exactly as the thunk prologue would have.
     EnvLoad {
@@ -443,6 +454,7 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
     let mut use_counts: HashMap<usize, usize> = HashMap::new();
     let mut use_sites: HashMap<usize, (Vec<usize>, bool)> = HashMap::new();
     let mut op_blocks: HashMap<usize, usize> = HashMap::new();
+    let mut call_results: HashMap<usize, usize> = HashMap::new();
     collect(
         context,
         module,
@@ -454,6 +466,7 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
         &mut use_counts,
         &mut use_sites,
         &mut op_blocks,
+        &mut call_results,
     )?;
 
     // GC ladder step 1 (D-053/D-054, rc only): a box/array allocation
@@ -511,9 +524,14 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
         }
 
         for plan in &mut plans {
-            let (op, die_at) = match plan {
-                Planned::BoxNew { op, die_at, .. } => (*op, die_at),
-                Planned::ArrayNew { op, die_at, .. } => (*op, die_at),
+            let (op, die_at, applies) = match plan {
+                Planned::BoxNew { op, die_at, .. } => (*op, die_at, false),
+                Planned::ArrayNew { op, die_at, .. } => (*op, die_at, false),
+                // D-067: received ownership (a returned pack/box)
+                // dies like created ownership.
+                Planned::ApplyClosure { op, die_at, result_managed: true, .. } => {
+                    (*op, die_at, true)
+                }
                 _ => continue,
             };
             let Ok(result) = op.result(0) else { continue };
@@ -532,7 +550,35 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
                             .all(|user| op_blocks.get(user).copied() == Some(def_block))
                 }
             };
-            if local {
+            // D-067 second leg, for RECEIVED packs (apply results):
+            // block-locality of the pack is not enough — values
+            // BORROWED OUT of it (borrowing-call results) must also
+            // stay in-block, or be dead. An in-block owning store
+            // (box_set/array_set) retains its own reference, so
+            // in-block derived uses are safe by the retain
+            // discipline; a cross-block or escaping derived value
+            // blocks the release (that pack simply keeps leaking —
+            // conservative, correct).
+            let derived_local = || -> bool {
+                let Some((users, _)) = use_sites.get(&key) else {
+                    return true;
+                };
+                users.iter().all(|user| {
+                    let Some(derived_key) = call_results.get(user) else {
+                        return true; // not a call — an in-block op use
+                    };
+                    match use_sites.get(derived_key) {
+                        None => true, // read and dropped
+                        Some((derived_users, derived_escapes)) => {
+                            !*derived_escapes
+                                && derived_users.iter().all(|derived_user| {
+                                    op_blocks.get(derived_user).copied() == Some(def_block)
+                                })
+                        }
+                    }
+                })
+            };
+            if local && (!applies || derived_local()) {
                 *die_at = block_terminator(op);
             }
         }
@@ -693,6 +739,7 @@ fn tail_release_anchor<'c, 'a>(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect<'c, 'a>(
     context: &'c Context,
     op: OperationRef<'c, 'a>,
@@ -704,6 +751,7 @@ fn collect<'c, 'a>(
     use_counts: &mut HashMap<usize, usize>,
     use_sites: &mut HashMap<usize, (Vec<usize>, bool)>,
     op_blocks: &mut HashMap<usize, usize>,
+    call_results: &mut HashMap<usize, usize>,
 ) -> Result<(), String> {
     op_blocks.insert(
         op.to_raw().ptr as usize,
@@ -720,12 +768,37 @@ fn collect<'c, 'a>(
     // feed the block-local lifetime analysis (D-053 step 1). A use on
     // an op with successors (branches) or func.return escapes the
     // block/function — conservative: such values are never released.
+    // EXEMPTION (D-067): a func.call whose callee carries the
+    // `frk.borrows` unit attribute (declared in the callee's own IR —
+    // intrinsics files mark their read-only helpers) does NOT escape
+    // its operands: the callee only reads them for the duration of
+    // the call. This is what lets a received pack's consumer reads
+    // (__lua_arg) leave the pack releasable by die_at.
+    let name_escapes = |n: &str, op: OperationRef<'c, 'a>| -> bool {
+        if n == "func.return" {
+            return true;
+        }
+        if n != "func.call" {
+            return false;
+        }
+        !callee_borrows(op)
+    };
     let escapes = op.successor_count() > 0
         || op
             .name()
             .as_string_ref()
             .as_str()
-            .is_ok_and(|n| n == "func.return" || n == "func.call");
+            .is_ok_and(|n| name_escapes(n, op));
+    let is_call = op
+        .name()
+        .as_string_ref()
+        .as_str()
+        .is_ok_and(|n| n == "func.call");
+    if is_call && op.result_count() == 1 {
+        if let Ok(result) = op.result(0) {
+            call_results.insert(op.to_raw().ptr as usize, result.to_raw().ptr as usize);
+        }
+    }
     for index in 0..op.operand_count() {
         if let Ok(operand) = op.operand(index) {
             let key = operand.to_raw().ptr as usize;
@@ -780,7 +853,7 @@ fn collect<'c, 'a>(
             while let Some(inner_op) = inner {
                 collect(
                     context, inner_op, plans, retypes, signatures, thunk_counter, str_counter,
-                    use_counts, use_sites, op_blocks,
+                    use_counts, use_sites, op_blocks, call_results,
                 )?;
                 inner = inner_op.next_in_block();
             }
@@ -877,6 +950,42 @@ fn plan_adt<'c, 'a>(
         }
         other => Err(format!("no lowering for frk_adt.{other}")),
     }
+}
+
+/// Does the func.call's callee carry the `frk.borrows` unit attribute
+/// (D-067)? Borrowing callees read their operands for the call's
+/// duration only, so operand values stay releasable by die_at.
+fn callee_borrows(call: OperationRef<'_, '_>) -> bool {
+    let Some(callee) = call
+        .attribute("callee")
+        .ok()
+        .and_then(|a| FlatSymbolRefAttribute::try_from(a).ok())
+        .map(|a| a.value().to_string())
+    else {
+        return false;
+    };
+    let Ok(module) = root_module(call) else {
+        return false;
+    };
+    let Ok(region) = module.region(0) else {
+        return false;
+    };
+    let Some(body) = region.first_block() else {
+        return false;
+    };
+    let mut next = body.first_operation();
+    while let Some(function) = next {
+        let name = function
+            .attribute("sym_name")
+            .ok()
+            .and_then(|a| StringAttribute::try_from(a).ok())
+            .map(|a| a.value().to_string());
+        if name.as_deref() == Some(&callee) {
+            return function.attribute("frk.borrows").is_ok();
+        }
+        next = function.next_in_block();
+    }
+    false
 }
 
 /// Does `callee`'s declared first input have the uniform envref type
@@ -995,8 +1104,14 @@ fn plan_closure<'c, 'a>(
             let [result] = results.as_slice() else {
                 return Err("closures return exactly one value (D-036)".to_string());
             };
+            let result_managed = matches!(
+                slot_kind(context, *result)?,
+                SlotKind::Ptr { managed: true }
+            );
             Ok(Planned::ApplyClosure {
                 op,
+                die_at: None,
+                result_managed,
                 param_kinds: kinds_of(context, &params)?,
                 result: map_type(context, *result)?,
             })
@@ -1106,6 +1221,7 @@ fn plan_mem<'c, 'a>(
             })
         }
         "array_len" => Ok(Planned::ArrayLen { op }),
+        "dispose" => Ok(Planned::Dispose { op }),
         other => Err(format!("no lowering for frk_mem.{other}")),
     }
 }
@@ -2400,6 +2516,20 @@ fn apply<'c, 'a>(
             let word = dyn_field(context, rewriter, operand(op, 0)?, 1, location)?;
             finish(rewriter, op, word)
         }
+        Planned::Dispose { op } => {
+            rewriter.set_insertion_point_before(op);
+            if strategy == Strategy::Rc {
+                let location = op.location();
+                rewriter.insert(direct_call_void(
+                    context,
+                    "frk_rt_rc_release",
+                    &[operand(op, 0)?],
+                    location,
+                )?);
+            }
+            rewriter.erase_op(op);
+            Ok(())
+        }
         Planned::EnvLoad { op, env_kinds, index } => {
             // One thunk-prologue field reload, at the field's slot
             // offset (D-063) — the layout math is kinds_layout's, so
@@ -3149,8 +3279,10 @@ fn apply<'c, 'a>(
         }
         Planned::ApplyClosure {
             op,
+            die_at,
             param_kinds,
             result,
+            ..
         } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
@@ -3215,7 +3347,14 @@ fn apply<'c, 'a>(
                     .build()
                     .map_err(|e| e.to_string())?,
             );
-            finish(rewriter, op, result_value(call)?)
+            let call_result = result_value(call)?;
+            // D-067: the received managed result dies at the block
+            // terminator (the M19 tail anchor applies as usual when
+            // the release lands in a tail-shaped block).
+            if let Some(terminator) = die_at {
+                releases.push((terminator, call_result));
+            }
+            finish(rewriter, op, call_result)
         }
     }
 }

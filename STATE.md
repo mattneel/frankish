@@ -1,21 +1,19 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M21 complete (tag m21-done). D-062 is CLOSED (D-066): the
-JIT/builtin registration is registry-driven with two-directional
-coverage witnesses; the dead print exports are gone from both twins;
-the last u8 crossed to i64 and AbiTy::U8 is removed — no sub-word
-integer crosses the ABI anywhere.
-Tree: green — `make test` 44 blocks; diff 79 cases 0 divergent (8
+Phase: M22 complete (tag m22-done). The pack terminal-count ruling
+(D-067): packs are CALLEE-OWNED — frk_mem.dispose + the frk.borrows
+attribute + received-pack die_at behind the derived-borrow locality
+gate. The 1000-call rc leak: 2026 → 24 (stdlib seeding only);
+per-call leak zero; D-064's observation closed.
+Tree: green — `make test` 45 blocks; diff 79 cases 0 divergent (8
 runners); grid 74/74 × BOTH strategies × 4 triples + s390x canary.
 
 ## Next action
-M21 closed; D-062 has nothing open. The queue returns to the user:
+M22 closed; no open ledger observations remain. The queue:
 1. femto_lua v0.3 (varargs, iterator triples, __newindex).
 2. r7rs_core v0.1 (pairs/lists, dynamic-wind, macros).
 3. effects-v1 (handle/perform/resume; resume closures born uniform).
-4. Pack terminal-count ruling (owned-params vs accepted-leak — the
-   one D-064 observation still awaiting its D-entry).
 
 ## In flight
 Nothing.
@@ -41,6 +39,27 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m22-done — Shipped: the pack terminal-count ruling (D-067; closes
+D-064's observation). Ruled OWNED: frk_mem.dispose (K2 no-op; Rc
+release; Arena erased) ends the callee's ownership of its incoming
+pack after the boxing prologue; frk.borrows (declared in the callee's
+own IR — __lua_arg in intrinsics.mlir) exempts borrowing reads from
+the escapes-conservatism; received packs join die_at behind the
+DERIVED-BORROW LOCALITY gate. The gate exists because the harness
+caught its absence: generic_for's iterator closure freed mid-loop —
+a jit-rc segfault the differential law surfaced before any commit.
+Measured: 1000-call leak 2026 → 24; disposed packs reclaim as
+Bacon–Rajan deferred frees at collect. Permanent witness:
+pack_reclamation.rs (no O(calls) term may return). Suite 45 blocks;
+diff 79/0; grid 74/74 × both strategies × 5 triples.
+
+M22 EXTRACTION: "borrows" is a fact about operands, not results —
+conflating the two was the milestone's one real bug, and the
+derived-borrow locality gate is the reusable lesson: releasing a
+container needs the borrows OUT of it to be provably dead or
+independently retained. That gate pattern will matter again the day
+effects-v1 hands out references from resumed frames.
+
 m21-done — Shipped: D-062 closed (D-066; "finish D-062"). Registry-
 driven registration: jit_symbol/builtin_for tables supply addresses
 and closures, frk-abi rows drive the SETS, coverage witnessed in both
@@ -619,6 +638,26 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-16 (thirtieth entry)
+    Milestone/step: M22 complete, tagged m22-done
+    Green? yes — 45 blocks; 79/0 (8 runners); grid 74/74 × 2 × 5
+    Did:
+    - D-067; frk_mem.dispose (IRDL/verify/eval/lowering); frk.borrows
+      escape exemption; lua emitter + intrinsics disposes; received-
+      pack die_at + derived-borrow locality gate (added after the
+      generic_for jit-rc segfault); pack_reclamation witness; book
+      strategies chapter section
+    Next: queue to the user (see Next action)
+    Landmines:
+    - frk.borrows means the callee doesn't KEEP OPERANDS — it says
+      NOTHING about results; anything derived from a borrowed read
+      must be block-local or independently retained before the
+      container may release (the generic_for lesson)
+    - dispose is for RECEIVED ownership only (parameters); disposing
+      a frame-created value double-releases with die_at
+    - disposed packs free at COLLECT (buffered zeros — Bacon-Rajan
+      defers); leak measurements must run frk_rt_rc_collect first
 
     Session end: 2026-07-16 (twenty-ninth entry)
     Milestone/step: M21 complete, tagged m21-done; D-062 CLOSED

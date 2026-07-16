@@ -54,6 +54,10 @@ irdl.dialect @frk_mem {
     irdl.operands(arr: %a)
     irdl.results(len: %n)
   }
+  irdl.operation @dispose {
+    %v = irdl.any
+    irdl.operands(value: %v)
+  }
   irdl.operation @box_new {
     %v = irdl.any
     %b = irdl.base @frk_mem::@box
@@ -169,6 +173,18 @@ pub(crate) fn verify_op<'c>(
         "array_len" => {
             decode_arr(context, operand_type(0)?)?;
             Ok(())
+        }
+        "dispose" => {
+            // End-of-ownership for a RECEIVED managed value (D-067:
+            // callee-owned packs). Operand must be a managed kernel
+            // type; frame-created values are the release discipline's
+            // job, not dispose's.
+            let printed = operand_type(0)?.to_string();
+            if printed.starts_with("!frk_mem.arr<") || printed.starts_with("!frk_mem.box<") {
+                Ok(())
+            } else {
+                Err(format!("dispose takes a managed mem value, got {printed}"))
+            }
         }
         other => Err(format!("no semantic verifier for frk_mem.{other}")),
     }

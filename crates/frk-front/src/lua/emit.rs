@@ -700,6 +700,10 @@ impl<'c> Emitter<'c> {
             )?;
             env.insert(name.clone(), boxed);
         }
+        // Packs are CALLEE-OWNED (D-067): all params are boxed above,
+        // so the incoming pack's ownership ends here — long before any
+        // tail call, so the D-064 tail shape is never disturbed.
+        self.build0(entry, "frk_mem.dispose", &[pack], &[], location)?;
 
         let mut fcx = Fcx {
             region: &region,

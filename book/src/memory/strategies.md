@@ -204,3 +204,21 @@ carries the entire cost of the discipline; the frontends never learn
 which strategy they are running under — which is the claim "strategy is
 a lowering parameter" cashed as a test matrix rather than an
 architecture diagram.
+
+## Ownership across calls: the pack protocol (M22)
+
+The rc discipline's last accounting gap was the calling convention
+itself: argument packs crossed calls at a terminal count of one that
+nobody dropped, and result packs were blocked from block-exit release
+by the conservatism that treats every call as escaping its operands.
+D-067 closed both: packs are **callee-owned** (`frk_mem.dispose` — a
+no-op in the reference semantics, a release under rc, erased under
+arena — ends the callee's ownership right after parameter extraction),
+and received result packs join the block-exit sweep behind a
+*derived-borrow locality* gate — releasable only when everything read
+out of them stays in-block or is retained by an owning store. The gate
+earned its keep before landing: without it, `generic_for`'s iterator
+closure was freed mid-loop, and the differential harness caught the
+segfault immediately. A 1000-call program's rc leak went from 2,026
+allocations to 24 (all process-lifetime stdlib seeding), witnessed
+permanently by `tests/pack_reclamation.rs`.

@@ -193,6 +193,43 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-067 [m22/gc] THE PACK TERMINAL-COUNT RULING (D-064's ledgered
+  observation, picked by the human): OWNED, not accepted-leak. The
+  evidence: 1000 rc calls leaked 2026 allocations — one arg pack
+  (retained into the args product, whose by-value evaporation strands
+  the count at 1) and one result pack (blocked from die_at by the
+  func.call escapes-conservatism over its own reads) per call. THE
+  PROTOCOL, three pieces:
+  (1) frk_mem.dispose — end-of-ownership for a RECEIVED managed
+  value. K2: semantic no-op (the interp doesn't count); K3: Rc →
+  release, Arena → erased. Packs are CALLEE-OWNED: the lua emitter
+  disposes the incoming pack right after the boxing prologue (long
+  before any tail call — no D-064 interaction), and the intrinsics
+  file's eleven pack-taking functions dispose before their returns.
+  (2) frk.borrows — a unit attribute a callee declares in its own IR
+  (__lua_arg carries it in intrinsics.mlir): a call to a borrowing
+  callee does not mark its operands escaping. This is a fact about
+  OPERANDS, not results — the distinction that bit immediately:
+  (3) received packs (managed apply results) join the die_at sweep,
+  gated by DERIVED-BORROW LOCALITY: the pack is releasable only if
+  every borrowing-read RESULT is itself block-local and non-escaping.
+  An in-block owning store (box_set/array_set) retains its own
+  reference, so in-block derived uses are safe by the existing
+  discipline; a cross-block borrow (generic_for's iterator triple —
+  f lives across the loop) blocks the release, conservatively. THE
+  HARNESS CAUGHT the missing gate as a jit-rc segfault in
+  lua/generic_for before it ever reached a commit: the borrowed
+  closure env was freed mid-loop. The differential law is the reason
+  this ruling ships sound.
+  RESULT: 1000-call leak 2026 → 24 (the process-lifetime stdlib
+  seeding only); per-call leak ZERO; disposed packs surface as
+  Bacon–Rajan deferred frees (buffered zeros reclaimed at collect —
+  by design). Witness: tests/pack_reclamation.rs asserts no O(calls)
+  term returns. Fences: TS arrays are USER-VISIBLE values, never
+  callee-owned (dispose is a pack-protocol fact, emitted only by the
+  lua frontend + its intrinsics); the generic_for triple still leaks
+  one pack per LOOP (not per iteration) — acceptable, revisit only
+  with evidence. Closes D-064's open observation.
 - D-066 [m21/surfaces] D-062 IS CLOSED — every named follow-up
   executed ("finish D-062", the human, verbatim):
   (1) REGISTRY-DRIVEN REGISTRATION: the JIT symbol set and the interp
