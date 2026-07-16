@@ -57,6 +57,29 @@ impl Eval for Apply {
         {
             let (name, captures) = closure.as_closure()?;
             let (_, args) = args_pack.as_adt()?;
+
+            // κ_frk v1 (D-069): applying a RESUMER marks its one-shot
+            // marker (second application traps) and returns the
+            // received pack — the identity-on-pack thunk, mirrored by
+            // the native lowering's synthesized resumer. Checked
+            // before the convention probe: the resumer has no
+            // func.func body.
+            if name == crate::ctl_eval::RESUMER {
+                let marker = captures
+                    .first()
+                    .ok_or_else(|| {
+                        EvalError::Malformed("resumer without a marker capture".into())
+                    })?
+                    .as_signed()?;
+                interp.ctl_consume_marker(marker)?;
+                let [pack] = args else {
+                    return Err(EvalError::Malformed(
+                        "resumer applied without exactly one pack".into(),
+                    ));
+                };
+                let pack = pack.clone();
+                return continue_with_result(frame, op, pack);
+            }
             // Two conventions (D-063): a UNIFORM callee (first input is
             // the envref) receives the closure value itself as its env —
             // env_load then reads captures out of it. A legacy callee

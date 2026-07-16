@@ -110,6 +110,13 @@ pub struct Interp<'c, 'a> {
     /// abort unwinds atomically (no user code runs between the abort
     /// raising the signal and its prompt catching it).
     ctl_aborted: std::cell::RefCell<Option<Value>>,
+    /// Live effect handlers, innermost last (κ_frk v1, D-069):
+    /// (label, clause closure, handle token, masked). Masked entries
+    /// are skipped by dispatch — the handler-free-for-ℓ context rule
+    /// during a clause call; the mask lifting is the deep reinstall.
+    ctl_handlers: std::cell::RefCell<Vec<(String, Value, i64, bool)>>,
+    /// One-shot resumer markers: marker id → consumed (D-069).
+    ctl_markers: std::cell::RefCell<std::collections::HashMap<i64, bool>>,
 }
 
 impl<'c, 'a> Interp<'c, 'a> {
@@ -140,7 +147,79 @@ impl<'c, 'a> Interp<'c, 'a> {
             ctl_prompts: std::cell::RefCell::new(Vec::new()),
             ctl_next_token: Cell::new(1),
             ctl_aborted: std::cell::RefCell::new(None),
+            ctl_handlers: std::cell::RefCell::new(Vec::new()),
+            ctl_markers: std::cell::RefCell::new(std::collections::HashMap::new()),
         })
+    }
+
+    /// Installs an effect handler over the prompt `token` (D-069).
+    pub fn ctl_push_handler(&self, label: &str, clause: Value, token: i64) {
+        self.ctl_handlers
+            .borrow_mut()
+            .push((label.to_string(), clause, token, false));
+    }
+
+    /// Removes the handler for `token` (LIFO; defensive scan).
+    pub fn ctl_pop_handler(&self, token: i64) {
+        let mut handlers = self.ctl_handlers.borrow_mut();
+        if let Some(position) = handlers.iter().rposition(|(_, _, t, _)| *t == token) {
+            handlers.remove(position);
+        }
+    }
+
+    /// Innermost UNMASKED handler for `label`: masks it and returns
+    /// (index, clause, token). None ⇒ the unhandled-effect trap.
+    pub fn ctl_find_and_mask(&self, label: &str) -> Option<(usize, Value, i64)> {
+        let mut handlers = self.ctl_handlers.borrow_mut();
+        for index in (0..handlers.len()).rev() {
+            let (l, _, _, masked) = &handlers[index];
+            if !*masked && l == label {
+                handlers[index].3 = true;
+                let (_, clause, token, _) = handlers[index].clone();
+                return Some((index, clause, token));
+            }
+        }
+        None
+    }
+
+    /// Lifts the dispatch mask (the deep reinstall).
+    pub fn ctl_unmask(&self, index: usize) {
+        if let Some(entry) = self.ctl_handlers.borrow_mut().get_mut(index) {
+            entry.3 = false;
+        }
+    }
+
+    /// A fresh one-shot resumer marker (same monotonic source as
+    /// prompt tokens — never reused).
+    pub fn ctl_new_marker(&self) -> i64 {
+        let marker = self.ctl_next_token.get();
+        self.ctl_next_token.set(marker + 1);
+        self.ctl_markers.borrow_mut().insert(marker, false);
+        marker
+    }
+
+    /// Consumes a marker; the second consumption is the κ_frk trap.
+    pub fn ctl_consume_marker(&self, marker: i64) -> Result<(), EvalError> {
+        let mut markers = self.ctl_markers.borrow_mut();
+        match markers.get_mut(&marker) {
+            Some(consumed) if !*consumed => {
+                *consumed = true;
+                Ok(())
+            }
+            Some(_) => Err(EvalError::Trap("one-shot violation (κ_frk)".into())),
+            None => Err(EvalError::Malformed(
+                "resume of an unknown marker (κ_frk)".into(),
+            )),
+        }
+    }
+
+    /// Was this marker consumed? (The perform-site decision.)
+    pub fn ctl_marker_consumed(&self, marker: i64) -> bool {
+        self.ctl_markers
+            .borrow()
+            .get(&marker)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Installs a fresh prompt and returns its token (κ_frk §2).
