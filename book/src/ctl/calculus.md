@@ -49,7 +49,17 @@ the division is the entire optimization story:
   into a detectable trap — *"one-shot violation"* — so the discipline is
   witnessed by tests, not trusted.
 
-`frk_ctl` v0 ships the drop-clause subset as three ops:
+As of effects-v1 (M24, D-069) the shipped rung covers the affine
+ladder's tractable clause classes — drop (v0), **abortive** (the
+clause returns without consuming κ; the handle yields its value),
+and **tail-resume** (the clause consumes κ exactly once; its return
+IS the resume value) — with the clause running *at the perform
+site*: dispatch masks the handler for the clause call (performs
+inside the clause go outward) and the mask lifting is the deep
+reinstall. κ is *born uniform*: a closure over a one-shot marker
+whose application marks-or-traps and returns its pack. Full
+re-entrant κ — non-tail resume, stored continuations — is the named
+Tier-2 stack-switching rung. The v0 drop-clause ops:
 
 | Op | Signature | Semantics |
 |---|---|---|

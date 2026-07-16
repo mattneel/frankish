@@ -113,6 +113,28 @@ The abort site itself follows the same pattern: the emitter places the
 runtime call, then a dummy return — dead in the interpreter (unwinding
 has already left), the diversion itself natively.
 
+## Effects-v1: the evidence stack (M24)
+
+The v1 handlers ride the same no-unwinder discipline. `handle` is the
+prompt recipe plus an **evidence push/pop** — labels are interned
+byte strings, so dispatch is a pointer compare. `perform` is
+**branch-free**: `perform_begin` masks the found handler and mints
+the one-shot marker; the clause applies through the uniform
+convention with κ built as a real native closure over that marker
+(its resumer thunk marks-or-traps and returns its pack — the exact
+mirror of the interpreter's special case); `perform_end` reads the
+clause's returned pack head *in the runtime* and makes the
+consumed-else-abort decision there, so the lowering never splits a
+block. The one-shot violation trap is real state in both twins.
+
+The license gate ran immediately: the interpreter routes every
+perform through its general dispatch machinery, native through the
+evidence stack — and the grid caught two real bugs before any commit
+(a func.func address needing the `func.constant` recipe, and wasm32
+exposing a hand-rolled κ box that read garbage under 32-bit
+pointers and silently turned tail-resume into abortive). Mechanisms
+disjoint, outputs byte-equal: that is the row's proof.
+
 ## The evidence
 
 The zero-allocation license holds: aborting runs allocate no continuation

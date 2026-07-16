@@ -1,21 +1,25 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M23 complete (tag m23-done). femto_lua v0.3 (D-068): the
-explist adjustment engine — varargs, multi-expression RHS, explicit
-iterator triples, constructor tails, one mechanism — plus __newindex
-as an IR intrinsic. Two kernel ownership findings fixed en route.
-Tree: green — `make test` 45 blocks; diff 84 cases 0 divergent (8
-runners); grid 79/79 × BOTH strategies × 4 triples + s390x canary.
+Phase: M24 complete (tag m24-done). effects-v1 (D-069): frk.ctl
+handle/perform — labeled handlers, the affine ladder's tractable
+clause classes (drop/abortive/tail-resume), κ born uniform with the
+one-shot trap REAL in both worlds; native = evidence stack +
+branch-free perform. Two grid finds fixed pre-commit (func.constant
+recipe; the wasm32 32-bit-pointer κ-box).
+Tree: green — `make test` 45 blocks; diff 86 cases 0 divergent (8
+runners); grid 81/81 × BOTH strategies × 4 triples + s390x canary.
 
 ## Next action
-M23 closed. The queue:
-1. r7rs_core v0.1 (pairs/lists as adt/bstr carriers; the dynamic-wind
-   OPEN ruling comes due; macros still fenced behind the expander).
-2. effects-v1 (frk_ctl handle/perform/resume; resume closures born
-   uniform; the one-shot violation trap golden).
-3. femto_lua v0.4 (select(), string.format, colon methods) — only if
-   an idiom demands it (L5: the admission rule, not completeness).
+M24 closed. The queue:
+1. r7rs_core v0.1 (pairs/lists; the dynamic-wind OPEN ruling comes
+   due — and v1 handlers now exist to build it on; macros fenced
+   behind the expander).
+2. A handler-consuming surface: parameterize/error-handlers in
+   scheme, or a koka-slice specimen — whichever idiom pulls
+   handle/perform into a frontend first (L5 admission).
+3. The Tier-2 stack-switching rung (full re-entrant κ) — revisit at
+   coroutines per D-069's fence.
 
 ## In flight
 Nothing.
@@ -41,6 +45,36 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m24-done — Shipped: effects-v1 (D-069; the human picked "effects").
+frk.ctl grows handle/perform/resume — κ_frk's H-op-resume rung,
+scoped to the affine ladder's tractable classes with THE CLAUSE AT
+THE PERFORM SITE: drop (v0), abortive (clause returns without
+consuming κ → the handle yields it via the v0 abort machinery), and
+tail-resume (clause consumes κ once; ITS RETURN IS THE RESUME VALUE;
+the dispatch mask lifting is the deep reinstall). κ is BORN UNIFORM:
+a closure over a one-shot marker; application marks-or-traps and
+returns its pack — Apply special-case interp-side, a synthesized
+identity-on-pack thunk native-side. Native dispatch = an evidence
+stack in both twins (labels interned ⇒ find is pointer compare) with
+BRANCH-FREE perform: begin masks + mints the marker; end reads the
+clause pack's head and decides consumed-else-abort IN THE RUNTIME.
+Full re-entrant κ = the named Tier-2 stack-switching rung. Six new
+K2 verifiers landed red-first (L1); the license gate (forced-general
+interp vs evidence-stack native) held: suite 45; diff 86/0; grid
+81/81 × 5 × 2.
+
+M24 EXTRACTION: the grid earned its keep TWICE pre-commit. (1)
+func.func addresses need the func.constant+cast recipe — addressof
+is llvm-symbols-only at pass time. (2) THE WASM32 κ-BOX: hand-rolled
+i64 slot stores vs unwrap's native {ptr,ptr} struct read — on 32-bit
+pointers the env came back as the fn-pointer's high half (zero), the
+resumer loaded a garbage marker FROM LINEAR-MEMORY ADDRESS 0 (valid
+on wasm — no crash!), and tail-resume silently became abortive
+(40≠42). s390x passed; ONLY a 32-bit-pointer target could see it.
+Lesson for the ledger of lessons: never hand-roll a layout the
+kernel already owns a recipe for — struct stores exist so pointer
+width stays the kernel's problem.
+
 m23-done — Shipped: femto_lua v0.3 (D-068). The explist ADJUSTMENT
 engine: one emitter mechanism (non-final truncates, final call/`...`
 expands, single-call forwarding preserved for the tail law) consumed
@@ -672,6 +706,32 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-16 (twenty-sixth entry)
+    Milestone/step: M24 complete, tagged m24-done
+    Green? yes — 45 blocks; 86/0 (8 runners); grid 81/81 × 5 × 2
+    Did:
+    - D-069 + κ_frk v1 rung; six K2 verifiers red-first; interp
+      handler stack/masking/markers + Apply resumer special-case;
+      5 registry rows + both twins (evidence stack, branch-free
+      perform_end deciding consumed-else-abort in rt); kernel
+      lowering (handle/perform/resume arms, intern_label,
+      synthesize_resumer); 2 native goldens incl. the hand-written
+      D-061 guard; two grid finds fixed (func.constant; wasm32 κ-box
+      struct layout); book ctl chapters updated
+    Next: queue to the user (r7rs v0.1+dynamic-wind / a handler-
+    consuming surface / Tier-2 stack-switching)
+    Landmines:
+    - κ's clause ABI is v1-tail-resume semantics: the clause's
+      RETURN is the resume value; code after k(v) in a clause does
+      NOT run after body-rest (that's the Tier-2 rung). Frontends
+      must emit tail-resume-shaped clauses or abortive ones only.
+    - the evidence stack masks by INDEX; handler_pop is plain pop —
+      an abortive unwind crossing MULTIPLE handles relies on each
+      handle's pop running in its own frame (guards make that true
+      natively; the interp pops in Handle's eval). Do not reorder.
+    - never hand-roll {ptr,ptr} boxes as i64 slots (the wasm32 find);
+      use closure_struct + store_op — pointer width is the kernel's.
 
     Session end: 2026-07-16 (twenty-fifth entry)
     Milestone/step: M23 complete, tagged m23-done
