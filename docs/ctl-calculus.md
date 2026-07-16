@@ -92,6 +92,27 @@ and is the oracle (L3):
     resume κ v, κ unused    ⇒ run κ; mark used.        (H-op-resume, v1)
     resume κ v, κ used      ⇒ trap "one-shot violation (κ_frk)".
 
+The v1 rung as SHIPPED (M24, D-069) — the affine ladder's tractable
+classes, clause-at-the-perform-site:
+
+    handle ℓ c @f (a…)      ⇒ push prompt t + handler H{ℓ, c, t};
+                              run f(t); pop both. H-return/abort as v0.
+    perform ℓ v             ⇒ innermost UNMASKED H with H.ℓ = ℓ
+                              (none ⇒ trap "unhandled effect (κ_frk)");
+                              mask H; κ := fresh one-shot resumer,
+                              BORN UNIFORM; r := c(v, κ) at the
+                              perform site; unmask H;
+                              consumed(κ) ⇒ perform = r   (tail-resume:
+                                the clause's return IS the resume
+                                value; the mask lifting is the deep
+                                reinstall)
+                              else       ⇒ abort(t, r)    (abortive).
+    κ applied twice         ⇒ trap "one-shot violation (κ_frk)".
+
+FENCED to the Tier-2 stack-switching rung (named; revisit at
+coroutines): full re-entrant κ — non-tail resume, stored
+continuations, clause code that runs after body-rest completes.
+
 Unwinding is *observable* only through mem effects already performed
 (stores, prints) — κ_frk has no unwind-time finalizers in v0.
 `dynamic-wind` is an OPEN ruling (ledger it when r7rs forces it;

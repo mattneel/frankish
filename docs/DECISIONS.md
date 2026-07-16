@@ -193,6 +193,57 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-069 [m24/ctl] effects-v1 (the human picked "effects"). frk.ctl
+  grows labeled handlers: handle/perform/resume — κ_frk's H-op-resume
+  rung, scoped to the AFFINE LADDER'S TRACTABLE RUNGS. THE RULING:
+  the clause runs AT THE PERFORM SITE (handler-on-top), which makes
+  three clause classes exact, total, and single-threaded:
+  (a) DROP — v0's prompt/abort, unchanged;
+  (b) ABORTIVE — the clause returns WITHOUT consuming κ: the handle
+  yields the clause's value, body-rest discarded (rides the v0
+  pending-cell/abort machinery unchanged);
+  (c) TAIL-RESUME — the clause consumes κ exactly once and ITS
+  RETURN IS THE RESUME VALUE: perform evaluates to it and the body
+  continues under the handler (deep reinstall = the dispatch mask
+  lifting). FENCED to the named Tier-2 stack-switching rung: full
+  re-entrant one-shot κ (non-tail resume, stored continuations,
+  clause code running after body-rest) — revisit when coroutines
+  land on LLVM coro or a specimen forces multi-suspension.
+  SEMANTICS (κ_frk v1 rung, added to the calculus doc):
+  perform ℓ v ⇒ innermost UNMASKED handler H for ℓ (handlers pushed
+  during a clause dispatch outward — the handler-free-for-ℓ context
+  rule); H masks for the clause call; κ = a fresh ONE-SHOT resumer,
+  BORN UNIFORM (a fn<[pack],[pack]> closure over a marker whose body
+  marks-or-traps and returns its pack — the identity-on-pack thunk);
+  r = clause(v, κ); consumed(marker) ⇒ perform = r, else
+  abort(H.token, r). κ twice ⇒ trap "one-shot violation (κ_frk)";
+  no live H ⇒ trap "unhandled effect (κ_frk)".
+  OPS (packed, D-036): handle(clause, body){label} -> dyn (= v0
+  prompt PLUS handler push/pop — body still receives the token, so
+  escapes compose); perform(v){label} -> dyn; resume(marker, v) ->
+  dyn (emitted only inside resumer bodies).
+  NATIVE (the license row's fast path): an evidence stack in both
+  twins (label = interned bstr ptr ⇒ find is pointer-compare);
+  perform lowers BRANCH-FREE — perform_begin(label, out) allocates
+  the marker and masks, the clause applies through the uniform
+  convention, perform_end(entry, marker, token, rtag, rpay) does the
+  consumed-else-abort decision IN THE RUNTIME (abort = the v0
+  pending cell; no block surgery in melior), then a select yields
+  clause-return-or-dummy. The one-shot trap is REAL native state
+  (resume_mark traps on a consumed marker) — interp/native parity.
+  THE LICENSE GATE: the interpreter routes every perform through the
+  general dispatch machinery; native uses the evidence stack +
+  direct apply — mechanisms disjoint, outputs byte-equal on the
+  corpus, per the κ_frk §3 forced-general-vs-fast-path row.
+  Exit bars: K2 verifiers for all six behaviors (tail-resume value
+  flow; abortive; label transparency through an inner handle; deep
+  re-entry — the SAME label performed again after a resume; the
+  one-shot trap; the unhandled trap) landing BEFORE the interp
+  implementation (L1); rt rows in frk-abi with both twins compiling
+  against the regenerated contract; hand-written goldens green on
+  interp + jit + jit-rc + the grid (with D-061 guards written
+  explicitly where aborts cross frames); suite/diff/grid green;
+  κ_frk doc updated (v1 rung + the Tier-2 fence named).
 - D-068 [m23/lua] femto_lua v0.3 ("Continue" ⇒ queue order): the
   four D-058 fences fall — varargs, mid-explist spreads, explicit
   iterator triples, multi-expression RHS — plus __newindex from the
