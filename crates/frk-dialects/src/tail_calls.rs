@@ -6,12 +6,21 @@
 //! `TailCallKind = musttail`, which LLVM guarantees to lower as a
 //! frame-replacing jump.
 //!
-//! The identical-signature gate is D-059's deliberate v1 frontier:
-//! self-recursion always qualifies, equal-signature mutual recursion
-//! qualifies; indirect and cross-signature tails wait for the
-//! uniform-signature convention (the r7rs prerequisite). The
-//! interpreter's trampoline covers ALL shapes meanwhile — reference
-//! semantics leads, native follows.
+//! Two qualifying cases:
+//! - DIRECT (M14): the callee's LLVM function type is IDENTICAL to
+//!   the caller's — self-recursion always qualifies, equal-signature
+//!   mutual recursion too.
+//! - INDIRECT (M18, D-063): the CALLSITE prototype — reconstructed
+//!   from the call's operand/result types — equals the caller's
+//!   function type. Under the uniform-signature convention every
+//!   closure-carried function of a pack language is `(ptr, ptr) ->
+//!   ptr`, so lua tail applies qualify by construction.
+//! Cross-signature tails remain unmarked; the interpreter's
+//! trampoline covers ALL shapes — reference semantics leads, native
+//! follows. NOTE (D-063 fence): under the rc strategy, block-exit
+//! releases sit between a tail call and its return, breaking the tail
+//! shape — rc-native deep recursion stays unguaranteed until release
+//! scheduling gets its own rung.
 
 use std::collections::HashMap;
 
@@ -150,20 +159,51 @@ fn qualifies(
     if !is_call {
         return false;
     }
-    // Direct call: a flat-symbol callee that resolves to an llvm.func.
-    let Some(callee) = op
+    // DIRECT: a flat-symbol callee that resolves to an llvm.func with
+    // the caller's exact type. INDIRECT (D-063): no callee attribute —
+    // operand 0 is the function pointer; the callsite prototype
+    // (reconstructed from operand/result types) must equal the
+    // caller's type.
+    let callee = op
         .attribute("callee")
         .ok()
         .and_then(|attribute| FlatSymbolRefAttribute::try_from(attribute).ok())
-        .map(|attribute| attribute.value().to_string())
-    else {
-        return false;
-    };
-    let Some(callee_type) = signatures.get(&callee) else {
-        return false;
-    };
-    if callee_type != caller_type {
-        return false;
+        .map(|attribute| attribute.value().to_string());
+    match callee {
+        Some(callee) => {
+            let Some(callee_type) = signatures.get(&callee) else {
+                return false;
+            };
+            if callee_type != caller_type {
+                return false;
+            }
+        }
+        None => {
+            if op.operand_count() == 0 {
+                return false;
+            }
+            let Some((caller_ret, caller_args)) = split_llvm_fn_type(caller_type) else {
+                return false;
+            };
+            let callsite_args = (1..op.operand_count())
+                .map(|index| {
+                    op.operand(index)
+                        .map(|operand| operand.r#type().to_string())
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let callsite_ret = if op.result_count() == 1 {
+                op.result(0)
+                    .map(|result| result.r#type().to_string())
+                    .unwrap_or_default()
+            } else {
+                "void".to_string()
+            };
+            if caller_ret != callsite_ret || caller_args != callsite_args {
+                return false;
+            }
+        }
     }
     // Tail shape: immediately followed by llvm.return of exactly the
     // call's results.
@@ -187,4 +227,13 @@ fn qualifies(
         }
     }
     true
+}
+
+/// Splits a printed `!llvm.func<RET (ARGS)>` into (RET, ARGS).
+fn split_llvm_fn_type(printed: &str) -> Option<(String, String)> {
+    let inner = printed.strip_prefix("!llvm.func<")?.strip_suffix('>')?;
+    let open = inner.find(" (")?;
+    let ret = inner[..open].to_string();
+    let args = inner[open + 2..].strip_suffix(')')?.to_string();
+    Some((ret, args))
 }

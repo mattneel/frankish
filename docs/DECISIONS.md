@@ -193,6 +193,47 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-063 [m18/closure] THE UNIFORM-SIGNATURE CONVENTION (D-059's
+  ledgered gap, picked by the human). Problem: femto_lua's tail-call
+  law is VIOLATED — every lua call is a closure-apply, which neither
+  the M14 interp trampoline (func.call only) nor native musttail
+  (identical-signature direct calls only) covers; deep `return f(x)`
+  blows the depth cap interp-side and the stack natively (corpus
+  fenced shallow since M13). Design, four rungs:
+  (1) INTERP (reference semantics, fully general): closure_eval's
+  Apply detects the tail shape ITSELF and returns Step::TailCall —
+  the M14 trampoline machinery absorbs it with zero frk-interp
+  changes (the Eval trait already speaks Step). Covers BOTH
+  conventions and every frontend.
+  (2) KERNEL (the convention): a closure callee MAY adopt the uniform
+  form — first parameter `!frk_closure.envref` (new opaque type,
+  lowers to ptr) instead of unpacked capture leading params; the body
+  reads captures via the new `closure.env_load` op (operand: envref;
+  attrs: index + the env product type; verifier checks index/type
+  against the carried product). closure.make detects a uniform callee
+  by its signature and SKIPS thunk synthesis — the closure struct
+  holds the callee's address directly. closure.apply lowering is
+  UNCHANGED (it already passes (fn_ptr, env_ptr, args…)). Legacy
+  callees keep the thunk path; the two conventions coexist per-callee
+  (ml/TS/scheme stay legacy).
+  (3) NATIVE TCO: frk-tail-calls gains the INDIRECT case — an
+  indirect llvm.call in tail shape whose callsite prototype
+  (reconstructed from operand/result types) equals the caller's
+  function type gets musttail. Under the uniform convention every
+  lua function IS (ptr, ptr) -> ptr, so lua tail applies qualify by
+  construction. wasm emits tail_call_indirect (proposal covers it).
+  (4) LUA ADOPTS IT: lifted functions become (envref, pack) -> pack
+  (env product = [_G, captures…], read via env_load); the _v wrappers
+  gain the ignored envref param — EXACTLY the signature rewrite
+  D-062's sequencing rule kept them emitter-built for.
+  FENCE, recorded honestly: native TCO under the RC STRATEGY is NOT
+  guaranteed this milestone — the block-exit releases the rc
+  discipline inserts between a tail call and its return break the
+  tail shape (release-before-call scheduling is its own future rung).
+  The deep-recursion goldens fence rc-native runners; interp/arena/
+  oracle carry the law at depth; rc stays byte-correct at corpus
+  depths. Revisit: rc release scheduling when a specimen needs deep
+  recursion under rc natively.
 - D-062 [m17/surfaces] Intrinsics and runtimes become FIRST-CLASS
   AUTHORING SURFACES (the human's directive: "we've forgotten two very
   important parts of defining programming languages"). Until now both

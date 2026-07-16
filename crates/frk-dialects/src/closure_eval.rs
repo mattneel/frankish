@@ -12,6 +12,7 @@ use melior::ir::operation::OperationLike;
 pub(crate) fn register_eval(interp: &mut Interp<'_, '_>) {
     interp.register_eval("frk_closure.make", Box::new(Make));
     interp.register_eval("frk_closure.apply", Box::new(Apply));
+    interp.register_eval("frk_closure.env_load", Box::new(EnvLoad));
 }
 
 fn operand_value(
@@ -50,15 +51,43 @@ impl Eval for Apply {
         op: OperationRef<'c, 'a>,
     ) -> Result<Step<'c, 'a>, EvalError> {
         let closure = operand_value(frame, op, 0, "a closure operand")?;
-        let (callee, captures) = closure.as_closure()?;
         let args_pack = operand_value(frame, op, 1, "an args operand")?;
-        let (_, args) = args_pack.as_adt()?;
+        let call_args;
+        let callee;
+        {
+            let (name, captures) = closure.as_closure()?;
+            let (_, args) = args_pack.as_adt()?;
+            // Two conventions (D-063): a UNIFORM callee (first input is
+            // the envref) receives the closure value itself as its env —
+            // env_load then reads captures out of it. A legacy callee
+            // receives the captures unpacked as leading arguments.
+            let uniform = interp
+                .function_input_types(name)
+                .and_then(|inputs| inputs.first().cloned())
+                .is_some_and(|first| first == "!frk_closure.envref");
+            call_args = if uniform {
+                let mut v = Vec::with_capacity(1 + args.len());
+                v.push(closure.clone());
+                v.extend(args.iter().cloned());
+                v
+            } else {
+                let mut v = Vec::with_capacity(captures.len() + args.len());
+                v.extend(captures.iter().cloned());
+                v.extend(args.iter().cloned());
+                v
+            };
+            callee = name.to_string();
+        }
 
-        let mut call_args = Vec::with_capacity(captures.len() + args.len());
-        call_args.extend(captures.iter().cloned());
-        call_args.extend(args.iter().cloned());
+        // The tail shape (D-063, generalizing M14): an apply whose sole
+        // result feeds the immediately following func.return REPLACES
+        // the frame — Step::TailCall rides the same trampoline as
+        // func.call tails, so deep closure recursion runs at one depth
+        // unit. Works for both conventions and every frontend.
+        if apply_is_tail(op) {
+            return Ok(Step::TailCall(callee, call_args));
+        }
 
-        let callee = callee.to_string();
         let results = interp.eval_function(&callee, &call_args)?;
         let [result] = results.as_slice() else {
             return Err(EvalError::Malformed(format!(
@@ -67,5 +96,51 @@ impl Eval for Apply {
             )));
         };
         continue_with_result(frame, op, result.clone())
+    }
+}
+
+/// apply's single result is exactly the operand of the immediately
+/// following func.return.
+fn apply_is_tail(op: OperationRef<'_, '_>) -> bool {
+    let Some(following) = op.next_in_block() else {
+        return false;
+    };
+    let is_return = following
+        .name()
+        .as_string_ref()
+        .as_str()
+        .is_ok_and(|name| name == "func.return");
+    if !is_return || op.result_count() != 1 || following.operand_count() != 1 {
+        return false;
+    }
+    match (op.result(0), following.operand(0)) {
+        (Ok(result), Ok(operand)) => {
+            use melior::ir::ValueLike;
+            result.to_raw().ptr == operand.to_raw().ptr
+        }
+        _ => false,
+    }
+}
+
+/// env_load under the uniform convention: the envref argument IS the
+/// closure value; the field is its capture at `index`.
+struct EnvLoad;
+impl Eval for EnvLoad {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let env = operand_value(frame, op, 0, "an env operand")?;
+        let (_, captures) = env.as_closure()?;
+        let index = crate::adt::index_attr(op, "index").map_err(EvalError::Malformed)?;
+        let value = captures.get(index).cloned().ok_or_else(|| {
+            EvalError::Malformed(format!(
+                "env_load index {index} out of range for {} capture(s)",
+                captures.len()
+            ))
+        })?;
+        continue_with_result(frame, op, value)
     }
 }

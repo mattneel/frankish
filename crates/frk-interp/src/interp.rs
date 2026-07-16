@@ -178,6 +178,25 @@ impl<'c, 'a> Interp<'c, 'a> {
         })
     }
 
+    /// The printed input types of a module function, for evaluators
+    /// that dispatch on a callee's convention (D-063: closure_eval
+    /// checks whether input 0 is the uniform envref). Generic — the
+    /// interpreter itself knows no dialect types.
+    pub fn function_input_types(&self, name: &str) -> Option<Vec<String>> {
+        let function = self.functions.get(name)?;
+        let attribute = function.attribute("function_type").ok()?;
+        let function_type =
+            melior::ir::r#type::FunctionType::try_from(
+                melior::ir::attribute::TypeAttribute::try_from(attribute).ok()?.value(),
+            )
+            .ok()?;
+        let mut inputs = Vec::with_capacity(function_type.input_count());
+        for index in 0..function_type.input_count() {
+            inputs.push(function_type.input(index).ok()?.to_string());
+        }
+        Some(inputs)
+    }
+
     /// Registers a host builtin for calls to a bodyless symbol.
     pub fn register_builtin(&mut self, symbol: impl Into<String>, builtin: Builtin) {
         self.builtins.insert(symbol.into(), builtin);

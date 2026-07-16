@@ -22,9 +22,20 @@
 //! contract: the callee exists and its signature equals
 //! (capture types ++ params) -> results; apply's args and results match
 //! the closure type exactly.
+//!
+//! THE UNIFORM-SIGNATURE CONVENTION (M18, D-063): a callee MAY instead
+//! take `(!frk_closure.envref, params...)` — one opaque env pointer,
+//! reading its captures via `closure.env_load %env {index, env =
+//! <product type>}`. Uniform callees get NO synthesized thunk (the
+//! closure struct holds their address directly), which makes every
+//! function of a pack-convention language share ONE LLVM signature —
+//! and indirect tail calls become `musttail`-able by construction.
+//! Legacy and uniform callees coexist per-callee; the verifier accepts
+//! either shape at `make` and checks `env_load` against its carried
+//! env product type.
 
 use melior::Context;
-use melior::ir::attribute::FlatSymbolRefAttribute;
+use melior::ir::attribute::{FlatSymbolRefAttribute, TypeAttribute};
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::FunctionType;
 use melior::ir::{OperationRef, Type, ValueLike};
@@ -60,6 +71,13 @@ irdl.dialect @frk_closure {
     irdl.operands(closure: %fn, args: %args)
     irdl.results(value: %res)
   }
+  irdl.type @envref {}
+  irdl.operation @env_load {
+    %e = irdl.base @frk_closure::@envref
+    %v = irdl.any
+    irdl.operands(env: %e)
+    irdl.results(value: %v)
+  }
 }
 "##;
 
@@ -86,6 +104,15 @@ pub(crate) fn decode_fn<'c>(
         decode_field_list(*params, "closure params")?,
         decode_field_list(*results, "closure results")?,
     ))
+}
+
+/// Reads env_load's carried env product type (the `env` TypeAttr).
+pub(crate) fn env_type_attr<'c>(op: OperationRef<'c, '_>) -> Result<Type<'c>, String> {
+    op.attribute("env")
+        .ok()
+        .and_then(|attribute| TypeAttribute::try_from(attribute).ok())
+        .map(|attribute| attribute.value())
+        .ok_or_else(|| "env_load without an `env` type attribute".to_string())
 }
 
 pub(crate) fn callee_name(op: OperationRef<'_, '_>) -> Result<String, String> {
@@ -131,31 +158,41 @@ pub(crate) fn verify_op<'c>(
                     .r#type(),
             )?;
 
-            let expected_inputs = env.len() + params.len();
+            // Two conventions (D-063): uniform callees take
+            // (envref, params...); legacy callees take
+            // (captures..., params...).
+            let uniform = function
+                .input(0)
+                .map(|input| input.to_string() == "!frk_closure.envref")
+                .unwrap_or(false);
+            let leading = if uniform { 1 } else { env.len() };
+            let expected_inputs = leading + params.len();
             if function.input_count() != expected_inputs {
                 return Err(format!(
-                    "@{callee} takes {} input(s); {} capture(s) + {} param(s) = {expected_inputs} expected",
+                    "@{callee} takes {} input(s); {} leading + {} param(s) = {expected_inputs} expected",
                     function.input_count(),
-                    env.len(),
+                    leading,
                     params.len()
                 ));
             }
-            for (index, capture) in env.iter().enumerate() {
-                let input = function.input(index).map_err(|e| e.to_string())?;
-                if *capture != input {
-                    return Err(format!(
-                        "capture {index} has type {capture}, @{callee} input {index} is {input}"
-                    ));
+            if !uniform {
+                for (index, capture) in env.iter().enumerate() {
+                    let input = function.input(index).map_err(|e| e.to_string())?;
+                    if *capture != input {
+                        return Err(format!(
+                            "capture {index} has type {capture}, @{callee} input {index} is {input}"
+                        ));
+                    }
                 }
             }
             for (offset, param) in params.iter().enumerate() {
                 let input = function
-                    .input(env.len() + offset)
+                    .input(leading + offset)
                     .map_err(|e| e.to_string())?;
                 if *param != input {
                     return Err(format!(
                         "closure param {offset} is {param}, @{callee} input {} is {input}",
-                        env.len() + offset
+                        leading + offset
                     ));
                 }
             }
@@ -169,6 +206,29 @@ pub(crate) fn verify_op<'c>(
             if *result != actual {
                 return Err(format!(
                     "closure result is {result}, @{callee} returns {actual}"
+                ));
+            }
+            Ok(())
+        }
+        "env_load" => {
+            let env_fields = crate::adt::decode_product(
+                context,
+                env_type_attr(op)?,
+            )?;
+            let index = crate::adt::index_attr(op, "index")?;
+            let field = env_fields.get(index).ok_or_else(|| {
+                format!(
+                    "env_load index {index} out of range for a {}-field env",
+                    env_fields.len()
+                )
+            })?;
+            let result = op
+                .result(0)
+                .map_err(|_| "env_load without a result".to_string())?
+                .r#type();
+            if result != *field {
+                return Err(format!(
+                    "env_load yields {result}; env field {index} is {field}"
                 ));
             }
             Ok(())

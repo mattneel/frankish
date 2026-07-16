@@ -275,6 +275,11 @@ enum Planned<'c, 'a> {
         callee: String,
         env_kinds: Vec<SlotKind<'c>>,
         env_layout: u64,
+        /// A UNIFORM-convention callee (D-063): first input is the
+        /// envref, so no thunk is synthesized — `thunk` holds the
+        /// callee symbol itself and the closure struct stores its
+        /// address directly.
+        uniform: bool,
         /// Lowered parameter/result types for the thunk signature.
         params: Vec<Type<'c>>,
         result: Type<'c>,
@@ -398,6 +403,13 @@ enum Planned<'c, 'a> {
     },
     BstrRep {
         op: OperationRef<'c, 'a>,
+    },
+    /// closure.env_load (D-063): reload ONE env field from the envref
+    /// pointer, exactly as the thunk prologue would have.
+    EnvLoad {
+        op: OperationRef<'c, 'a>,
+        env_kinds: Vec<SlotKind<'c>>,
+        index: usize,
     },
     /// frk_ctl.prompt (κ_frk, D-060): enter → apply body(token) →
     /// exit → resolve-overwrites → yield. `param_kinds` is the body
@@ -781,6 +793,47 @@ fn plan_adt<'c, 'a>(
     }
 }
 
+/// Does `callee`'s declared first input have the uniform envref type
+/// (D-063)? Resolved against the enclosing module's func.funcs.
+fn callee_first_input_is_envref(
+    op: OperationRef<'_, '_>,
+    callee: &str,
+) -> Result<bool, String> {
+    let module = root_module(op)?;
+    let body = module
+        .region(0)
+        .map_err(|e| e.to_string())?
+        .first_block()
+        .ok_or_else(|| "module without a body".to_string())?;
+    let mut next = body.first_operation();
+    while let Some(function) = next {
+        let is_func = function
+            .name()
+            .as_string_ref()
+            .as_str()
+            .is_ok_and(|name| name == "func.func");
+        if is_func {
+            let name = function
+                .attribute("sym_name")
+                .ok()
+                .and_then(|a| StringAttribute::try_from(a).ok())
+                .map(|a| a.value().to_string());
+            if name.as_deref() == Some(callee) {
+                let first = function
+                    .attribute("function_type")
+                    .ok()
+                    .and_then(|a| TypeAttribute::try_from(a).ok())
+                    .and_then(|a| melior::ir::r#type::FunctionType::try_from(a.value()).ok())
+                    .and_then(|f| f.input(0).ok())
+                    .map(|t| t.to_string());
+                return Ok(first.as_deref() == Some("!frk_closure.envref"));
+            }
+        }
+        next = function.next_in_block();
+    }
+    Ok(false)
+}
+
 fn plan_closure<'c, 'a>(
     context: &'c Context,
     suffix: &str,
@@ -813,8 +866,16 @@ fn plan_closure<'c, 'a>(
                 .collect::<Result<Vec<_>, _>>()?;
             let result = map_type(context, *result)?;
 
-            let thunk = format!("__frk_thunk_{}", *thunk_counter);
-            *thunk_counter += 1;
+            // D-063: a uniform callee (first input = envref) needs no
+            // thunk — the closure struct stores its address directly.
+            let uniform = callee_first_input_is_envref(op, &callee)?;
+            let thunk = if uniform {
+                callee.clone()
+            } else {
+                let name = format!("__frk_thunk_{}", *thunk_counter);
+                *thunk_counter += 1;
+                name
+            };
             Ok(Planned::MakeClosure {
                 op,
                 callee,
@@ -822,8 +883,21 @@ fn plan_closure<'c, 'a>(
                 env_layout,
                 params,
                 result,
+                uniform,
                 thunk,
             })
+        }
+        "env_load" => {
+            let env_fields = decode_product(context, crate::closure::env_type_attr(op)?)?;
+            let env_kinds = kinds_of(context, &env_fields)?;
+            let index = crate::adt::index_attr(op, "index")?;
+            if index >= env_kinds.len() {
+                return Err(format!(
+                    "env_load index {index} out of range for {} field(s)",
+                    env_kinds.len()
+                ));
+            }
+            Ok(Planned::EnvLoad { op, env_kinds, index })
         }
         "apply" => {
             let (params, results) = decode_fn(
@@ -1101,6 +1175,7 @@ fn map_type<'c>(context: &'c Context, r#type: Type<'c>) -> Result<Type<'c>, Stri
         || printed.starts_with("!frk_mem.arr<")
         || printed == "!frk_str.str"
         || printed == "!frk_bstr.str"
+        || printed == "!frk_closure.envref"
     {
         Ok(llvm::r#type::pointer(context, 0))
     } else if printed == "!frk_dyn.dyn" {
@@ -1360,12 +1435,16 @@ fn synthesize_thunks(
             env_kinds,
             params,
             result,
+            uniform,
             thunk,
             ..
         } = plan
         else {
             continue;
         };
+        if *uniform {
+            continue; // D-063: the callee IS the entry point.
+        }
 
         let mut inputs = Vec::with_capacity(1 + params.len());
         inputs.push(ptr);
@@ -2235,6 +2314,98 @@ fn apply<'c, 'a>(
             let location = op.location();
             let word = dyn_field(context, rewriter, operand(op, 0)?, 1, location)?;
             finish(rewriter, op, word)
+        }
+        Planned::EnvLoad { op, env_kinds, index } => {
+            // One thunk-prologue field reload, at the field's slot
+            // offset (D-063) — the layout math is kinds_layout's, so
+            // env_load and make can never disagree about placement.
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let env_ptr = operand(op, 0)?;
+            let offset: usize = env_kinds[..index].iter().map(|kind| kind.slots()).sum();
+            let value = match &env_kinds[index] {
+                SlotKind::Words { slots, mapped } => {
+                    let mut rebuilt =
+                        result_value(rewriter.insert(llvm::undef(*mapped, location)))?;
+                    for slot in 0..*slots {
+                        let word =
+                            load_slot_at(context, rewriter, env_ptr, offset + slot, location)?;
+                        rebuilt = result_value(rewriter.insert(llvm::insert_value(
+                            context,
+                            rebuilt,
+                            DenseI64ArrayAttribute::new(context, &[slot as i64]),
+                            word,
+                            location,
+                        )))?;
+                    }
+                    rebuilt
+                }
+                SlotKind::Ptr { .. } | SlotKind::Closure => {
+                    let word = load_slot_at(context, rewriter, env_ptr, offset, location)?;
+                    if matches!(&env_kinds[index], SlotKind::Closure) {
+                        // Closures are 2-slot {fn, env} structs.
+                        let ptr = llvm::r#type::pointer(context, 0);
+                        let word2 =
+                            load_slot_at(context, rewriter, env_ptr, offset + 1, location)?;
+                        let a = result_value(rewriter.insert(cast_op(
+                            "llvm.inttoptr",
+                            word,
+                            ptr,
+                            location,
+                        )?))?;
+                        let b = result_value(rewriter.insert(cast_op(
+                            "llvm.inttoptr",
+                            word2,
+                            ptr,
+                            location,
+                        )?))?;
+                        let mut rebuilt = result_value(
+                            rewriter.insert(llvm::undef(closure_struct(context), location)),
+                        )?;
+                        for (slot, value) in [(0i64, a), (1i64, b)] {
+                            rebuilt = result_value(rewriter.insert(llvm::insert_value(
+                                context,
+                                rebuilt,
+                                DenseI64ArrayAttribute::new(context, &[slot]),
+                                value,
+                                location,
+                            )))?;
+                        }
+                        rebuilt
+                    } else {
+                        result_value(rewriter.insert(cast_op(
+                            "llvm.inttoptr",
+                            word,
+                            llvm::r#type::pointer(context, 0),
+                            location,
+                        )?))?
+                    }
+                }
+                SlotKind::F64 => {
+                    let word = load_slot_at(context, rewriter, env_ptr, offset, location)?;
+                    let f64_type = Type::parse(context, "f64").ok_or("f64 type")?;
+                    result_value(rewriter.insert(cast_op(
+                        "arith.bitcast",
+                        word,
+                        f64_type,
+                        location,
+                    )?))?
+                }
+                SlotKind::Int(width) => {
+                    let word = load_slot_at(context, rewriter, env_ptr, offset, location)?;
+                    if *width < 64 {
+                        result_value(rewriter.insert(cast_op(
+                            "arith.trunci",
+                            word,
+                            IntegerType::new(context, *width).into(),
+                            location,
+                        )?))?
+                    } else {
+                        word
+                    }
+                }
+            };
+            finish(rewriter, op, value)
         }
         Planned::CtlPrompt { op, result } => {
             // κ_frk §2 as a branchless sequence (D-060): enter → apply
