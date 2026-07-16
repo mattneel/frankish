@@ -74,7 +74,8 @@ checked against it:
 | C twin | a generated header (`frk_rt_abi.h`, checked in, drift-tested, `make abi` regenerates) included by `frk_rt.c` — the C compiler enforces the contract at every compile, on every grid triple |
 | JIT capture shims | generated typed assertions per Capture row (the panel's strongest finding: shims are registered by type-erased pointer — the one layer the twins' checks didn't reach) |
 | Kernel lowering | extern declarations *derived* from the registry (the hand-written type tables are deleted), with dedup against symbols an intrinsics file already declares |
-| Every module | the semantic verifier projects each bodyless `frk_rt_*` declaration onto its registry row (class-level, with the `i1`/`i8` ↔ `u8` widening rule pinned) — covering frontends' hand declarations and intrinsics files uniformly |
+| Every module | the semantic verifier projects each bodyless `frk_rt_*` declaration onto its registry row (class-level, with the `i1`/`i8` widening rule pinned) — covering frontends' hand declarations and intrinsics files uniformly |
+| Registration | the JIT symbol set and interp builtin set are *driven by* the registry's `JitBinding`/`InterpDisposition` columns — a row without its pointer/behavior panics at registration and fails the coverage witnesses, in both directions (missing and stale) |
 
 Each layer carries an L1 witness. The sharpest is the tamper test: it
 **replays the M15 bug on purpose** — compiles a definition whose

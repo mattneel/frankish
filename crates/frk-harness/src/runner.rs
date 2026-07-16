@@ -330,81 +330,12 @@ fn interpret_case(case: &Case) -> Result<String, RunError> {
     frk_dialects::register_eval(&mut interp);
 
     if matches!(case.kind, SourceKind::Ts | SourceKind::Lua | SourceKind::Scheme) {
-        // TS-0/Lua protocol (D-047/D-054): void entry; output = prints.
-        // scheme display protocol (M15): no trailing newline; newline
-        // emits one; booleans as #t/#f.
-        interp.register_builtin(
-            "frk_rt_scm_display_num",
-            Box::new(|arguments, output| {
-                output.push_str(&frk_rt::format_lua_num(arguments[0].as_float()?));
-                Ok(vec![])
-            }),
-        );
-        interp.register_builtin(
-            "frk_rt_scm_display_bool",
-            Box::new(|arguments, output| {
-                output.push_str(if arguments[0].as_signed()? != 0 { "#t" } else { "#f" });
-                Ok(vec![])
-            }),
-        );
-        interp.register_builtin(
-            "frk_rt_scm_newline",
-            Box::new(|_arguments, output| {
-                output.push('\n');
-                Ok(vec![])
-            }),
-        );
-        interp.register_builtin(
-            frk_front::loanword::PRINT_F64,
-            Box::new(|arguments, output| {
-                output.push_str(&frk_rt::format_f64(arguments[0].as_float()?));
-                output.push('\n');
-                Ok(vec![])
-            }),
-        );
-        interp.register_builtin(
-            frk_front::loanword::PRINT_BOOL,
-            Box::new(|arguments, output| {
-                output.push_str(if arguments[0].as_bool()? { "true" } else { "false" });
-                output.push('\n');
-                Ok(vec![])
-            }),
-        );
-        interp.register_builtin(
-            frk_front::loanword::PRINT_STR,
-            Box::new(|arguments, output| {
-                let units = arguments[0].as_str_units()?;
-                output.push_str(&String::from_utf16_lossy(units));
-                output.push('\n');
-                Ok(vec![])
-            }),
-        );
-        interp.register_builtin(
-            "frk_rt_bstr_from_num",
-            Box::new(|arguments, _output| {
-                Ok(vec![frk_interp::Value::bytes(
-                    frk_rt::format_lua_num(arguments[0].as_float()?).into_bytes(),
-                )])
-            }),
-        );
-        interp.register_builtin(
-            "frk_rt_print_lua_str",
-            Box::new(|arguments, output| {
-                let bytes = arguments[0].as_bytes()?;
-                output.push_str(&String::from_utf8_lossy(bytes));
-                output.push('\n');
-                Ok(vec![])
-            }),
-        );
-        interp.register_builtin(
-            "frk_rt_lua_error",
-            Box::new(|arguments, _output| {
-                Err(frk_interp::EvalError::Trap(format!(
-                    "lua runtime error {} (D-056)",
-                    arguments[0].as_signed()?
-                )))
-            }),
-        );
+        // TS-0/Lua/Scheme print protocols: void entry; output = the
+        // captured print stream. Registration is REGISTRY-DRIVEN
+        // (D-062, finished at M21): frk-abi's Builtin rows are the
+        // set; builtin_for supplies the behavior; a row with no
+        // behavior panics here and fails the coverage test.
+        register_protocol_builtins(&mut interp);
         interp
             .eval_function(&case.entry, &[])
             .map_err(|e| RunError::Invoke(e.to_string()))?;
@@ -469,105 +400,25 @@ impl Runner for JitRunner {
         // Entry functions carry llvm.emit_c_interface (goldens/README.md);
         // invoke_packed resolves the _mlir_ciface_ wrapper by entry name.
         let engine = ExecutionEngine::new(&module, 2, &[], false, false);
-        // The kernel lowering calls the strategy's runtime (D-041); the
-        // harness process hosts frk-rt, so hand the JIT every symbol.
-        // AOT (M7 grid) links the staticlib instead.
+        // Registry-driven JIT resolution (D-062, finished at M21): the
+        // frk-abi table is the AUTHORITY on which symbols the JIT must
+        // bind and how (Real twin fn vs capturing shim); jit_symbol
+        // supplies the pointers (data cannot name functions). A row
+        // whose pointer is missing panics loudly here and fails the
+        // coverage unit test before any golden runs.
         unsafe {
-            engine.register_symbol(
-                "frk_rt_arena_alloc",
-                frk_rt::frk_rt_arena_alloc as *mut (),
-            );
-            engine.register_symbol("frk_rt_rc_alloc", frk_rt::frk_rt_rc_alloc as *mut ());
-            engine.register_symbol("frk_rt_rc_retain", frk_rt::frk_rt_rc_retain as *mut ());
-            engine.register_symbol(
-                "frk_rt_rc_release",
-                frk_rt::frk_rt_rc_release as *mut (),
-            );
-            // TS prints resolve to in-process CAPTURING symbols: the
-            // JIT shares our stdout, so the real runtime's println
-            // would interleave with harness output (D-047).
-            engine.register_symbol(
-                frk_front::loanword::PRINT_F64,
-                capture_print_f64 as *mut (),
-            );
-            engine.register_symbol(
-                frk_front::loanword::PRINT_BOOL,
-                capture_print_bool as *mut (),
-            );
-            engine.register_symbol(
-                "frk_rt_str_from_units",
-                frk_rt::frk_rt_str_from_units as *mut (),
-            );
-            engine.register_symbol("frk_rt_str_concat", frk_rt::frk_rt_str_concat as *mut ());
-            engine.register_symbol("frk_rt_str_eq", frk_rt::frk_rt_str_eq as *mut ());
-            engine.register_symbol("frk_rt_str_len", frk_rt::frk_rt_str_len as *mut ());
-            engine.register_symbol("frk_rt_dyn_check", frk_rt::frk_rt_dyn_check as *mut ());
-            engine.register_symbol(
-                "frk_rt_bstr_intern",
-                frk_rt::frk_rt_bstr_intern as *mut (),
-            );
-            engine.register_symbol(
-                "frk_rt_bstr_concat",
-                frk_rt::frk_rt_bstr_concat as *mut (),
-            );
-            engine.register_symbol(
-                "frk_rt_bstr_from_num",
-                frk_rt::frk_rt_bstr_from_num as *mut (),
-            );
-            engine.register_symbol("frk_rt_table_init", frk_rt::frk_rt_table_init as *mut ());
-            engine.register_symbol(
-                "frk_rt_table_raw_get",
-                frk_rt::frk_rt_table_raw_get as *mut (),
-            );
-            engine.register_symbol(
-                "frk_rt_table_raw_set",
-                frk_rt::frk_rt_table_raw_set as *mut (),
-            );
-            engine.register_symbol("frk_rt_table_len", frk_rt::frk_rt_table_len as *mut ());
-            engine.register_symbol("frk_rt_lua_error", frk_rt::frk_rt_lua_error as *mut ());
-            engine.register_symbol(
-                "frk_rt_table_next",
-                frk_rt::frk_rt_table_next as *mut (),
-            );
-            engine.register_symbol("frk_rt_bstr_sub", frk_rt::frk_rt_bstr_sub as *mut ());
-            engine.register_symbol("frk_rt_bstr_rep", frk_rt::frk_rt_bstr_rep as *mut ());
-            // scheme display resolves to CAPTURING symbols (shared
-            // stdout, D-047) — no trailing newline for display.
-            engine.register_symbol(
-                "frk_rt_scm_display_num",
-                capture_scm_display_num as *mut (),
-            );
-            engine.register_symbol(
-                "frk_rt_scm_display_bool",
-                capture_scm_display_bool as *mut (),
-            );
-            engine.register_symbol("frk_rt_scm_newline", capture_scm_newline as *mut ());
-            // Control effects (κ_frk, D-060): the pending-cell carrier.
-            engine.register_symbol(
-                "frk_rt_ctl_prompt_enter",
-                frk_rt::frk_rt_ctl_prompt_enter as *mut (),
-            );
-            engine.register_symbol(
-                "frk_rt_ctl_prompt_exit",
-                frk_rt::frk_rt_ctl_prompt_exit as *mut (),
-            );
-            engine.register_symbol("frk_rt_ctl_abort", frk_rt::frk_rt_ctl_abort as *mut ());
-            engine.register_symbol(
-                "frk_rt_ctl_pending",
-                frk_rt::frk_rt_ctl_pending as *mut (),
-            );
-            engine.register_symbol(
-                "frk_rt_ctl_resolve",
-                frk_rt::frk_rt_ctl_resolve as *mut (),
-            );
-            engine.register_symbol(
-                "frk_rt_print_lua_str",
-                capture_print_lua_str as *mut (),
-            );
-            engine.register_symbol(
-                frk_front::loanword::PRINT_STR,
-                capture_print_str as *mut (),
-            );
+            for entry in frk_abi::RT_ABI {
+                if entry.jit == frk_abi::JitBinding::NotLinked {
+                    continue;
+                }
+                let pointer = jit_symbol(entry.name).unwrap_or_else(|| {
+                    panic!(
+                        "{} is {:?} in frk-abi but jit_symbol has no pointer for it",
+                        entry.name, entry.jit
+                    )
+                });
+                engine.register_symbol(entry.name, pointer);
+            }
         }
         if matches!(case.kind, SourceKind::Ts | SourceKind::Lua | SourceKind::Scheme) {
             CAPTURE.with(|buffer| buffer.borrow_mut().clear());
@@ -605,7 +456,7 @@ extern "C" fn capture_print_f64(value: f64) {
     });
 }
 
-extern "C" fn capture_print_bool(value: u8) {
+extern "C" fn capture_print_bool(value: i64) {
     CAPTURE.with(|buffer| {
         let mut buffer = buffer.borrow_mut();
         buffer.push_str(if value != 0 { "true" } else { "false" });
@@ -657,6 +508,134 @@ extern "C" fn capture_scm_newline() {
 // fn-pointer assertions generated by build.rs from frk-abi — a shim
 // signature drifting from the registered ABI refuses to compile.
 include!(concat!(env!("OUT_DIR"), "/capture_assertions.rs"));
+
+/// Registers every frk-abi `Builtin` row's interpreter behavior —
+/// the registry drives the set, this function supplies the semantics.
+pub fn register_protocol_builtins(interp: &mut frk_interp::Interp<'_, '_>) {
+    for entry in frk_abi::RT_ABI {
+        if entry.interp != frk_abi::InterpDisposition::Builtin {
+            continue;
+        }
+        let builtin = builtin_for(entry.name).unwrap_or_else(|| {
+            panic!(
+                "{} is InterpDisposition::Builtin in frk-abi but builtin_for has no behavior",
+                entry.name
+            )
+        });
+        interp.register_builtin(entry.name, builtin);
+    }
+}
+
+/// The interpreter behavior for a registered Builtin symbol.
+fn builtin_for(name: &str) -> Option<frk_interp::Builtin> {
+    Some(match name {
+        "frk_rt_scm_display_num" => Box::new(|arguments, output| {
+            output.push_str(&frk_rt::format_lua_num(arguments[0].as_float()?));
+            Ok(vec![])
+        }),
+        "frk_rt_scm_display_bool" => Box::new(|arguments, output| {
+            output.push_str(if arguments[0].as_signed()? != 0 { "#t" } else { "#f" });
+            Ok(vec![])
+        }),
+        "frk_rt_scm_newline" => Box::new(|_arguments, output| {
+            output.push('\n');
+            Ok(vec![])
+        }),
+        "frk_rt_print_f64" => Box::new(|arguments, output| {
+            output.push_str(&frk_rt::format_f64(arguments[0].as_float()?));
+            output.push('\n');
+            Ok(vec![])
+        }),
+        // i64 flag since the D-062 finish (booleans widen at call
+        // sites) — read as an integer, not an i1.
+        "frk_rt_print_bool" => Box::new(|arguments, output| {
+            output.push_str(if arguments[0].as_signed()? != 0 { "true" } else { "false" });
+            output.push('\n');
+            Ok(vec![])
+        }),
+        "frk_rt_print_str" => Box::new(|arguments, output| {
+            let units = arguments[0].as_str_units()?;
+            output.push_str(&String::from_utf16_lossy(units));
+            output.push('\n');
+            Ok(vec![])
+        }),
+        "frk_rt_bstr_from_num" => Box::new(|arguments, _output| {
+            Ok(vec![frk_interp::Value::bytes(
+                frk_rt::format_lua_num(arguments[0].as_float()?).into_bytes(),
+            )])
+        }),
+        "frk_rt_print_lua_str" => Box::new(|arguments, output| {
+            let bytes = arguments[0].as_bytes()?;
+            output.push_str(&String::from_utf8_lossy(bytes));
+            output.push('\n');
+            Ok(vec![])
+        }),
+        "frk_rt_lua_error" => Box::new(|arguments, _output| {
+            Err(frk_interp::EvalError::Trap(format!(
+                "lua runtime error {} (D-056)",
+                arguments[0].as_signed()?
+            )))
+        }),
+        _ => return None,
+    })
+}
+
+/// Test-only coverage probe over [`jit_symbol`] (the pointer itself
+/// is process-local and meaningless to assert beyond presence).
+pub fn jit_symbol_for_test(name: &str) -> Option<*mut ()> {
+    jit_symbol(name)
+}
+
+/// The JIT pointer for a registered runtime symbol (D-062): Real rows
+/// bind the Rust twin; Capture rows bind the harness shims (stdout
+/// interleaving, D-047). The SET is driven by frk-abi — this table
+/// only supplies what data cannot: the addresses. Coverage is unit-
+/// tested against the registry (see tests below) and enforced by a
+/// panic in the registration loop.
+fn jit_symbol(name: &str) -> Option<*mut ()> {
+    Some(match name {
+        // Core
+        "frk_rt_arena_alloc" => frk_rt::frk_rt_arena_alloc as *mut (),
+        "frk_rt_rc_alloc" => frk_rt::frk_rt_rc_alloc as *mut (),
+        "frk_rt_rc_retain" => frk_rt::frk_rt_rc_retain as *mut (),
+        "frk_rt_rc_release" => frk_rt::frk_rt_rc_release as *mut (),
+        // Str
+        "frk_rt_str_from_units" => frk_rt::frk_rt_str_from_units as *mut (),
+        "frk_rt_str_concat" => frk_rt::frk_rt_str_concat as *mut (),
+        "frk_rt_str_eq" => frk_rt::frk_rt_str_eq as *mut (),
+        "frk_rt_str_len" => frk_rt::frk_rt_str_len as *mut (),
+        // Bstr
+        "frk_rt_bstr_intern" => frk_rt::frk_rt_bstr_intern as *mut (),
+        "frk_rt_bstr_concat" => frk_rt::frk_rt_bstr_concat as *mut (),
+        "frk_rt_bstr_from_num" => frk_rt::frk_rt_bstr_from_num as *mut (),
+        "frk_rt_bstr_sub" => frk_rt::frk_rt_bstr_sub as *mut (),
+        "frk_rt_bstr_rep" => frk_rt::frk_rt_bstr_rep as *mut (),
+        // Dyn
+        "frk_rt_dyn_check" => frk_rt::frk_rt_dyn_check as *mut (),
+        "frk_rt_table_init" => frk_rt::frk_rt_table_init as *mut (),
+        "frk_rt_table_raw_get" => frk_rt::frk_rt_table_raw_get as *mut (),
+        "frk_rt_table_raw_set" => frk_rt::frk_rt_table_raw_set as *mut (),
+        "frk_rt_table_len" => frk_rt::frk_rt_table_len as *mut (),
+        "frk_rt_table_next" => frk_rt::frk_rt_table_next as *mut (),
+        // Ctl
+        "frk_rt_ctl_prompt_enter" => frk_rt::frk_rt_ctl_prompt_enter as *mut (),
+        "frk_rt_ctl_prompt_exit" => frk_rt::frk_rt_ctl_prompt_exit as *mut (),
+        "frk_rt_ctl_abort" => frk_rt::frk_rt_ctl_abort as *mut (),
+        "frk_rt_ctl_pending" => frk_rt::frk_rt_ctl_pending as *mut (),
+        "frk_rt_ctl_resolve" => frk_rt::frk_rt_ctl_resolve as *mut (),
+        // Lua errors bind REAL (stderr + abort — not captured output).
+        "frk_rt_lua_error" => frk_rt::frk_rt_lua_error as *mut (),
+        // Capture shims (stdout is protocol output, D-047).
+        "frk_rt_print_f64" => capture_print_f64 as *mut (),
+        "frk_rt_print_bool" => capture_print_bool as *mut (),
+        "frk_rt_print_str" => capture_print_str as *mut (),
+        "frk_rt_print_lua_str" => capture_print_lua_str as *mut (),
+        "frk_rt_scm_display_num" => capture_scm_display_num as *mut (),
+        "frk_rt_scm_display_bool" => capture_scm_display_bool as *mut (),
+        "frk_rt_scm_newline" => capture_scm_newline as *mut (),
+        _ => return None,
+    })
+}
 
 /// The upstream oracle for ml_core (SPEC §7.2/§8; oracle policy in
 /// docs/canon.md §5): the SAME source file the frankish runners

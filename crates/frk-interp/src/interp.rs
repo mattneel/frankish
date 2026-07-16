@@ -202,6 +202,11 @@ impl<'c, 'a> Interp<'c, 'a> {
         self.builtins.insert(symbol.into(), builtin);
     }
 
+    /// Coverage probe (D-062): is a builtin registered for `symbol`?
+    pub fn has_builtin(&self, symbol: &str) -> bool {
+        self.builtins.contains_key(symbol)
+    }
+
     /// Drains everything builtins printed so far.
     pub fn take_output(&self) -> String {
         std::mem::take(&mut self.output.borrow_mut())

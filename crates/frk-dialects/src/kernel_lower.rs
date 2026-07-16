@@ -1359,7 +1359,6 @@ fn registered_fn_type<'c>(context: &'c Context, name: &str) -> Result<Type<'c>, 
         } else {
             match ty {
                 frk_abi::AbiTy::F64 => Type::parse(context, "f64").expect("f64"),
-                frk_abi::AbiTy::U8 => IntegerType::new(context, 8).into(),
                 _ => IntegerType::new(context, 64).into(),
             }
         }

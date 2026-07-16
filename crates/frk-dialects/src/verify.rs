@@ -220,7 +220,6 @@ fn check_rt_declaration(op: OperationRef<'_, '_>) -> Result<(), String> {
         } else {
             match ty {
                 frk_abi::AbiTy::F64 => "f64",
-                frk_abi::AbiTy::U8 => "u8",
                 _ => "i64",
             }
         }

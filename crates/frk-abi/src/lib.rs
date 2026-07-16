@@ -25,9 +25,6 @@ pub enum AbiTy {
     I64,
     U64,
     F64,
-    /// `u8` — legacy print flags only; new entries should take I64
-    /// (the scm_display_bool lesson: wasm enforces exact widths).
-    U8,
     PtrMutU8,
     PtrConstU8,
     PtrConstU16,
@@ -45,7 +42,6 @@ impl AbiTy {
             AbiTy::I64 => "int64_t",
             AbiTy::U64 => "uint64_t",
             AbiTy::F64 => "double",
-            AbiTy::U8 => "uint8_t",
             AbiTy::PtrMutU8 => "uint8_t *",
             AbiTy::PtrConstU8 => "const uint8_t *",
             AbiTy::PtrConstU16 => "const uint16_t *",
@@ -59,7 +55,6 @@ impl AbiTy {
             AbiTy::I64 => "i64",
             AbiTy::U64 => "u64",
             AbiTy::F64 => "f64",
-            AbiTy::U8 => "u8",
             AbiTy::PtrMutU8 => "*mut u8",
             AbiTy::PtrConstU8 => "*const u8",
             AbiTy::PtrConstU16 => "*const u16",
@@ -183,14 +178,11 @@ pub const RT_ABI: &[RtFn] = &[
     RtFn { name: "frk_rt_ctl_prompt_exit", args: &[I64], ret: None, lane: Lane::Ctl, jit: Real, interp: DialectEval },
     RtFn { name: "frk_rt_ctl_resolve", args: &[I64, PtrMutI64], ret: Some(I64), lane: Lane::Ctl, jit: Real, interp: DialectEval },
     // ---- Ts: the TS-0 print protocol (D-047) ----
-    RtFn { name: "frk_rt_print_bool", args: &[U8], ret: None, lane: Lane::Ts, jit: Capture, interp: Builtin },
+    RtFn { name: "frk_rt_print_bool", args: &[I64], ret: None, lane: Lane::Ts, jit: Capture, interp: Builtin },
     RtFn { name: "frk_rt_print_f64", args: &[F64], ret: None, lane: Lane::Ts, jit: Capture, interp: Builtin },
     RtFn { name: "frk_rt_print_str", args: &[PtrConstU8], ret: None, lane: Lane::Ts, jit: Capture, interp: Builtin },
     // ---- Lua: print protocol + runtime errors (D-054/D-056) ----
     RtFn { name: "frk_rt_lua_error", args: &[I64], ret: None, lane: Lane::Lua, jit: Real, interp: Builtin },
-    RtFn { name: "frk_rt_print_lua_bool", args: &[U8], ret: None, lane: Lane::Lua, jit: NotLinked, interp: NotReachable },
-    RtFn { name: "frk_rt_print_lua_nil", args: &[], ret: None, lane: Lane::Lua, jit: NotLinked, interp: NotReachable },
-    RtFn { name: "frk_rt_print_lua_num", args: &[F64], ret: None, lane: Lane::Lua, jit: NotLinked, interp: NotReachable },
     RtFn { name: "frk_rt_print_lua_str", args: &[PtrConstU8], ret: None, lane: Lane::Lua, jit: Capture, interp: Builtin },
     // ---- Scheme: the display protocol (M15) ----
     RtFn { name: "frk_rt_scm_display_bool", args: &[I64], ret: None, lane: Lane::Scheme, jit: Capture, interp: Builtin },
@@ -309,7 +301,9 @@ mod tests {
         assert!(header.contains("void frk_rt_scm_display_bool(int64_t);"));
         assert!(assertions
             .contains("unsafe extern \"C\" fn(i64) = crate::frk_rt_scm_display_bool;"));
-        // And the u8 legacy flags stay u8 until migrated:
-        assert!(header.contains("void frk_rt_print_bool(uint8_t);"));
+        // The legacy u8 flags are GONE (D-062 finish): every integer
+        // crosses the ABI at 64 bits.
+        assert!(header.contains("void frk_rt_print_bool(int64_t);"));
+        assert!(!header.contains("uint8_t);"));
     }
 }

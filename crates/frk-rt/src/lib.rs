@@ -434,7 +434,9 @@ pub extern "C" fn frk_rt_print_f64(value: f64) {
 
 /// Prints a boolean as JS spells it. i1 arrives zero-extended.
 #[unsafe(no_mangle)]
-pub extern "C" fn frk_rt_print_bool(value: u8) {
+pub extern "C" fn frk_rt_print_bool(value: i64) {
+    // i64 flag (D-062 finish): every integer crosses the ABI at 64
+    // bits — the display_bool lesson, applied to its last holdout.
     println!("{}", if value != 0 { "true" } else { "false" });
 }
 
@@ -1014,11 +1016,6 @@ pub extern "C" fn frk_rt_print_lua_num(value: f64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn frk_rt_print_lua_bool(value: u8) {
     println!("{}", if value != 0 { "true" } else { "false" });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn frk_rt_print_lua_nil() {
-    println!("nil");
 }
 
 // ---- scheme display protocol (M15, r7rs_core): `display` prints

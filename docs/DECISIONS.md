@@ -193,6 +193,29 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-066 [m21/surfaces] D-062 IS CLOSED — every named follow-up
+  executed ("finish D-062", the human, verbatim):
+  (1) REGISTRY-DRIVEN REGISTRATION: the JIT symbol set and the interp
+  builtin set are now DRIVEN by frk-abi rows — jit_symbol/builtin_for
+  supply only what data cannot (addresses, closures); a row without
+  its pointer/behavior panics at registration AND fails the coverage
+  witnesses (both directions: missing binding, stale binding). The
+  ~35-call hand-written registration block is gone.
+  (2) DEAD EXPORTS REMOVED: print_lua_num/bool/nil deleted from both
+  twins and the registry (they were linked by nothing since the
+  __lua_tostring path landed; the registry exposed it at M17).
+  (3) THE LAST U8 DIES: frk_rt_print_bool takes i64; loanword
+  declares i64 and widens booleans at the call site (extui); the
+  capture shim and interp builtin follow. AbiTy::U8 is REMOVED from
+  the vocabulary — no sub-word integer crosses the ABI, anywhere,
+  which retires the M15 display_bool bug class at the TYPE level
+  (the verifier keeps accepting i1/i8 DECLARATIONS via the widening
+  class rule for future frontends). The migration was driven by the
+  machinery itself: registry edited first, then every layer refused
+  to compile until fixed — twins, shims, frontend, in order, each
+  named by its own enforcement point. Nothing about D-062 remains
+  open; its revisit conditions (intrinsics DSL, lane filter) stay as
+  written.
 - D-065 [m20/surfaces] THE LUA INTRINSICS MIGRATION COMPLETES
   (D-062's named follow-up, unfenced by D-063, picked by the human).
   The _v pack wrappers, the iterator protocol (next/pairs/ipairs +

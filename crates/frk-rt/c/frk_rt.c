@@ -314,7 +314,7 @@ void frk_rt_print_f64(double value) {
     printf("%s\n", buffer);
 }
 
-void frk_rt_print_bool(unsigned char value) {
+void frk_rt_print_bool(int64_t value) {
     printf("%s\n", value ? "true" : "false");
 }
 
@@ -646,11 +646,6 @@ void frk_rt_print_lua_str(const unsigned char *s) {
 }
 
 /* ---- Lua printing (M11 bar 4; D-052/D-055): native %.14g. ---- */
-void frk_rt_print_lua_num(double value) { printf("%.14g\n", value); }
-void frk_rt_print_lua_bool(unsigned char value) {
-    printf("%s\n", value ? "true" : "false");
-}
-void frk_rt_print_lua_nil(void) { printf("nil\n"); }
 
 /* scheme display protocol (M15, r7rs_core): no trailing newline; the
  * mirror of the Rust twin. */

@@ -290,9 +290,12 @@ pub fn compile_loanword<'c>(context: &'c Context, text: &str) -> Result<Module<'
     let f64_type = Type::parse(context, "f64").ok_or(LoanwordError("f64".into()))?;
     let i1_type: Type = IntegerType::new(context, 1).into();
     let str_type = Type::parse(context, "!frk_str.str").ok_or(LoanwordError("str".into()))?;
+    let i64_type: Type = IntegerType::new(context, 64).into();
     for (symbol, param) in [
         (PRINT_F64, f64_type),
-        (PRINT_BOOL, i1_type),
+        // i64 flag per the registered ABI (D-062 finish): booleans
+        // widen at the call site; no sub-word integer crosses the ABI.
+        (PRINT_BOOL, i64_type),
         (PRINT_STR, str_type),
     ] {
         let declaration = OperationBuilder::new("func.func", Location::unknown(context))
@@ -563,6 +566,20 @@ impl<'c, 'p> Emitter<'c, 'p> {
                     TsTy::Bool => PRINT_BOOL,
                     TsTy::Str => PRINT_STR,
                     other => return err(format!("console.log of {other:?}")),
+                };
+                // Booleans widen to the registered i64 flag (D-062).
+                let value = if matches!(&ty, TsTy::Bool) {
+                    let i64_type: Type = IntegerType::new(self.context, 64).into();
+                    let widened = fcx.block.append_operation(
+                        melior::dialect::arith::extui(value, i64_type, location),
+                    );
+                    let raw = widened
+                        .result(0)
+                        .map_err(|e| LoanwordError(e.to_string()))?
+                        .to_raw();
+                    unsafe { Value::from_raw(raw) }
+                } else {
+                    value
                 };
                 fcx.block.append_operation(
                     OperationBuilder::new("func.call", location)

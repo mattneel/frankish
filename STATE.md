@@ -1,24 +1,21 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M20 complete (tag m20-done). The lua intrinsics migration is
-COMPLETE (D-065): the _v wrappers, iterator protocol, string module,
-and __lua_index moved to intrinsics.mlir; emit_helpers is DELETED —
-the lua emitter builds zero helper IR.
-Tree: green — `make test` 43 blocks; diff 79 cases 0 divergent (8
+Phase: M21 complete (tag m21-done). D-062 is CLOSED (D-066): the
+JIT/builtin registration is registry-driven with two-directional
+coverage witnesses; the dead print exports are gone from both twins;
+the last u8 crossed to i64 and AbiTy::U8 is removed — no sub-word
+integer crosses the ABI anywhere.
+Tree: green — `make test` 44 blocks; diff 79 cases 0 divergent (8
 runners); grid 74/74 × BOTH strategies × 4 triples + s390x canary.
 
 ## Next action
-M20 closed. The queue returns to the user:
-1. femto_lua v0.3 (varargs, iterator triples, __newindex) — new
-   protocol helpers now land as intrinsics.mlir edits, not builder
-   code.
+M21 closed; D-062 has nothing open. The queue returns to the user:
+1. femto_lua v0.3 (varargs, iterator triples, __newindex).
 2. r7rs_core v0.1 (pairs/lists, dynamic-wind, macros).
 3. effects-v1 (handle/perform/resume; resume closures born uniform).
-4. Registry-driven JIT/builtin registration + dead-export cleanup
-   (the remaining D-062 follow-ups).
-5. Pack terminal-count ruling (owned-params vs accepted-leak, D-064's
-   ledgered observation).
+4. Pack terminal-count ruling (owned-params vs accepted-leak — the
+   one D-064 observation still awaiting its D-entry).
 
 ## In flight
 Nothing.
@@ -44,6 +41,26 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m21-done — Shipped: D-062 closed (D-066; "finish D-062"). Registry-
+driven registration: jit_symbol/builtin_for tables supply addresses
+and closures, frk-abi rows drive the SETS, coverage witnessed in both
+directions (missing AND stale) plus loud panics at registration. Dead
+exports print_lua_num/bool/nil deleted from both twins + registry.
+The last u8 → i64 (frk_rt_print_bool): loanword declares i64 and
+extui-widens at call sites; capture shim + interp builtin follow
+(the builtin's as_bool() would have broken on the widened value —
+caught in the rewrite); AbiTy::U8 removed from the vocabulary. The
+migration was DRIVEN BY THE MACHINERY: registry first, then the C
+header, the Rust assertions, and the capture assertions each refused
+in turn, naming their own fix sites. Suite 44 blocks; diff 79/0;
+grid 74/74 × both strategies × 5 triples.
+
+M21 EXTRACTION: registry-first migration is the payoff of authoring
+surfaces — the enforcement points aren't just guards, they are the
+MIGRATION PLAN (edit the truth, follow the refusals). The coverage
+witnesses' stale direction mattered immediately: deleting the dead
+rows would have left stale jit/builtin bindings undetected without it.
+
 m20-done — Shipped: the lua intrinsics migration completes (D-065;
 D-062's follow-up, unfenced by D-063 exactly as the sequencing rule
 planned). The _v pack wrappers, next/pairs/ipairs(+iter), string
@@ -602,6 +619,22 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-16 (twenty-ninth entry)
+    Milestone/step: M21 complete, tagged m21-done; D-062 CLOSED
+    Green? yes — 44 blocks; 79/0 (8 runners); grid 74/74 × 2 × 5
+    Did:
+    - D-066; registry-driven JIT/builtin registration + has_builtin +
+      two-directional coverage witnesses; dead exports deleted; u8→i64
+      (twins, shim, loanword decl + extui, interp builtin); AbiTy::U8
+      removed; book enforcement table gains the registration row
+    Next: queue to the user (see Next action)
+    Landmines:
+    - adding a runtime fn now = ONE registry row + the twins; the
+      panics/witnesses NAME every remaining site — follow the errors,
+      do not pre-edit consumers
+    - interp builtins read WIDENED integer flags (as_signed != 0),
+      never as_bool — call sites extui before the ABI boundary
 
     Session end: 2026-07-16 (twenty-eighth entry)
     Milestone/step: M20 complete, tagged m20-done
