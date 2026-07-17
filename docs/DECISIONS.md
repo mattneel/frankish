@@ -193,6 +193,40 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-073 [m28/ts2/mem] TS-2 OPENS with the classes core (the human
+  picked it; the stage completes over two milestones — interfaces/
+  itabs (D-026) and object closures/method values are the SECOND
+  half, fenced here). (1) REPRESENTATION: a class instance is a
+  MANAGED BOX OF A PRODUCT — !frk_mem.box<!frk_adt.product<[...]>>,
+  fields in declaration order. No new kernel TYPE: identity comes
+  from the box, shape from the product, tracing from the layout
+  word. What the kernel lacked is FIELD-GRANULAR MUTATION: new ops
+  frk_mem.field_get(box){field}->T / field_set(box, value){field},
+  the record idiom TS carries that no earlier specimen forced
+  (Lua's tables are dynamic; ml_core's products immutable). (2)
+  Slice: monomorphic classes, annotated fields (num/bool/str +
+  class references — cycles are IN scope), a single constructor
+  (param + this-assignment bodies), methods as plain functions
+  taking `this` first (@Class_method; direct calls — no dispatch
+  until itabs), `new` as @Class_new. Class annotations are treated
+  NOMINALLY in this slice; structural typing bites at the interface
+  milestone, where it belongs. (3) GC LIVE FOR TS (Tier 2):
+  kinds_layout's product recursion generalizes from its dyn-only
+  arm to SLOT-KIND-DRIVEN codes — managed-pointer fields code 1, so
+  records holding strings/arrays/records TRACE; the retain side is
+  already symmetric (product_snoc retains managed appends, D-057).
+  field_set mirrors box_set: retain-new, store, NO release-old (the
+  documented leak-biased frontier). field_set joins the D-057
+  owned-operand exclusion. Cyclic instance graphs ride the existing
+  Bacon–Rajan machinery — a cycle corpus case gates under rc.
+  (4) Loanword: additive within v1 again (classdecl top row; new/
+  mcall/pset nodes; prop reused for field reads). FENCED LOUD:
+  interfaces, method values/object closures (next milestone),
+  inheritance/extends, static members, getters/setters, optional
+  and union-typed fields, field initializers at declaration,
+  nested classes, `this` outside methods. Revisit: itabs next
+  milestone; union-typed locals + fields when TS-2 completes
+  (mutation semantics for narrowing demote by design, D-072).
 - D-072 [m27/ts1/contract] TS-1 lands (the human picked it):
   discriminated unions + the imported-flow-facts verifier — and
   frk_contract is BORN (SPEC §4.6; D-015's first ops). The

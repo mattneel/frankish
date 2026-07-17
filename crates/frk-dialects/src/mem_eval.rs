@@ -11,6 +11,8 @@ pub(crate) fn register_eval(interp: &mut Interp<'_, '_>) {
     interp.register_eval("frk_mem.box_new", Box::new(BoxNew));
     interp.register_eval("frk_mem.box_get", Box::new(BoxGet));
     interp.register_eval("frk_mem.box_set", Box::new(BoxSet));
+    interp.register_eval("frk_mem.field_get", Box::new(FieldGet));
+    interp.register_eval("frk_mem.field_set", Box::new(FieldSet));
     interp.register_eval("frk_mem.array_new", Box::new(ArrayNew));
     interp.register_eval("frk_mem.array_get", Box::new(ArrayGet));
     interp.register_eval("frk_mem.array_set", Box::new(ArraySet));
@@ -161,6 +163,61 @@ impl Eval for BoxSet {
         let boxed = operand_value(frame, op, 0)?;
         let value = operand_value(frame, op, 1)?;
         *boxed.as_box()?.borrow_mut() = value;
+        continue_with_results(frame, op, &[])
+    }
+}
+
+/// Field-granular record reads (D-073): the box holds a product
+/// (tag-0 adt); project the named field out of the shared cell.
+struct FieldGet;
+impl Eval for FieldGet {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let boxed = operand_value(frame, op, 0)?;
+        let field = crate::adt::index_attr(op, "field").map_err(EvalError::Malformed)?;
+        let cell = boxed.as_box()?;
+        let value = {
+            let record = cell.borrow();
+            let (_, fields) = record.as_adt()?;
+            fields
+                .get(field)
+                .cloned()
+                .ok_or_else(|| {
+                    EvalError::Malformed(format!("field {field} out of range"))
+                })?
+        };
+        continue_with_result(frame, op, value)
+    }
+}
+
+/// Field-granular record writes (D-073): replace one field in place;
+/// aliases of the box observe the write.
+struct FieldSet;
+impl Eval for FieldSet {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let boxed = operand_value(frame, op, 0)?;
+        let value = operand_value(frame, op, 1)?;
+        let field = crate::adt::index_attr(op, "field").map_err(EvalError::Malformed)?;
+        let cell = boxed.as_box()?;
+        {
+            let mut record = cell.borrow_mut();
+            let (tag, fields) = record.as_adt()?;
+            let mut fields = fields.to_vec();
+            if field >= fields.len() {
+                return Err(EvalError::Malformed(format!("field {field} out of range")));
+            }
+            fields[field] = value;
+            *record = Value::adt(tag, fields);
+        }
         continue_with_results(frame, op, &[])
     }
 }

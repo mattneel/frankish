@@ -126,6 +126,10 @@ fn kinds_layout(kinds: &[SlotKind<'_>], types: &[Type<'_>]) -> u64 {
                     // M25 (D-070): a boxed product traces its dyn
                     // fields — the all-zero fallback left a pair's
                     // car/cdr untraced (an rc UAF at first release).
+                    // M28 (D-073): the recursion goes SLOT-KIND-DRIVEN
+                    // — managed-pointer fields code 1, so records
+                    // holding strings/arrays/records trace and their
+                    // releases cascade (retain==trace symmetry).
                     let mut emitted = 0usize;
                     let field_context = unsafe { TypeLike::context(ty).to_ref() };
                     if let Ok(fields) = decode_product(field_context, *ty) {
@@ -134,9 +138,28 @@ fn kinds_layout(kinds: &[SlotKind<'_>], types: &[Type<'_>]) -> u64 {
                                 codes.push(2);
                                 codes.push(0);
                                 emitted += 2;
-                            } else {
-                                codes.push(0);
-                                emitted += 1;
+                                continue;
+                            }
+                            match slot_kind(field_context, *field) {
+                                Ok(SlotKind::Ptr { managed }) => {
+                                    codes.push(if managed { 1 } else { 0 });
+                                    emitted += 1;
+                                }
+                                Ok(SlotKind::Closure) => {
+                                    codes.push(0); // thunk fn-ptr
+                                    codes.push(1); // env ptr (managed)
+                                    emitted += 2;
+                                }
+                                Ok(SlotKind::Words { slots, .. }) => {
+                                    // Nested aggregates: conservative
+                                    // skip (the leak-biased frontier).
+                                    codes.extend(std::iter::repeat_n(0u8, slots));
+                                    emitted += slots;
+                                }
+                                _ => {
+                                    codes.push(0);
+                                    emitted += 1;
+                                }
                             }
                         }
                     }
@@ -335,6 +358,22 @@ enum Planned<'c, 'a> {
     BoxSet {
         op: OperationRef<'c, 'a>,
         payload_retain: RetainKind,
+    },
+    /// Record field read (D-073): load one word at a slot offset in
+    /// the box payload and adapt it to the field type.
+    FieldGet {
+        op: OperationRef<'c, 'a>,
+        offset: usize,
+        kind: SlotKind<'c>,
+    },
+    /// Record field write (D-073): retain-new (rc), adapt to a word,
+    /// store at the slot offset. NO release-old — the documented
+    /// leak-biased frontier, mirroring box_set.
+    FieldSet {
+        op: OperationRef<'c, 'a>,
+        offset: usize,
+        kind: SlotKind<'c>,
+        field_retain: RetainKind,
     },
     ArrayNew {
         op: OperationRef<'c, 'a>,
@@ -563,6 +602,11 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
                 {
                     &[(*op, 1)]
                 }
+                Planned::FieldSet { op, field_retain, .. }
+                    if *field_retain != RetainKind::None =>
+                {
+                    &[(*op, 1)]
+                }
                 Planned::ArraySet { op, elem_retain, .. }
                     if *elem_retain != RetainKind::None =>
                 {
@@ -667,6 +711,7 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
             Planned::ProductSnoc { op, .. } => &[(*op, 1usize)],
             Planned::BoxNew { op, .. } => &[(*op, 0)],
             Planned::BoxSet { op, .. } => &[(*op, 1)],
+            Planned::FieldSet { op, .. } => &[(*op, 1)],
             Planned::ArraySet { op, .. } => &[(*op, 2)],
             Planned::DynWrap { op, .. } => &[(*op, 0)],
             // Table stores own both the key and the value (D-057).
@@ -1251,6 +1296,30 @@ fn plan_mem<'c, 'a>(
                 op,
                 payload_retain: retain_kind(&slot_kind(context, elem)?, elem),
             })
+        }
+        "field_get" | "field_set" => {
+            let box_type = op
+                .operand(0)
+                .map_err(|_| "field op without a box operand".to_string())?
+                .r#type();
+            let (fields, field) = crate::mem::record_field(context, op, box_type)?;
+            let kinds = fields
+                .iter()
+                .map(|ty| slot_kind(context, *ty))
+                .collect::<Result<Vec<_>, _>>()?;
+            let offset = total_slots(&kinds[..field]);
+            let kind = kinds[field].clone();
+            if matches!(kind, SlotKind::Words { .. } | SlotKind::Closure) {
+                return Err(
+                    "multi-slot record fields are fenced (D-073: num/bool/str/refs)".into(),
+                );
+            }
+            if suffix == "field_get" {
+                Ok(Planned::FieldGet { op, offset, kind })
+            } else {
+                let field_retain = retain_kind(&kind, fields[field]);
+                Ok(Planned::FieldSet { op, offset, kind, field_retain })
+            }
         }
         "array_new" => {
             let elem = crate::mem::decode_arr(
@@ -3705,6 +3774,86 @@ fn apply<'c, 'a>(
                 .unwrap_or(false);
             maybe_retain(context, rewriter, strategy, payload_retain, payload, shared, location)?;
             rewriter.insert(store_op(context, payload, boxed, location)?);
+            rewriter.erase_op(op);
+            Ok(())
+        }
+        Planned::FieldGet { op, offset, kind } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
+            let boxed = operand(op, 0)?;
+            let slot =
+                result_value(rewriter.insert(gep_op(context, boxed, offset, ptr, location)?))?;
+            let word = result_value(rewriter.insert(
+                OperationBuilder::new("llvm.load", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "ordering"),
+                        Attribute::parse(context, "0 : i64").ok_or("ordering attr")?,
+                    )])
+                    .add_operands(&[slot])
+                    .add_results(&[i64_type])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            let value = match kind {
+                SlotKind::Ptr { .. } => {
+                    result_value(rewriter.insert(cast_op("llvm.inttoptr", word, ptr, location)?))?
+                }
+                SlotKind::F64 => result_value(rewriter.insert(cast_op(
+                    "arith.bitcast",
+                    word,
+                    Type::parse(context, "f64").ok_or("f64")?,
+                    location,
+                )?))?,
+                SlotKind::Int(width) if width < 64 => {
+                    result_value(rewriter.insert(cast_op(
+                        "arith.trunci",
+                        word,
+                        IntegerType::new(context, width as u32).into(),
+                        location,
+                    )?))?
+                }
+                _ => word,
+            };
+            finish(rewriter, op, value)
+        }
+        Planned::FieldSet { op, offset, kind, field_retain } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
+            let boxed = operand(op, 0)?;
+            let value = operand(op, 1)?;
+            let shared = retain_shared
+                .get(&(op.to_raw().ptr as usize, 1))
+                .copied()
+                .unwrap_or(false);
+            maybe_retain(context, rewriter, strategy, field_retain, value, shared, location)?;
+            let word = match kind {
+                SlotKind::Ptr { .. } => result_value(rewriter.insert(cast_op(
+                    "llvm.ptrtoint",
+                    value,
+                    i64_type,
+                    location,
+                )?))?,
+                SlotKind::F64 => result_value(rewriter.insert(cast_op(
+                    "arith.bitcast",
+                    value,
+                    i64_type,
+                    location,
+                )?))?,
+                SlotKind::Int(width) if width < 64 => result_value(rewriter.insert(cast_op(
+                    "arith.extui",
+                    value,
+                    i64_type,
+                    location,
+                )?))?,
+                _ => value,
+            };
+            let slot =
+                result_value(rewriter.insert(gep_op(context, boxed, offset, ptr, location)?))?;
+            rewriter.insert(store_op(context, word, slot, location)?);
             rewriter.erase_op(op);
             Ok(())
         }

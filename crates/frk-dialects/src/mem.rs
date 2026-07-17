@@ -19,7 +19,7 @@ use melior::ir::{OperationRef, Type, ValueLike};
 
 use crate::attr_util::type_params;
 
-pub const IRDL: &str = r#"
+pub const IRDL: &str = r##"
 irdl.dialect @frk_mem {
   irdl.type @box {
     %elem = irdl.any
@@ -75,8 +75,44 @@ irdl.dialect @frk_mem {
     %v = irdl.any
     irdl.operands(box: %b, value: %v)
   }
+  irdl.operation @field_get {
+    %b = irdl.base @frk_mem::@box
+    %v = irdl.any
+    %f = irdl.base "#builtin.integer"
+    irdl.operands(box: %b)
+    irdl.results(value: %v)
+    irdl.attributes { "field" = %f }
+  }
+  irdl.operation @field_set {
+    %b = irdl.base @frk_mem::@box
+    %v = irdl.any
+    %f = irdl.base "#builtin.integer"
+    irdl.operands(box: %b, value: %v)
+    irdl.attributes { "field" = %f }
+  }
 }
-"#;
+"##;
+
+/// Decodes a record op's box operand: the box must hold a product
+/// (D-073 — a class instance is a managed box of a product), and the
+/// `field` attribute must index into it. Returns (field types, index).
+pub(crate) fn record_field<'c>(
+    context: &'c Context,
+    op: OperationRef<'c, '_>,
+    box_type: Type<'c>,
+) -> Result<(Vec<Type<'c>>, usize), String> {
+    let elem = decode_box(context, box_type)?;
+    let fields = crate::adt::decode_product(context, elem)
+        .map_err(|_| format!("field ops need a box of a product, got box<{elem}>"))?;
+    let field = crate::adt::index_attr(op, "field")?;
+    if field >= fields.len() {
+        return Err(format!(
+            "field {field} out of range: the record has {} field(s)",
+            fields.len()
+        ));
+    }
+    Ok((fields, field))
+}
 
 /// Decodes `!frk_mem.box<T>` to T.
 pub(crate) fn decode_box<'c>(context: &'c Context, r#type: Type<'c>) -> Result<Type<'c>, String> {
@@ -138,6 +174,36 @@ pub(crate) fn verify_op<'c>(
                 Ok(())
             } else {
                 Err(format!("box_set stores a {value} into a box<{elem}>"))
+            }
+        }
+        // Field-granular record mutation (D-073): the box must hold a
+        // product; the field index must be in range; the value/result
+        // type must equal the named field's type.
+        "field_get" => {
+            let (fields, field) = record_field(context, op, operand_type(0)?)?;
+            let result = op
+                .result(0)
+                .map_err(|_| "field_get without a result".to_string())?
+                .r#type();
+            if result == fields[field] {
+                Ok(())
+            } else {
+                Err(format!(
+                    "field_get yields {result}, field {field} is {}",
+                    fields[field]
+                ))
+            }
+        }
+        "field_set" => {
+            let (fields, field) = record_field(context, op, operand_type(0)?)?;
+            let value = operand_type(1)?;
+            if value == fields[field] {
+                Ok(())
+            } else {
+                Err(format!(
+                    "field_set stores a {value}, field {field} is {}",
+                    fields[field]
+                ))
             }
         }
         "array_new" => {
