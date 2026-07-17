@@ -1,23 +1,25 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M25 complete (tag m25-done). r7rs_core v0.1 (D-070): pairs
-(TAG_PAIR = 6 — the D-051 widening, every D-057 symmetry site
-touched), quote/symbols, and dynamic-wind CLOSED escape-only as
-frk_ctl.wind (the D-061 guard discipline IS the finalizer hook).
-Tree: green — `make test` 45 blocks; diff 91 cases 0 divergent (8
-runners); grid 86/86 × BOTH strategies × 4 triples + s390x canary.
+Phase: M26 complete (tag m26-done). Handler consumption (D-071):
+R7RS exceptions over v1 handlers as PURE consumption; first-class
+procedures de-fenced for scheme; the escape-wins perform_end fix
+(the one ledgered kernel-adjacent delta — a real M24 bug the
+consumer caught).
+Tree: green — `make test` 45 blocks; diff 95 cases 0 divergent (8
+runners); grid 90/90 × BOTH strategies × 4 triples + s390x canary.
 
 ## Next action
-M25 closed. The queue:
-1. A handler-consuming surface (scheme parameterize / error handlers
-   over v1 handle/perform, or a koka-slice specimen) — the idiom
-   that pulls effects into a frontend (L5 admission).
-2. r7rs_core v0.2: set-car!/set-cdr! (pair mutation REOPENS the
-   cycle question — pairs join the purple/candidate machinery),
-   strings, vectors; define-syntax stays behind the expander.
-3. The Tier-2 stack-switching rung (re-entrant κ + re-entrant
-   winds) — revisit at coroutines per D-069/D-070.
+M26 closed. The queue:
+1. r7rs_core v0.3: make-parameter/parameterize (top-level value
+   defines — global cells — are the missing rung; first-class
+   procedures now exist), guard sugar, plain raise.
+2. r7rs_core structured-data growth: set-car!/set-cdr! (pair
+   mutation joins the purple machinery), strings, vectors.
+3. The Tier-2 stack-switching rung (re-entrant κ / winds) — at
+   coroutines.
+4. TS-1 (narrowing verifier; D-051 tag widening precedent now
+   exists twice).
 
 ## In flight
 Nothing.
@@ -43,6 +45,33 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m26-done — Shipped: handler consumption (D-071). R7RS
+with-exception-handler + raise-continuable over the v1 handlers as
+PURE CONSUMPTION: the clause and body are STATIC wrapper intrinsics
+(per-site closures differ only in env); the handler's return IS the
+resume value (R7RS 6.11 = the tail-resume ABI); nested delegation =
+the D-069 masking rule, zero new semantics. The consuming idiom
+forced FIRST-CLASS PROCEDURES (L5 working): lambdas lift as uniform
+pack-fn closures (wind-thunk machinery generalized to n params via
+__scm_arg), procedure-valued vars apply through the uniform
+convention + guard. THE LEDGERED DELTA against the zero-kernel bar:
+perform_end clobbered an in-flight abort when a clause ESCAPED
+through an enclosing prompt — the interp's Err propagation had
+escape-wins right, native overwrote the pending cell. Both twins
+fixed; exn_escape (escape from a handler crossing a dynamic-wind,
+afters firing) witnesses it on every runner. Corpus 15/15 vs chibi;
+suite 45; diff 95/0; grid 90/90 × 5 × 2.
+
+M26 EXTRACTION: consumption is a VERIFIER CLASS. Hand-written op
+goldens exercise what the author imagined; a real surface exercises
+COMPOSITIONS nobody wrote down — escape-from-clause-across-wind
+existed in no golden and broke native. The milestone's design
+lesson: static wrapper intrinsics over per-site closures (env
+carries the variance) kept the whole feature at two IR functions —
+the seed-module surface absorbing what would have been emitter
+builder-code sprawl. First-class procedures cost ~80 emitter lines
+because the uniform convention already existed everywhere below.
+
 m25-done — Shipped: r7rs_core v0.1 (D-070; the human picked
 "r7rs_core"). THE D-051 WIDENING FIRED: TAG_PAIR = 6 — pairs as
 wrapped product<[dyn,dyn]> through EXISTING ops (no cons kernel op;
@@ -737,6 +766,31 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-17 (twenty-eighth entry)
+    Milestone/step: M26 complete, tagged m26-done
+    Green? yes — 45 blocks; 95/0 (8 runners); grid 90/90 × 5 × 2
+    Did:
+    - D-071; __scm_arg intrinsic; wind-thunk lifting generalized to
+      n params; first-class lambdas + procedure-valued application
+      (guarded); __scm_exn_clause/__scm_exn_body static wrappers;
+      with-exception-handler + raise-continuable primitives; the
+      escape-wins perform_end fix (both twins); 4 chibi-validated
+      corpus cases; manifest v0.2; book current
+    Next: queue to the user (parameterize+global cells / pair
+    mutation+strings+vectors / Tier-2 / TS-1)
+    Landmines:
+    - perform_end preserves an in-flight abort BY DESIGN (escape
+      wins over abortive-clause) — do not "simplify" the pending
+      check away; the interp's Err propagation is the spec
+    - first-class application reads result HEAD via __scm_arg,
+      which breaks the apply-tail shape — deep first-class tail
+      recursion is not TCO'd (direct calls still are); note before
+      any corpus case leans on it
+    - __scm_exn_clause runs the user handler INSIDE the clause
+      frame: a handler that itself installs handlers works (masking
+      is per-entry), but a handler RESUMING TWICE would hit the
+      one-shot trap — R7RS-legal (raise-continuable resumes once)
 
     Session end: 2026-07-16 (twenty-seventh entry)
     Milestone/step: M25 complete, tagged m25-done

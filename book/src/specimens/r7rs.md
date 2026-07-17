@@ -98,7 +98,20 @@ with the interpreter mirroring it by catching the abort around the
 thunk. Two nested winds crossed by an escape print their afters
 innermost-first, exactly once, byte-equal with chibi.
 
-r7rs_core is v0.1 SHIPPED. It forced `frk_ctl` into existence, made tail
+At v0.2 (M26) the specimen became the **first consumer of the
+effects surface**: `with-exception-handler` + `raise-continuable`
+land as pure consumption — the handler's return *is*
+raise-continuable's value (the tail-resume clause ABI verbatim), and
+R7RS's rule that the handler runs with the *outer* handler current
+needed no new semantics: it is the masking rule. The consuming idiom
+also de-fenced **first-class procedures** (lambdas as uniform
+closures, procedure-valued application), and caught a real
+effects-v1 bug: a handler escaping through an enclosing prompt had
+its in-flight abort clobbered by the native perform's abortive path
+— escape now wins in both twins, witnessed by an escape crossing a
+dynamic-wind out of a handler on every runner.
+
+r7rs_core is v0.2 SHIPPED. It forced `frk_ctl` into existence, made tail
 calls load-bearing corpus-wide, and demonstrated the calling-convention
 fork — the fourth language on the kernel, and the one that proved the
 control lane.

@@ -1,4 +1,17 @@
-# specimen: r7rs_core — v0.1 SHIPPED (D-070; m25-done)
+# specimen: r7rs_core — v0.2 SHIPPED (D-071; m26-done)
+
+Status: v0.2 shipped (M26): R7RS exceptions —
+with-exception-handler + raise-continuable over the v1 handlers
+(handle{label=exn}; the handler's return IS raise-continuable's
+value; nested handlers delegate outward via the D-069 masking rule)
+— and FIRST-CLASS PROCEDURES de-fenced (lambdas as uniform pack-fn
+closures; procedure-valued application through the uniform
+convention). 15-case corpus vs chibi, all runners, all triples.
+Fences v0.3+: plain raise (handler-returns semantics), guard sugar,
+error objects, make-parameter/parameterize (wants top-level value
+defines), set-car!/set-cdr!, strings, vectors, define-syntax.
+
+Previously — v0.1 (D-070; m25-done):
 
 Status: v0.1 shipped (M25): pairs/lists (TAG_PAIR = 6 — the D-051
 widening — as wrapped product<[dyn,dyn]> carriers), quote + symbols
