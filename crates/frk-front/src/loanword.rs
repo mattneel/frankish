@@ -27,6 +27,7 @@
 //!   (tsc-legal dead code).
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use melior::Context;
 use melior::ir::attribute::{
@@ -126,6 +127,31 @@ enum TsTy {
     Void,
     Str,
     Arr(Box<TsTy>),
+    /// A discriminated union (D-072) — the value IS an frk_adt sum.
+    Union(Rc<UnionDef>),
+    /// A union value NARROWED to one variant: same sum representation,
+    /// the index licenses checkless `extract`s downstream.
+    Variant(Rc<UnionDef>, usize),
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct UnionDef {
+    variants: Vec<VariantDef>,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct VariantDef {
+    /// The `kind` string literal — NOT a stored field (D-072): tests
+    /// lower to tag compares, reads to tag-selected literals.
+    kind: String,
+    fields: Vec<(String, TsTy)>,
+}
+
+/// One interned type row: a value type, or a variant row (referenced
+/// by union rows; not a value type by itself — D-072 fence).
+enum Row {
+    Ty(TsTy),
+    Obj(VariantDef),
 }
 
 struct TsFn {
@@ -141,6 +167,18 @@ struct Artifact {
     /// Byte offset of each line start, for span → line/col.
     line_starts: Vec<usize>,
     file: String,
+    /// The resolved type-row table — `obj`/`narrow` nodes reference
+    /// union rows by index (D-072).
+    types: Vec<Row>,
+}
+
+impl Artifact {
+    fn union_at(&self, index: usize) -> Result<Rc<UnionDef>> {
+        match self.types.get(index) {
+            Some(Row::Ty(TsTy::Union(def))) => Ok(def.clone()),
+            _ => err(format!("type ref {index} is not a union row (D-072)")),
+        }
+    }
 }
 
 fn field<'j>(node: &'j Json, key: &str) -> Result<&'j Json> {
@@ -178,53 +216,92 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
         }
     }
 
-    let types: Vec<TsTy> = field(&document, "types")?
+    // One ordered pass: producers intern depth-first, so every ref
+    // points backward (the D-049 arr precedent, now general — obj rows
+    // reference scalar rows, union rows reference obj rows; D-072).
+    let mut rows: Vec<Row> = Vec::new();
+    for row in field(&document, "types")?
         .as_array()
         .ok_or_else(|| LoanwordError("types must be an array".into()))?
-        .iter()
-        .map(|row| match kind(row)? {
-            "num" => Ok(TsTy::Num),
-            "bool" => Ok(TsTy::Bool),
-            "void" => Ok(TsTy::Void),
-            "str" => Ok(TsTy::Str),
-            // arr rows reference an earlier interned row (producers
-            // intern elem first); resolved in a second pass below.
-            "arr" => Ok(TsTy::Void),
-            other => err(format!("unsupported interned type {other:?}")),
-        })
-        .collect::<Result<_>>()?;
-    // Second pass: resolve arr rows now that scalars exist.
-    let types: Vec<TsTy> = field(&document, "types")?
-        .as_array()
-        .unwrap()
-        .iter()
-        .enumerate()
-        .map(|(index, row)| {
-            if kind(row)? == "arr" {
-                let elem = field(row, "elem")?
-                    .as_u64()
-                    .ok_or_else(|| LoanwordError("arr elem ref".into()))?;
-                let elem = types
-                    .get(elem as usize)
-                    .cloned()
-                    .ok_or_else(|| LoanwordError("arr elem out of range".into()))?;
+    {
+        let resolved_ty = |key: &Json| -> Result<TsTy> {
+            let index = key
+                .as_u64()
+                .ok_or_else(|| LoanwordError("type ref must be an index".into()))?;
+            match rows.get(index as usize) {
+                Some(Row::Ty(ty)) => Ok(ty.clone()),
+                Some(Row::Obj(_)) => err("a variant row is not a value type (D-072)"),
+                None => err(format!("type ref {index} out of range")),
+            }
+        };
+        let parsed = match kind(row)? {
+            "num" => Row::Ty(TsTy::Num),
+            "bool" => Row::Ty(TsTy::Bool),
+            "void" => Row::Ty(TsTy::Void),
+            "str" => Row::Ty(TsTy::Str),
+            "arr" => {
+                let elem = resolved_ty(field(row, "elem")?)?;
                 if matches!(elem, TsTy::Arr(_)) {
                     return err("nested arrays are fenced in TS-0 (D-049)");
                 }
-                Ok(TsTy::Arr(Box::new(elem)))
-            } else {
-                Ok(types[index].clone())
+                Row::Ty(TsTy::Arr(Box::new(elem)))
             }
-        })
-        .collect::<Result<_>>()?;
+            "obj" => {
+                let kind_lit = field(row, "kind")?
+                    .as_str()
+                    .ok_or_else(|| LoanwordError("obj row kind".into()))?
+                    .to_string();
+                let mut fields = Vec::new();
+                for entry in field(row, "fields")?
+                    .as_array()
+                    .ok_or_else(|| LoanwordError("obj row fields".into()))?
+                {
+                    let name = field(entry, "name")?
+                        .as_str()
+                        .ok_or_else(|| LoanwordError("obj field name".into()))?
+                        .to_string();
+                    let ty = resolved_ty(field(entry, "ty")?)?;
+                    if !matches!(ty, TsTy::Num | TsTy::Bool | TsTy::Str) {
+                        return err("variant fields are num/bool/str in TS-1 (D-072)");
+                    }
+                    fields.push((name, ty));
+                }
+                Row::Obj(VariantDef { kind: kind_lit, fields })
+            }
+            "union" => {
+                let mut variants = Vec::new();
+                for reference in field(row, "variants")?
+                    .as_array()
+                    .ok_or_else(|| LoanwordError("union row variants".into()))?
+                {
+                    let index = reference
+                        .as_u64()
+                        .ok_or_else(|| LoanwordError("union variant ref".into()))?;
+                    match rows.get(index as usize) {
+                        Some(Row::Obj(def)) => variants.push(def.clone()),
+                        _ => return err("union row must reference variant rows (D-072)"),
+                    }
+                }
+                if variants.is_empty() {
+                    return err("a union needs at least one variant");
+                }
+                Row::Ty(TsTy::Union(Rc::new(UnionDef { variants })))
+            }
+            other => return err(format!("unsupported interned type {other:?}")),
+        };
+        rows.push(parsed);
+    }
     let type_at = |node: &Json, key: &str| -> Result<TsTy> {
         let index = field(node, key)?
             .as_u64()
             .ok_or_else(|| LoanwordError("type ref must be an index".into()))?;
-        types
-            .get(index as usize)
-            .cloned()
-            .ok_or_else(|| LoanwordError(format!("type ref {index} out of range")))
+        match rows.get(index as usize) {
+            Some(Row::Ty(ty)) => Ok(ty.clone()),
+            Some(Row::Obj(_)) => {
+                err("a variant row is not a value type — annotate with its union (D-072)")
+            }
+            None => err(format!("type ref {index} out of range")),
+        }
     };
 
     let mut functions = Vec::new();
@@ -271,6 +348,7 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
             .clone(),
         line_starts,
         file,
+        types: rows,
     })
 }
 
@@ -359,26 +437,24 @@ struct Fcx<'c, 'r> {
 }
 
 impl<'c, 'p> Emitter<'c, 'p> {
-    fn loc_of(&self, node: &Json) -> Location<'c> {
-        // Span → FileLineColLoc via the artifact's line table (§6.5).
-        let Some(span) = node.get("span").and_then(Json::as_array) else {
-            return Location::unknown(self.context);
-        };
-        let Some(start) = span.first().and_then(Json::as_u64) else {
-            return Location::unknown(self.context);
-        };
-        let start = start as usize;
+    /// Span → 1-based (line, column) via the artifact line table.
+    fn line_col(&self, node: &Json) -> Option<(usize, usize)> {
+        let span = node.get("span").and_then(Json::as_array)?;
+        let start = span.first().and_then(Json::as_u64)? as usize;
         let line = match self.artifact.line_starts.binary_search(&start) {
             Ok(exact) => exact,
             Err(insert) => insert - 1,
         };
         let column = start - self.artifact.line_starts[line];
-        Location::new(
-            self.context,
-            &self.artifact.file,
-            line + 1,
-            column + 1,
-        )
+        Some((line + 1, column + 1))
+    }
+
+    fn loc_of(&self, node: &Json) -> Location<'c> {
+        // Span → FileLineColLoc via the artifact's line table (§6.5).
+        let Some((line, column)) = self.line_col(node) else {
+            return Location::unknown(self.context);
+        };
+        Location::new(self.context, &self.artifact.file, line, column)
     }
 
     fn mlir_ty(&self, ty: &TsTy) -> Result<Type<'c>> {
@@ -393,8 +469,29 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 Type::parse(self.context, &format!("!frk_mem.arr<{inner}>"))
                     .ok_or(LoanwordError("arr".into()))
             }
+            TsTy::Union(def) | TsTy::Variant(def, _) => {
+                // Union and narrowed-variant values share one sum
+                // representation (D-072) — narrowing is a fact, not a
+                // representation change.
+                Type::parse(self.context, &self.sum_text(def)?)
+                    .ok_or(LoanwordError("sum".into()))
+            }
             TsTy::Void => err("void has no value type"),
         }
+    }
+
+    /// `!frk_adt.sum<[[…],[…]]>` for a union — variant payload types
+    /// in declaration order, `kind` excluded (D-072).
+    fn sum_text(&self, def: &UnionDef) -> Result<String> {
+        let mut variants = Vec::new();
+        for variant in &def.variants {
+            let mut fields = Vec::new();
+            for (_, ty) in &variant.fields {
+                fields.push(format!("{}", self.mlir_ty(ty)?));
+            }
+            variants.push(format!("[{}]", fields.join(", ")));
+        }
+        Ok(format!("!frk_adt.sum<[{}]>", variants.join(", ")))
     }
 
     fn signature(&self, function: &TsFn) -> Result<FunctionType<'c>> {
@@ -595,6 +692,12 @@ impl<'c, 'p> Emitter<'c, 'p> {
             }
             "let" => {
                 let (value, ty) = self.emit_expr(fcx, field(node, "e")?)?;
+                if matches!(ty, TsTy::Union(_) | TsTy::Variant(_, _)) {
+                    // Producer-fenced (D-072); defense in depth — box
+                    // reads have no SSA identity, so narrow facts on a
+                    // boxed union would silently demote.
+                    return err("union-typed locals are fenced in TS-1 (D-072)");
+                }
                 let name = field(node, "name")?
                     .as_str()
                     .ok_or_else(|| LoanwordError("let name".into()))?;
@@ -655,11 +758,17 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 let (condition, _) = self.emit_expr(fcx, field(node, "c")?)?;
                 let then_block = fcx.region.append_block(Block::new(&[]));
                 let else_block = fcx.region.append_block(Block::new(&[]));
-                let join_block = fcx.region.append_block(Block::new(&[]));
                 fcx.block.append_operation(self.cond_br(
                     condition, then_block, else_block, location,
                 )?);
 
+                // The join is LAZY: when both arms return, appending a
+                // predecessor-less join block leaves dead unconverted
+                // ops for the LLVM translation to choke on (found by
+                // TS-1's trailing if/else-return shape). Statements
+                // after a fully-returning if are tsc-visible dead code
+                // and drop like statements after `return`.
+                let mut fallthroughs = Vec::new();
                 for (start, statements) in [
                     (then_block, Some(field(node, "then")?)),
                     (else_block, node.get("else").filter(|e| !e.is_null())),
@@ -675,9 +784,16 @@ impl<'c, 'p> Emitter<'c, 'p> {
                         }
                     }
                     if !fcx.terminated {
-                        fcx.block
-                            .append_operation(self.br(join_block, None, location)?);
+                        fallthroughs.push(fcx.block);
                     }
+                }
+                if fallthroughs.is_empty() {
+                    fcx.terminated = true;
+                    return Ok(());
+                }
+                let join_block = fcx.region.append_block(Block::new(&[]));
+                for exit in fallthroughs {
+                    exit.append_operation(self.br(join_block, None, location)?);
                 }
                 fcx.block = join_block;
                 fcx.terminated = false;
@@ -929,6 +1045,20 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 let op = field(node, "op")?
                     .as_str()
                     .ok_or_else(|| LoanwordError("bin op".into()))?;
+                // A discriminant test on an unnarrowed union lowers to
+                // a TAG compare, not a string compare (D-072) — this is
+                // what the promotion pass re-derives facts from.
+                if matches!(op, "===" | "!==") {
+                    if let Some(result) = self.try_kind_test(
+                        fcx,
+                        op,
+                        field(node, "l")?,
+                        field(node, "r")?,
+                        location,
+                    )? {
+                        return Ok(result);
+                    }
+                }
                 let (lhs, lhs_ty) = self.emit_expr(fcx, field(node, "l")?)?;
                 let (rhs, _) = self.emit_expr(fcx, field(node, "r")?)?;
                 let f64_type = self.mlir_ty(&TsTy::Num)?;
@@ -1129,8 +1259,343 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 )?;
                 Ok((value, target.ret.clone()))
             }
+            "obj" => {
+                // Union-variant construction (D-072): product chain +
+                // make_sum, fields in variant declaration order, kind
+                // not stored.
+                let index = field(node, "u")?
+                    .as_u64()
+                    .ok_or_else(|| LoanwordError("obj union ref".into()))?;
+                let def = self.artifact.union_at(index as usize)?;
+                let v = field(node, "v")?
+                    .as_u64()
+                    .ok_or_else(|| LoanwordError("obj variant".into()))?
+                    as usize;
+                let variant = def
+                    .variants
+                    .get(v)
+                    .ok_or_else(|| LoanwordError(format!("variant {v} out of range")))?
+                    .clone();
+                let items = field(node, "fields")?
+                    .as_array()
+                    .ok_or_else(|| LoanwordError("obj fields".into()))?;
+                if items.len() != variant.fields.len() {
+                    return err(format!(
+                        "variant '{}' takes {} field(s), literal has {}",
+                        variant.kind,
+                        variant.fields.len(),
+                        items.len()
+                    ));
+                }
+                let mut product = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_adt.product_new", location)
+                        .add_results(&[Type::parse(self.context, "!frk_adt.product<[]>")
+                            .ok_or(LoanwordError("product".into()))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                let mut grown = Vec::new();
+                for (item, (name, declared)) in items.iter().zip(&variant.fields) {
+                    let (value, ty) = self.emit_expr(fcx, item)?;
+                    if &ty != declared {
+                        return err(format!(
+                            "field '{name}' of '{}' is {declared:?}, literal supplies {ty:?}",
+                            variant.kind
+                        ));
+                    }
+                    grown.push(format!("{}", self.mlir_ty(&ty)?));
+                    let product_ty =
+                        Type::parse(self.context, &format!("!frk_adt.product<[{}]>", grown.join(", ")))
+                            .ok_or(LoanwordError("product".into()))?;
+                    product = self.op_result(
+                        fcx.block,
+                        OperationBuilder::new("frk_adt.product_snoc", location)
+                            .add_operands(&[product, value])
+                            .add_results(&[product_ty])
+                            .build()
+                            .map_err(|e| LoanwordError(e.to_string()))?,
+                    )?;
+                }
+                let i64_type: Type = IntegerType::new(self.context, 64).into();
+                let sum = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_adt.make_sum", location)
+                        .add_attributes(&[(
+                            Identifier::new(self.context, "variant"),
+                            IntegerAttribute::new(i64_type, v as i64).into(),
+                        )])
+                        .add_operands(&[product])
+                        .add_results(&[self.mlir_ty(&TsTy::Union(def.clone()))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                Ok((sum, TsTy::Union(def)))
+            }
+            "narrow" => {
+                // An IMPORTED flow fact (D-072): emitted as a checked
+                // cast; the promotion pass deletes it if provable,
+                // else it runs with this blame at runtime.
+                let (value, ty) = self.emit_expr(fcx, field(node, "e")?)?;
+                let TsTy::Union(def) = ty else {
+                    return err(format!("narrow of a non-union value ({ty:?})"));
+                };
+                let v = field(node, "v")?
+                    .as_u64()
+                    .ok_or_else(|| LoanwordError("narrow variant".into()))?
+                    as usize;
+                let variant = def
+                    .variants
+                    .get(v)
+                    .ok_or_else(|| LoanwordError(format!("variant {v} out of range")))?;
+                let (line, column) = self.line_col(node).unwrap_or((0, 0));
+                let blame = format!(
+                    "cast to '{}' at {}:{line}:{column}",
+                    variant.kind, self.artifact.file
+                );
+                let i64_type: Type = IntegerType::new(self.context, 64).into();
+                let narrowed = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_contract.narrow", location)
+                        .add_attributes(&[
+                            (
+                                Identifier::new(self.context, "variant"),
+                                IntegerAttribute::new(i64_type, v as i64).into(),
+                            ),
+                            (
+                                Identifier::new(self.context, "blame"),
+                                StringAttribute::new(self.context, &blame).into(),
+                            ),
+                        ])
+                        .add_operands(&[value])
+                        .add_results(&[self.mlir_ty(&TsTy::Union(def.clone()))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                Ok((narrowed, TsTy::Variant(def, v)))
+            }
+            "prop" => {
+                let name = field(node, "name")?
+                    .as_str()
+                    .ok_or_else(|| LoanwordError("prop name".into()))?;
+                let (value, ty) = self.emit_expr(fcx, field(node, "e")?)?;
+                match ty {
+                    TsTy::Variant(def, v) => {
+                        let variant = &def.variants[v];
+                        if name == "kind" {
+                            // The discriminant of a KNOWN variant is a
+                            // literal (kind is not stored — D-072).
+                            let text = variant.kind.clone();
+                            return Ok((
+                                self.str_lit(fcx, &text, location)?,
+                                TsTy::Str,
+                            ));
+                        }
+                        let index = variant
+                            .fields
+                            .iter()
+                            .position(|(field_name, _)| field_name == name)
+                            .ok_or_else(|| {
+                                LoanwordError(format!(
+                                    "variant '{}' has no field '{name}'",
+                                    variant.kind
+                                ))
+                            })?;
+                        let field_ty = variant.fields[index].1.clone();
+                        let i64_type: Type = IntegerType::new(self.context, 64).into();
+                        let extracted = self.op_result(
+                            fcx.block,
+                            OperationBuilder::new("frk_adt.extract", location)
+                                .add_attributes(&[
+                                    (
+                                        Identifier::new(self.context, "variant"),
+                                        IntegerAttribute::new(i64_type, v as i64).into(),
+                                    ),
+                                    (
+                                        Identifier::new(self.context, "field"),
+                                        IntegerAttribute::new(i64_type, index as i64).into(),
+                                    ),
+                                ])
+                                .add_operands(&[value])
+                                .add_results(&[self.mlir_ty(&field_ty)?])
+                                .build()
+                                .map_err(|e| LoanwordError(e.to_string()))?,
+                        )?;
+                        Ok((extracted, field_ty))
+                    }
+                    TsTy::Union(def) => {
+                        if name != "kind" {
+                            return err(format!(
+                                "field '{name}' on an unnarrowed union (only the discriminant reads)"
+                            ));
+                        }
+                        // tag-selected literal chain: tag_of + selects
+                        // over the kind literals, last variant as base.
+                        let i64_type: Type = IntegerType::new(self.context, 64).into();
+                        let tag = self.op_result(
+                            fcx.block,
+                            OperationBuilder::new("frk_adt.tag_of", location)
+                                .add_operands(&[value])
+                                .add_results(&[i64_type])
+                                .build()
+                                .map_err(|e| LoanwordError(e.to_string()))?,
+                        )?;
+                        let str_ty = self.mlir_ty(&TsTy::Str)?;
+                        let last = def.variants.len() - 1;
+                        let mut selected =
+                            self.str_lit(fcx, &def.variants[last].kind.clone(), location)?;
+                        for v in (0..last).rev() {
+                            let expected = self.op_result(
+                                fcx.block,
+                                melior::dialect::arith::constant(
+                                    self.context,
+                                    IntegerAttribute::new(i64_type, v as i64).into(),
+                                    location,
+                                ),
+                            )?;
+                            let hit = self.op_result(
+                                fcx.block,
+                                OperationBuilder::new("arith.cmpi", location)
+                                    .add_attributes(&[(
+                                        Identifier::new(self.context, "predicate"),
+                                        IntegerAttribute::new(i64_type, 0).into(),
+                                    )])
+                                    .add_operands(&[tag, expected])
+                                    .add_results(&[IntegerType::new(self.context, 1).into()])
+                                    .build()
+                                    .map_err(|e| LoanwordError(e.to_string()))?,
+                            )?;
+                            let literal =
+                                self.str_lit(fcx, &def.variants[v].kind.clone(), location)?;
+                            selected = self.op_result(
+                                fcx.block,
+                                OperationBuilder::new("arith.select", location)
+                                    .add_operands(&[hit, literal, selected])
+                                    .add_results(&[str_ty])
+                                    .build()
+                                    .map_err(|e| LoanwordError(e.to_string()))?,
+                            )?;
+                        }
+                        Ok((selected, TsTy::Str))
+                    }
+                    other => err(format!("property '{name}' of {other:?}")),
+                }
+            }
             other => err(format!("unsupported expression kind {other:?}")),
         }
+    }
+
+    /// The static type of an expression node WITHOUT emitting it —
+    /// only the shapes a discriminant test can sit on (D-072).
+    fn peek_ty(&self, fcx: &Fcx<'c, '_>, node: &Json) -> Result<Option<TsTy>> {
+        Ok(match kind(node)? {
+            "var" => {
+                let name = field(node, "name")?
+                    .as_str()
+                    .ok_or_else(|| LoanwordError("var name".into()))?;
+                fcx.env.get(name).map(|binding| match binding {
+                    Binding::Value(_, ty) | Binding::Boxed(_, ty) => ty.clone(),
+                })
+            }
+            "obj" => {
+                let index = field(node, "u")?
+                    .as_u64()
+                    .ok_or_else(|| LoanwordError("obj union ref".into()))?;
+                Some(TsTy::Union(self.artifact.union_at(index as usize)?))
+            }
+            _ => None,
+        })
+    }
+
+    /// `<union>.kind === "<lit>"` (either side) → tag_of + cmpi
+    /// (D-072). Returns None when the shape does not match — the
+    /// caller falls through to ordinary emission (e.g. a NARROWED
+    /// kind read, which is a constant string compare).
+    fn try_kind_test<'r>(
+        &self,
+        fcx: &mut Fcx<'c, 'r>,
+        op: &str,
+        left: &Json,
+        right: &Json,
+        location: Location<'c>,
+    ) -> Result<Option<(Value<'c, 'r>, TsTy)>> {
+        for (subject, literal) in [(left, right), (right, left)] {
+            if kind(subject)? != "prop" {
+                continue;
+            }
+            if field(subject, "name")?.as_str() != Some("kind") {
+                continue;
+            }
+            let inner = field(subject, "e")?;
+            let Some(TsTy::Union(def)) = self.peek_ty(fcx, inner)? else {
+                continue;
+            };
+            if kind(literal)? != "str" {
+                continue;
+            }
+            let text = field(literal, "v")?
+                .as_str()
+                .ok_or_else(|| LoanwordError("str literal".into()))?;
+            let Some(v) = def.variants.iter().position(|m| m.kind == text) else {
+                return err(format!(
+                    "kind test against {text:?} — not a variant (tsc refuses this comparison)"
+                ));
+            };
+            let (value, _) = self.emit_expr(fcx, inner)?;
+            let i64_type: Type = IntegerType::new(self.context, 64).into();
+            let tag = self.op_result(
+                fcx.block,
+                OperationBuilder::new("frk_adt.tag_of", location)
+                    .add_operands(&[value])
+                    .add_results(&[i64_type])
+                    .build()
+                    .map_err(|e| LoanwordError(e.to_string()))?,
+            )?;
+            let expected = self.op_result(
+                fcx.block,
+                melior::dialect::arith::constant(
+                    self.context,
+                    IntegerAttribute::new(i64_type, v as i64).into(),
+                    location,
+                ),
+            )?;
+            // arith CmpIPredicate: eq = 0, ne = 1.
+            let predicate = if op == "===" { 0 } else { 1 };
+            let compared = self.op_result(
+                fcx.block,
+                OperationBuilder::new("arith.cmpi", location)
+                    .add_attributes(&[(
+                        Identifier::new(self.context, "predicate"),
+                        IntegerAttribute::new(i64_type, predicate).into(),
+                    )])
+                    .add_operands(&[tag, expected])
+                    .add_results(&[IntegerType::new(self.context, 1).into()])
+                    .build()
+                    .map_err(|e| LoanwordError(e.to_string()))?,
+            )?;
+            return Ok(Some((compared, TsTy::Bool)));
+        }
+        Ok(None)
+    }
+
+    /// An `frk_str.lit` value (UTF-16 string literal, D-049).
+    fn str_lit<'r>(
+        &self,
+        fcx: &Fcx<'c, 'r>,
+        text: &str,
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_str.lit", location)
+                .add_attributes(&[(
+                    Identifier::new(self.context, "text"),
+                    StringAttribute::new(self.context, text).into(),
+                )])
+                .add_results(&[self.mlir_ty(&TsTy::Str)?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )
     }
 
     // ---- op helpers ----

@@ -102,7 +102,10 @@ function span(node: ts.Node): Json {
   return [node.getStart(sourceFile), node.end];
 }
 
-// Interned type table. v1 rows: num | bool | void | fun.
+// Interned type table. v1 rows: num | bool | void | str | arr, plus
+// the TS-1 extension (D-072, additive per D-046): obj (a union
+// variant: kind literal + payload fields) and union (variant row
+// refs, declaration order).
 const typeRows: Json[] = [];
 const typeIndex = new Map<string, number>();
 function internType(row: Json): number {
@@ -112,6 +115,106 @@ function internType(row: Json): number {
   typeRows.push(row);
   typeIndex.set(key, typeRows.length - 1);
   return typeRows.length - 1;
+}
+
+// ---- TS-1 discriminated unions (D-072) ----
+// Pass A collects object-type aliases (the variants); pass B resolves
+// union aliases over them and interns their rows. The discriminant is
+// a `kind: "<lit>"` property by fence; payload fields are num/bool/str.
+
+interface VariantDef {
+  aliasName: string;
+  kind: string;
+  fields: { name: string; ty: number }[];
+}
+interface UnionDef {
+  rowIdx: number;
+  variants: VariantDef[];
+}
+
+const objAliases = new Map<string, ts.TypeLiteralNode>();
+const unionAliasNodes = new Map<string, ts.UnionTypeNode>();
+for (const top of sourceFile.statements) {
+  if (!ts.isTypeAliasDeclaration(top)) continue;
+  if (top.typeParameters) fail(top, "a generic type alias (TS-4 territory)");
+  const name = top.name.text;
+  if (ts.isTypeLiteralNode(top.type)) {
+    objAliases.set(name, top.type);
+  } else if (ts.isUnionTypeNode(top.type)) {
+    unionAliasNodes.set(name, top.type);
+  } else {
+    fail(top.type, "a type alias that is neither an object type nor a union");
+  }
+}
+
+function scalarField(node: ts.TypeNode): number {
+  const text = node.getText(sourceFile);
+  if (text === "number") return internType({ k: "num" });
+  if (text === "boolean") return internType({ k: "bool" });
+  if (text === "string") return internType({ k: "str" });
+  fail(node, `variant field type \`${text}\` (num/bool/str only in TS-1)`);
+}
+
+function variantOf(aliasName: string, owner: ts.Node): VariantDef {
+  const literal = objAliases.get(aliasName);
+  if (!literal) fail(owner, `union member \`${aliasName}\` (not an object-type alias)`);
+  let kind: string | null = null;
+  const fields: { name: string; ty: number }[] = [];
+  for (const member of literal.members) {
+    if (!ts.isPropertySignature(member) || !member.name || !ts.isIdentifier(member.name))
+      fail(member, "a non-property union-variant member");
+    if (member.questionToken) fail(member, "an optional variant property");
+    if (!member.type) fail(member, "an unannotated variant property");
+    const propName = member.name.text;
+    if (propName === "kind") {
+      if (
+        !ts.isLiteralTypeNode(member.type) ||
+        !ts.isStringLiteral(member.type.literal)
+      )
+        fail(member.type, "a kind that is not a string-literal type");
+      kind = member.type.literal.text;
+    } else {
+      fields.push({ name: propName, ty: scalarField(member.type) });
+    }
+  }
+  if (kind === null)
+    fail(literal, `variant \`${aliasName}\` without a \`kind: "<lit>"\` discriminant`);
+  return { aliasName, kind, fields };
+}
+
+const unions = new Map<string, UnionDef>();
+for (const [name, node] of unionAliasNodes) {
+  const variants: VariantDef[] = [];
+  for (const member of node.types) {
+    if (!ts.isTypeReferenceNode(member) || !ts.isIdentifier(member.typeName))
+      fail(member, "a union member that is not a named variant alias");
+    variants.push(variantOf(member.typeName.text, member));
+  }
+  const kinds = new Set(variants.map((v) => v.kind));
+  if (kinds.size !== variants.length)
+    fail(node, `union \`${name}\` with duplicate kind literals`);
+  const variantRows = variants.map((v) =>
+    internType({
+      k: "obj",
+      kind: v.kind,
+      fields: v.fields.map((f) => ({ name: f.name, ty: f.ty })),
+    })
+  );
+  const rowIdx = internType({ k: "union", variants: variantRows });
+  unions.set(name, { rowIdx, variants });
+}
+
+/// Is this checker type one of our recorded unions or variants?
+function recordedAliasName(type: ts.Type): string | undefined {
+  return type.aliasSymbol?.name;
+}
+function isRecordedObjectish(type: ts.Type): boolean {
+  const name = recordedAliasName(type);
+  if (name !== undefined && (unions.has(name) || objAliases.has(name))) return true;
+  // A PARTIALLY narrowed union (e.g. the else of a three-variant
+  // chain) is an anonymous subset type — the alias is gone but the
+  // discriminant property still marks it as ours.
+  return type.getProperty("kind") !== undefined;
 }
 
 function annotationType(node: ts.TypeNode | undefined, owner: ts.Node): number {
@@ -124,6 +227,10 @@ function annotationType(node: ts.TypeNode | undefined, owner: ts.Node): number {
   if (text === "number[]") return internType({ k: "arr", elem: internType({ k: "num" }) });
   if (text === "boolean[]") return internType({ k: "arr", elem: internType({ k: "bool" }) });
   if (text === "string[]") return internType({ k: "arr", elem: internType({ k: "str" }) });
+  const union = unions.get(text);
+  if (union) return union.rowIdx;
+  if (objAliases.has(text))
+    fail(node, `variant alias \`${text}\` as an annotation — annotate with its union (TS-1)`);
   fail(node, `type annotation \`${text}\``);
 }
 
@@ -153,6 +260,39 @@ function expr(node: ts.Expression): Json {
   if (ts.isArrayLiteralExpression(node)) {
     return { k: "arr", items: node.elements.map((e) => expr(e)), span: span(node) };
   }
+  if (ts.isObjectLiteralExpression(node)) {
+    // A union-variant construction (D-072): admitted only where the
+    // contextual type names a recorded union — the consumer needs the
+    // sum type, and the checker already agreed the literal fits it.
+    const contextual = checker.getContextualType(node);
+    const unionName = contextual && recordedAliasName(contextual);
+    const union = unionName ? unions.get(unionName) : undefined;
+    if (!union)
+      fail(node, "an object literal outside a union-typed context (TS-1)");
+    let kindValue: string | null = null;
+    const byName = new Map<string, ts.Expression>();
+    for (const property of node.properties) {
+      if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name))
+        fail(property, "a non-plain object-literal property (TS-1)");
+      if (property.name.text === "kind") {
+        if (!ts.isStringLiteral(property.initializer))
+          fail(property, "a kind that is not a string literal");
+        kindValue = property.initializer.text;
+      } else {
+        byName.set(property.name.text, property.initializer);
+      }
+    }
+    if (kindValue === null) fail(node, "an object literal without a kind");
+    const v = union.variants.findIndex((m) => m.kind === kindValue);
+    if (v < 0) fail(node, `kind \`${kindValue}\` (not a variant of \`${unionName}\`)`);
+    const variant = union.variants[v];
+    const fields = variant.fields.map((f) => {
+      const initializer = byName.get(f.name);
+      if (!initializer) fail(node, `an object literal missing field \`${f.name}\``);
+      return expr(initializer);
+    });
+    return { k: "obj", u: union.rowIdx, v, fields, span: span(node) };
+  }
   if (ts.isElementAccessExpression(node)) {
     return {
       k: "index",
@@ -162,6 +302,17 @@ function expr(node: ts.Expression): Json {
     };
   }
   if (ts.isPropertyAccessExpression(node)) {
+    const target = checker.getTypeAtLocation(node.expression);
+    if (isRecordedObjectish(target)) {
+      // Union/variant field access (D-072). The identifier underneath
+      // carries its own narrow wrapper when the checker narrowed it.
+      return {
+        k: "prop",
+        e: expr(node.expression),
+        name: node.name.text,
+        span: span(node),
+      };
+    }
     if (node.name.text === "length") {
       return { k: "len", e: expr(node.expression), span: span(node) };
     }
@@ -169,7 +320,29 @@ function expr(node: ts.Expression): Json {
   }
   if (node.kind === ts.SyntaxKind.TrueKeyword) return { k: "bool", v: true, span: span(node) };
   if (node.kind === ts.SyntaxKind.FalseKeyword) return { k: "bool", v: false, span: span(node) };
-  if (ts.isIdentifier(node)) return { k: "var", name: node.text, span: span(node) };
+  if (ts.isIdentifier(node)) {
+    const variable: Json = { k: "var", name: node.text, span: span(node) };
+    // The imported flow fact (D-072): where the checker has NARROWED a
+    // union-typed name to one variant, export the fact as a narrow
+    // cast annotation. The consumer re-verifies it (or demotes it to a
+    // runtime check) — this is untrusted input by design.
+    const symbol = checker.getSymbolAtLocation(node);
+    const declaration = symbol?.valueDeclaration;
+    if (symbol && declaration) {
+      const declared = checker.getTypeOfSymbolAtLocation(symbol, declaration);
+      const unionName = recordedAliasName(declared);
+      const union = unionName ? unions.get(unionName) : undefined;
+      if (union) {
+        const here = checker.getTypeAtLocation(node);
+        const memberName = recordedAliasName(here);
+        const v = union.variants.findIndex((m) => m.aliasName === memberName);
+        if (v >= 0) {
+          return { k: "narrow", e: variable, u: union.rowIdx, v, span: span(node) };
+        }
+      }
+    }
+    return variable;
+  }
   if (ts.isBinaryExpression(node)) {
     const op = BIN_OPS.get(node.operatorToken.kind);
     if (!op) fail(node, `operator \`${node.operatorToken.getText(sourceFile)}\``);
@@ -219,6 +392,9 @@ function logKind(node: ts.Expression): string {
   if (type.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) return "num";
   if (type.flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) return "bool";
   if (type.flags & (ts.TypeFlags.String | ts.TypeFlags.StringLiteral)) return "str";
+  // A union discriminant reads as a union of string literals (D-072).
+  if (type.isUnion() && type.types.every((t) => t.flags & ts.TypeFlags.StringLiteral))
+    return "str";
   fail(node, `console.log of type \`${checker.typeToString(type)}\``);
 }
 
@@ -261,7 +437,13 @@ function stmt(node: ts.Statement): Json {
     if (!ts.isIdentifier(decl.name)) fail(node, "a destructuring let");
     if (!decl.initializer) fail(node, "a let without an initializer");
     // const vs let both accepted; mutation legality is tsc's problem
-    // (checker-as-oracle), boxes are ours.
+    // (checker-as-oracle), boxes are ours. FENCE (D-072): union-typed
+    // locals — box reads have no SSA identity, so their narrow facts
+    // would silently demote; admit when a case needs them, with the
+    // demotion named.
+    const initType = checker.getTypeAtLocation(decl.initializer);
+    if (isRecordedObjectish(initType))
+      fail(node, "a union-typed local (TS-1: unions live in parameters and expressions)");
     return {
       k: "let",
       name: decl.name.text,
@@ -295,6 +477,9 @@ function block(node: ts.Statement): Json {
 const decls: Json[] = [];
 const stmts: Json[] = [];
 for (const top of sourceFile.statements) {
+  // Type aliases were consumed by the TS-1 tables above; they carry
+  // no runtime statements.
+  if (ts.isTypeAliasDeclaration(top)) continue;
   if (ts.isFunctionDeclaration(top)) {
     if (!top.name) fail(top, "an anonymous function declaration");
     if (!top.body) fail(top, "a bodyless function declaration");
