@@ -193,6 +193,61 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-072 [m27/ts1/contract] TS-1 lands (the human picked it):
+  discriminated unions + the imported-flow-facts verifier — and
+  frk_contract is BORN (SPEC §4.6; D-015's first ops). The
+  architecture is the manifest's, verbatim: the checker's narrowing
+  facts are IMPORTED as cast annotations and RE-VERIFIED by our own
+  dominance/dataflow pass; unverifiable casts demote to runtime
+  contract checks (trust-but-verify — tsc remains untrusted input).
+  (1) Loanword vocabulary extends ADDITIVELY within v1 (D-046's
+  "vocabulary at TS-1" revisit fires; the D-049 additive precedent
+  governs): type rows union{variants}/obj{kind, fields}; expr nodes
+  obj (construction), prop (field access), narrow (an imported fact:
+  "e is variant v here", with span). (2) The slice: unions of
+  object-type aliases discriminated by a `kind: "<string-lit>"`
+  property; payload fields num/bool/str; construction only where the
+  contextual type names the union; narrowing via if on
+  `s.kind ===/!==`. FENCED LOUD: switch narrowing, let-bound
+  union values (box reads have no SSA identity — facts would demote
+  silently; admit when a case needs them, with the demotion named),
+  optional/readonly props, nested object/union payloads, structural
+  interfaces (TS-2), >64-variant unions (mask width). (3)
+  Representation: a union value IS !frk_adt.sum, variant order =
+  union declaration order; `kind` is NOT a stored field — in test
+  position `s.kind === "lit"` lowers to tag_of + arith.cmpi, in
+  value position to a tag-selected frk_str literal chain. Payload
+  fields keep variant declaration order, kind excluded. (4)
+  frk_contract.narrow(sum){variant, blame} -> sum: a CHECKED CAST —
+  identity on success, deterministic blame trap on refutation
+  (blame = "cast to 'kind' at file:line:col", built from the span
+  via the artifact line table). K2: the interpreter ALWAYS executes
+  the check — reference semantics is maximal checking. K3: native
+  lowers surviving narrows to tag extract + frk_rt_contract_check
+  (actual, expected, blame ptr+len) — registry row, both twins,
+  straight-line abort like frk_rt_dyn_check (D-054 pattern). (5)
+  THE PROMOTION PASS (the research slice): forward must-dataflow
+  over cf edges, per-function. State = possible-tag bitmask per sum
+  ROOT (roots resolve through narrow results to the underlying SSA
+  value); edge constraints from cf.cond_br whose condition is
+  arith.cmpi eq/ne of frk_adt.tag_of(root) against a constant
+  (true/false successors intersect/subtract); block entry state =
+  union over predecessor exit states; fixpoint. Sums are PURE
+  VALUES, so facts never invalidate — no kill set, the transfer is
+  monotone. A narrow whose block-entry mask ⊆ {v} is DELETED (uses
+  replaced by its operand); everything else survives to runtime.
+  Runs at lower_kernel entry — NATIVE PATHS ONLY, so the
+  differential law diffs proof-elided native against the
+  always-checking interp: a wrong promotion IS a divergence (L3).
+  (6) Exit bars: both fates witnessed — a corpus case whose narrows
+  ALL promote (if/else + else-implication via mask subtraction) and
+  one that DEMOTES (tsc's aliased-discriminant narrowing, which our
+  pass honestly cannot see) yet stays byte-equal with node; a
+  tampered artifact with a false fact trapping with blame; suite/
+  diff/grid green. Revisit: switch + negative-fact vocabulary when
+  a corpus case wants them; let-narrowing at TS-2 (objects force
+  the mutability question anyway); promotion stats as a frnksh
+  surface when the book needs the demo.
 - D-071 [m26/scheme] Handler consumption (the human picked it): R7RS
   exceptions over the v1 handlers — the milestone whose THESIS BAR is
   ZERO KERNEL DELTAS. `with-exception-handler` + `raise-continuable`

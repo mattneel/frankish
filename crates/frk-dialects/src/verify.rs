@@ -157,6 +157,9 @@ fn check<'c>(
     } else if let Some(suffix) = name.strip_prefix("frk_ctl.") {
         crate::ctl::verify_op(context, suffix, op)
             .map_err(|message| format!("frk_ctl.{suffix}: {message}"))
+    } else if let Some(suffix) = name.strip_prefix("frk_contract.") {
+        crate::contract::verify_op(context, suffix, op)
+            .map_err(|message| format!("frk_contract.{suffix}: {message}"))
     } else {
         Ok(())
     };
