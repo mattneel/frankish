@@ -77,6 +77,46 @@ fn aliases_observe_field_writes() {
 }
 
 #[test]
+fn recursive_records_tie_and_read_back_through_the_knot() {
+    // D-074: two records reference each other through type-erased
+    // recrefs; the cycle ties with field_set and reads back with
+    // rec_cast — identity survives erasure.
+    const NP: &str = "!frk_adt.product<[i64, !frk_mem.recref]>";
+    const NODE: &str = "!frk_mem.box<!frk_adt.product<[i64, !frk_mem.recref]>>";
+    let result = interpret_i64(&format!(
+        r#"func.func @main() -> i64 {{
+            %e = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
+            %a1 = arith.constant 30 : i64
+            %b1 = arith.constant 12 : i64
+            %pa0 = "frk_adt.product_snoc"(%e, %a1) : (!frk_adt.product<[]>, i64) -> !frk_adt.product<[i64]>
+            %pb0 = "frk_adt.product_snoc"(%e, %b1) : (!frk_adt.product<[]>, i64) -> !frk_adt.product<[i64]>
+            // Seed each next-field with a self-reference, then tie.
+            %seeda = "frk_mem.box_new"(%pa0) : (!frk_adt.product<[i64]>) -> !frk_mem.box<!frk_adt.product<[i64]>>
+            %ra0 = "frk_mem.rec_ref"(%seeda) : (!frk_mem.box<!frk_adt.product<[i64]>>) -> !frk_mem.recref
+            %pa = "frk_adt.product_snoc"(%pa0, %ra0) : (!frk_adt.product<[i64]>, !frk_mem.recref) -> {NP}
+            %pb = "frk_adt.product_snoc"(%pb0, %ra0) : (!frk_adt.product<[i64]>, !frk_mem.recref) -> {NP}
+            %a = "frk_mem.box_new"(%pa) : ({NP}) -> {NODE}
+            %b = "frk_mem.box_new"(%pb) : ({NP}) -> {NODE}
+            %rb = "frk_mem.rec_ref"(%b) : ({NODE}) -> !frk_mem.recref
+            %ra = "frk_mem.rec_ref"(%a) : ({NODE}) -> !frk_mem.recref
+            "frk_mem.field_set"(%a, %rb) {{field = 1 : i64}} : ({NODE}, !frk_mem.recref) -> ()
+            "frk_mem.field_set"(%b, %ra) {{field = 1 : i64}} : ({NODE}, !frk_mem.recref) -> ()
+            // a.next.val + a.next.next.val = 12 + 30 = 42.
+            %n1r = "frk_mem.field_get"(%a) {{field = 1 : i64}} : ({NODE}) -> !frk_mem.recref
+            %n1 = "frk_mem.rec_cast"(%n1r) : (!frk_mem.recref) -> {NODE}
+            %v1 = "frk_mem.field_get"(%n1) {{field = 0 : i64}} : ({NODE}) -> i64
+            %n2r = "frk_mem.field_get"(%n1) {{field = 1 : i64}} : ({NODE}) -> !frk_mem.recref
+            %n2 = "frk_mem.rec_cast"(%n2r) : (!frk_mem.recref) -> {NODE}
+            %v2 = "frk_mem.field_get"(%n2) {{field = 0 : i64}} : ({NODE}) -> i64
+            %sum = arith.addi %v1, %v2 : i64
+            return %sum : i64
+        }}"#
+    ))
+    .unwrap();
+    assert_eq!(result, 42);
+}
+
+#[test]
 fn verify_rejects_wrong_field_type_and_range() {
     let context = frk_core::context();
     frk_dialects::register(&context).expect("registration");

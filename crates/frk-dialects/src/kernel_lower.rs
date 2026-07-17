@@ -239,7 +239,10 @@ fn slot_kind<'c>(context: &'c Context, r#type: Type<'c>) -> Result<SlotKind<'c>,
     if printed.starts_with("!frk_closure.fn<") {
         return Ok(SlotKind::Closure);
     }
-    if printed.starts_with("!frk_mem.box<") || printed.starts_with("!frk_mem.arr<") {
+    if printed.starts_with("!frk_mem.box<")
+        || printed.starts_with("!frk_mem.arr<")
+        || printed == "!frk_mem.recref"
+    {
         return Ok(SlotKind::Ptr { managed: true });
     }
     if printed == "!frk_str.str" || printed == "!frk_bstr.str" {
@@ -374,6 +377,10 @@ enum Planned<'c, 'a> {
         offset: usize,
         kind: SlotKind<'c>,
         field_retain: RetainKind,
+    },
+    /// D-074 erase/cast: pure identity — every side is one pointer.
+    RecIdentity {
+        op: OperationRef<'c, 'a>,
     },
     ArrayNew {
         op: OperationRef<'c, 'a>,
@@ -1321,6 +1328,7 @@ fn plan_mem<'c, 'a>(
                 Ok(Planned::FieldSet { op, offset, kind, field_retain })
             }
         }
+        "rec_ref" | "rec_cast" => Ok(Planned::RecIdentity { op }),
         "array_new" => {
             let elem = crate::mem::decode_arr(
                 context,
@@ -1581,6 +1589,7 @@ fn map_type<'c>(context: &'c Context, r#type: Type<'c>) -> Result<Type<'c>, Stri
         Ok(closure_struct(context))
     } else if printed.starts_with("!frk_mem.box<")
         || printed.starts_with("!frk_mem.arr<")
+        || printed == "!frk_mem.recref"
         || printed == "!frk_str.str"
         || printed == "!frk_bstr.str"
         || printed == "!frk_closure.envref"
@@ -3856,6 +3865,10 @@ fn apply<'c, 'a>(
             rewriter.insert(store_op(context, word, slot, location)?);
             rewriter.erase_op(op);
             Ok(())
+        }
+        Planned::RecIdentity { op } => {
+            rewriter.set_insertion_point_before(op);
+            finish(rewriter, op, operand(op, 0)?)
         }
         Planned::TagOf { op } => {
             rewriter.set_insertion_point_before(op);

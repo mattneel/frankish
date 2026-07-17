@@ -13,6 +13,8 @@ pub(crate) fn register_eval(interp: &mut Interp<'_, '_>) {
     interp.register_eval("frk_mem.box_set", Box::new(BoxSet));
     interp.register_eval("frk_mem.field_get", Box::new(FieldGet));
     interp.register_eval("frk_mem.field_set", Box::new(FieldSet));
+    interp.register_eval("frk_mem.rec_ref", Box::new(RecIdentity));
+    interp.register_eval("frk_mem.rec_cast", Box::new(RecIdentity));
     interp.register_eval("frk_mem.array_new", Box::new(ArrayNew));
     interp.register_eval("frk_mem.array_get", Box::new(ArrayGet));
     interp.register_eval("frk_mem.array_set", Box::new(ArraySet));
@@ -219,6 +221,23 @@ impl Eval for FieldSet {
             *record = Value::adt(tag, fields);
         }
         continue_with_results(frame, op, &[])
+    }
+}
+
+/// D-074: type-erased record references. Both directions are pure
+/// identity — the value IS the shared box; erasure is a static-type
+/// fact only, so object identity survives the knot.
+struct RecIdentity;
+impl Eval for RecIdentity {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let value = operand_value(frame, op, 0)?;
+        value.as_box()?; // must be a record either way
+        continue_with_result(frame, op, value)
     }
 }
 

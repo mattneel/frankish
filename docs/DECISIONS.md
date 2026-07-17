@@ -193,6 +193,30 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-074 [m28/mem] Recursive records: THE TYPE KNOT, found at
+  implementation. A self-/mutually-referential class (Node.next:
+  Node) makes box<product<...>> INFINITE as a structural parametric
+  type — MLIR parametric types cannot express μ-types. Ruling: class-
+  reference FIELDS are stored type-erased as !frk_mem.recref, a new
+  ZERO-parameter opaque type ("a managed record reference"), with
+  identity ops rec_ref(box<product>)->recref (erase at store) and
+  rec_cast(recref)->box<product> (un-erase at read; the target
+  product's own ref fields are recref, so the type CLOSES). Both
+  lower to nothing (every side is one pointer) and evaluate as
+  identity. recref slots are Ptr{managed} — traced (code 1),
+  retained, released; the release CASCADE is untouched because
+  layout rides the ALLOCATION header (D-057), not the static type.
+  rec_cast is TRUSTED: the frontend's nominal typing is the
+  guarantee, verify cannot check the pointee (documented obligation,
+  same class as native unchecked array bounds, D-049). Object
+  identity (===, later) is box pointer equality — erase preserves
+  it. Rationale for erase-over-alternatives: named module-level
+  record declarations (LLVM identified-struct style) buy
+  verifiability at the cost of a symbol-table coupling in a VALUE
+  dialect — defer until a consumer needs the checkability; dyn
+  boxing drags the tag machinery into statically-typed code.
+  Revisit: named record decls if a second frontend needs checked
+  casts; niche/nullability when optional fields land.
 - D-073 [m28/ts2/mem] TS-2 OPENS with the classes core (the human
   picked it; the stage completes over two milestones — interfaces/
   itabs (D-026) and object closures/method values are the SECOND

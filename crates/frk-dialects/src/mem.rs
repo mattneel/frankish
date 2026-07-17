@@ -90,6 +90,19 @@ irdl.dialect @frk_mem {
     irdl.operands(box: %b, value: %v)
     irdl.attributes { "field" = %f }
   }
+  irdl.type @recref {}
+  irdl.operation @rec_ref {
+    %b = irdl.base @frk_mem::@box
+    %r = irdl.base @frk_mem::@recref
+    irdl.operands(box: %b)
+    irdl.results(ref: %r)
+  }
+  irdl.operation @rec_cast {
+    %r = irdl.base @frk_mem::@recref
+    %b = irdl.base @frk_mem::@box
+    irdl.operands(ref: %r)
+    irdl.results(box: %b)
+  }
 }
 "##;
 
@@ -205,6 +218,26 @@ pub(crate) fn verify_op<'c>(
                     fields[field]
                 ))
             }
+        }
+        // Type-erased record references (D-074): both sides of the
+        // knot must be a box of a product; the cast's pointee is the
+        // FRONTEND's obligation (nominal typing), not checkable here.
+        "rec_ref" => {
+            let boxed = operand_type(0)?;
+            let elem = decode_box(context, boxed)?;
+            crate::adt::decode_product(context, elem)
+                .map_err(|_| format!("rec_ref erases a box of a product, got box<{elem}>"))?;
+            Ok(())
+        }
+        "rec_cast" => {
+            let result = op
+                .result(0)
+                .map_err(|_| "rec_cast without a result".to_string())?
+                .r#type();
+            let elem = decode_box(context, result)?;
+            crate::adt::decode_product(context, elem)
+                .map_err(|_| format!("rec_cast yields a box of a product, got box<{elem}>"))?;
+            Ok(())
         }
         "array_new" => {
             decode_arr(
