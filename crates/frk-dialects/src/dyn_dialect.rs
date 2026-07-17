@@ -15,7 +15,7 @@ use melior::ir::OperationRef;
 use melior::ir::attribute::IntegerAttribute;
 use melior::ir::operation::OperationLike;
 
-pub const IRDL: &str = r#"
+pub const IRDL: &str = r##"
 irdl.dialect @frk_dyn {
   irdl.type @dyn {}
   irdl.operation @wrap {
@@ -75,8 +75,26 @@ irdl.dialect @frk_dyn {
     irdl.operands(value: %d)
     irdl.results(word: %n)
   }
+  irdl.type @iface {}
+  irdl.operation @iface_make {
+    %b = irdl.base @frk_mem::@box
+    %i = irdl.base @frk_dyn::@iface
+    %m = irdl.base "#builtin.array"
+    irdl.operands(obj: %b)
+    irdl.results(iface: %i)
+    irdl.attributes { "methods" = %m }
+  }
+  irdl.operation @iface_call {
+    %i = irdl.base @frk_dyn::@iface
+    %p = irdl.base @frk_adt::@product
+    %r = irdl.any
+    %k = irdl.base "#builtin.integer"
+    irdl.operands(iface: %i, args: %p)
+    irdl.results(value: %r)
+    irdl.attributes { "method" = %k }
+  }
 }
-"#;
+"##;
 
 pub const TAG_NIL: i64 = 0;
 pub const TAG_BOOL: i64 = 1;
@@ -118,6 +136,47 @@ pub(crate) fn verify_op<'c>(
         }
         "tag_of" | "table_new" | "raw_get" | "raw_set" | "table_len" | "set_meta"
         | "get_meta" | "payload_word" | "table_next" => Ok(()),
+        // Structural interfaces (D-075): the itab pair.
+        "iface_make" => {
+            let methods = iface_methods(op)?;
+            if methods.is_empty() {
+                return Err("iface_make needs at least one method".to_string());
+            }
+            Ok(())
+        }
+        "iface_call" => {
+            let method = op
+                .attribute("method")
+                .ok()
+                .and_then(|attribute| IntegerAttribute::try_from(attribute).ok())
+                .ok_or_else(|| "missing integer `method` attribute".to_string())?
+                .value();
+            if method < 0 {
+                return Err(format!("negative method index {method}"));
+            }
+            if op.result_count() != 1 {
+                return Err("iface_call yields exactly one result (D-036)".to_string());
+            }
+            Ok(())
+        }
         other => Err(format!("no semantic verifier for frk_dyn.{other}")),
     }
+}
+
+/// The `methods` attribute: an array of flat symbol refs, in the
+/// interface's method declaration order (D-075).
+pub(crate) fn iface_methods(op: OperationRef<'_, '_>) -> Result<Vec<String>, String> {
+    use melior::ir::attribute::FlatSymbolRefAttribute;
+    let attribute = op
+        .attribute("methods")
+        .map_err(|_| "iface_make without a methods attribute".to_string())?;
+    let elements = crate::attr_util::array_elements(attribute)
+        .map_err(|_| "methods must be an array attribute".to_string())?;
+    let mut methods = Vec::new();
+    for (index, element) in elements.into_iter().enumerate() {
+        let symbol = FlatSymbolRefAttribute::try_from(element)
+            .map_err(|_| format!("methods[{index}] must be a flat symbol ref"))?;
+        methods.push(symbol.value().to_string());
+    }
+    Ok(methods)
 }

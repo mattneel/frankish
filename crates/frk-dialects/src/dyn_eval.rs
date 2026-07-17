@@ -22,6 +22,8 @@ pub(crate) fn register_eval(interp: &mut Interp<'_, '_>) {
     interp.register_eval("frk_dyn.get_meta", Box::new(GetMeta));
     interp.register_eval("frk_dyn.payload_word", Box::new(PayloadWord));
     interp.register_eval("frk_dyn.table_next", Box::new(TableNext));
+    interp.register_eval("frk_dyn.iface_make", Box::new(IfaceMake));
+    interp.register_eval("frk_dyn.iface_call", Box::new(IfaceCall));
 }
 
 /// Iteration for pairs/next (D-058): nil key → first entry; else the
@@ -29,6 +31,69 @@ pub(crate) fn register_eval(interp: &mut Interp<'_, '_>) {
 /// native path iterates slot order — both are legal Lua (pairs order
 /// is implementation-defined), and the canon rule (D-058) keeps
 /// corpus output order-independent.
+/// Structural interfaces (D-075), REFERENCE representation: the
+/// interface value is a DICTIONARY — a product of bound closures, one
+/// per method, each capturing the object. Native lowers the same ops
+/// to a Go-style itab; the differential matrix arbitrates.
+struct IfaceMake;
+impl Eval for IfaceMake {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let object = frame
+            .get(op.operand(0).map_err(|_| {
+                EvalError::Malformed("iface_make without an object".into())
+            })?.into())?;
+        let methods =
+            crate::dyn_dialect::iface_methods(op).map_err(EvalError::Malformed)?;
+        let dictionary: Vec<Value> = methods
+            .into_iter()
+            .map(|symbol| Value::closure(symbol, vec![object.clone()]))
+            .collect();
+        continue_with_result(frame, op, Value::adt(0, dictionary))
+    }
+}
+
+struct IfaceCall;
+impl Eval for IfaceCall {
+    fn eval<'c, 'a>(
+        &self,
+        interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let iface = frame
+            .get(op.operand(0).map_err(|_| {
+                EvalError::Malformed("iface_call without an iface".into())
+            })?.into())?;
+        let args_pack = frame
+            .get(op.operand(1).map_err(|_| {
+                EvalError::Malformed("iface_call without args".into())
+            })?.into())?;
+        let method = crate::adt::index_attr(op, "method").map_err(EvalError::Malformed)?;
+        let (_, dictionary) = iface.as_adt()?;
+        let bound = dictionary.get(method).ok_or_else(|| {
+            EvalError::Malformed(format!("method index {method} out of range"))
+        })?;
+        let (callee, captures) = bound.as_closure()?;
+        let (_, args) = args_pack.as_adt()?;
+        let mut call_args = Vec::with_capacity(captures.len() + args.len());
+        call_args.extend(captures.iter().cloned());
+        call_args.extend(args.iter().cloned());
+        let results = interp.eval_function(callee, &call_args)?;
+        let [result] = results.as_slice() else {
+            return Err(EvalError::Malformed(format!(
+                "@{callee} returned {} value(s); iface_call yields exactly one (D-075)",
+                results.len()
+            )));
+        };
+        continue_with_result(frame, op, result.clone())
+    }
+}
+
 struct TableNext;
 impl Eval for TableNext {
     fn eval<'c, 'a>(

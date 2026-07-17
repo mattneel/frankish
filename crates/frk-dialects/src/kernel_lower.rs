@@ -248,8 +248,9 @@ fn slot_kind<'c>(context: &'c Context, r#type: Type<'c>) -> Result<SlotKind<'c>,
     if printed == "!frk_str.str" || printed == "!frk_bstr.str" {
         return Ok(SlotKind::Ptr { managed: false });
     }
-    if printed == "!frk_dyn.dyn" {
-        // Fat value (D-051): two verbatim word slots.
+    if printed == "!frk_dyn.dyn" || printed == "!frk_dyn.iface" {
+        // Fat values (D-051) and interface pairs (D-075): two verbatim
+        // word slots.
         return Ok(SlotKind::Words { slots: 2, mapped: map_type(context, r#type)? });
     }
     if printed == "f64" {
@@ -385,6 +386,25 @@ enum Planned<'c, 'a> {
     /// D-074 construction-knot placeholder: a null pointer.
     RecrefNull {
         op: OperationRef<'c, 'a>,
+    },
+    /// D-075 interface conversion: {obj word, itab word}. v0
+    /// materializes the table on the stack at the conversion site
+    /// (hoisted alloca) — the static-global cache is a later lowering
+    /// upgrade behind the same surface; the borrows-only fence makes
+    /// stack lifetime sound.
+    IfaceMake {
+        op: OperationRef<'c, 'a>,
+        /// (method symbol, its post-retype function type) in interface
+        /// declaration order.
+        fn_types: Vec<(String, Type<'c>)>,
+    },
+    /// D-075 dispatch: load entry k, indirect call (obj, args…) —
+    /// the call site knows the signature from the interface def.
+    IfaceCall {
+        op: OperationRef<'c, 'a>,
+        method: usize,
+        param_kinds: Vec<SlotKind<'c>>,
+        result: Type<'c>,
     },
     ArrayNew {
         op: OperationRef<'c, 'a>,
@@ -1487,6 +1507,35 @@ fn plan_dyn<'c, 'a>(
         "set_meta" => Ok(Planned::TableSetMeta { op }),
         "get_meta" => Ok(Planned::TableGetMeta { op }),
         "payload_word" => Ok(Planned::DynPayloadWord { op }),
+        "iface_make" => {
+            let methods = crate::dyn_dialect::iface_methods(op)?;
+            let module = root_module(op)?;
+            let mut fn_types = Vec::new();
+            for symbol in methods {
+                let ty = declared_fn_type(context, module, &symbol)?;
+                fn_types.push((symbol, ty));
+            }
+            Ok(Planned::IfaceMake { op, fn_types })
+        }
+        "iface_call" => {
+            let method = crate::adt::index_attr(op, "method")?;
+            let args_type = op
+                .operand(1)
+                .map_err(|_| "iface_call without args".to_string())?
+                .r#type();
+            let fields = decode_product(context, args_type)?;
+            let param_kinds = fields
+                .iter()
+                .map(|ty| slot_kind(context, *ty))
+                .collect::<Result<Vec<_>, _>>()?;
+            let result = map_type(
+                context,
+                op.result(0)
+                    .map_err(|_| "iface_call without a result".to_string())?
+                    .r#type(),
+            )?;
+            Ok(Planned::IfaceCall { op, method, param_kinds, result })
+        }
         "table_next" => Ok(Planned::TableNext { op }),
         other => Err(format!("no lowering for frk_dyn.{other}")),
     }
@@ -1600,11 +1649,59 @@ fn map_type<'c>(context: &'c Context, r#type: Type<'c>) -> Result<Type<'c>, Stri
         || printed == "!frk_closure.envref"
     {
         Ok(llvm::r#type::pointer(context, 0))
-    } else if printed == "!frk_dyn.dyn" {
+    } else if printed == "!frk_dyn.dyn" || printed == "!frk_dyn.iface" {
         Ok(slots_struct(context, 2))
     } else {
         Ok(r#type)
     }
+}
+
+/// A named func.func's POST-RETYPE function type (D-075: what a
+/// func.constant reference must carry to still verify after the
+/// signature rewrite).
+fn declared_fn_type<'c>(
+    context: &'c Context,
+    module: OperationRef<'c, '_>,
+    symbol: &str,
+) -> Result<Type<'c>, String> {
+    let body = module
+        .region(0)
+        .map_err(|e| e.to_string())?
+        .first_block()
+        .ok_or_else(|| "module without a body".to_string())?;
+    let mut next = body.first_operation();
+    while let Some(function) = next {
+        next = function.next_in_block();
+        if op_name_of(function) != "func.func" {
+            continue;
+        }
+        let name = function
+            .attribute("sym_name")
+            .ok()
+            .and_then(|a| StringAttribute::try_from(a).ok())
+            .map(|a| a.value().to_string());
+        if name.as_deref() != Some(symbol) {
+            continue;
+        }
+        if let Some(mapped) = mapped_signature(context, function)? {
+            return Ok(mapped);
+        }
+        let attribute = function
+            .attribute("function_type")
+            .ok()
+            .and_then(|a| TypeAttribute::try_from(a).ok())
+            .ok_or_else(|| "func.func without function_type".to_string())?;
+        return Ok(attribute.value());
+    }
+    Err(format!("iface method @{symbol} is not a function in this module"))
+}
+
+fn op_name_of(op: OperationRef<'_, '_>) -> String {
+    op.name()
+        .as_string_ref()
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_default()
 }
 
 fn mapped_signature<'c>(
@@ -3885,6 +3982,198 @@ fn apply<'c, 'a>(
                     .map_err(|e| e.to_string())?,
             ))?;
             finish(rewriter, op, null)
+        }
+        Planned::IfaceMake { op, fn_types } => {
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
+
+            // The table alloca hoists to the FUNCTION ENTRY — one
+            // stack slot per site, loop-safe.
+            let entry_first = op
+                .block()
+                .and_then(|block| block.parent_region())
+                .and_then(|region| region.first_block())
+                .and_then(|entry| entry.first_operation())
+                .ok_or_else(|| "iface_make outside a function".to_string())?;
+            rewriter.set_insertion_point_before(entry_first);
+            let count = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, fn_types.len() as i64).into(),
+                location,
+            )))?;
+            let table = result_value(rewriter.insert(
+                OperationBuilder::new("llvm.alloca", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "elem_type"),
+                        TypeAttribute::new(i64_type).into(),
+                    )])
+                    .add_operands(&[count])
+                    .add_results(&[ptr])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+
+            rewriter.set_insertion_point_before(op);
+            for (index, (symbol, fn_type)) in fn_types.iter().enumerate() {
+                // Method address: func.constant + unrealized cast (the
+                // MakeClosure recipe — folded after FuncToLLVM), with
+                // the POST-RETYPE type so the reference verifies.
+                let constant = result_value(rewriter.insert(
+                    OperationBuilder::new("func.constant", location)
+                        .add_attributes(&[(
+                            melior::ir::Identifier::new(context, "value"),
+                            FlatSymbolRefAttribute::new(context, symbol).into(),
+                        )])
+                        .add_results(&[*fn_type])
+                        .build()
+                        .map_err(|e| e.to_string())?,
+                ))?;
+                let address = result_value(rewriter.insert(
+                    OperationBuilder::new("builtin.unrealized_conversion_cast", location)
+                        .add_operands(&[constant])
+                        .add_results(&[ptr])
+                        .build()
+                        .map_err(|e| e.to_string())?,
+                ))?;
+                let word = result_value(rewriter.insert(cast_op(
+                    "llvm.ptrtoint",
+                    address,
+                    i64_type,
+                    location,
+                )?))?;
+                let slot =
+                    result_value(rewriter.insert(gep_op(context, table, index, ptr, location)?))?;
+                rewriter.insert(store_op(context, word, slot, location)?);
+            }
+
+            let obj = operand(op, 0)?;
+            let obj_word = result_value(rewriter.insert(cast_op(
+                "llvm.ptrtoint",
+                obj,
+                i64_type,
+                location,
+            )?))?;
+            let table_word = result_value(rewriter.insert(cast_op(
+                "llvm.ptrtoint",
+                table,
+                i64_type,
+                location,
+            )?))?;
+            let pair_ty = slots_struct(context, 2);
+            let undef = result_value(rewriter.insert(llvm::undef(pair_ty, location)))?;
+            let with_obj = result_value(rewriter.insert(llvm::insert_value(
+                context,
+                undef,
+                DenseI64ArrayAttribute::new(context, &[0]),
+                obj_word,
+                location,
+            )))?;
+            let pair = result_value(rewriter.insert(llvm::insert_value(
+                context,
+                with_obj,
+                DenseI64ArrayAttribute::new(context, &[1]),
+                table_word,
+                location,
+            )))?;
+            finish(rewriter, op, pair)
+        }
+        Planned::IfaceCall { op, method, param_kinds, result } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
+
+            let iface = operand(op, 0)?;
+            let table_word = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                iface,
+                DenseI64ArrayAttribute::new(context, &[1]),
+                i64_type,
+                location,
+            )))?;
+            let table = result_value(rewriter.insert(cast_op(
+                "llvm.inttoptr",
+                table_word,
+                ptr,
+                location,
+            )?))?;
+            let entry =
+                result_value(rewriter.insert(gep_op(context, table, method, ptr, location)?))?;
+            let fn_word = result_value(rewriter.insert(
+                OperationBuilder::new("llvm.load", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "ordering"),
+                        Attribute::parse(context, "0 : i64").ok_or("ordering attr")?,
+                    )])
+                    .add_operands(&[entry])
+                    .add_results(&[i64_type])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            let fn_ptr = result_value(rewriter.insert(cast_op(
+                "llvm.inttoptr",
+                fn_word,
+                ptr,
+                location,
+            )?))?;
+            let obj_word = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                iface,
+                DenseI64ArrayAttribute::new(context, &[0]),
+                i64_type,
+                location,
+            )))?;
+            let obj = result_value(rewriter.insert(cast_op(
+                "llvm.inttoptr",
+                obj_word,
+                ptr,
+                location,
+            )?))?;
+
+            let arg_pack = operand(op, 1)?;
+            let mut call_operands: Vec<Value> = vec![fn_ptr, obj];
+            let mut offset = 0usize;
+            for kind in &param_kinds {
+                let value =
+                    read_slots(context, rewriter, arg_pack, offset, kind.clone(), location)?;
+                call_operands.push(value);
+                offset += kind.slots();
+            }
+            let n = call_operands.len() as i32;
+            let call = rewriter.insert(
+                OperationBuilder::new("llvm.call", location)
+                    .add_attributes(&[
+                        (
+                            melior::ir::Identifier::new(context, "CConv"),
+                            Attribute::parse(context, "#llvm.cconv<ccc>").ok_or("CConv")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "TailCallKind"),
+                            Attribute::parse(context, "#llvm.tailcallkind<none>")
+                                .ok_or("TailCallKind")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "fastmathFlags"),
+                            Attribute::parse(context, "#llvm.fastmath<none>")
+                                .ok_or("fastmathFlags")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "op_bundle_sizes"),
+                            Attribute::parse(context, "array<i32>").ok_or("op_bundle_sizes")?,
+                        ),
+                        (
+                            melior::ir::Identifier::new(context, "operandSegmentSizes"),
+                            Attribute::parse(context, &format!("array<i32: {n}, 0>"))
+                                .ok_or("operandSegmentSizes")?,
+                        ),
+                    ])
+                    .add_operands(&call_operands)
+                    .add_results(&[result])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            );
+            finish(rewriter, op, result_value(call)?)
         }
         Planned::TagOf { op } => {
             rewriter.set_insertion_point_before(op);

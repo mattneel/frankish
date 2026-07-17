@@ -193,6 +193,43 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-075 [m29/ts2/dyn] TS-2 COMPLETES (the human picked it):
+  structural interfaces on D-026's itabs + object closures — the
+  stage freezes at this milestone's exit. (1) INTERFACES: method-
+  only, non-void returns, fully annotated (properties in
+  interfaces, void interface methods → fence loud). An interface
+  VALUE is !frk_dyn.iface — an opaque TWO-SLOT {obj word, itab
+  word} (the Go shape, D-026 followed as ruled). Kernel ops:
+  iface_make(box){methods=[@C__m…]} -> iface (the conversion site
+  is static — sealed world — so the symbol list is an attribute)
+  and iface_call(iface, args product){method=k} -> result (exactly
+  one; packed per D-036). (2) TWO REPRESENTATIONS, ONE SEMANTICS
+  (the K-contract thesis re-demonstrated): the INTERP evaluates
+  iface_make as a dictionary — a product of bound closures
+  (closure(sym, [obj]) per method) — and iface_call as field-k
+  apply; NATIVE lowers to a real itab — a module-level constant
+  table of method addresses, DEDUPED by content, entries pointing
+  at the class methods DIRECTLY (no wrapper thunks: the call site
+  knows the signature from the interface def, exactly as Go does),
+  iface_call = load entry k + indirect call (obj, unpacked args).
+  The differential matrix arbitrates the two. (3) v0 iface values
+  are BORROWS: parameter-passing only; storing an iface (lets,
+  fields, arrays) is FENCED — the retain design rides the next
+  consumer, not speculation. (4) OBJECT CLOSURES: arrow functions
+  with annotated params and EXPRESSION bodies, lambda-lifted onto
+  frk_closure.make/apply verbatim (zero new kernel ops — D-035's
+  dialect absorbs its fourth frontend). Captures are BY BINDING:
+  parameters by value, let-locals by their BOX — so an arrow
+  capturing an object shares the alias and observes mutation, the
+  JS law, witnessed against node. Function-type annotations
+  ((x: T) => R rows) type closure-valued params; calls through
+  closure-typed variables are frk_closure.apply. FENCED: `this` in
+  arrows, block-bodied arrows, method VALUES (`c.read` unbound —
+  JS this-undefined semantics we refuse to imitate; the arrow
+  `() => c.read()` is the honest spelling), closures escaping into
+  fields/arrays (capture-lifetime rung). Revisit: iface stores +
+  retain at the first consumer; method-value bind() if a corpus
+  case ever demands it.
 - D-074 [m28/mem] Recursive records: THE TYPE KNOT, found at
   implementation. A self-/mutually-referential class (Node.next:
   Node) makes box<product<...>> INFINITE as a structural parametric
