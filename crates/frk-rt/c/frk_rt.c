@@ -328,6 +328,20 @@ void frk_rt_dyn_check(int64_t actual, int64_t expected) {
     }
 }
 
+/* The contract narrowing check (D-072): a demoted flow fact executes
+ * here — mismatch prints the blame and aborts. */
+void frk_rt_contract_check(int64_t actual, int64_t expected,
+                           const uint8_t *blame, int64_t blame_len) {
+    if (actual != expected) {
+        fprintf(stderr,
+                "frk: contract: narrowing refuted: expected variant %lld, "
+                "got %lld — %.*s (D-072)\n",
+                (long long)expected, (long long)actual,
+                (int)(blame_len < 0 ? 0 : blame_len), (const char *)blame);
+        abort();
+    }
+}
+
 /* Lua runtime errors (D-056 helpers): print and abort. */
 void frk_rt_lua_error(int64_t code) {
     fprintf(stderr, "frk: lua runtime error %lld (D-056)\n", (long long)code);

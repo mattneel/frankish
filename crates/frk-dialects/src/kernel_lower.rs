@@ -390,6 +390,14 @@ enum Planned<'c, 'a> {
         text: String,
         symbol: String,
     },
+    /// A DEMOTED narrowing fact (D-072): the promotion pass could not
+    /// prove it, so the check executes at runtime with blame attached.
+    ContractNarrow {
+        op: OperationRef<'c, 'a>,
+        expected: i64,
+        blame: String,
+        symbol: String,
+    },
     BstrConcat {
         op: OperationRef<'c, 'a>,
     },
@@ -492,6 +500,12 @@ enum Planned<'c, 'a> {
 pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<(), String> {
     // Sound: the context strictly outlives every IR object walked here.
     let context = unsafe { module.context().to_ref() };
+
+    // Trust-but-verify (D-072): native paths first delete every
+    // narrowing check the dataflow can PROVE; only demoted facts reach
+    // the plans below. The interpreter never runs this pass — a wrong
+    // promotion diffs against its always-checking semantics (L3).
+    crate::contract::promote_narrows(module)?;
 
     let mut plans = Vec::new();
     let mut retypes = Vec::new();
@@ -894,6 +908,8 @@ fn collect<'c, 'a>(
         plans.push(plan_bstr(suffix, op, str_counter)?);
     } else if let Some(suffix) = name.strip_prefix("frk_ctl.") {
         plans.push(plan_ctl(context, suffix, op, str_counter)?);
+    } else if let Some(suffix) = name.strip_prefix("frk_contract.") {
+        plans.push(plan_contract(suffix, op, str_counter)?);
     } else {
         if name == "func.func" {
             if let Some(mapped) = mapped_signature(context, op)? {
@@ -1394,6 +1410,23 @@ fn plan_dyn<'c, 'a>(
     }
 }
 
+fn plan_contract<'c, 'a>(
+    suffix: &str,
+    op: OperationRef<'c, 'a>,
+    str_counter: &mut usize,
+) -> Result<Planned<'c, 'a>, String> {
+    match suffix {
+        "narrow" => {
+            let expected = crate::adt::index_attr(op, "variant")? as i64;
+            let blame = crate::contract::blame_of(op)?;
+            let symbol = format!("__frk_blame_{}", *str_counter);
+            *str_counter += 1;
+            Ok(Planned::ContractNarrow { op, expected, blame, symbol })
+        }
+        other => Err(format!("no lowering for frk_contract.{other}")),
+    }
+}
+
 fn plan_bstr<'c, 'a>(
     suffix: &str,
     op: OperationRef<'c, 'a>,
@@ -1642,6 +1675,9 @@ fn declare_str_runtime(
             }
             Planned::CtlResume { .. } => needed.push(("frk_rt_ctl_resume_mark", false)),
             Planned::CtlWind { .. } => needed.push(("frk_rt_ctl_pack_head", false)),
+            Planned::ContractNarrow { .. } => {
+                needed.push(("frk_rt_contract_check", false))
+            }
             _ => {}
         }
     }
@@ -3684,6 +3720,37 @@ fn apply<'c, 'a>(
             ));
             finish(rewriter, op, result_value(read)?)
         }
+        Planned::ContractNarrow { op, expected, blame, symbol } => {
+            // The demoted-fact check (D-072): straight-line, like
+            // frk_rt_dyn_check (D-054) — the rt aborts with blame on
+            // refutation; identity on success.
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let container = operand(op, 0)?;
+            let actual = result_value(rewriter.insert(llvm::extract_value(
+                context,
+                container,
+                DenseI64ArrayAttribute::new(context, &[0]),
+                i64_type,
+                location,
+            )))?;
+            let expected_value =
+                result_value(rewriter.insert(melior::dialect::arith::constant(
+                    context,
+                    IntegerAttribute::new(i64_type, expected).into(),
+                    location,
+                )))?;
+            let (address, len) =
+                byte_global(context, rewriter, op, &symbol, blame.as_bytes(), location)?;
+            rewriter.insert(direct_call_void(
+                context,
+                "frk_rt_contract_check",
+                &[actual, expected_value, address, len],
+                location,
+            )?);
+            finish(rewriter, op, container)
+        }
         Planned::Read { op, offset, kind } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
@@ -4328,7 +4395,31 @@ fn intern_label<'c>(
 ) -> Result<Value<'c, 'c>, String> {
     let i64_type: Type = IntegerType::new(context, 64).into();
     let ptr = llvm::r#type::pointer(context, 0);
-    let bytes = text.as_bytes();
+    let (address, len) =
+        byte_global(context, rewriter, op, symbol, text.as_bytes(), location)?;
+    let interned = result_value(rewriter.insert(direct_call(
+        context,
+        "frk_rt_bstr_intern",
+        &[address, len],
+        ptr,
+        location,
+    )?))?;
+    result_value(rewriter.insert(cast_op("llvm.ptrtoint", interned, i64_type, location)?))
+}
+
+/// A module-level internal constant byte array: yields (address, len)
+/// values at the current insertion point. The raw-bytes half of the
+/// BstrLit recipe, shared with contract blame strings (D-072).
+fn byte_global<'c>(
+    context: &'c Context,
+    rewriter: &RewriterBase<'c, '_>,
+    op: OperationRef<'c, '_>,
+    symbol: &str,
+    bytes: &[u8],
+    location: Location<'c>,
+) -> Result<(Value<'c, 'c>, Value<'c, 'c>), String> {
+    let i64_type: Type = IntegerType::new(context, 64).into();
+    let ptr = llvm::r#type::pointer(context, 0);
     let module = root_module(op)?;
     let body = module
         .region(0)
@@ -4395,14 +4486,7 @@ fn intern_label<'c>(
         IntegerAttribute::new(i64_type, bytes.len() as i64).into(),
         location,
     )))?;
-    let interned = result_value(rewriter.insert(direct_call(
-        context,
-        "frk_rt_bstr_intern",
-        &[address, len],
-        ptr,
-        location,
-    )?))?;
-    result_value(rewriter.insert(cast_op("llvm.ptrtoint", interned, i64_type, location)?))
+    Ok((address, len))
 }
 
 fn strategy_alloc<'c>(

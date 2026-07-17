@@ -641,6 +641,9 @@ fn jit_symbol(name: &str) -> Option<*mut ()> {
         "frk_rt_ctl_perform_begin" => frk_rt::frk_rt_ctl_perform_begin as *mut (),
         "frk_rt_ctl_perform_end" => frk_rt::frk_rt_ctl_perform_end as *mut (),
         "frk_rt_ctl_resume_mark" => frk_rt::frk_rt_ctl_resume_mark as *mut (),
+        // Contract checks bind REAL (stderr + abort — not captured
+        // output; refutations stay out of in-process goldens, D-072).
+        "frk_rt_contract_check" => frk_rt::frk_rt_contract_check as *mut (),
         // Lua errors bind REAL (stderr + abort — not captured output).
         "frk_rt_lua_error" => frk_rt::frk_rt_lua_error as *mut (),
         // Capture shims (stdout is protocol output, D-047).

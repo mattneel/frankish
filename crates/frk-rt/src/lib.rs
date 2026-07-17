@@ -452,6 +452,30 @@ pub extern "C" fn frk_rt_dyn_check(actual: i64, expected: i64) {
     }
 }
 
+/// The contract narrowing check (D-072): a demoted flow fact executes
+/// here — mismatch prints the blame (UTF-8 bytes prepared by the
+/// frontend from the artifact line table) and aborts. Same corpus law
+/// as [`frk_rt_dyn_check`]: refutations stay out of in-process golden
+/// runs; the abort path is verified at the interp level.
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_contract_check(
+    actual: i64,
+    expected: i64,
+    blame: *const u8,
+    blame_len: i64,
+) {
+    if actual != expected {
+        let blame = unsafe {
+            std::slice::from_raw_parts(blame, blame_len.max(0) as usize)
+        };
+        eprintln!(
+            "frk: contract: narrowing refuted: expected variant {expected}, got {actual} — {} (D-072)",
+            String::from_utf8_lossy(blame)
+        );
+        std::process::abort();
+    }
+}
+
 // ---- strings (M9, D-049): rt-owned immutable UTF-16 values. Layout
 // {len: u64, units: u16 × len}, one allocation, plain malloc-domain
 // (strategy-independent; revisit at the M10 GC gate). ----

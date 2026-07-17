@@ -42,6 +42,7 @@ int64_t frk_rt_ctl_pending(void);
 int64_t frk_rt_ctl_prompt_enter(void);
 void frk_rt_ctl_prompt_exit(int64_t);
 int64_t frk_rt_ctl_resolve(int64_t, int64_t *);
+void frk_rt_contract_check(int64_t, int64_t, const uint8_t *, int64_t);
 void frk_rt_print_bool(int64_t);
 void frk_rt_print_f64(double);
 void frk_rt_print_str(const uint8_t *);

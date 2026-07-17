@@ -92,6 +92,8 @@ pub enum Lane {
     Dyn,
     /// Control effects (κ_frk pending cell).
     Ctl,
+    /// Contract checks with blame (D-072).
+    Contract,
     /// TS-0 print protocol.
     Ts,
     /// femto_lua print protocol + errors.
@@ -187,6 +189,8 @@ pub const RT_ABI: &[RtFn] = &[
     RtFn { name: "frk_rt_ctl_prompt_enter", args: &[], ret: Some(I64), lane: Lane::Ctl, jit: Real, interp: DialectEval },
     RtFn { name: "frk_rt_ctl_prompt_exit", args: &[I64], ret: None, lane: Lane::Ctl, jit: Real, interp: DialectEval },
     RtFn { name: "frk_rt_ctl_resolve", args: &[I64, PtrMutI64], ret: Some(I64), lane: Lane::Ctl, jit: Real, interp: DialectEval },
+
+    RtFn { name: "frk_rt_contract_check", args: &[I64, I64, PtrConstU8, I64], ret: None, lane: Lane::Contract, jit: Real, interp: DialectEval },
     // ---- Ts: the TS-0 print protocol (D-047) ----
     RtFn { name: "frk_rt_print_bool", args: &[I64], ret: None, lane: Lane::Ts, jit: Capture, interp: Builtin },
     RtFn { name: "frk_rt_print_f64", args: &[F64], ret: None, lane: Lane::Ts, jit: Capture, interp: Builtin },
