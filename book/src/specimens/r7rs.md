@@ -87,7 +87,18 @@ corpus files carry it and the reader treats `import` as a top-level no-op;
 and uncaught `error` goes to chibi's stderr with a nonzero exit, so it is
 *not* stdout-matchable and stays fenced from the v0 differential.
 
-r7rs_core is v0 SHIPPED. It forced `frk_ctl` into existence, made tail
+At v0.1 (M25) the specimen grew structured data and its finalizer
+form: pairs arrived as the FIRST new dyn tag since ratification
+(wrapped `product<[dyn,dyn]>` through existing ops — the retain==
+trace symmetry law named every kernel site the widening touched),
+quote and symbols ride interned byte strings, and `dynamic-wind`
+closed **escape-only** as `frk_ctl.wind` — the D-061 guard
+discipline turned out to BE the unwind-finalizer hook natively,
+with the interpreter mirroring it by catching the abort around the
+thunk. Two nested winds crossed by an escape print their afters
+innermost-first, exactly once, byte-equal with chibi.
+
+r7rs_core is v0.1 SHIPPED. It forced `frk_ctl` into existence, made tail
 calls load-bearing corpus-wide, and demonstrated the calling-convention
 fork — the fourth language on the kernel, and the one that proved the
 control lane.

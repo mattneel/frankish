@@ -1,25 +1,23 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M24 complete (tag m24-done). effects-v1 (D-069): frk.ctl
-handle/perform — labeled handlers, the affine ladder's tractable
-clause classes (drop/abortive/tail-resume), κ born uniform with the
-one-shot trap REAL in both worlds; native = evidence stack +
-branch-free perform. Two grid finds fixed pre-commit (func.constant
-recipe; the wasm32 32-bit-pointer κ-box).
-Tree: green — `make test` 45 blocks; diff 86 cases 0 divergent (8
-runners); grid 81/81 × BOTH strategies × 4 triples + s390x canary.
+Phase: M25 complete (tag m25-done). r7rs_core v0.1 (D-070): pairs
+(TAG_PAIR = 6 — the D-051 widening, every D-057 symmetry site
+touched), quote/symbols, and dynamic-wind CLOSED escape-only as
+frk_ctl.wind (the D-061 guard discipline IS the finalizer hook).
+Tree: green — `make test` 45 blocks; diff 91 cases 0 divergent (8
+runners); grid 86/86 × BOTH strategies × 4 triples + s390x canary.
 
 ## Next action
-M24 closed. The queue:
-1. r7rs_core v0.1 (pairs/lists; the dynamic-wind OPEN ruling comes
-   due — and v1 handlers now exist to build it on; macros fenced
-   behind the expander).
-2. A handler-consuming surface: parameterize/error-handlers in
-   scheme, or a koka-slice specimen — whichever idiom pulls
-   handle/perform into a frontend first (L5 admission).
-3. The Tier-2 stack-switching rung (full re-entrant κ) — revisit at
-   coroutines per D-069's fence.
+M25 closed. The queue:
+1. A handler-consuming surface (scheme parameterize / error handlers
+   over v1 handle/perform, or a koka-slice specimen) — the idiom
+   that pulls effects into a frontend (L5 admission).
+2. r7rs_core v0.2: set-car!/set-cdr! (pair mutation REOPENS the
+   cycle question — pairs join the purple/candidate machinery),
+   strings, vectors; define-syntax stays behind the expander.
+3. The Tier-2 stack-switching rung (re-entrant κ + re-entrant
+   winds) — revisit at coroutines per D-069/D-070.
 
 ## In flight
 Nothing.
@@ -45,6 +43,39 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m25-done — Shipped: r7rs_core v0.1 (D-070; the human picked
+"r7rs_core"). THE D-051 WIDENING FIRED: TAG_PAIR = 6 — pairs as
+wrapped product<[dyn,dyn]> through EXISTING ops (no cons kernel op;
+the manifest's adt-carriers promise kept). The D-057 symmetry law
+named every site: masked_dyn_ptr → the 4..=6 range compare, six
+tracer arms across both twins, kinds_layout recursing into product
+fields (the all-zero fallback = a latent rc UAF), TAG_LIMIT 7. No
+pair mutation ⇒ no new cycles ⇒ trial deletion untouched. Symbols =
+interned tag-3 bstrs; eq? compares symbols through frk_bstr.eq
+(byte-equal in the oracle, pointer-equal natively — the
+payload_word shortcut DIVERGED interp-side and the differential law
+caught it). DYNAMIC-WIND CLOSED escape-only as frk_ctl.wind:
+before(); r := thunk(); after(); yield r, crossing aborts re-raised
+AFTER after() — natively the D-061 guard discipline IS the
+unwind-finalizer hook; the interp mirrors by catching the abort
+around the thunk. Wind thunks lift (captures…, pack)→pack with the
+RetShape generalization. Corpus 11/11 vs chibi; suite 45; diff
+91/0; grid 86/86 × 5 × 2.
+
+M25 EXTRACTION: two lessons for the ledger of lessons. (1) A tag
+widening is a FRONTIER walk, not a constant bump — D-057's symmetry
+law turned "add a tag" into a checklist of named sites, and the one
+site NOT on the checklist (kinds_layout's product fallback) was
+exactly where the latent UAF sat. Laws that enumerate frontiers pay
+off when the frontier moves. (2) Identity is a SEMANTIC contract,
+not a representation accident: payload_word equality was true
+natively (interning) and false in the reference (fresh values) —
+the differential law surfaced a divergence NO single implementation
+would ever notice. eq? now goes through the op whose two
+implementations CONVERGE. The wind design is the milestone's gift:
+zero new runtime state, because the propagation discipline built
+for D-061 already WAS a finalizer mechanism waiting to be named.
+
 m24-done — Shipped: effects-v1 (D-069; the human picked "effects").
 frk.ctl grows handle/perform/resume — κ_frk's H-op-resume rung,
 scoped to the affine ladder's tractable classes with THE CLAUSE AT
@@ -706,6 +737,34 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-16 (twenty-seventh entry)
+    Milestone/step: M25 complete, tagged m25-done
+    Green? yes — 45 blocks; 91/0 (8 runners); grid 86/86 × 5 × 2
+    Did:
+    - D-070; TAG_PAIR widening (mask range, six tracer arms,
+      kinds_layout product recursion, TAG_LIMIT 7); frk_ctl.wind op
+      (IRDL/verify/eval/lowering + 2 K2 verifiers); scheme quote
+      sugar + Expr::Quote + symbols; cons/car/cdr/null?/pair?/eq?/
+      list primitives as IR intrinsics; display str/'()/pair/dotted
+      arms; wind-thunk job flavor + RetShape; rt rows scm_display_str
+      + ctl_pack_head; arith.andi eval (+ sentinel repointed);
+      __scm_eq via frk_bstr.eq (the interning-divergence fix);
+      5 chibi-validated corpus cases; manifest v0.1; κ_frk OPEN
+      ruling struck; book current
+    Next: queue to the user (handler-consuming surface / r7rs v0.2
+    with pair mutation / Tier-2 stack switching)
+    Landmines:
+    - set-car!/set-cdr! REOPEN the cycle question: mutable pairs
+      must join the purple/candidate machinery before v0.2 ships
+      mutation (today pairs cannot cycle — that is WHY trial
+      deletion needed no change)
+    - eq? on numbers is payload-BIT equality (f64 bits): fine for
+      fixnums; (eq? 0.0 -0.0) would diverge from chibi — fenced
+      with flonums, note before unfencing
+    - payload_word is identity ONLY natively; never use it for
+      cross-implementation equality — route through an op whose
+      interp/native semantics converge (the __scm_eq lesson)
 
     Session end: 2026-07-16 (twenty-sixth entry)
     Milestone/step: M24 complete, tagged m24-done

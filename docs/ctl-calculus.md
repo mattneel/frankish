@@ -114,9 +114,13 @@ coroutines): full re-entrant κ — non-tail resume, stored
 continuations, clause code that runs after body-rest completes.
 
 Unwinding is *observable* only through mem effects already performed
-(stores, prints) — κ_frk has no unwind-time finalizers in v0.
-`dynamic-wind` is an OPEN ruling (ledger it when r7rs forces it;
-atli's `drop_across_scopes` example is the study precedent).
+(stores, prints) — plus the ONE finalizer form: `frk_ctl.wind`
+(D-070, CLOSING the former OPEN ruling): before(); r := thunk();
+after(); yield r, a crossing abort re-raised AFTER after() runs.
+Escape-only (before() cannot re-run — κ is one-shot, outward);
+re-entrant winds are the Tier-2 rung. Natively the D-061 guard
+discipline IS the finalizer hook; the interpreter mirrors it by
+catching the abort around the thunk.
 
 ## 3. Licenses → lowerings → gates
 
