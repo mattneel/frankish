@@ -191,6 +191,30 @@ tracer.
 
 ## Rulings
 
+## Interfaces: the itab pair (TS-2)
+
+D-026 reserved Go-style itabs for structural interface dispatch; TS-2
+cashed the reservation (D-075). An interface value is `!frk_dyn.iface`
+— an opaque two-slot `{obj, itab}` pair, the third two-word citizen
+after closures and fat dyns. Two ops:
+`iface_make(box){methods = [@C__m…]}` converts at a statically known
+site (sealed world: the symbol list is an attribute), and
+`iface_call(iface, args){method = k}` dispatches.
+
+The pair is the cleanest demonstration yet of the K-contract's
+representation freedom: the **interpreter** evaluates `iface_make` as
+a *dictionary* — a product of bound closures, one per method, each
+capturing the object — while **native** builds a real itab (a table
+of method addresses; entries point at the class methods directly,
+because the call site knows the signature from the interface
+definition, exactly as Go does) and dispatches with one load and an
+indirect call. Same ops, two representations, and the differential
+matrix arbitrates every run. v0 tables materialize on the stack at
+the conversion site (hoisted to the function entry, loop-safe); the
+static-global cache is a later lowering upgrade behind the same
+surface, sound because v0 interface values are *borrows* —
+parameter-passing only, by fence.
+
 | Entry | Ruling |
 |---|---|
 | D-051 | Fat values; the six-tag closed space; wrap/unwrap/tag_of surface; trap-on-mismatch totality. |
@@ -198,7 +222,8 @@ tracer.
 | D-056 | Tables as raw kernel ops; metatable protocol as synthesized IR; out-pointer ABI; f64-bits key hashing. |
 | D-057 | Table stores own keys and values; dyn-pair retain masking; shell + slot-array tracing and freeing. |
 | D-058 | `table_next` + the iteration-order canon rule. |
-| D-026 | Itab-style structural dispatch reserved; deliberately absent from the v0 surface. |
+| D-026 | Itab-style structural dispatch reserved at founding; executed by D-075 at TS-2. |
+| D-075 | The iface pair; dictionary-vs-itab dual representation; borrows-only v0; arrows onto frk_closure. |
 
 For how femto_lua drives this surface — the pack convention, `__index`, the
 `%.14g` print canon — see

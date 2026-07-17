@@ -38,19 +38,27 @@ Curated test262 slice per stage (license: BSD) + tsc baseline-derived cases
 + hand corpus per idiom. node/V8 is ground truth through canon filter.
 
 ## Status
-TS-2 IN PROGRESS — the classes core SHIPPED (2026-07-17, m28-done,
-D-073/D-074): monomorphic classes as MANAGED BOXES OF PRODUCTS
-(field-granular frk_mem.field_get/field_set — the record idiom no
-earlier specimen forced), constructors (`this.f = e` bodies, the
-`this.next = this` knot via recref_null + back-patch), methods as
-plain `this`-first functions (direct calls), recursive class types
-through D-074's type-erased recref, and GC LIVE FOR TS: record
-layouts trace managed fields, both collector twins drill the
-record-shaped dead ring to the same free count, and a live object
-cycle runs under rc on all five architectures. Fences to the
-stage's SECOND half: structural interfaces (itabs, D-026), object
-closures/method values, inheritance, static members, getters/
-setters, optional + union-typed fields, field initializers.
+TS-2 SHIPPED, STAGE FROZEN (2026-07-17, m29-done; D-073/D-074/
+D-075, over two milestones):
+- Classes core (m28-done): monomorphic classes as MANAGED BOXES OF
+  PRODUCTS (frk_mem.field_get/field_set), all-assigning
+  constructors with the `this.next = this` knot, methods as
+  `this`-first plain functions, recursive class types via D-074's
+  type-erased recref, GC LIVE (record layouts trace; both twins
+  collect the record ring; a live object cycle runs under rc on
+  all five architectures).
+- Interfaces + object closures (m29-done, D-075): STRUCTURAL
+  interfaces on D-026's itabs — no `implements` anywhere, shape is
+  the contract; iface value = {obj, itab} pair; interp runs the
+  dictionary representation, native a real itab with indirect
+  calls, the matrix arbitrates. Arrows lambda-lift onto
+  frk_closure verbatim; captures by binding (params by value,
+  lets by box) give JS mutation visibility.
+Stage fences (carried forward, NOT TS-2 debt): inheritance/extends,
+static members, getters/setters, optional + union-typed fields,
+field initializers, method VALUES (unbound `this` — refused;
+arrows are the spelling), iface stores (borrows-only v0),
+interface properties/extends, block-bodied arrows, this-in-arrow.
 
 TS-1 SHIPPED (2026-07-17, m27-done, D-072): discriminated unions +
 the imported-flow-facts verifier — THE RESEARCH SLICE, exactly as

@@ -1,24 +1,25 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M28 complete (tag m28-done). TS-2 classes core (D-073/
-D-074): field-granular records (class = managed box of a product),
-methods/this/new, the recref knot for recursive classes, GC live
-for TS (record layouts trace; both twins collect the record ring).
-TS-2 completes next TS milestone with itabs + method values.
-Tree: green — `make test` 51 blocks; diff 102 cases 0 divergent (8
-runners); grid 97/97 × BOTH strategies × 4 triples + s390x canary.
+Phase: M29 complete (tag m29-done). TS-2 SHIPPED AND FROZEN
+(D-075): structural interfaces on D-026's itabs (dictionary interp
+/ real-itab native, the matrix arbitrates) + object closures
+(arrows onto frk_closure, captures by binding). Five specimens,
+five languages, one kernel.
+Tree: green — `make test` 53 blocks; diff 104 cases 0 divergent (8
+runners); grid 99/99 × BOTH strategies × 4 triples + s390x canary.
 
 ## Next action
-M28 closed. The queue:
-1. ts-2b: TS-2 second half — structural interfaces (itabs, D-026),
-   object closures/method values; the stage freezes when it ships.
-2. parameterize: r7rs v0.3 — make-parameter/parameterize (global
+M29 closed; TS-2 frozen. The queue:
+1. parameterize: r7rs v0.3 — make-parameter/parameterize (global
    cells rung), guard sugar, plain raise.
-3. pairs-mut: r7rs structured data — set-car!/set-cdr!, strings,
+2. pairs-mut: r7rs structured data — set-car!/set-cdr!, strings,
    vectors.
-4. tier-2: the stack-switching rung (re-entrant κ / winds), at
+3. tier-2: the stack-switching rung (re-entrant κ / winds), at
    coroutines.
+4. ts-3: async/await via the ported tsc downlevel state-machine
+   transform + exceptions (the manifest's next stage; wants the
+   effects lane it now has).
 
 ## In flight
 Nothing.
@@ -44,6 +45,37 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m29-done — Shipped: TS-2's second half; THE STAGE FREEZES (D-075).
+Structural interfaces cash D-026: !frk_dyn.iface = {obj, itab}
+two-slot; iface_make(box){methods} at sealed-world conversion
+sites; iface_call(iface, pack){k}. TWO REPRESENTATIONS, ONE
+SEMANTICS: interp = dictionary (product of bound closures), native
+= real itab (stack table hoisted to entry, method addresses via
+func.constant+cast carrying POST-RETYPE types, one load + indirect
+call typed from the interface def — no wrapper thunks, the Go
+move). v0 iface values are BORROWS (params only) — the retain
+design waits for a real consumer. OBJECT CLOSURES: arrows lambda-
+lift onto frk_closure.make/apply with ZERO new kernel ops (the
+dialect's fourth frontend); captures by BINDING — params by value,
+lets by box — so arrows over objects share the alias (JS law,
+node-witnessed: mutation between calls visible). Producer computes
+captures (tsc knows the bindings); method VALUES refused (unbound
+this — arrows are the honest spelling). Corpus: ifaces (two
+layouts, one interface, no implements anywhere) + arrows. Suite
+53; diff 104/0; grid 99/99 × 5 × 2.
+
+M29 EXTRACTION: (1) the dictionary/itab pair is the K-contract's
+sharpest demo yet — REPRESENTATION IS A LOWERING DETAIL is now
+witnessed by a case where interp and native use structurally
+different data (closures vs tables) and the matrix cannot tell.
+(2) The closure dialect absorbed its fourth frontend with zero
+ops added — arrows, ml lambdas, lua functions, scheme lambdas all
+ride make/apply; the M3-M7 kernel keeps refusing to grow for new
+languages, which is the thesis. (3) Coercion sites (obj literals,
+iwrap) all hang off checker.getContextualType — the checker-as-
+oracle architecture keeps paying: assignability is tsc's problem,
+representation is ours, and the boundary is one function call.
+
 m28-done — Shipped: TS-2 classes core (D-073/D-074). The record
 idiom lands in frk_mem: field_get/field_set on boxes of products
 (gep+load/store, retain-new under rc, owned-operand exclusion, the
@@ -830,6 +862,33 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-17 (thirty-first entry)
+    Milestone/step: M29 complete, tagged m29-done; TS-2 frozen
+    Green? yes — 53 blocks; 104/0 (8 runners); grid 99/99 × 5 × 2
+    Did:
+    - D-075; frk_dyn.iface + iface_make/iface_call (IRDL/verify/
+      dictionary eval/itab lowering + K3 JIT test); producer
+      interfaces/iwrap/imcall/arrows/fn-types/fcall; consumer
+      Iface/Fn types + emissions + arrow lambda-lifting; 2 goldens;
+      manifest TS-2 FROZEN; book dyn itab section
+    Next: queue to the user (parameterize / pairs-mut / tier-2 /
+    ts-3)
+    Landmines:
+    - iface tables are STACK values hoisted to function entry —
+      sound ONLY under the borrows-only fence; lifting the fence
+      (iface stores) requires the static-global cache + a retain
+      story FIRST
+    - func.constant references must carry POST-RETYPE types
+      (declared_fn_type) or verification fails after signature
+      rewriting — any new address-taking site must go through it
+    - melior ArrayAttribute::try_from does not accept real
+      ArrayAttrs — use attr_util::array_elements (that is WHY it
+      exists)
+    - arrow captures are BY BINDING; capturing a let means the BOX
+      travels — releasing that box while a closure holds it would
+      be a UAF; closures escaping into fields/arrays stay fenced
+      until the capture-lifetime rung
 
     Session end: 2026-07-17 (thirtieth entry)
     Milestone/step: M28 complete, tagged m28-done
