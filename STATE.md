@@ -1,16 +1,16 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M26 complete (tag m26-done). Handler consumption (D-071):
-R7RS exceptions over v1 handlers as PURE consumption; first-class
-procedures de-fenced for scheme; the escape-wins perform_end fix
-(the one ledgered kernel-adjacent delta — a real M24 bug the
-consumer caught).
-Tree: green — `make test` 45 blocks; diff 95 cases 0 divergent (8
-runners); grid 90/90 × BOTH strategies × 4 triples + s390x canary.
+Phase: M27 complete (tag m27-done). TS-1 (D-072): discriminated
+unions + the imported-flow-facts verifier — frk_contract born
+(narrow + blame + the promotion dataflow); both fates witnessed
+(all direct facts promote; the aliased-discriminant fact demotes
+and stays byte-equal; a tampered fact traps with blame).
+Tree: green — `make test` 49 blocks; diff 99 cases 0 divergent (8
+runners); grid 94/94 × BOTH strategies × 4 triples + s390x canary.
 
 ## Next action
-M26 closed. The queue:
+M27 closed. The queue:
 1. r7rs_core v0.3: make-parameter/parameterize (top-level value
    defines — global cells — are the missing rung; first-class
    procedures now exist), guard sugar, plain raise.
@@ -18,8 +18,9 @@ M26 closed. The queue:
    mutation joins the purple machinery), strings, vectors.
 3. The Tier-2 stack-switching rung (re-entrant κ / winds) — at
    coroutines.
-4. TS-1 (narrowing verifier; D-051 tag widening precedent now
-   exists twice).
+4. TS-2 (classes, structural interfaces/itabs D-026, object
+   closures — the GC goes live for TS; union-typed locals return
+   here with the mutability question).
 
 ## In flight
 Nothing.
@@ -45,6 +46,40 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m27-done — Shipped: TS-1 (D-072), the manifest's research slice
+verbatim: tsc's control-flow narrowing IMPORTED as cast annotations,
+RE-VERIFIED by our own dominance/dataflow pass, unverifiable casts
+DEMOTED to frk.contract runtime checks. frk_contract is BORN (SPEC
+§4.6 / D-015's first ops): narrow = checked cast, identity on
+success, blame trap on refutation; interp ALWAYS checks (reference
+semantics is maximal checking); native runs promote_narrows at
+lower_kernel entry — forward must-dataflow, possible-tag bitmasks
+per sum root, edge constraints from cond_br on tag_of cmpi, no kill
+set (sums are pure values), union-at-joins, fixpoint; proven narrows
+DELETED, so a wrong promotion is an L3 divergence by construction.
+Representation: unions ARE frk_adt sums; kind NOT stored (tests =
+tag compares — the promotion pass's food; reads = tag-selected
+literal chains). Producer: type-alias tables, contextual-type
+construction, prop nodes, narrow export; loanword additive within
+v1 (D-046 revisit resolved). Corpus 4 cases × 8 runners; witnesses:
+promotion counts (≥9 facts, 0 surviving on direct cases; exactly
+(0,1) on alias_demote), tampered-fact blame trap. Found: latent
+TS-0 dead-join bug (trailing if/else both-return → predecessor-less
+block breaks LLVM translation) — join now lazy. Suite 49; diff
+99/0; grid 94/94 × 5 × 2.
+
+M27 EXTRACTION: the promotion pass is the first REAL optimization
+in the repo, and it cost nothing semantically because the interp
+NEVER runs it — "reference = maximal checking, native = proof-
+elided" turns the entire differential matrix into an automatic
+soundness auditor for any future pass with the same shape. Second:
+the DEMOTION fate is what makes imported-fact architectures honest
+— alias_demote encodes "tsc knows things our pass doesn't" as a
+GREEN test, not a limitation note. Third: the tag-test lowering
+choice (kind not stored) is what made verification tractable — the
+frontend lowers the discriminant INTO the vocabulary the verifier
+speaks; representation choices and verifier design are one decision.
+
 m26-done — Shipped: handler consumption (D-071). R7RS
 with-exception-handler + raise-continuable over the v1 handlers as
 PURE CONSUMPTION: the clause and body are STATIC wrapper intrinsics
@@ -766,6 +801,33 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-17 (twenty-ninth entry)
+    Milestone/step: M27 complete, tagged m27-done
+    Green? yes — 49 blocks; 99/0 (8 runners); grid 94/94 × 5 × 2
+    Did:
+    - D-072; frk_contract dialect (IRDL/verify/eval/lowering);
+      promote_narrows dataflow + 12 CFG verifiers; frk_rt_contract_
+      check (Contract lane, both twins, make abi); producer type
+      aliases + obj/prop/narrow nodes; consumer Union/Variant +
+      kind-test tag lowering + blame from spans; 4 goldens; 3
+      witness tests (promotion counts, demotion, tampered fact);
+      TS-0 dead-join fix; manifest TS-1 SHIPPED; book chapters
+      (dialects/contract, specimens/ts1)
+    Next: queue to the user (parameterize / pair mutation / Tier-2 /
+    TS-2)
+    Landmines:
+    - promote_narrows runs on NATIVE paths only — never "unify" it
+      into the interp path; the asymmetry IS the auditor
+    - narrow is identity-on-success and kind is NOT a stored field;
+      storing kind would break both the verifier vocabulary and the
+      sum layout — TS-2 objects must not casually regress this
+    - union-typed LOCALS are fenced (box reads have no SSA
+      identity); admitting them silently demotes every fact —
+      that admission needs its own D-entry naming the cost
+    - the false-fact witness needs variants sharing a field shape;
+      differently-shaped variants are refused at EMISSION (the
+      consumer's typing), which is the cheaper defense firing first
 
     Session end: 2026-07-17 (twenty-eighth entry)
     Milestone/step: M26 complete, tagged m26-done

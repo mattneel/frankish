@@ -38,6 +38,22 @@ Curated test262 slice per stage (license: BSD) + tsc baseline-derived cases
 + hand corpus per idiom. node/V8 is ground truth through canon filter.
 
 ## Status
+TS-1 SHIPPED (2026-07-17, m27-done, D-072): discriminated unions +
+the imported-flow-facts verifier — THE RESEARCH SLICE, exactly as
+the identity paragraph above promised. Unions of `kind`-discriminated
+object aliases ride frk_adt sums (kind not stored: tests are tag
+compares, reads are tag-selected literals); tsc's control-flow
+narrowing exports as narrow cast annotations (loanword additive
+within v1); frk_contract is BORN (narrow op, blame from the span
+table); the native promotion pass re-derives every provable fact
+and DELETES its check, unprovable facts demote to runtime checks.
+Corpus: 4 cases node-diffed on all runners + the full grid; the
+demotion witness (aliased discriminant), the promotion counts, and
+the tampered-fact blame trap are standing tests. Slice fences
+(D-072): switch narrowing, union-typed LOCALS (box reads have no
+SSA identity — facts would silently demote; admit with the demotion
+named), optional props, nested payloads, >64-variant unions.
+
 TS-0 SHIPPED (2026-07-03): the full stage scope — monomorphic
 functions, number/boolean/string, arrays, control flow — compiles
 through loanword v1 (frozen, D-046) into the kernel dialects and runs
@@ -47,5 +63,5 @@ JS semantic mappings, canon §6 print fence), D-049 (arrays in
 frk.mem, OOB traps stricter-than-JS with source locations, strings
 as rt-owned UTF-16 — the code-unit ruling fired at .length), D-050
 (noImplicitReturns as checker-as-oracle corollary; tamper-refusal
-and §6.5 witnesses). TS-1 (discriminated unions + narrowing) is the
-next stage, unscheduled.
+and §6.5 witnesses). TS-2 (classes, structural interfaces, object
+closures — the GC goes live for TS) is the next stage, unscheduled.

@@ -28,6 +28,7 @@
 - [frk_mem — Boxes, Arrays, Strategies](dialects/mem.md)
 - [frk_str and frk_bstr — Two Kinds of Strings](dialects/str-bstr.md)
 - [frk_dyn — Dynamic Values and Tables](dialects/dyn.md)
+- [frk_contract — Trust but Verify](dialects/contract.md)
 
 # Memory
 
@@ -46,6 +47,7 @@
 - [Specimens and Fences](specimens/overview.md)
 - [ml_core — the OCaml Slice](specimens/ml-core.md)
 - [TS-0 and loanword](specimens/ts0.md)
+- [TS-1 — Narrowing as Contract](specimens/ts1.md)
 - [femto_lua and the Pack Convention](specimens/femto-lua.md)
 - [r7rs_core — Scheme Forces frk.ctl](specimens/r7rs.md)
 
