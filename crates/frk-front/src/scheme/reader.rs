@@ -35,11 +35,16 @@ impl Datum {
 enum Tok {
     Open(usize),
     Close(usize),
+    Quote(usize),
     Atom(String, usize, usize),
 }
 
 fn is_delimiter(byte: u8) -> bool {
-    byte.is_ascii_whitespace() || byte == b'(' || byte == b')' || byte == b';'
+    byte.is_ascii_whitespace()
+        || byte == b'('
+        || byte == b')'
+        || byte == b';'
+        || byte == b'\''
 }
 
 fn tokenize(source: &str) -> Result<Vec<Tok>, String> {
@@ -54,6 +59,9 @@ fn tokenize(source: &str) -> Result<Vec<Tok>, String> {
             while i < bytes.len() && bytes[i] != b'\n' {
                 i += 1;
             }
+        } else if byte == b'\'' {
+            tokens.push(Tok::Quote(i));
+            i += 1;
         } else if byte == b'(' {
             tokens.push(Tok::Open(i));
             i += 1;
@@ -109,6 +117,18 @@ fn read_datum(tokens: &[Tok], position: &mut usize, source_len: usize) -> Result
         .get(*position)
         .ok_or_else(|| "unexpected end of input".to_string())?;
     match token {
+        Tok::Quote(start) => {
+            // 'd — reader sugar for (quote d) (v0.1, D-070).
+            let start = *start;
+            *position += 1;
+            let quoted = read_datum(tokens, position, source_len)?;
+            let end = quoted.span().end;
+            let span = Span { start, end };
+            Ok(Datum::List(
+                vec![Datum::Symbol("quote".to_string(), Span { start, end: start + 1 }), quoted],
+                span,
+            ))
+        }
         Tok::Atom(text, start, end) => {
             *position += 1;
             atom(text, *start, *end)

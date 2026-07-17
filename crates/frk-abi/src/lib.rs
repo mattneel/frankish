@@ -180,6 +180,7 @@ pub const RT_ABI: &[RtFn] = &[
     RtFn { name: "frk_rt_ctl_handler_pop", args: &[], ret: None, lane: Lane::Ctl, jit: Real, interp: DialectEval },
     RtFn { name: "frk_rt_ctl_perform_begin", args: &[I64, PtrMutI64], ret: Some(I64), lane: Lane::Ctl, jit: Real, interp: DialectEval },
     RtFn { name: "frk_rt_ctl_perform_end", args: &[I64, I64, I64, I64, PtrMutI64], ret: Some(I64), lane: Lane::Ctl, jit: Real, interp: DialectEval },
+    RtFn { name: "frk_rt_ctl_pack_head", args: &[I64, PtrMutI64], ret: None, lane: Lane::Ctl, jit: Real, interp: DialectEval },
     RtFn { name: "frk_rt_ctl_resume_mark", args: &[I64], ret: None, lane: Lane::Ctl, jit: Real, interp: DialectEval },
     RtFn { name: "frk_rt_ctl_abort", args: &[I64, I64, I64], ret: None, lane: Lane::Ctl, jit: Real, interp: DialectEval },
     RtFn { name: "frk_rt_ctl_pending", args: &[], ret: Some(I64), lane: Lane::Ctl, jit: Real, interp: DialectEval },
@@ -196,6 +197,7 @@ pub const RT_ABI: &[RtFn] = &[
     // ---- Scheme: the display protocol (M15) ----
     RtFn { name: "frk_rt_scm_display_bool", args: &[I64], ret: None, lane: Lane::Scheme, jit: Capture, interp: Builtin },
     RtFn { name: "frk_rt_scm_display_num", args: &[F64], ret: None, lane: Lane::Scheme, jit: Capture, interp: Builtin },
+    RtFn { name: "frk_rt_scm_display_str", args: &[PtrConstU8], ret: None, lane: Lane::Scheme, jit: Capture, interp: Builtin },
     RtFn { name: "frk_rt_scm_newline", args: &[], ret: None, lane: Lane::Scheme, jit: Capture, interp: Builtin },
 ];
 

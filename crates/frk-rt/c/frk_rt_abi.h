@@ -35,6 +35,7 @@ void frk_rt_ctl_handler_push(int64_t, int64_t, int64_t, int64_t);
 void frk_rt_ctl_handler_pop(void);
 int64_t frk_rt_ctl_perform_begin(int64_t, int64_t *);
 int64_t frk_rt_ctl_perform_end(int64_t, int64_t, int64_t, int64_t, int64_t *);
+void frk_rt_ctl_pack_head(int64_t, int64_t *);
 void frk_rt_ctl_resume_mark(int64_t);
 void frk_rt_ctl_abort(int64_t, int64_t, int64_t);
 int64_t frk_rt_ctl_pending(void);
@@ -48,6 +49,7 @@ void frk_rt_lua_error(int64_t);
 void frk_rt_print_lua_str(const uint8_t *);
 void frk_rt_scm_display_bool(int64_t);
 void frk_rt_scm_display_num(double);
+void frk_rt_scm_display_str(const uint8_t *);
 void frk_rt_scm_newline(void);
 
 #endif /* FRK_RT_ABI_H */

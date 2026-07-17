@@ -345,12 +345,12 @@ fn unregistered_ops_fail_loudly() {
         r#"func.func @main() -> i64 {
             %a = arith.constant 6 : i64
             %b = arith.constant 3 : i64
-            %r = arith.andi %a, %b : i64
+            %r = arith.shrsi %a, %b : i64
             return %r : i64
         }"#,
     )
     .unwrap_err();
-    assert_eq!(error, EvalError::UnknownOp("arith.andi".into()));
+    assert_eq!(error, EvalError::UnknownOp("arith.shrsi".into()));
 }
 
 #[test]
@@ -380,4 +380,20 @@ fn maxsi_picks_the_signed_maximum() {
     )
     .unwrap();
     assert_eq!(picked, 0);
+}
+
+#[test]
+fn andi_is_bitwise_and() {
+    // M25: arith.andi joins the registry (__scm_eq's conjunction);
+    // works at i1 (the common case) and wider widths.
+    let picked = interpret_i64(
+        r#"func.func @main() -> i64 {
+            %a = arith.constant 6 : i64
+            %b = arith.constant 3 : i64
+            %m = arith.andi %a, %b : i64
+            return %m : i64
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(picked, 2);
 }

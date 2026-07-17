@@ -32,6 +32,7 @@ use melior::ir::{
 };
 
 use super::ast::{Expr, LetKind, Program, Top};
+use super::reader::Datum;
 use super::reader::Span;
 
 const TAG_BOOL: i64 = 1;
@@ -68,8 +69,20 @@ struct Job {
     captures: Vec<Capture>,
     params: Vec<String>,
     escape: Option<String>,
+    /// A dynamic-wind thunk (D-070): lifted as (captures…, pack) →
+    /// pack — the uniform shape frk_ctl.wind applies.
+    wind_thunk: bool,
     body: Vec<Expr>,
     procs: HashMap<String, ProcInfo>,
+}
+
+/// The enclosing function's return shape — guards and escapes must
+/// early-return something well-typed (D-061/D-070).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RetShape {
+    Dyn,
+    Void,
+    Pack,
 }
 
 pub fn emit<'c>(
@@ -127,6 +140,7 @@ pub fn emit<'c>(
                 captures: Vec::new(),
                 params: params.clone(),
                 escape: None,
+                wind_thunk: false,
                 body: body.clone(),
                 procs: top.clone(),
             });
@@ -163,7 +177,7 @@ struct Fcx<'c, 'r> {
     block: BlockRef<'c, 'r>,
     locals: HashMap<String, Local<'c, 'r>>,
     procs: HashMap<String, ProcInfo>,
-    returns_dyn: bool,
+    ret_shape: RetShape,
 }
 
 #[derive(Clone, Copy)]
@@ -391,6 +405,10 @@ impl<'c> Emitter<'c> {
         ));
     }
 
+    fn ret_raw<'r>(&self, b: BlockRef<'c, 'r>, values: &[Value<'c, 'r>], l: Location<'c>) -> R<()> {
+        self.ret(b, values, l)
+    }
+
     fn ret<'r>(&self, b: BlockRef<'c, 'r>, values: &[Value<'c, 'r>], l: Location<'c>) -> R<()> {
         b.append_operation(
             OperationBuilder::new("func.return", l)
@@ -447,6 +465,8 @@ impl<'c> Emitter<'c> {
         }
         if job.escape.is_some() {
             inputs.push(self.i64_ty());
+        } else if job.wind_thunk {
+            inputs.push(self.pack_ty());
         } else {
             inputs.extend(std::iter::repeat_n(self.dyn_ty(), job.params.len()));
         }
@@ -475,7 +495,43 @@ impl<'c> Emitter<'c> {
             }
         }
         let mut fcx =
-            Fcx { region: &region, block: entry, locals, procs: job.procs.clone(), returns_dyn: true };
+            Fcx {
+                region: &region,
+                block: entry,
+                locals,
+                procs: job.procs.clone(),
+                ret_shape: if job.wind_thunk { RetShape::Pack } else { RetShape::Dyn },
+            };
+        if job.wind_thunk {
+            // Body evaluates as a sequence; the final value returns as
+            // a ONE-element pack (the uniform shape). Divergence (an
+            // escape inside the thunk) has already early-returned.
+            let l = Location::unknown(self.context);
+            if let Some(value) = self.emit_seq_value(&mut fcx, &job.body.clone())? {
+                let one = self.const_i64(fcx.block, 1, l)?;
+                let pack = self.build(
+                    fcx.block,
+                    "frk_mem.array_new",
+                    &[one],
+                    &[self.pack_ty()],
+                    &[],
+                    l,
+                )?;
+                let zero = self.const_i64(fcx.block, 0, l)?;
+                self.build(
+                    fcx.block,
+                    "frk_mem.array_set",
+                    &[pack, zero, value],
+                    &[],
+                    &[],
+                    l,
+                )
+                .ok();
+                self.ret_raw(fcx.block, &[pack], l)?;
+            }
+            self.func(module, &job.symbol, &inputs, &[self.pack_ty()], region, false);
+            return Ok(());
+        }
         self.emit_body_tail(&mut fcx, &job.body)?;
         self.func(module, &job.symbol, &inputs, &[self.dyn_ty()], region, false);
         Ok(())
@@ -497,7 +553,7 @@ impl<'c> Emitter<'c> {
             block: entry,
             locals: HashMap::new(),
             procs: top.clone(),
-            returns_dyn: false,
+            ret_shape: RetShape::Void,
         };
         for form in program {
             if let Top::Expr(expr) = form {
@@ -535,6 +591,7 @@ impl<'c> Emitter<'c> {
             Expr::Begin(exprs, _) => self.emit_seq_value(fcx, exprs),
             Expr::Let(kind, binds, body, _) => self.emit_let_value(fcx, *kind, binds, body),
             Expr::App(callee, args, _) => self.emit_app_value(fcx, callee, args, l),
+            Expr::Quote(datum, _) => self.emit_quoted(fcx, datum, l).map(Some),
             Expr::Lambda(_, _, _) => {
                 Err("first-class lambdas are fenced in r7rs_core v0 (only as call/cc receivers)".into())
             }
@@ -749,6 +806,7 @@ impl<'c> Emitter<'c> {
                     captures: captures.clone(),
                     params,
                     escape: None,
+                    wind_thunk: false,
                     body,
                     procs: inner_procs.clone(),
                 });
@@ -917,12 +975,154 @@ impl<'c> Emitter<'c> {
     /// Returns the enclosing function's dead dummy (dyn) or nothing
     /// (void @main) — reached only when an abort is propagating.
     fn emit_early_return<'r>(&mut self, fcx: &mut Fcx<'c, 'r>, l: Location<'c>) -> R<()> {
-        if fcx.returns_dyn {
-            let dummy = self.dummy_dyn(fcx.block, l)?;
-            self.ret(fcx.block, &[dummy], l)
-        } else {
-            self.ret(fcx.block, &[], l)
+        match fcx.ret_shape {
+            RetShape::Dyn => {
+                let dummy = self.dummy_dyn(fcx.block, l)?;
+                self.ret(fcx.block, &[dummy], l)
+            }
+            RetShape::Void => self.ret(fcx.block, &[], l),
+            RetShape::Pack => {
+                let zero = self.const_i64(fcx.block, 0, l)?;
+                let empty = self.build(
+                    fcx.block,
+                    "frk_mem.array_new",
+                    &[zero],
+                    &[self.pack_ty()],
+                    &[],
+                    l,
+                )?;
+                self.ret(fcx.block, &[empty], l)
+            }
         }
+    }
+
+    fn pack_ty(&self) -> Type<'c> {
+        Type::parse(self.context, "!frk_mem.arr<!frk_dyn.dyn>").expect("pack")
+    }
+    fn pack_fn_ty(&self) -> Type<'c> {
+        Type::parse(
+            self.context,
+            "!frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>",
+        )
+        .expect("pack fn")
+    }
+    fn nil_dyn<'r>(&self, b: BlockRef<'c, 'r>, l: Location<'c>) -> R<Value<'c, 'r>> {
+        let w = self.const_i64(b, 0, l)?;
+        self.wrap(b, 0, w, l)
+    }
+    fn symbol_dyn<'r>(&self, b: BlockRef<'c, 'r>, name: &str, l: Location<'c>) -> R<Value<'c, 'r>> {
+        let lit = self.build(
+            b,
+            "frk_bstr.lit",
+            &[],
+            &[Type::parse(self.context, "!frk_bstr.str").ok_or("bstr type")?],
+            &[("text", StringAttribute::new(self.context, name).into())],
+            l,
+        )?;
+        self.wrap(b, 3, lit, l)
+    }
+
+    /// Quoted data (D-070): fixnums, booleans, symbols (interned
+    /// bstrs), and proper/improper lists via right-folded cons.
+    fn emit_quoted<'r>(
+        &mut self,
+        fcx: &mut Fcx<'c, 'r>,
+        datum: &Datum,
+        l: Location<'c>,
+    ) -> R<Value<'c, 'r>> {
+        match datum {
+            Datum::Int(v, _) => self.num_dyn(fcx.block, *v as f64, l),
+            Datum::Bool(v, _) => self.bool_dyn(fcx.block, *v, l),
+            Datum::Symbol(name, _) => self.symbol_dyn(fcx.block, name, l),
+            Datum::List(items, _) => {
+                let mut acc = self.nil_dyn(fcx.block, l)?;
+                for item in items.iter().rev() {
+                    let head = self.emit_quoted(fcx, item, l)?;
+                    acc = self
+                        .call(fcx.block, "__scm_cons", &[head, acc], &[self.dyn_ty()], l)?
+                        .ok_or("cons produced no value")?;
+                }
+                Ok(acc)
+            }
+        }
+    }
+
+    /// Lifts a zero-parameter lambda as a WIND THUNK closure —
+    /// (captures…, pack) → pack, the uniform shape frk_ctl.wind
+    /// applies (D-070).
+    fn emit_wind_thunk<'r>(
+        &mut self,
+        fcx: &mut Fcx<'c, 'r>,
+        lambda: &Expr,
+        l: Location<'c>,
+    ) -> R<Value<'c, 'r>> {
+        let Expr::Lambda(params, body, _) = lambda else {
+            return Err("dynamic-wind takes three (lambda () …) thunks in v0.1".into());
+        };
+        if !params.is_empty() {
+            return Err("dynamic-wind thunks take no parameters".into());
+        }
+        let mut bound: HashSet<String> = HashSet::new();
+        let mut free = BTreeSet::new();
+        free_names_body(body, &mut bound, &mut free);
+        let captures: Vec<Capture> = free
+            .into_iter()
+            .filter_map(|name| {
+                fcx.locals.get(&name).map(|local| Capture {
+                    name,
+                    kind: match local {
+                        Local::Val(_) => CapKind::Val,
+                        Local::Tok(_) => CapKind::Tok,
+                    },
+                })
+            })
+            .collect();
+        let symbol = format!("scm_wind{}", self.next_fn);
+        self.next_fn += 1;
+        let empty = Type::parse(self.context, "!frk_adt.product<[]>").ok_or("empty product")?;
+        let mut env = self.build(fcx.block, "frk_adt.product_new", &[], &[empty], &[], l)?;
+        let mut field_types: Vec<String> = Vec::new();
+        for capture in &captures {
+            let value = match fcx.locals.get(&capture.name).copied() {
+                Some(Local::Val(v)) | Some(Local::Tok(v)) => v,
+                None => return Err(format!("capture `{}` not in scope", capture.name)),
+            };
+            field_types.push(match capture.kind {
+                CapKind::Val => "!frk_dyn.dyn".to_string(),
+                CapKind::Tok => "i64".to_string(),
+            });
+            let product_ty = Type::parse(
+                self.context,
+                &format!("!frk_adt.product<[{}]>", field_types.join(", ")),
+            )
+            .ok_or("product type")?;
+            env = self.build(
+                fcx.block,
+                "frk_adt.product_snoc",
+                &[env, value],
+                &[product_ty],
+                &[],
+                l,
+            )?;
+        }
+        let closure = self.build(
+            fcx.block,
+            "frk_closure.make",
+            &[env],
+            &[self.pack_fn_ty()],
+            &[("callee", FlatSymbolRefAttribute::new(self.context, &symbol).into())],
+            l,
+        )?;
+        self.job_queue.push(Job {
+            symbol,
+            captures,
+            params: Vec::new(),
+            escape: None,
+            wind_thunk: true,
+            body: body.clone(),
+            procs: fcx.procs.clone(),
+        });
+        Ok(closure)
     }
 
     fn emit_callcc<'r>(
@@ -1006,6 +1206,7 @@ impl<'c> Emitter<'c> {
             captures,
             params: Vec::new(),
             escape: Some(escape.clone()),
+            wind_thunk: false,
             body: body.clone(),
             procs: fcx.procs.clone(),
         });
@@ -1104,6 +1305,70 @@ impl<'c> Emitter<'c> {
                 self.call(fcx.block, "frk_rt_scm_newline", &[], &[], l)?;
                 Ok(Some(Some(self.num_dyn(fcx.block, 0.0, l)?)))
             }
+            "cons" | "eq?" => {
+                let [a, b] = args else {
+                    return Err(format!("`{op}` takes two arguments"));
+                };
+                let Some(av) = self.emit_value(fcx, a)? else { return Ok(Some(None)) };
+                let Some(bv) = self.emit_value(fcx, b)? else { return Ok(Some(None)) };
+                let callee = if op == "cons" { "__scm_cons" } else { "__scm_eq" };
+                let r = self
+                    .call(fcx.block, callee, &[av, bv], &[self.dyn_ty()], l)?
+                    .ok_or("intrinsic produced no value")?;
+                Ok(Some(Some(r)))
+            }
+            "car" | "cdr" | "null?" | "pair?" => {
+                let [a] = args else {
+                    return Err(format!("`{op}` takes one argument"));
+                };
+                let Some(av) = self.emit_value(fcx, a)? else { return Ok(Some(None)) };
+                let callee = match op {
+                    "car" => "__scm_car",
+                    "cdr" => "__scm_cdr",
+                    "null?" => "__scm_nullp",
+                    _ => "__scm_pairp",
+                };
+                let r = self
+                    .call(fcx.block, callee, &[av], &[self.dyn_ty()], l)?
+                    .ok_or("intrinsic produced no value")?;
+                Ok(Some(Some(r)))
+            }
+            "list" => {
+                let mut values = Vec::new();
+                for arg in args {
+                    match self.emit_value(fcx, arg)? {
+                        Some(v) => values.push(v),
+                        None => return Ok(Some(None)),
+                    }
+                }
+                let mut acc = self.nil_dyn(fcx.block, l)?;
+                for value in values.into_iter().rev() {
+                    acc = self
+                        .call(fcx.block, "__scm_cons", &[value, acc], &[self.dyn_ty()], l)?
+                        .ok_or("cons produced no value")?;
+                }
+                Ok(Some(Some(acc)))
+            }
+            "dynamic-wind" => {
+                let [before, thunk, after] = args else {
+                    return Err("dynamic-wind takes three thunks".into());
+                };
+                let bf = self.emit_wind_thunk(fcx, before, l)?;
+                let th = self.emit_wind_thunk(fcx, thunk, l)?;
+                let af = self.emit_wind_thunk(fcx, after, l)?;
+                let r = self.build(
+                    fcx.block,
+                    "frk_ctl.wind",
+                    &[bf, th, af],
+                    &[self.dyn_ty()],
+                    &[],
+                    l,
+                )?;
+                // A crossing escape leaves pending set — same guard
+                // discipline as any non-tail call (D-061/D-070).
+                self.emit_guard(fcx, l)?;
+                Ok(Some(Some(r)))
+            }
             _ => Ok(None),
         }
     }
@@ -1143,7 +1408,8 @@ fn is_primitive(op: &str) -> bool {
     matches!(
         op,
         "+" | "-" | "*" | "quotient" | "remainder" | "=" | "<" | ">" | "<=" | ">=" | "display"
-            | "newline"
+            | "newline" | "cons" | "car" | "cdr" | "null?" | "pair?" | "eq?" | "list"
+            | "dynamic-wind"
     )
 }
 
@@ -1169,6 +1435,7 @@ fn free_names(expr: &Expr, bound: &mut HashSet<String>, out: &mut BTreeSet<Strin
             free_names(c, bound, out);
         }
         Expr::Begin(exprs, _) => free_names_body(exprs, bound, out),
+        Expr::Quote(_, _) => {}
         Expr::App(callee, args, _) => {
             free_names(callee, bound, out);
             for a in args {

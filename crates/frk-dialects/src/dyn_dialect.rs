@@ -84,7 +84,12 @@ pub const TAG_NUM: i64 = 2;
 pub const TAG_STR: i64 = 3;
 pub const TAG_TABLE: i64 = 4;
 pub const TAG_FUN: i64 = 5;
-const TAG_LIMIT: i64 = 6;
+/// A cons cell (M25, D-070): payload = boxed product<[dyn, dyn]>.
+/// MANAGED — the D-051 widening: every retain/trace frontier site
+/// accepts 4..=6 (the D-057 symmetry law names them all).
+pub const TAG_PAIR: i64 = 6;
+// Widened to 7 at M25 (D-070): TAG_PAIR = 6 joins the closed space.
+const TAG_LIMIT: i64 = 7;
 
 pub(crate) fn tag_attr(op: OperationRef<'_, '_>) -> Result<i64, String> {
     let tag = op

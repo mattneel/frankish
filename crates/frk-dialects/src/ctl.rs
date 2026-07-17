@@ -54,6 +54,14 @@ irdl.dialect @frk_ctl {
     irdl.operands(value: %v)
     irdl.results(out: %r)
   }
+  irdl.operation @wind {
+    %b = irdl.base @frk_closure::@fn
+    %t = irdl.base @frk_closure::@fn
+    %a = irdl.base @frk_closure::@fn
+    %r = irdl.base @frk_dyn::@dyn
+    irdl.operands(before: %b, thunk: %t, after: %a)
+    irdl.results(value: %r)
+  }
   irdl.operation @resume {
     %m = irdl.is i64
     %v = irdl.base @frk_dyn::@dyn
@@ -87,7 +95,7 @@ pub(crate) fn verify_op<'c>(
                 ))
             }
         }
-        "abort" | "pending" | "resume" => Ok(()),
+        "abort" | "pending" | "resume" | "wind" => Ok(()),
         "handle" => {
             // clause: the uniform pack fn; body: fn<[i64],[dyn]>
             // (prompt-shaped); label attribute present.

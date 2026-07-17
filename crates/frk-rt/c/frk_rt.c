@@ -108,9 +108,9 @@ static void frk_for_each_child(unsigned char *payload, frk_visit_fn visit) {
                 for (int64_t i = 0; i < cap; i++) {
                     int64_t *s = slots + i * 5;
                     if (s[0] != 1) continue;
-                    if ((s[1] == 4 || s[1] == 5) && s[2])
+                    if (s[1] >= 4 && s[1] <= 6 && s[2])
                         visit((unsigned char *)(intptr_t)s[2]);
-                    if ((s[3] == 4 || s[3] == 5) && s[4])
+                    if (s[3] >= 4 && s[3] <= 6 && s[4])
                         visit((unsigned char *)(intptr_t)s[4]);
                 }
             break;
@@ -126,7 +126,7 @@ static void frk_for_each_child(unsigned char *payload, frk_visit_fn visit) {
             } else {
                 for (int64_t i = 0; i + 1 < len * 2; i += 2) {
                     int64_t tag = words[1 + i];
-                    if ((tag == 4 || tag == 5) && words[2 + i])
+                    if (tag >= 4 && tag <= 6 && words[2 + i])
                         visit((unsigned char *)(intptr_t)words[2 + i]);
                 }
             }
@@ -143,7 +143,7 @@ static void frk_for_each_child(unsigned char *payload, frk_visit_fn visit) {
                     w += 1;
                 } else if (code == 2) {
                     int64_t tag = words[w];
-                    if (w + 1 < count && (tag == 4 || tag == 5) && words[w + 1])
+                    if (w + 1 < count && tag >= 4 && tag <= 6 && words[w + 1])
                         visit((unsigned char *)(intptr_t)words[w + 1]);
                     w += 2;
                 } else {
@@ -463,6 +463,12 @@ int64_t frk_rt_ctl_perform_end(int64_t entry, int64_t marker, int64_t token,
     }
 }
 
+void frk_rt_ctl_pack_head(int64_t pack, int64_t *out) {
+    const int64_t *words = (const int64_t *)(intptr_t)pack;
+    if (words[0] > 0) { out[0] = words[1]; out[1] = words[2]; }
+    else { out[0] = 0; out[1] = 0; }
+}
+
 void frk_rt_ctl_resume_mark(int64_t marker) {
     if (frk_ctl_was_consumed(marker)) {
         fprintf(stderr, "frk: one-shot violation (Îº_frk, D-069)\n");
@@ -739,6 +745,10 @@ void frk_rt_scm_display_bool(int64_t value) {
     printf("%s", value ? "#t" : "#f");
 }
 void frk_rt_scm_newline(void) { printf("\n"); }
+void frk_rt_scm_display_str(const uint8_t *s) {
+    uint64_t len = *(const uint64_t *)s;
+    fwrite(s + 8, 1, (size_t)len, stdout);
+}
 
 /* ---- strings (M9, D-049): {u64 len; u16 units[]}; plain malloc,
  * strategy-independent. UTF-16 code-unit semantics throughout. ---- */

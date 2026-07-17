@@ -35,6 +35,7 @@ pub(crate) fn register(registry: &mut HashMap<&'static str, Box<dyn Eval>>) {
     registry.insert("arith.sitofp", Box::new(SiToFp));
     registry.insert("arith.fptosi", Box::new(FpToSi));
     registry.insert("arith.maxsi", Box::new(MaxSI));
+    registry.insert("arith.andi", Box::new(AndI));
 }
 
 struct ExtUI;
@@ -266,6 +267,21 @@ macro_rules! wrapping_binary {
             }
         }
     };
+}
+
+/// Bitwise AND (M25: __scm_eq's tag∧payload conjunction).
+struct AndI;
+impl Eval for AndI {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let (lhs, rhs) = binary_operands(frame, op)?;
+        let bits = lhs.as_unsigned()? & rhs.as_unsigned()?;
+        continue_with_result(frame, op, Value::int(bits, lhs.width()?)?)
+    }
 }
 
 wrapping_binary!(AddI, wrapping_add);

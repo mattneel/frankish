@@ -37,6 +37,7 @@ use melior::ir::attribute::{
 };
 use melior::ir::operation::{OperationBuilder, OperationLike, OperationMutLike};
 use melior::ir::r#type::{FunctionType, IntegerType, TypeId};
+use melior::ir::TypeLike;
 use melior::ir::{
     Block, BlockLike, Location, Operation, OperationRef, Region, RegionLike, Type, Value,
     ValueLike,
@@ -121,6 +122,27 @@ fn kinds_layout(kinds: &[SlotKind<'_>], types: &[Type<'_>]) -> u64 {
                 if ty.to_string() == "!frk_dyn.dyn" {
                     codes.push(2); // dyn tag; pair traced by tag
                     codes.push(0);
+                } else if ty.to_string().starts_with("!frk_adt.product<") {
+                    // M25 (D-070): a boxed product traces its dyn
+                    // fields — the all-zero fallback left a pair's
+                    // car/cdr untraced (an rc UAF at first release).
+                    let mut emitted = 0usize;
+                    let field_context = unsafe { TypeLike::context(ty).to_ref() };
+                    if let Ok(fields) = decode_product(field_context, *ty) {
+                        for field in &fields {
+                            if field.to_string() == "!frk_dyn.dyn" {
+                                codes.push(2);
+                                codes.push(0);
+                                emitted += 2;
+                            } else {
+                                codes.push(0);
+                                emitted += 1;
+                            }
+                        }
+                    }
+                    if emitted < *slots {
+                        codes.extend(std::iter::repeat_n(0u8, *slots - emitted));
+                    }
                 } else {
                     codes.extend(std::iter::repeat_n(0u8, *slots));
                 }
@@ -457,6 +479,12 @@ enum Planned<'c, 'a> {
     CtlResume {
         op: OperationRef<'c, 'a>,
     },
+    /// frk_ctl.wind (D-070): before(); r := thunk(); after(); yield r
+    /// — escape-only dynamic-wind; the guard discipline propagates a
+    /// crossing abort AFTER after() has run.
+    CtlWind {
+        op: OperationRef<'c, 'a>,
+    },
 }
 
 /// Lowers every kernel op and type under `module` (the pipeline anchors
@@ -662,7 +690,10 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
         ) || matches!(
             plan,
             Planned::DynWrap { payload_kind: SlotKind::Closure | SlotKind::Words { .. }, .. }
-        ) || matches!(plan, Planned::TableNew { .. } | Planned::CtlPerform { .. })
+        ) || matches!(
+            plan,
+            Planned::TableNew { .. } | Planned::CtlPerform { .. } | Planned::CtlWind { .. }
+        )
     });
     if needs_allocator {
         declare_runtime(context, module, strategy)?;
@@ -1304,6 +1335,7 @@ fn plan_ctl<'c, 'a>(
             Ok(Planned::CtlPerform { op, result, label_text, label_symbol })
         }
         "resume" => Ok(Planned::CtlResume { op }),
+        "wind" => Ok(Planned::CtlWind { op }),
         "prompt" => {
             let result = map_type(
                 context,
@@ -1609,6 +1641,7 @@ fn declare_str_runtime(
                 needed.push(("frk_rt_ctl_resume_mark", false));
             }
             Planned::CtlResume { .. } => needed.push(("frk_rt_ctl_resume_mark", false)),
+            Planned::CtlWind { .. } => needed.push(("frk_rt_ctl_pack_head", false)),
             _ => {}
         }
     }
@@ -3193,6 +3226,122 @@ fn apply<'c, 'a>(
             let value = operand(op, 1)?;
             finish(rewriter, op, value)
         }
+        Planned::CtlWind { op } => {
+            // before(); r := thunk(); after(); yield head(r). A
+            // crossing abort re-raises through the ENCLOSING frame's
+            // guard — after() has already run by then (D-070).
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let ptr = llvm::r#type::pointer(context, 0);
+            let mut thunk_pack: Option<Value> = None;
+            for index in 0..3usize {
+                let closure = operand(op, index)?;
+                let fn_ptr = result_value(rewriter.insert(llvm::extract_value(
+                    context,
+                    closure,
+                    DenseI64ArrayAttribute::new(context, &[0]),
+                    ptr,
+                    location,
+                )))?;
+                let env_ptr = result_value(rewriter.insert(llvm::extract_value(
+                    context,
+                    closure,
+                    DenseI64ArrayAttribute::new(context, &[1]),
+                    ptr,
+                    location,
+                )))?;
+                let eight = result_value(rewriter.insert(melior::dialect::arith::constant(
+                    context,
+                    IntegerAttribute::new(i64_type, 8).into(),
+                    location,
+                )))?;
+                let empty = strategy_alloc(
+                    context,
+                    rewriter,
+                    strategy,
+                    eight,
+                    2 | (2 << 2), // LAYOUT_ARRAY_DYN, zero-length
+                    location,
+                )?;
+                let zero = result_value(rewriter.insert(melior::dialect::arith::constant(
+                    context,
+                    IntegerAttribute::new(i64_type, 0).into(),
+                    location,
+                )))?;
+                store_slot_at(context, rewriter, empty, 0, zero, location)?;
+                let call = rewriter.insert(
+                    OperationBuilder::new("llvm.call", location)
+                        .add_attributes(&[
+                            (
+                                melior::ir::Identifier::new(context, "CConv"),
+                                Attribute::parse(context, "#llvm.cconv<ccc>").ok_or("CConv")?,
+                            ),
+                            (
+                                melior::ir::Identifier::new(context, "TailCallKind"),
+                                Attribute::parse(context, "#llvm.tailcallkind<none>")
+                                    .ok_or("TailCallKind")?,
+                            ),
+                            (
+                                melior::ir::Identifier::new(context, "fastmathFlags"),
+                                Attribute::parse(context, "#llvm.fastmath<none>")
+                                    .ok_or("fastmathFlags")?,
+                            ),
+                            (
+                                melior::ir::Identifier::new(context, "op_bundle_sizes"),
+                                Attribute::parse(context, "array<i32>")
+                                    .ok_or("op_bundle_sizes")?,
+                            ),
+                            (
+                                melior::ir::Identifier::new(context, "operandSegmentSizes"),
+                                Attribute::parse(context, "array<i32: 3, 0>")
+                                    .ok_or("operandSegmentSizes")?,
+                            ),
+                            (
+                                melior::ir::Identifier::new(context, "frk.ctl_body"),
+                                Attribute::parse(context, "unit").ok_or("ctl_body")?,
+                            ),
+                        ])
+                        .add_operands(&[fn_ptr, env_ptr, empty])
+                        .add_results(&[ptr])
+                        .build()
+                        .map_err(|e| e.to_string())?,
+                );
+                if index == 1 {
+                    thunk_pack = Some(result_value(call)?);
+                }
+            }
+            let thunk_pack = thunk_pack.ok_or("wind without a thunk result")?;
+            let pack_w = result_value(
+                rewriter.insert(cast_op("llvm.ptrtoint", thunk_pack, i64_type, location)?),
+            )?;
+            let two = result_value(rewriter.insert(melior::dialect::arith::constant(
+                context,
+                IntegerAttribute::new(i64_type, 2).into(),
+                location,
+            )))?;
+            let out2 = result_value(rewriter.insert(
+                OperationBuilder::new("llvm.alloca", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "elem_type"),
+                        TypeAttribute::new(i64_type).into(),
+                    )])
+                    .add_operands(&[two])
+                    .add_results(&[ptr])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            rewriter.insert(direct_call_void(
+                context,
+                "frk_rt_ctl_pack_head",
+                &[pack_w, out2],
+                location,
+            )?);
+            let head_tag = load_slot_at(context, rewriter, out2, 0, location)?;
+            let head_pay = load_slot_at(context, rewriter, out2, 1, location)?;
+            let yielded = build_dyn_words(context, rewriter, head_tag, head_pay, location)?;
+            finish(rewriter, op, yielded)
+        }
         Planned::CtlPending { op } => {
             rewriter.set_insertion_point_before(op);
             let location = op.location();
@@ -4055,7 +4204,7 @@ fn masked_dyn_ptr<'c>(
     )))?;
     let five = result_value(rewriter.insert(melior::dialect::arith::constant(
         context,
-        IntegerAttribute::new(i64_type, 5).into(),
+        IntegerAttribute::new(i64_type, 6).into(),
         location,
     )))?;
     let zero = result_value(rewriter.insert(melior::dialect::arith::constant(
@@ -4084,11 +4233,15 @@ fn masked_dyn_ptr<'c>(
             .map(|r| unsafe { Value::from_raw(r.to_raw()) })
             .map_err(|e| e.to_string())
     };
-    let is4 = cmpi(0, tag_v, four)?;
-    let is5 = cmpi(0, tag_v, five)?;
+    // Managed tags are the RANGE 4..=6 (table, fun, pair — D-070):
+    // sge(tag,4) AND sle(tag,6). The five constant is retired to a
+    // six by the widening; the symmetry law (D-057) pairs this site
+    // with the tracer arms in both twins.
+    let is_ge4 = cmpi(5, tag_v, four)?; // sge
+    let is_le6 = cmpi(3, tag_v, five)?; // sle against the widened bound
     let either = result_value(rewriter.insert(
-        OperationBuilder::new("arith.ori", location)
-            .add_operands(&[is4, is5])
+        OperationBuilder::new("arith.andi", location)
+            .add_operands(&[is_ge4, is_le6])
             .add_results(&[IntegerType::new(context, 1).into()])
             .build()
             .map_err(|e| e.to_string())?,

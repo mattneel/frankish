@@ -427,3 +427,121 @@ fn unhandled_perform_traps() {
         "{error}"
     );
 }
+
+// ---- v0.1 (M25, D-070): dynamic-wind, escape-only. ----
+
+#[test]
+fn wind_runs_after_on_normal_exit() {
+    // before writes 1, thunk yields 42, after writes 2 into the box:
+    // result = 42 * 100 + box = 4202.
+    let source = format!(
+        r#"func.func @before(%env: !frk_closure.envref, %pack: {PACK}) -> {PACK} {{
+            %b = "frk_closure.env_load"(%env) {{index = 0 : i64, env = !frk_adt.product<[!frk_mem.box<!frk_dyn.dyn>]>}} : (!frk_closure.envref) -> !frk_mem.box<{DYN}>
+            %c1 = arith.constant 1.0 : f64
+            %d = "frk_dyn.wrap"(%c1) {{tag = {NUM} : i64}} : (f64) -> {DYN}
+            "frk_mem.box_set"(%b, %d) : (!frk_mem.box<{DYN}>, {DYN}) -> ()
+            %z = arith.constant 0 : i64
+            %rp = "frk_mem.array_new"(%z) : (i64) -> {PACK}
+            return %rp : {PACK}
+        }}
+        func.func @thunk(%env: !frk_closure.envref, %pack: {PACK}) -> {PACK} {{
+            %c42 = arith.constant 42.0 : f64
+            %d = "frk_dyn.wrap"(%c42) {{tag = {NUM} : i64}} : (f64) -> {DYN}
+            %c1 = arith.constant 1 : i64
+            %rp = "frk_mem.array_new"(%c1) : (i64) -> {PACK}
+            %z = arith.constant 0 : i64
+            "frk_mem.array_set"(%rp, %z, %d) : ({PACK}, i64, {DYN}) -> ()
+            return %rp : {PACK}
+        }}
+        func.func @after(%env: !frk_closure.envref, %pack: {PACK}) -> {PACK} {{
+            %b = "frk_closure.env_load"(%env) {{index = 0 : i64, env = !frk_adt.product<[!frk_mem.box<!frk_dyn.dyn>]>}} : (!frk_closure.envref) -> !frk_mem.box<{DYN}>
+            %c2 = arith.constant 2.0 : f64
+            %d = "frk_dyn.wrap"(%c2) {{tag = {NUM} : i64}} : (f64) -> {DYN}
+            "frk_mem.box_set"(%b, %d) : (!frk_mem.box<{DYN}>, {DYN}) -> ()
+            %z = arith.constant 0 : i64
+            %rp = "frk_mem.array_new"(%z) : (i64) -> {PACK}
+            return %rp : {PACK}
+        }}
+        func.func @main() -> i64 {{
+            %c0 = arith.constant 0.0 : f64
+            %zero = "frk_dyn.wrap"(%c0) {{tag = {NUM} : i64}} : (f64) -> {DYN}
+            %box = "frk_mem.box_new"(%zero) : ({DYN}) -> !frk_mem.box<{DYN}>
+            %pe = "frk_adt.product_new"() : () -> {P_EMPTY}
+            %pb = "frk_adt.product_snoc"(%pe, %box) : ({P_EMPTY}, !frk_mem.box<{DYN}>) -> !frk_adt.product<[!frk_mem.box<{DYN}>]>
+            %bf = "frk_closure.make"(%pb) {{callee = @before}} : (!frk_adt.product<[!frk_mem.box<{DYN}>]>) -> {PACKFN}
+            %th = "frk_closure.make"(%pe) {{callee = @thunk}} : ({P_EMPTY}) -> {PACKFN}
+            %af = "frk_closure.make"(%pb) {{callee = @after}} : (!frk_adt.product<[!frk_mem.box<{DYN}>]>) -> {PACKFN}
+            %r = "frk_ctl.wind"(%bf, %th, %af) : ({PACKFN}, {PACKFN}, {PACKFN}) -> {DYN}
+            %rf = "frk_dyn.unwrap"(%r) {{tag = {NUM} : i64}} : ({DYN}) -> f64
+            %after_d = "frk_mem.box_get"(%box) : (!frk_mem.box<{DYN}>) -> {DYN}
+            %av = "frk_dyn.unwrap"(%after_d) {{tag = {NUM} : i64}} : ({DYN}) -> f64
+            %c100 = arith.constant 100.0 : f64
+            %scaled = arith.mulf %rf, %c100 : f64
+            %sum = arith.addf %scaled, %av : f64
+            %n = arith.fptosi %sum : f64 to i64
+            return %n : i64
+        }}"#
+    );
+    assert_eq!(interpret_i64(&source).unwrap(), 4202);
+}
+
+#[test]
+fn wind_runs_after_when_an_escape_crosses() {
+    // prompt → body(token) → wind whose THUNK aborts to the token.
+    // after() must still fire (writes 2 into the box) and the prompt
+    // catches 7 → 7 * 100 + 2 = 702. This is the escape-only
+    // dynamic-wind contract (D-070) in one number.
+    let source = format!(
+        r#"func.func @before(%env: !frk_closure.envref, %pack: {PACK}) -> {PACK} {{
+            %z = arith.constant 0 : i64
+            %rp = "frk_mem.array_new"(%z) : (i64) -> {PACK}
+            return %rp : {PACK}
+        }}
+        func.func @thunk(%env: !frk_closure.envref, %pack: {PACK}) -> {PACK} {{
+            %tok = "frk_closure.env_load"(%env) {{index = 0 : i64, env = {P_I64}}} : (!frk_closure.envref) -> i64
+            %c7 = arith.constant 7.0 : f64
+            %v = "frk_dyn.wrap"(%c7) {{tag = {NUM} : i64}} : (f64) -> {DYN}
+            "frk_ctl.abort"(%tok, %v) : (i64, {DYN}) -> ()
+            %z = arith.constant 0 : i64
+            %rp = "frk_mem.array_new"(%z) : (i64) -> {PACK}
+            return %rp : {PACK}
+        }}
+        func.func @after(%env: !frk_closure.envref, %pack: {PACK}) -> {PACK} {{
+            %b = "frk_closure.env_load"(%env) {{index = 0 : i64, env = !frk_adt.product<[!frk_mem.box<!frk_dyn.dyn>]>}} : (!frk_closure.envref) -> !frk_mem.box<{DYN}>
+            %c2 = arith.constant 2.0 : f64
+            %d = "frk_dyn.wrap"(%c2) {{tag = {NUM} : i64}} : (f64) -> {DYN}
+            "frk_mem.box_set"(%b, %d) : (!frk_mem.box<{DYN}>, {DYN}) -> ()
+            %z = arith.constant 0 : i64
+            %rp = "frk_mem.array_new"(%z) : (i64) -> {PACK}
+            return %rp : {PACK}
+        }}
+        func.func @body(%box: !frk_mem.box<{DYN}>, %tok: i64) -> {DYN} {{
+            %pe = "frk_adt.product_new"() : () -> {P_EMPTY}
+            %bf = "frk_closure.make"(%pe) {{callee = @before}} : ({P_EMPTY}) -> {PACKFN}
+            %pt = "frk_adt.product_snoc"(%pe, %tok) : ({P_EMPTY}, i64) -> {P_I64}
+            %th = "frk_closure.make"(%pt) {{callee = @thunk}} : ({P_I64}) -> {PACKFN}
+            %pa = "frk_adt.product_snoc"(%pe, %box) : ({P_EMPTY}, !frk_mem.box<{DYN}>) -> !frk_adt.product<[!frk_mem.box<{DYN}>]>
+            %af = "frk_closure.make"(%pa) {{callee = @after}} : (!frk_adt.product<[!frk_mem.box<{DYN}>]>) -> {PACKFN}
+            %r = "frk_ctl.wind"(%bf, %th, %af) : ({PACKFN}, {PACKFN}, {PACKFN}) -> {DYN}
+            return %r : {DYN}
+        }}
+        func.func @main() -> i64 {{
+            %c0 = arith.constant 0.0 : f64
+            %zero = "frk_dyn.wrap"(%c0) {{tag = {NUM} : i64}} : (f64) -> {DYN}
+            %box = "frk_mem.box_new"(%zero) : ({DYN}) -> !frk_mem.box<{DYN}>
+            %pe = "frk_adt.product_new"() : () -> {P_EMPTY}
+            %pb = "frk_adt.product_snoc"(%pe, %box) : ({P_EMPTY}, !frk_mem.box<{DYN}>) -> !frk_adt.product<[!frk_mem.box<{DYN}>]>
+            %bo = "frk_closure.make"(%pb) {{callee = @body}} : (!frk_adt.product<[!frk_mem.box<{DYN}>]>) -> {FN_BODY}
+            %out = "frk_ctl.prompt"(%bo) : ({FN_BODY}) -> {DYN}
+            %caught = "frk_dyn.unwrap"(%out) {{tag = {NUM} : i64}} : ({DYN}) -> f64
+            %after_d = "frk_mem.box_get"(%box) : (!frk_mem.box<{DYN}>) -> {DYN}
+            %av = "frk_dyn.unwrap"(%after_d) {{tag = {NUM} : i64}} : ({DYN}) -> f64
+            %c100 = arith.constant 100.0 : f64
+            %scaled = arith.mulf %caught, %c100 : f64
+            %sum = arith.addf %scaled, %av : f64
+            %n = arith.fptosi %sum : f64 to i64
+            return %n : i64
+        }}"#
+    );
+    assert_eq!(interpret_i64(&source).unwrap(), 702);
+}

@@ -168,7 +168,7 @@ unsafe fn for_each_child(payload: *mut u8, mut visit: impl FnMut(*mut u8)) {
                             continue; // empty or tombstone
                         }
                         for (tag, pay) in [(*slot.add(1), *slot.add(2)), (*slot.add(3), *slot.add(4))] {
-                            if tag == 4 || tag == 5 {
+                            if (4..=6).contains(&tag) {
                                 visit_word(pay as u64);
                             }
                         }
@@ -196,7 +196,7 @@ unsafe fn for_each_child(payload: *mut u8, mut visit: impl FnMut(*mut u8)) {
                         while index + 1 < length * 2 {
                             let tag = *words.add((1 + index) as usize);
                             let pay = *words.add((2 + index) as usize);
-                            if tag == 4 || tag == 5 {
+                            if (4..=6).contains(&tag) {
                                 visit_word(pay as u64);
                             }
                             index += 2;
@@ -219,7 +219,7 @@ unsafe fn for_each_child(payload: *mut u8, mut visit: impl FnMut(*mut u8)) {
                         }
                         2 => {
                             let tag = *words.add(index);
-                            if index + 1 < word_count && (tag == 4 || tag == 5) {
+                            if index + 1 < word_count && ((4..=6).contains(&tag)) {
                                 visit_word(*words.add(index + 1) as u64);
                             }
                             index += 2;
@@ -701,6 +701,25 @@ pub unsafe extern "C" fn frk_rt_ctl_perform_end(
     }
 }
 
+/// Nil-filled pack-head read (M25: wind's lowering; any pack-typed
+/// op that needs element 0 without branching on emptiness).
+///
+/// # Safety
+/// `pack` must be a live values pack; `out` two writable i64 slots.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_ctl_pack_head(pack: i64, out: *mut i64) {
+    unsafe {
+        let words = pack as usize as *const i64;
+        if *words > 0 {
+            *out = *words.add(1);
+            *out.add(1) = *words.add(2);
+        } else {
+            *out = 0;
+            *out.add(1) = 0;
+        }
+    }
+}
+
 /// One-shot consumption; the second call is the κ_frk trap.
 #[unsafe(no_mangle)]
 pub extern "C" fn frk_rt_ctl_resume_mark(marker: i64) {
@@ -1149,6 +1168,19 @@ pub extern "C" fn frk_rt_scm_display_bool(value: i64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn frk_rt_scm_newline() {
     println!();
+}
+
+/// Byte-string display, NO newline (M25: symbols, list punctuation).
+///
+/// # Safety
+/// `s` must be a live bstr ({u64 len; bytes}).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_scm_display_str(s: *const u8) {
+    let text = unsafe {
+        let len = *(s as *const u64) as usize;
+        std::slice::from_raw_parts(s.add(8), len)
+    };
+    print!("{}", String::from_utf8_lossy(text));
 }
 
 /// Test/introspection helper (not part of the lowering ABI).

@@ -1,0 +1,8 @@
+(import (scheme base) (scheme write))
+(display 'hello) (newline)
+(display (eq? 'a 'a)) (newline)
+(display (eq? 'a 'b)) (newline)
+(display '(a b c)) (newline)
+(define (find x l) (if (null? l) #f (if (eq? x (car l)) #t (find x (cdr l)))))
+(display (find 'b '(a b c))) (newline)
+(display (find 'z '(a b c))) (newline)

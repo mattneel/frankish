@@ -15,6 +15,7 @@ pub(crate) fn register_eval(interp: &mut Interp<'_, '_>) {
     interp.register_eval("frk_ctl.handle", Box::new(Handle));
     interp.register_eval("frk_ctl.perform", Box::new(Perform));
     interp.register_eval("frk_ctl.resume", Box::new(Resume));
+    interp.register_eval("frk_ctl.wind", Box::new(Wind));
 }
 
 /// The synthesized resumer's callee name: κ is BORN UNIFORM (D-069) —
@@ -156,6 +157,35 @@ impl Eval for Perform {
             interp.ctl_set_aborted(result);
             Err(EvalError::Abort { token })
         }
+    }
+}
+
+struct Wind;
+impl Eval for Wind {
+    fn eval<'c, 'a>(
+        &self,
+        interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        // dynamic-wind, escape-only (D-070): before(); r := thunk();
+        // after(); yield r — an abort raised by the thunk re-raises
+        // AFTER after() has run (the interpreter's mirror of the
+        // native guard ordering). before() cannot re-run: κ is
+        // one-shot and outward.
+        let before = operand_value(frame, op, 0)?;
+        let thunk = operand_value(frame, op, 1)?;
+        let after = operand_value(frame, op, 2)?;
+        let empty = Value::array(Vec::new());
+        apply_uniform(interp, &before, empty.clone())?;
+        let outcome = apply_uniform(interp, &thunk, empty.clone());
+        // after() runs on BOTH exits, before any re-raise. An abort
+        // in after() itself supersedes (last writer wins — same as
+        // native, where after()'s own abort overwrites the pending
+        // cell).
+        apply_uniform(interp, &after, empty)?;
+        let pack = outcome?;
+        continue_with_result(frame, op, pack_head(&pack)?)
     }
 }
 

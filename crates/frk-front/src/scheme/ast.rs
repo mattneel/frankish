@@ -19,6 +19,8 @@ pub enum Expr {
     Lambda(Vec<String>, Vec<Expr>, Span),
     Begin(Vec<Expr>, Span),
     App(Box<Expr>, Vec<Expr>, Span),
+    /// `(quote d)` / `'d` — the datum as data (v0.1, D-070).
+    Quote(Datum, Span),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,7 +51,8 @@ impl Expr {
             | Expr::Let(_, _, _, s)
             | Expr::Lambda(_, _, s)
             | Expr::Begin(_, s)
-            | Expr::App(_, _, s) => *s,
+            | Expr::App(_, _, s)
+            | Expr::Quote(_, s) => *s,
         }
     }
 }
@@ -152,6 +155,12 @@ fn parse_list(items: &[Datum], span: Span) -> Result<Expr, String> {
             "letrec" => return parse_let(LetKind::LetRec, items, span),
             "define" => {
                 return Err("nested define is fenced in r7rs_core v0".to_string());
+            }
+            "quote" => {
+                let [_, datum] = items else {
+                    return Err("quote takes exactly one datum".to_string());
+                };
+                return Ok(Expr::Quote(datum.clone(), span));
             }
             _ => {}
         }
