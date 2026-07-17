@@ -193,6 +193,50 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-070 [m25/scheme] r7rs_core v0.1 (the human picked "r7rs_core").
+  Pairs, quote, symbols — and DYNAMIC-WIND'S OPEN RULING CLOSES.
+  (1) THE D-051 WIDENING FIRES: TAG_PAIR = 6, the first new dyn tag
+  since ratification. A pair is a wrapped product<[dyn, dyn]> through
+  the EXISTING wrap/unwrap ops (the manifest's "adt carriers" promise
+  kept — no cons kernel op); the retain==trace symmetry law (D-057)
+  names every site the widening touches: masked_dyn_ptr becomes the
+  range compare 4..=6, the three tracer arms in EACH twin (table
+  slots, array-dyn, wordmap dyn-pairs) accept 6, and kinds_layout's
+  Words arm learns to RECURSE INTO PRODUCT FIELDS so a boxed
+  [dyn,dyn] traces its two children (the previous all-zero fallback
+  would have left car/cdr untraced — an rc UAF waiting for the
+  first release). No pair mutation in v0.1 ⇒ pairs cannot form
+  cycles ⇒ trial deletion untouched.
+  (2) SYMBOLS are tag-3 byte strings: interning makes eq? a pointer
+  compare for free; strings-as-strings stay fenced, so the overlap
+  is unobservable. '() is the nil tag; display prints it "()".
+  (3) DYNAMIC-WIND CLOSES — escape-only, as frk_ctl.wind(before,
+  thunk, after) -> dyn: before(); r := thunk(); after(); yield r —
+  and an abort raised inside thunk re-raises AFTER after() has run.
+  The insight: natively, the D-061 pending-guard discipline IS the
+  unwind-finalizer hook (after() runs unconditionally post-thunk,
+  BEFORE the pending check propagates), and the interpreter mirrors
+  it exactly by catching Err(Abort) around the thunk, running
+  after(), and re-raising. No new runtime state; both worlds run
+  after() exactly once on normal AND escape exits; before() cannot
+  re-run because κ is escape-only (one-shot, outward). Re-entrant
+  winds = the Tier-2 rung with re-entrant κ (κ_frk fence updated:
+  "no unwind-time finalizers" becomes "wind is THE finalizer form").
+  (4) scheme/intrinsics.mlir is BORN (the M17 seed-module surface,
+  scheme's turn): display grows str/pair arms (proper lists spaced,
+  dotted pairs " . ", '() as "()"), cons/car/cdr/null?/pair? are IR
+  intrinsics over wrap/unwrap; the emitter's builder-built display
+  helper dies. New rt rows (registry-first): frk_rt_scm_display_str
+  (no-newline byte print) and frk_rt_ctl_pack_head (nil-filled
+  pack-head read, shared by wind's lowering).
+  Exit bars: corpus cases chibi-validated BEFORE implementation
+  (pairs/display incl. dotted; list recursion; symbols + eq?;
+  dynamic-wind normal; dynamic-wind crossed by an escape through TWO
+  nested winds — afters innermost-first, exactly once); K2 wind
+  verifiers (normal + escape re-raise ordering) red-first; jit-rc
+  green on pair-heavy cases (the symmetry witness); suite/diff/grid
+  green; manifest v0.1 SHIPPED; κ_frk OPEN ruling struck; book
+  current.
 - D-069 [m24/ctl] effects-v1 (the human picked "effects"). frk.ctl
   grows labeled handlers: handle/perform/resume — κ_frk's H-op-resume
   rung, scoped to the AFFINE LADDER'S TRACTABLE RUNGS. THE RULING:
