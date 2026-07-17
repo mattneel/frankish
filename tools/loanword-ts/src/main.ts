@@ -260,6 +260,67 @@ function classOf(type: ts.Type): ClassRecord | undefined {
   return name ? classes.get(name) : undefined;
 }
 
+// ---- TS-2b structural interfaces + object closures (D-075) ----
+
+interface IfaceRecord {
+  rowIdx: number;
+  methods: { name: string }[];
+}
+const ifaces = new Map<string, IfaceRecord>();
+for (const top of sourceFile.statements) {
+  if (!ts.isInterfaceDeclaration(top)) continue;
+  if (top.typeParameters) fail(top, "a generic interface (TS-4 territory)");
+  if (top.heritageClauses) fail(top, "interface extends (fenced in TS-2)");
+  const methods: { name: string; params: number[]; ret: number }[] = [];
+  for (const member of top.members) {
+    if (!ts.isMethodSignature(member) || !member.name || !ts.isIdentifier(member.name))
+      fail(member, "an interface member that is not a method (method-only, D-075)");
+    if (!member.type) fail(member, "an unannotated interface method return");
+    if (member.type.getText(sourceFile) === "void")
+      fail(member.type, "a void interface method (non-void returns only, D-075)");
+    const params = member.parameters.map((p) => {
+      if (!ts.isIdentifier(p.name)) fail(p, "a destructuring parameter");
+      return annotationType(p.type, p);
+    });
+    methods.push({ name: member.name.text, params, ret: annotationType(member.type, member) });
+  }
+  if (methods.length === 0) fail(top, "an empty interface");
+  const rowIdx = internType({
+    k: "iface",
+    name: top.name.text,
+    methods: methods.map((m) => ({ name: m.name, params: m.params, ret: m.ret })),
+  });
+  ifaces.set(top.name.text, { rowIdx, methods });
+}
+
+function ifaceOf(type: ts.Type): IfaceRecord | undefined {
+  const name = type.symbol?.name;
+  return name ? ifaces.get(name) : undefined;
+}
+
+/// An expression in a COERCION position (call/return): a class value
+/// flowing into an interface-typed context wraps in the conversion
+/// node (D-075) — the consumer synthesizes the method-symbol list.
+function coerced(node: ts.Expression): Json {
+  const contextual = checker.getContextualType(node);
+  if (contextual) {
+    const iface = ifaceOf(contextual);
+    if (iface) {
+      const cls = classOf(checker.getTypeAtLocation(node));
+      if (cls) {
+        return {
+          k: "iwrap",
+          e: expr(node),
+          i: iface.rowIdx,
+          c: cls.rowIdx,
+          span: span(node),
+        };
+      }
+    }
+  }
+  return expr(node);
+}
+
 /// Is this checker type one of our recorded unions or variants?
 function recordedAliasName(type: ts.Type): string | undefined {
   return type.aliasSymbol?.name;
@@ -275,6 +336,14 @@ function isRecordedObjectish(type: ts.Type): boolean {
 
 function annotationType(node: ts.TypeNode | undefined, owner: ts.Node): number {
   if (!node) fail(owner, "a missing type annotation (TS-0 decls are fully annotated)");
+  // Function types ((x: T) => R) intern structurally (D-075).
+  if (ts.isFunctionTypeNode(node)) {
+    const params = node.parameters.map((p) => {
+      if (!ts.isIdentifier(p.name)) fail(p, "a destructuring parameter");
+      return annotationType(p.type, p);
+    });
+    return internType({ k: "fn", params, ret: annotationType(node.type, node) });
+  }
   const text = node.getText(sourceFile);
   if (text === "number") return internType({ k: "num" });
   if (text === "boolean") return internType({ k: "bool" });
@@ -287,6 +356,8 @@ function annotationType(node: ts.TypeNode | undefined, owner: ts.Node): number {
   if (union) return union.rowIdx;
   const cls = classes.get(text);
   if (cls) return cls.rowIdx;
+  const iface = ifaces.get(text);
+  if (iface) return iface.rowIdx;
   if (objAliases.has(text))
     fail(node, `variant alias \`${text}\` as an annotation — annotate with its union (TS-1)`);
   fail(node, `type annotation \`${text}\``);
@@ -369,7 +440,7 @@ function expr(node: ts.Expression): Json {
     return {
       k: "new",
       c: cls.rowIdx,
-      args: (node.arguments ?? []).map((a) => expr(a)),
+      args: (node.arguments ?? []).map(coerced),
       span: span(node),
     };
   }
@@ -445,27 +516,92 @@ function expr(node: ts.Expression): Json {
       span: span(node),
     };
   }
+  if (ts.isArrowFunction(node)) {
+    // Object closures (D-075): annotated params, EXPRESSION body,
+    // captures computed here (tsc knows the bindings) — parameters
+    // by value, let-locals by their box, downstream.
+    if (!node.type) fail(node, "an arrow without a return annotation");
+    if (ts.isBlock(node.body)) fail(node, "a block-bodied arrow (expression bodies only)");
+    const params: Json[] = node.parameters.map((p) => {
+      if (!ts.isIdentifier(p.name)) fail(p, "a destructuring parameter");
+      if (p.questionToken || p.initializer) fail(p, "an optional/defaulted parameter");
+      return { name: p.name.text, ty: annotationType(p.type, p) };
+    });
+    const captures: string[] = [];
+    const visit = (n: ts.Node): void => {
+      if (n.kind === ts.SyntaxKind.ThisKeyword)
+        fail(n, "`this` inside an arrow (fenced, D-075)");
+      if (ts.isIdentifier(n)) {
+        const symbol = checker.getSymbolAtLocation(n);
+        const declaration = symbol?.valueDeclaration;
+        if (
+          declaration &&
+          (ts.isVariableDeclaration(declaration) || ts.isParameter(declaration)) &&
+          (declaration.getEnd() < node.getStart(sourceFile) ||
+            declaration.getStart(sourceFile) > node.end) &&
+          !captures.includes(n.text)
+        ) {
+          captures.push(n.text);
+        }
+      }
+      n.forEachChild(visit);
+    };
+    visit(node.body);
+    return {
+      k: "arrow",
+      params,
+      ret: annotationType(node.type, node),
+      e: expr(node.body),
+      captures,
+      span: span(node),
+    };
+  }
   if (ts.isCallExpression(node)) {
-    // Method calls (TS-2.0): obj.m(args) on a class-typed receiver.
+    // Method calls (TS-2): obj.m(args) on class- or interface-typed
+    // receivers.
     if (ts.isPropertyAccessExpression(node.expression)) {
       const receiver = node.expression.expression;
-      const cls = classOf(checker.getTypeAtLocation(receiver));
+      const receiverType = checker.getTypeAtLocation(receiver);
+      const cls = classOf(receiverType);
       if (cls) {
         return {
           k: "mcall",
           e: expr(receiver),
           c: cls.rowIdx,
           m: node.expression.name.text,
-          args: node.arguments.map((a) => expr(a)),
+          args: node.arguments.map(coerced),
+          span: span(node),
+        };
+      }
+      const iface = ifaceOf(receiverType);
+      if (iface) {
+        return {
+          k: "imcall",
+          e: expr(receiver),
+          i: iface.rowIdx,
+          m: node.expression.name.text,
+          args: node.arguments.map(coerced),
           span: span(node),
         };
       }
     }
     if (!ts.isIdentifier(node.expression)) fail(node, "a non-identifier callee");
+    // A call through a closure-typed VALUE (param or let) is apply,
+    // not a direct call (D-075).
+    const calleeSymbol = checker.getSymbolAtLocation(node.expression);
+    const calleeDecl = calleeSymbol?.valueDeclaration;
+    if (calleeDecl && (ts.isVariableDeclaration(calleeDecl) || ts.isParameter(calleeDecl))) {
+      return {
+        k: "fcall",
+        f: expr(node.expression),
+        args: node.arguments.map(coerced),
+        span: span(node),
+      };
+    }
     return {
       k: "call",
       name: node.expression.text,
-      args: node.arguments.map((a) => expr(a)),
+      args: node.arguments.map(coerced),
       span: span(node),
     };
   }
@@ -552,6 +688,8 @@ function stmt(node: ts.Statement): Json {
     const initType = checker.getTypeAtLocation(decl.initializer);
     if (isRecordedObjectish(initType))
       fail(node, "a union-typed local (TS-1: unions live in parameters and expressions)");
+    if (ifaceOf(initType))
+      fail(node, "an interface-typed local (D-075: iface values are borrows — params only)");
     return {
       k: "let",
       name: decl.name.text,
@@ -572,7 +710,11 @@ function stmt(node: ts.Statement): Json {
     return { k: "while", c: expr(node.expression), body: block(node.statement), span: span(node) };
   }
   if (ts.isReturnStatement(node)) {
-    return { k: "ret", e: node.expression ? expr(node.expression) : null, span: span(node) };
+    return {
+      k: "ret",
+      e: node.expression ? coerced(node.expression) : null,
+      span: span(node),
+    };
   }
   fail(node, `statement kind ${ts.SyntaxKind[node.kind]}`);
 }
@@ -665,9 +807,10 @@ function classDecl(top: ts.ClassDeclaration): Json {
 const decls: Json[] = [];
 const stmts: Json[] = [];
 for (const top of sourceFile.statements) {
-  // Type aliases were consumed by the TS-1 tables above; they carry
-  // no runtime statements.
+  // Type aliases and interfaces were consumed by the type tables
+  // above; they carry no runtime statements.
   if (ts.isTypeAliasDeclaration(top)) continue;
+  if (ts.isInterfaceDeclaration(top)) continue;
   if (ts.isClassDeclaration(top)) {
     decls.push(classDecl(top));
     continue;

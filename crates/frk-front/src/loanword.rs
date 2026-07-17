@@ -136,6 +136,25 @@ enum TsTy {
     /// by type-row index (which also breaks Rc cycles for recursive
     /// classes — the def lives in the artifact's side table).
     Class(usize),
+    /// A structural interface value (D-075): the opaque itab pair,
+    /// by type-row index.
+    Iface(usize),
+    /// A closure value (D-075): !frk_closure.fn by signature.
+    Fn(Rc<FnDef>),
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct FnDef {
+    params: Vec<TsTy>,
+    ret: TsTy,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct IfaceDef {
+    name: String,
+    /// (name, param types, return type) in declaration order — the
+    /// itab's method order.
+    methods: Vec<(String, Vec<TsTy>, TsTy)>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -209,6 +228,8 @@ struct Artifact {
     classes: HashMap<usize, ClassDef>,
     /// Class declarations (constructor + method bodies) for emission.
     class_decls: Vec<ClassDecl>,
+    /// Interface definitions by type-row index (D-075).
+    ifaces: HashMap<usize, IfaceDef>,
 }
 
 impl Artifact {
@@ -230,6 +251,12 @@ impl Artifact {
             .iter()
             .find(|decl| decl.ty == index)
             .ok_or_else(|| LoanwordError(format!("class row {index} has no declaration")))
+    }
+
+    fn iface_at(&self, index: usize) -> Result<&IfaceDef> {
+        self.ifaces
+            .get(&index)
+            .ok_or_else(|| LoanwordError(format!("type ref {index} is not an iface row (D-075)")))
     }
 }
 
@@ -288,6 +315,7 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
         }
     }
     let mut classes: HashMap<usize, ClassDef> = HashMap::new();
+    let mut iface_defs: HashMap<usize, IfaceDef> = HashMap::new();
     let mut rows: Vec<Row> = Vec::new();
     for row in raw_rows {
         let resolved_ty = |key: &Json| -> Result<TsTy> {
@@ -386,6 +414,48 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
                 let own_index = rows.len();
                 classes.insert(own_index, ClassDef { name, fields });
                 Row::Ty(TsTy::Class(own_index))
+            }
+            "fn" => {
+                let mut params = Vec::new();
+                for reference in field(row, "params")?
+                    .as_array()
+                    .ok_or_else(|| LoanwordError("fn row params".into()))?
+                {
+                    params.push(resolved_ty(reference)?);
+                }
+                let ret = resolved_ty(field(row, "ret")?)?;
+                Row::Ty(TsTy::Fn(Rc::new(FnDef { params, ret })))
+            }
+            "iface" => {
+                let name = field(row, "name")?
+                    .as_str()
+                    .ok_or_else(|| LoanwordError("iface row name".into()))?
+                    .to_string();
+                let mut methods = Vec::new();
+                for entry in field(row, "methods")?
+                    .as_array()
+                    .ok_or_else(|| LoanwordError("iface row methods".into()))?
+                {
+                    let method_name = field(entry, "name")?
+                        .as_str()
+                        .ok_or_else(|| LoanwordError("iface method name".into()))?
+                        .to_string();
+                    let mut params = Vec::new();
+                    for reference in field(entry, "params")?
+                        .as_array()
+                        .ok_or_else(|| LoanwordError("iface method params".into()))?
+                    {
+                        params.push(resolved_ty(reference)?);
+                    }
+                    let ret = resolved_ty(field(entry, "ret")?)?;
+                    if ret == TsTy::Void {
+                        return err("void interface methods are fenced (D-075)");
+                    }
+                    methods.push((method_name, params, ret));
+                }
+                let own_index = rows.len();
+                iface_defs.insert(own_index, IfaceDef { name, methods });
+                Row::Ty(TsTy::Iface(own_index))
             }
             other => return err(format!("unsupported interned type {other:?}")),
         };
@@ -511,6 +581,7 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
         types: rows,
         classes,
         class_decls,
+        ifaces: iface_defs,
     })
 }
 
@@ -523,7 +594,12 @@ pub fn compile_loanword<'c>(context: &'c Context, text: &str) -> Result<Module<'
     let artifact = parse_artifact(text)?;
     let module = Module::new(Location::unknown(context));
 
-    let emitter = Emitter { context, artifact: &artifact };
+    let emitter = Emitter {
+        context,
+        artifact: &artifact,
+        module: &module,
+        arrow_counter: std::cell::Cell::new(0),
+    };
 
     // Print runtime declarations (bodyless; every execution path
     // resolves them its own way — D-047).
@@ -592,6 +668,10 @@ pub fn compile_loanword<'c>(context: &'c Context, text: &str) -> Result<Module<'
 struct Emitter<'c, 'p> {
     context: &'c Context,
     artifact: &'p Artifact,
+    /// For arrow lambda-lifting (D-075): synthesized functions append
+    /// to the module mid-expression.
+    module: &'p Module<'c>,
+    arrow_counter: std::cell::Cell<usize>,
 }
 
 /// One local: parameters bind values, `let` locals bind boxes.
@@ -659,6 +739,20 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 // fields store type-erased (D-074), closing the knot.
                 Type::parse(self.context, &self.class_box_text(*index)?)
                     .ok_or(LoanwordError("class box".into()))
+            }
+            TsTy::Iface(_) => Type::parse(self.context, "!frk_dyn.iface")
+                .ok_or(LoanwordError("iface".into())),
+            TsTy::Fn(def) => {
+                let mut params = Vec::new();
+                for ty in &def.params {
+                    params.push(format!("{}", self.mlir_ty(ty)?));
+                }
+                let ret = format!("{}", self.mlir_ty(&def.ret)?);
+                Type::parse(
+                    self.context,
+                    &format!("!frk_closure.fn<[{}], [{ret}]>", params.join(", ")),
+                )
+                .ok_or(LoanwordError("fn type".into()))
             }
             TsTy::Void => err("void has no value type"),
         }
@@ -976,6 +1070,247 @@ impl<'c, 'p> Emitter<'c, 'p> {
         );
         module.body().append_operation(op);
         Ok(())
+    }
+
+    /// Packs an argument list into an frk_adt product (D-036 packed
+    /// surfaces: iface_call and closure.apply take one args operand).
+    fn emit_args_product<'r>(
+        &self,
+        fcx: &mut Fcx<'c, 'r>,
+        args: &Json,
+        location: Location<'c>,
+    ) -> Result<(Value<'c, 'r>, Vec<TsTy>)> {
+        let items = args
+            .as_array()
+            .ok_or_else(|| LoanwordError("args must be an array".into()))?;
+        let mut product = self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_adt.product_new", location)
+                .add_results(&[Type::parse(self.context, "!frk_adt.product<[]>")
+                    .ok_or(LoanwordError("product".into()))?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )?;
+        let mut types = Vec::new();
+        let mut grown = Vec::new();
+        for item in items {
+            let (value, ty) = self.emit_expr(fcx, item)?;
+            grown.push(format!("{}", self.mlir_ty(&ty)?));
+            let product_ty = Type::parse(
+                self.context,
+                &format!("!frk_adt.product<[{}]>", grown.join(", ")),
+            )
+            .ok_or(LoanwordError("product".into()))?;
+            product = self.op_result(
+                fcx.block,
+                OperationBuilder::new("frk_adt.product_snoc", location)
+                    .add_operands(&[product, value])
+                    .add_results(&[product_ty])
+                    .build()
+                    .map_err(|e| LoanwordError(e.to_string()))?,
+            )?;
+            types.push(ty);
+        }
+        Ok((product, types))
+    }
+
+    /// Lambda-lifts an arrow (D-075): captures by BINDING — parameters
+    /// by value, let-locals by their BOX (the JS mutation law) — into
+    /// a fresh `@__arrow_N(captures…, params…) -> ret`, then
+    /// `frk_closure.make` over the capture product.
+    fn emit_arrow<'r>(
+        &self,
+        fcx: &mut Fcx<'c, 'r>,
+        node: &Json,
+        location: Location<'c>,
+    ) -> Result<(Value<'c, 'r>, TsTy)> {
+        let params: Vec<(String, TsTy)> = field(node, "params")?
+            .as_array()
+            .ok_or_else(|| LoanwordError("arrow params".into()))?
+            .iter()
+            .map(|param| {
+                Ok((
+                    field(param, "name")?
+                        .as_str()
+                        .ok_or_else(|| LoanwordError("param name".into()))?
+                        .to_string(),
+                    match self.artifact.types.get(
+                        field(param, "ty")?
+                            .as_u64()
+                            .ok_or_else(|| LoanwordError("param ty".into()))?
+                            as usize,
+                    ) {
+                        Some(Row::Ty(ty)) => ty.clone(),
+                        _ => return err("arrow param type ref"),
+                    },
+                ))
+            })
+            .collect::<Result<_>>()?;
+        let ret = match self.artifact.types.get(
+            field(node, "ret")?
+                .as_u64()
+                .ok_or_else(|| LoanwordError("arrow ret".into()))? as usize,
+        ) {
+            Some(Row::Ty(ty)) => ty.clone(),
+            _ => return err("arrow ret type ref"),
+        };
+
+        // Captured bindings, in the producer's order.
+        let mut capture_values: Vec<Value<'c, 'r>> = Vec::new();
+        let mut capture_binds: Vec<(String, TsTy, bool)> = Vec::new(); // (name, ty, boxed)
+        for name in field(node, "captures")?
+            .as_array()
+            .ok_or_else(|| LoanwordError("arrow captures".into()))?
+        {
+            let name = name
+                .as_str()
+                .ok_or_else(|| LoanwordError("capture name".into()))?;
+            match fcx.env.get(name).cloned() {
+                Some(Binding::Value(value, ty)) => {
+                    capture_values.push(value);
+                    capture_binds.push((name.to_string(), ty, false));
+                }
+                Some(Binding::Boxed(cell, ty)) => {
+                    capture_values.push(cell);
+                    capture_binds.push((name.to_string(), ty, true));
+                }
+                None => return err(format!("arrow captures unknown {name:?}")),
+            }
+        }
+
+        // The lifted function: (captures…, params…) -> ret.
+        let index = self.arrow_counter.get();
+        self.arrow_counter.set(index + 1);
+        let symbol = format!("__arrow_{index}");
+        let capture_slot_ty = |ty: &TsTy, boxed: bool| -> Result<Type<'c>> {
+            if boxed {
+                Type::parse(
+                    self.context,
+                    &format!("!frk_mem.box<{}>", self.mlir_ty(ty)?),
+                )
+                .ok_or(LoanwordError("capture box type".into()))
+            } else {
+                self.mlir_ty(ty)
+            }
+        };
+        {
+            let inner_location = Location::unknown(self.context);
+            let region = Region::new();
+            let mut arg_types: Vec<(Type, Location)> = Vec::new();
+            for (_, ty, boxed) in &capture_binds {
+                arg_types.push((capture_slot_ty(ty, *boxed)?, inner_location));
+            }
+            for (_, ty) in &params {
+                arg_types.push((self.mlir_ty(ty)?, inner_location));
+            }
+            let entry = region.append_block(Block::new(&arg_types));
+            let mut env = HashMap::new();
+            for (position, (name, ty, boxed)) in capture_binds.iter().enumerate() {
+                let raw = entry
+                    .argument(position)
+                    .map_err(|e| LoanwordError(e.to_string()))?
+                    .to_raw();
+                let value = unsafe { Value::from_raw(raw) };
+                env.insert(
+                    name.clone(),
+                    if *boxed {
+                        Binding::Boxed(value, ty.clone())
+                    } else {
+                        Binding::Value(value, ty.clone())
+                    },
+                );
+            }
+            for (position, (name, ty)) in params.iter().enumerate() {
+                let raw = entry
+                    .argument(capture_binds.len() + position)
+                    .map_err(|e| LoanwordError(e.to_string()))?
+                    .to_raw();
+                env.insert(
+                    name.clone(),
+                    Binding::Value(unsafe { Value::from_raw(raw) }, ty.clone()),
+                );
+            }
+            let mut inner = Fcx {
+                region: &region,
+                block: entry,
+                env,
+                exit: entry, // expression bodies cannot `return`
+                ret: ret.clone(),
+                terminated: false,
+            };
+            let (body, body_ty) = self.emit_expr(&mut inner, field(node, "e")?)?;
+            if body_ty != ret {
+                return err(format!(
+                    "arrow returns {ret:?}, body is {body_ty:?}"
+                ));
+            }
+            inner.block.append_operation(
+                OperationBuilder::new("func.return", inner_location)
+                    .add_operands(&[body])
+                    .build()
+                    .map_err(|e| LoanwordError(e.to_string()))?,
+            );
+            let signature = FunctionType::new(
+                self.context,
+                &arg_types.iter().map(|(ty, _)| *ty).collect::<Vec<_>>(),
+                &[self.mlir_ty(&ret)?],
+            );
+            let op = melior::dialect::func::func(
+                self.context,
+                StringAttribute::new(self.context, &symbol),
+                TypeAttribute::new(signature.into()),
+                region,
+                &[],
+                inner_location,
+            );
+            self.module.body().append_operation(op);
+        }
+
+        // make: env product of the captured values.
+        let mut product = self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_adt.product_new", location)
+                .add_results(&[Type::parse(self.context, "!frk_adt.product<[]>")
+                    .ok_or(LoanwordError("product".into()))?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )?;
+        let mut grown = Vec::new();
+        for (value, (_, ty, boxed)) in
+            capture_values.iter().zip(capture_binds.iter())
+        {
+            grown.push(format!("{}", capture_slot_ty(ty, *boxed)?));
+            let product_ty = Type::parse(
+                self.context,
+                &format!("!frk_adt.product<[{}]>", grown.join(", ")),
+            )
+            .ok_or(LoanwordError("product".into()))?;
+            product = self.op_result(
+                fcx.block,
+                OperationBuilder::new("frk_adt.product_snoc", location)
+                    .add_operands(&[product, *value])
+                    .add_results(&[product_ty])
+                    .build()
+                    .map_err(|e| LoanwordError(e.to_string()))?,
+            )?;
+        }
+        let fn_ty = TsTy::Fn(Rc::new(FnDef {
+            params: params.iter().map(|(_, ty)| ty.clone()).collect(),
+            ret: ret.clone(),
+        }));
+        let closure = self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_closure.make", location)
+                .add_attributes(&[(
+                    Identifier::new(self.context, "callee"),
+                    FlatSymbolRefAttribute::new(self.context, &symbol).into(),
+                )])
+                .add_operands(&[product])
+                .add_results(&[self.mlir_ty(&fn_ty)?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )?;
+        Ok((closure, fn_ty))
     }
 
     /// `obj.m(args)` → `func.call @Class__m(this, args…)` (D-073;
@@ -1805,6 +2140,119 @@ impl<'c, 'p> Emitter<'c, 'p> {
                     Some(value) => Ok((value, ret)),
                     None => err("void method call in expression position"),
                 }
+            }
+            "iwrap" => {
+                // Interface conversion (D-075): the consumer owns the
+                // structural match — class method symbols in the
+                // interface's declaration order.
+                let iface_index = field(node, "i")?
+                    .as_u64()
+                    .ok_or_else(|| LoanwordError("iwrap iface ref".into()))?
+                    as usize;
+                let class_index = field(node, "c")?
+                    .as_u64()
+                    .ok_or_else(|| LoanwordError("iwrap class ref".into()))?
+                    as usize;
+                let (value, ty) = self.emit_expr(fcx, field(node, "e")?)?;
+                if ty != TsTy::Class(class_index) {
+                    return err(format!("iwrap of a non-class value ({ty:?})"));
+                }
+                let iface = self.artifact.iface_at(iface_index)?;
+                let decl = self.artifact.class_decl(class_index)?;
+                let mut symbols = Vec::new();
+                for (method_name, _, _) in &iface.methods {
+                    let found = decl
+                        .methods
+                        .iter()
+                        .any(|method| &method.name == method_name);
+                    if !found {
+                        return err(format!(
+                            "class {} does not implement {}.{method_name}",
+                            decl.name, iface.name
+                        ));
+                    }
+                    symbols.push(Attribute::from(FlatSymbolRefAttribute::new(
+                        self.context,
+                        &format!("{}__{}", decl.name, method_name),
+                    )));
+                }
+                let methods_attr =
+                    melior::ir::attribute::ArrayAttribute::new(self.context, &symbols);
+                let iface_value = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_dyn.iface_make", location)
+                        .add_attributes(&[(
+                            Identifier::new(self.context, "methods"),
+                            methods_attr.into(),
+                        )])
+                        .add_operands(&[value])
+                        .add_results(&[self.mlir_ty(&TsTy::Iface(iface_index))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                Ok((iface_value, TsTy::Iface(iface_index)))
+            }
+            "imcall" => {
+                // Interface dispatch (D-075): pack args, iface_call.
+                let iface_index = field(node, "i")?
+                    .as_u64()
+                    .ok_or_else(|| LoanwordError("imcall iface ref".into()))?
+                    as usize;
+                let method_name = field(node, "m")?
+                    .as_str()
+                    .ok_or_else(|| LoanwordError("imcall method".into()))?;
+                let iface = self.artifact.iface_at(iface_index)?.clone();
+                let method = iface
+                    .methods
+                    .iter()
+                    .position(|(name, _, _)| name == method_name)
+                    .ok_or_else(|| {
+                        LoanwordError(format!(
+                            "interface {} has no method {method_name:?}",
+                            iface.name
+                        ))
+                    })?;
+                let ret = iface.methods[method].2.clone();
+                let (value, ty) = self.emit_expr(fcx, field(node, "e")?)?;
+                if ty != TsTy::Iface(iface_index) {
+                    return err(format!("imcall receiver is {ty:?}"));
+                }
+                let (pack, _) =
+                    self.emit_args_product(fcx, field(node, "args")?, location)?;
+                let i64_type: Type = IntegerType::new(self.context, 64).into();
+                let result = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_dyn.iface_call", location)
+                        .add_attributes(&[(
+                            Identifier::new(self.context, "method"),
+                            IntegerAttribute::new(i64_type, method as i64).into(),
+                        )])
+                        .add_operands(&[value, pack])
+                        .add_results(&[self.mlir_ty(&ret)?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                Ok((result, ret))
+            }
+            "arrow" => self.emit_arrow(fcx, node, location),
+            "fcall" => {
+                // A call through a closure-typed value (D-075):
+                // frk_closure.apply over a packed args product.
+                let (closure, ty) = self.emit_expr(fcx, field(node, "f")?)?;
+                let TsTy::Fn(def) = ty else {
+                    return err(format!("call through a non-closure value ({ty:?})"));
+                };
+                let (pack, _) =
+                    self.emit_args_product(fcx, field(node, "args")?, location)?;
+                let result = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_closure.apply", location)
+                        .add_operands(&[closure, pack])
+                        .add_results(&[self.mlir_ty(&def.ret)?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                Ok((result, def.ret.clone()))
             }
             "obj" => {
                 // Union-variant construction (D-072): product chain +
