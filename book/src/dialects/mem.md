@@ -149,6 +149,30 @@ trial deletion over the purple candidate buffer, the explicit
 [The GC Ladder](../memory/gc.md). The strategy-as-parameter design itself is
 examined in [Strategy as a Lowering Parameter](../memory/strategies.md).
 
+## Records: field-granular boxes (TS-2)
+
+TS-2's classes forced the record idiom (D-073): a class instance is a
+**managed box of a product** — identity from the box, shape from the
+product, tracing from the allocation's layout word — plus the two ops
+no earlier specimen needed, `field_get(box){field}` and
+`field_set(box, value){field}`. Reads gep to the word slot and adapt;
+writes retain-new under rc and store, mirroring `box_set`'s
+leak-biased no-release-old frontier. The layout recursion for boxed
+products went slot-kind-driven at the same time, so records holding
+strings, arrays, or other records trace — and both collector twins
+drill the record shape (pointer at word 1) to identical free counts.
+
+Recursive classes hit a real wall: `Node.next: Node` makes
+`box<product<…>>` infinite as a structural parametric type. D-074
+unties it with **type erasure**: class-reference fields store as the
+opaque `!frk_mem.recref`, with identity ops `rec_ref`/`rec_cast` at
+store/read — the target product's own ref fields are recref, so the
+type closes. Both lower to nothing; object identity survives because
+the value *is* the box either way. The `this.next = this` bootstrap
+gets `recref_null`: a construction-only placeholder seeded into the
+product and back-patched with `rec_ref(box)` immediately after
+`box_new` — reading one is a frontend bug, never a program outcome.
+
 ## Rulings
 
 | Entry | Ruling |
@@ -158,3 +182,5 @@ examined in [Strategy as a Lowering Parameter](../memory/strategies.md).
 | D-053 | rc + cycle collection wins the GC gate over MMTk (two-twin runtime and the five-triple grid decide it). |
 | D-054 | GC ladder step 1: block-local liveness releases, release counter in both twins, leak assertion. |
 | D-057 | Three-word rc header; layout descriptors on every allocation; release cascade + trial deletion; the transfer-vs-release exclusion. |
+| D-073 | Records: class instances as boxes of products; field_get/field_set; slot-kind-driven product layouts (managed fields trace). |
+| D-074 | Recursive records: type-erased recref + rec_ref/rec_cast close the μ-type knot; recref_null seeds the `this.next = this` bootstrap. |

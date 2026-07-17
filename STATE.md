@@ -1,26 +1,24 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M27 complete (tag m27-done). TS-1 (D-072): discriminated
-unions + the imported-flow-facts verifier — frk_contract born
-(narrow + blame + the promotion dataflow); both fates witnessed
-(all direct facts promote; the aliased-discriminant fact demotes
-and stays byte-equal; a tampered fact traps with blame).
-Tree: green — `make test` 49 blocks; diff 99 cases 0 divergent (8
-runners); grid 94/94 × BOTH strategies × 4 triples + s390x canary.
+Phase: M28 complete (tag m28-done). TS-2 classes core (D-073/
+D-074): field-granular records (class = managed box of a product),
+methods/this/new, the recref knot for recursive classes, GC live
+for TS (record layouts trace; both twins collect the record ring).
+TS-2 completes next TS milestone with itabs + method values.
+Tree: green — `make test` 51 blocks; diff 102 cases 0 divergent (8
+runners); grid 97/97 × BOTH strategies × 4 triples + s390x canary.
 
 ## Next action
-M27 closed. The queue:
-1. r7rs_core v0.3: make-parameter/parameterize (top-level value
-   defines — global cells — are the missing rung; first-class
-   procedures now exist), guard sugar, plain raise.
-2. r7rs_core structured-data growth: set-car!/set-cdr! (pair
-   mutation joins the purple machinery), strings, vectors.
-3. The Tier-2 stack-switching rung (re-entrant κ / winds) — at
+M28 closed. The queue:
+1. ts-2b: TS-2 second half — structural interfaces (itabs, D-026),
+   object closures/method values; the stage freezes when it ships.
+2. parameterize: r7rs v0.3 — make-parameter/parameterize (global
+   cells rung), guard sugar, plain raise.
+3. pairs-mut: r7rs structured data — set-car!/set-cdr!, strings,
+   vectors.
+4. tier-2: the stack-switching rung (re-entrant κ / winds), at
    coroutines.
-4. TS-2 (classes, structural interfaces/itabs D-026, object
-   closures — the GC goes live for TS; union-typed locals return
-   here with the mutability question).
 
 ## In flight
 Nothing.
@@ -46,6 +44,37 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m28-done — Shipped: TS-2 classes core (D-073/D-074). The record
+idiom lands in frk_mem: field_get/field_set on boxes of products
+(gep+load/store, retain-new under rc, owned-operand exclusion, the
+leak-biased no-release-old frontier); kinds_layout's product
+recursion goes SLOT-KIND-DRIVEN (managed fields code 1 — records
+holding strings/arrays/records trace; retain==trace held). THE TYPE
+KNOT (D-074): recursive classes cannot type structurally (no
+μ-types in MLIR) — class-ref fields erase to !frk_mem.recref with
+identity rec_ref/rec_cast; `this.next = this` seeds recref_null and
+back-patches after box_new. Frontend: classes/ctors/methods/new/
+this/pset/mcall through loanword (additive within v1 again);
+methods are this-first plain functions (direct calls). Corpus:
+counter/identity/linked — the linked ring is a LIVE OBJECT CYCLE
+under rc, green on all five architectures; both collector twins
+drill the record-shaped dead ring to the same free count (the
+2/2/4/4/6 parity story gains its 8). Suite 51; diff 102/0; grid
+97/97 × 5 × 2. Fenced to TS-2's second half: itabs (D-026), method
+values/object closures, inheritance, optional/union fields.
+
+M28 EXTRACTION: (1) the record surface cost TWO ops because
+identity/shape/tracing were already separately owned (box/product/
+layout word) — the dialect factoring paid out; composition, not new
+machinery. (2) Type erasure is the kernel's answer to μ-types, and
+it is CHEAP precisely because layout rides allocations, not types —
+a design decision made for the collector (D-057) turned out to be
+what makes recursive data typeable. (3) The construction knot
+(self-reference needs the box before its own ref) is a LANGUAGE-
+INDEPENDENT fact — Scheme letrec closures hit it (D-035 solved it
+by value-capture), TS hits it at object graphs; recref_null is the
+record-shaped instance of the same bootstrap pattern.
+
 m27-done — Shipped: TS-1 (D-072), the manifest's research slice
 verbatim: tsc's control-flow narrowing IMPORTED as cast annotations,
 RE-VERIFIED by our own dominance/dataflow pass, unverifiable casts
@@ -801,6 +830,33 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-17 (thirtieth entry)
+    Milestone/step: M28 complete, tagged m28-done
+    Green? yes — 51 blocks; 102/0 (8 runners); grid 97/97 × 5 × 2
+    Did:
+    - D-073/D-074; frk_mem field_get/field_set + recref/rec_ref/
+      rec_cast/recref_null (IRDL/verify/eval/lowering); slot-kind
+      product layouts; record-ring drill in BOTH collector twins;
+      producer classes (fields/ctor/methods/new/this/pset/mcall);
+      consumer TsTy::Class + @C__new/@C__m emission; 3 goldens incl.
+      the live-cycle ring; manifest TS-2-in-progress; book mem
+      records section
+    Next: queue to the user (ts-2b itabs / parameterize / pairs-mut
+    / tier-2)
+    Landmines:
+    - field_set does NOT release the old value (leak-biased, mirrors
+      box_set) — closing that frontier is a deliberate future rung,
+      not a bug fix to slip in
+    - recref_null must NEVER survive a constructor; the back-patch
+      happens in the SAME block as box_new — do not let a future
+      ctor form (option-b bodies) move statements between them
+    - TsTy::Class is an INDEX into the artifact rows — cloning
+      artifacts or merging modules would invalidate it; the index is
+      artifact-scoped by design
+    - class methods mangle as {Class}__{method}; a user function
+      named the same collides silently — producer-side guard is owed
+      when TS-2 completes
 
     Session end: 2026-07-17 (twenty-ninth entry)
     Milestone/step: M27 complete, tagged m27-done
