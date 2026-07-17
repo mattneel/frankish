@@ -53,6 +53,17 @@ int main(void) {
     frk_rt_rc_release(c);
     frk_rt_rc_collect();
     printf("%llu\n", (unsigned long long)frk_rt_rc_free_count()); /* 6 */
+
+    /* M28 (D-073): record shape — ptr at word 1, dead ring */
+    unsigned char *n1 = frk_rt_rc_alloc(16, 1ULL << 6);
+    unsigned char *n2 = frk_rt_rc_alloc(16, 1ULL << 6);
+    ((uint64_t *)n1)[0] = 7; ((uint64_t *)n2)[0] = 11;
+    ((uint64_t *)n1)[1] = (uint64_t)(uintptr_t)n2; frk_rt_rc_retain(n2);
+    ((uint64_t *)n2)[1] = (uint64_t)(uintptr_t)n1; frk_rt_rc_retain(n1);
+    frk_rt_rc_release(n1);
+    frk_rt_rc_release(n2);
+    frk_rt_rc_collect();
+    printf("%llu\n", (unsigned long long)frk_rt_rc_free_count()); /* 8 */
     return 0;
 }
 "#;
@@ -73,7 +84,7 @@ int main(void) {
     let lines: Vec<&str> = std::str::from_utf8(&output.stdout).unwrap().lines().collect();
     assert_eq!(
         lines,
-        ["2", "2", "4", "4", "6"],
-        "the C twin's cascade/dead-cycle/live-cycle story matches the Rust twin's"
+        ["2", "2", "4", "4", "6", "8"],
+        "the C twin's cascade/dead-cycle/live-cycle/record-ring story matches the Rust twin's"
     );
 }

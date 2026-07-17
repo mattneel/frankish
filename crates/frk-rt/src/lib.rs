@@ -1340,6 +1340,30 @@ mod tests {
             frk_rt_rc_collect();
         }
         assert_eq!(frk_rt_rc_free_count() - frees_mid, 2, "then it dies");
+
+        // M28 (D-073): the RECORD shape — a two-word Node with its
+        // managed pointer at word 1 ([val, next]), tied into a dead
+        // ring. The wordmap must steer trial deletion to the right
+        // slot; the self-referential seed (D-074) also rides retain.
+        let frees_rec = frk_rt_rc_free_count();
+        let n1 = frk_rt_rc_alloc(16, layout_wordmap(&[0, 1]));
+        let n2 = frk_rt_rc_alloc(16, layout_wordmap(&[0, 1]));
+        unsafe {
+            (n1 as *mut u64).write(7);
+            (n2 as *mut u64).write(11);
+            (n1 as *mut u64).add(1).write(n2 as u64);
+            frk_rt_rc_retain(n2);
+            (n2 as *mut u64).add(1).write(n1 as u64);
+            frk_rt_rc_retain(n1);
+            frk_rt_rc_release(n1);
+            frk_rt_rc_release(n2);
+            frk_rt_rc_collect();
+        }
+        assert_eq!(
+            frk_rt_rc_free_count() - frees_rec,
+            2,
+            "the record-shaped dead ring collects (D-073 Tier-2 witness)"
+        );
     }
 
     #[test]

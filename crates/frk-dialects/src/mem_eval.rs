@@ -15,6 +15,7 @@ pub(crate) fn register_eval(interp: &mut Interp<'_, '_>) {
     interp.register_eval("frk_mem.field_set", Box::new(FieldSet));
     interp.register_eval("frk_mem.rec_ref", Box::new(RecIdentity));
     interp.register_eval("frk_mem.rec_cast", Box::new(RecIdentity));
+    interp.register_eval("frk_mem.recref_null", Box::new(RecrefNull));
     interp.register_eval("frk_mem.array_new", Box::new(ArrayNew));
     interp.register_eval("frk_mem.array_get", Box::new(ArrayGet));
     interp.register_eval("frk_mem.array_set", Box::new(ArraySet));
@@ -238,6 +239,23 @@ impl Eval for RecIdentity {
         let value = operand_value(frame, op, 0)?;
         value.as_box()?; // must be a record either way
         continue_with_result(frame, op, value)
+    }
+}
+
+/// D-074 construction knot: the placeholder a self-referential slot
+/// holds between box_new and the immediate rec_ref back-patch.
+/// Reading one (via rec_cast → as_box) errors — a frontend bug, never
+/// a program outcome.
+struct RecrefNull;
+impl Eval for RecrefNull {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        // A zero word: not a box, so any read through it errors.
+        continue_with_result(frame, op, Value::Int { bits: 0, width: 64 })
     }
 }
 

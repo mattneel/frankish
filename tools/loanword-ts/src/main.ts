@@ -204,6 +204,62 @@ for (const [name, node] of unionAliasNodes) {
   unions.set(name, { rowIdx, variants });
 }
 
+// ---- TS-2.0 classes (D-073/D-074) ----
+// Monomorphic classes: annotated fields (scalars + class references —
+// crefs intern as their own rows so recursive shapes close), a single
+// all-assigning constructor, methods. Nominal in this slice.
+
+interface ClassRecord {
+  rowIdx: number;
+  fields: { name: string; ty: number }[];
+}
+const classNames = new Set<string>();
+for (const top of sourceFile.statements) {
+  if (ts.isClassDeclaration(top)) {
+    if (!top.name) fail(top, "an anonymous class");
+    if (top.typeParameters) fail(top, "a generic class (TS-4 territory)");
+    if (top.heritageClauses) fail(top, "extends/implements (fenced in TS-2.0)");
+    classNames.add(top.name.text);
+  }
+}
+
+const classes = new Map<string, ClassRecord>();
+function classFieldType(node: ts.TypeNode, owner: ts.Node): number {
+  const text = node.getText(sourceFile);
+  if (text === "number") return internType({ k: "num" });
+  if (text === "boolean") return internType({ k: "bool" });
+  if (text === "string") return internType({ k: "str" });
+  if (classNames.has(text)) return internType({ k: "cref", name: text });
+  fail(owner, `field type \`${text}\` (num/bool/str/class refs in TS-2.0)`);
+}
+for (const top of sourceFile.statements) {
+  if (!ts.isClassDeclaration(top) || !top.name) continue;
+  const fields: { name: string; ty: number }[] = [];
+  for (const member of top.members) {
+    if (!ts.isPropertyDeclaration(member)) continue;
+    if (!ts.isIdentifier(member.name)) fail(member, "a computed field name");
+    if (member.initializer) fail(member, "a field initializer (assign in the constructor)");
+    if (member.questionToken) fail(member, "an optional field");
+    if (!member.type) fail(member, "an unannotated field");
+    if (ts.canHaveModifiers(member) && ts.getModifiers(member)?.length)
+      fail(member, "a field modifier (static/readonly/private fenced)");
+    fields.push({ name: member.name.text, ty: classFieldType(member.type, member) });
+  }
+  const rowIdx = internType({
+    k: "class",
+    name: top.name.text,
+    fields: fields.map((f) => ({ name: f.name, ty: f.ty })),
+  });
+  classes.set(top.name.text, { rowIdx, fields });
+}
+
+/// The recorded class of a checker type, if any (class instance types
+/// carry their declaration symbol).
+function classOf(type: ts.Type): ClassRecord | undefined {
+  const name = type.symbol?.name;
+  return name ? classes.get(name) : undefined;
+}
+
 /// Is this checker type one of our recorded unions or variants?
 function recordedAliasName(type: ts.Type): string | undefined {
   return type.aliasSymbol?.name;
@@ -229,6 +285,8 @@ function annotationType(node: ts.TypeNode | undefined, owner: ts.Node): number {
   if (text === "string[]") return internType({ k: "arr", elem: internType({ k: "str" }) });
   const union = unions.get(text);
   if (union) return union.rowIdx;
+  const cls = classes.get(text);
+  if (cls) return cls.rowIdx;
   if (objAliases.has(text))
     fail(node, `variant alias \`${text}\` as an annotation — annotate with its union (TS-1)`);
   fail(node, `type annotation \`${text}\``);
@@ -301,8 +359,31 @@ function expr(node: ts.Expression): Json {
       span: span(node),
     };
   }
+  if (node.kind === ts.SyntaxKind.ThisKeyword) {
+    return { k: "var", name: "this", span: span(node) };
+  }
+  if (ts.isNewExpression(node)) {
+    if (!ts.isIdentifier(node.expression)) fail(node, "new of a non-identifier");
+    const cls = classes.get(node.expression.text);
+    if (!cls) fail(node, `new of unknown class \`${node.expression.text}\``);
+    return {
+      k: "new",
+      c: cls.rowIdx,
+      args: (node.arguments ?? []).map((a) => expr(a)),
+      span: span(node),
+    };
+  }
   if (ts.isPropertyAccessExpression(node)) {
     const target = checker.getTypeAtLocation(node.expression);
+    const targetClass = classOf(target);
+    if (targetClass) {
+      return {
+        k: "prop",
+        e: expr(node.expression),
+        name: node.name.text,
+        span: span(node),
+      };
+    }
     if (isRecordedObjectish(target)) {
       // Union/variant field access (D-072). The identifier underneath
       // carries its own narrow wrapper when the checker narrowed it.
@@ -365,6 +446,21 @@ function expr(node: ts.Expression): Json {
     };
   }
   if (ts.isCallExpression(node)) {
+    // Method calls (TS-2.0): obj.m(args) on a class-typed receiver.
+    if (ts.isPropertyAccessExpression(node.expression)) {
+      const receiver = node.expression.expression;
+      const cls = classOf(checker.getTypeAtLocation(receiver));
+      if (cls) {
+        return {
+          k: "mcall",
+          e: expr(receiver),
+          c: cls.rowIdx,
+          m: node.expression.name.text,
+          args: node.arguments.map((a) => expr(a)),
+          span: span(node),
+        };
+      }
+    }
     if (!ts.isIdentifier(node.expression)) fail(node, "a non-identifier callee");
     return {
       k: "call",
@@ -417,6 +513,18 @@ function stmt(node: ts.Statement): Json {
           a: expr(target.expression),
           i: expr(target.argumentExpression),
           e: expr(node.expression.right),
+          span: span(node),
+        };
+      }
+      if (ts.isPropertyAccessExpression(target)) {
+        // Field mutation (TS-2.0): obj.f = e / this.f = e.
+        const cls = classOf(checker.getTypeAtLocation(target.expression));
+        if (!cls) fail(target, "property assignment to a non-class value");
+        return {
+          k: "pset",
+          e: expr(target.expression),
+          name: target.name.text,
+          v: expr(node.expression.right),
           span: span(node),
         };
       }
@@ -474,12 +582,96 @@ function block(node: ts.Statement): Json {
   return [stmt(node)];
 }
 
+function classDecl(top: ts.ClassDeclaration): Json {
+  const name = top.name!.text;
+  const cls = classes.get(name)!;
+  let ctor: Json = null;
+  const methods: Json[] = [];
+  for (const member of top.members) {
+    if (ts.isPropertyDeclaration(member)) continue; // fields already interned
+    if (ts.isConstructorDeclaration(member)) {
+      if (ctor !== null) fail(member, "a second constructor");
+      if (!member.body) fail(member, "a bodyless constructor");
+      const params: Json[] = member.parameters.map((p) => {
+        if (!ts.isIdentifier(p.name)) fail(p, "a destructuring parameter");
+        if (p.questionToken || p.initializer) fail(p, "an optional/defaulted parameter");
+        if (ts.canHaveModifiers(p) && ts.getModifiers(p)?.length)
+          fail(p, "a parameter property (constructor(public x) is fenced)");
+        return { name: p.name.text, ty: annotationType(p.type, p) };
+      });
+      // The slice constructor (D-073): a sequence of `this.f = expr`
+      // covering every field exactly once. Values evaluate in SOURCE
+      // order; the consumer builds the record in declaration order.
+      const sets: Json[] = [];
+      const seen = new Set<string>();
+      for (const statement of member.body.statements) {
+        if (
+          !ts.isExpressionStatement(statement) ||
+          !ts.isBinaryExpression(statement.expression) ||
+          statement.expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+          !ts.isPropertyAccessExpression(statement.expression.left) ||
+          statement.expression.left.expression.kind !== ts.SyntaxKind.ThisKeyword
+        ) {
+          fail(statement, "a constructor statement that is not `this.field = expr`");
+        }
+        const fieldName = statement.expression.left.name.text;
+        if (seen.has(fieldName)) fail(statement, `field \`${fieldName}\` assigned twice`);
+        seen.add(fieldName);
+        if (statement.expression.right.kind === ts.SyntaxKind.ThisKeyword) {
+          // `this.next = this` — the cycle bootstrap (D-074): the
+          // consumer seeds the slot and back-patches after box_new.
+          sets.push({ name: fieldName, self: true, span: span(statement) });
+        } else {
+          sets.push({
+            name: fieldName,
+            e: expr(statement.expression.right),
+            span: span(statement),
+          });
+        }
+      }
+      for (const field of cls.fields) {
+        if (!seen.has(field.name))
+          fail(member, `constructor does not assign field \`${field.name}\``);
+      }
+      ctor = { params, sets };
+      continue;
+    }
+    if (ts.isMethodDeclaration(member)) {
+      if (!ts.isIdentifier(member.name)) fail(member, "a computed method name");
+      if (!member.body) fail(member, "a bodyless method");
+      if (member.typeParameters) fail(member, "a generic method");
+      if (ts.canHaveModifiers(member) && ts.getModifiers(member)?.length)
+        fail(member, "a method modifier (static/private fenced)");
+      const params: Json[] = member.parameters.map((p) => {
+        if (!ts.isIdentifier(p.name)) fail(p, "a destructuring parameter");
+        if (p.questionToken || p.initializer) fail(p, "an optional/defaulted parameter");
+        return { name: p.name.text, ty: annotationType(p.type, p) };
+      });
+      methods.push({
+        name: member.name.text,
+        params,
+        ret: annotationType(member.type, member),
+        body: member.body.statements.map(stmt),
+        span: span(member),
+      });
+      continue;
+    }
+    fail(member, `class member kind ${ts.SyntaxKind[member.kind]}`);
+  }
+  if (ctor === null) fail(top, `class \`${name}\` without a constructor`);
+  return { k: "class", name, ty: cls.rowIdx, ctor, methods, span: span(top) };
+}
+
 const decls: Json[] = [];
 const stmts: Json[] = [];
 for (const top of sourceFile.statements) {
   // Type aliases were consumed by the TS-1 tables above; they carry
   // no runtime statements.
   if (ts.isTypeAliasDeclaration(top)) continue;
+  if (ts.isClassDeclaration(top)) {
+    decls.push(classDecl(top));
+    continue;
+  }
   if (ts.isFunctionDeclaration(top)) {
     if (!top.name) fail(top, "an anonymous function declaration");
     if (!top.body) fail(top, "a bodyless function declaration");

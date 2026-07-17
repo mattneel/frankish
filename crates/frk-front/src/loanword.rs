@@ -132,6 +132,41 @@ enum TsTy {
     /// A union value NARROWED to one variant: same sum representation,
     /// the index licenses checkless `extract`s downstream.
     Variant(Rc<UnionDef>, usize),
+    /// A class instance (D-073): a managed box of a product, NOMINAL
+    /// by type-row index (which also breaks Rc cycles for recursive
+    /// classes — the def lives in the artifact's side table).
+    Class(usize),
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct ClassDef {
+    name: String,
+    /// Declaration order; class-typed fields store as !frk_mem.recref
+    /// in the product (D-074).
+    fields: Vec<(String, TsTy)>,
+}
+
+struct MethodDecl {
+    name: String,
+    params: Vec<(String, TsTy)>,
+    ret: TsTy,
+    body: Vec<Json>,
+}
+
+struct CtorDecl {
+    params: Vec<(String, TsTy)>,
+    /// (field name, rhs expr) in SOURCE order — evaluation order is
+    /// the program's; the record builds in declaration order after.
+    /// None = `this.f = this`, the D-074 construction knot: the slot
+    /// seeds null and back-patches right after box_new.
+    sets: Vec<(String, Option<Json>)>,
+}
+
+struct ClassDecl {
+    ty: usize,
+    name: String,
+    ctor: CtorDecl,
+    methods: Vec<MethodDecl>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -170,6 +205,10 @@ struct Artifact {
     /// The resolved type-row table — `obj`/`narrow` nodes reference
     /// union rows by index (D-072).
     types: Vec<Row>,
+    /// Class definitions by type-row index (D-073).
+    classes: HashMap<usize, ClassDef>,
+    /// Class declarations (constructor + method bodies) for emission.
+    class_decls: Vec<ClassDecl>,
 }
 
 impl Artifact {
@@ -178,6 +217,19 @@ impl Artifact {
             Some(Row::Ty(TsTy::Union(def))) => Ok(def.clone()),
             _ => err(format!("type ref {index} is not a union row (D-072)")),
         }
+    }
+
+    fn class_at(&self, index: usize) -> Result<&ClassDef> {
+        self.classes
+            .get(&index)
+            .ok_or_else(|| LoanwordError(format!("type ref {index} is not a class row (D-073)")))
+    }
+
+    fn class_decl(&self, index: usize) -> Result<&ClassDecl> {
+        self.class_decls
+            .iter()
+            .find(|decl| decl.ty == index)
+            .ok_or_else(|| LoanwordError(format!("class row {index} has no declaration")))
     }
 }
 
@@ -219,11 +271,25 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
     // One ordered pass: producers intern depth-first, so every ref
     // points backward (the D-049 arr precedent, now general — obj rows
     // reference scalar rows, union rows reference obj rows; D-072).
-    let mut rows: Vec<Row> = Vec::new();
-    for row in field(&document, "types")?
+    // The ONE forward reference is D-074's knot: a `cref` row names a
+    // class whose row comes later, so class indices prescan by name.
+    let raw_rows = field(&document, "types")?
         .as_array()
-        .ok_or_else(|| LoanwordError("types must be an array".into()))?
-    {
+        .ok_or_else(|| LoanwordError("types must be an array".into()))?;
+    let mut class_indices: HashMap<String, usize> = HashMap::new();
+    for (index, row) in raw_rows.iter().enumerate() {
+        if kind(row)? == "class" {
+            let name = field(row, "name")?
+                .as_str()
+                .ok_or_else(|| LoanwordError("class row name".into()))?;
+            if class_indices.insert(name.to_string(), index).is_some() {
+                return err(format!("duplicate class {name:?}"));
+            }
+        }
+    }
+    let mut classes: HashMap<usize, ClassDef> = HashMap::new();
+    let mut rows: Vec<Row> = Vec::new();
+    for row in raw_rows {
         let resolved_ty = |key: &Json| -> Result<TsTy> {
             let index = key
                 .as_u64()
@@ -287,6 +353,40 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
                 }
                 Row::Ty(TsTy::Union(Rc::new(UnionDef { variants })))
             }
+            "cref" => {
+                // D-074: a class reference by name — forward-legal.
+                let name = field(row, "name")?
+                    .as_str()
+                    .ok_or_else(|| LoanwordError("cref name".into()))?;
+                let index = class_indices
+                    .get(name)
+                    .ok_or_else(|| LoanwordError(format!("cref to unknown class {name:?}")))?;
+                Row::Ty(TsTy::Class(*index))
+            }
+            "class" => {
+                let name = field(row, "name")?
+                    .as_str()
+                    .ok_or_else(|| LoanwordError("class row name".into()))?
+                    .to_string();
+                let mut fields = Vec::new();
+                for entry in field(row, "fields")?
+                    .as_array()
+                    .ok_or_else(|| LoanwordError("class row fields".into()))?
+                {
+                    let field_name = field(entry, "name")?
+                        .as_str()
+                        .ok_or_else(|| LoanwordError("class field name".into()))?
+                        .to_string();
+                    let ty = resolved_ty(field(entry, "ty")?)?;
+                    if !matches!(ty, TsTy::Num | TsTy::Bool | TsTy::Str | TsTy::Class(_)) {
+                        return err("class fields are num/bool/str/class refs (D-073)");
+                    }
+                    fields.push((field_name, ty));
+                }
+                let own_index = rows.len();
+                classes.insert(own_index, ClassDef { name, fields });
+                Row::Ty(TsTy::Class(own_index))
+            }
             other => return err(format!("unsupported interned type {other:?}")),
         };
         rows.push(parsed);
@@ -304,15 +404,8 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
         }
     };
 
-    let mut functions = Vec::new();
-    for decl in field(&document, "decls")?
-        .as_array()
-        .ok_or_else(|| LoanwordError("decls must be an array".into()))?
-    {
-        if kind(decl)? != "fn" {
-            return err(format!("unsupported decl kind {:?}", kind(decl)?));
-        }
-        let params = field(decl, "params")?
+    let parse_params = |node: &Json, key: &str| -> Result<Vec<(String, TsTy)>> {
+        field(node, key)?
             .as_array()
             .ok_or_else(|| LoanwordError("params must be an array".into()))?
             .iter()
@@ -325,19 +418,86 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
                     type_at(param, "ty")?,
                 ))
             })
-            .collect::<Result<Vec<_>>>()?;
-        functions.push(TsFn {
-            name: field(decl, "name")?
-                .as_str()
-                .ok_or_else(|| LoanwordError("fn name".into()))?
-                .to_string(),
-            params,
-            ret: type_at(decl, "ret")?,
-            body: field(decl, "body")?
-                .as_array()
-                .ok_or_else(|| LoanwordError("fn body".into()))?
-                .clone(),
-        });
+            .collect::<Result<Vec<_>>>()
+    };
+
+    let mut functions = Vec::new();
+    let mut class_decls = Vec::new();
+    for decl in field(&document, "decls")?
+        .as_array()
+        .ok_or_else(|| LoanwordError("decls must be an array".into()))?
+    {
+        match kind(decl)? {
+            "fn" => {
+                functions.push(TsFn {
+                    name: field(decl, "name")?
+                        .as_str()
+                        .ok_or_else(|| LoanwordError("fn name".into()))?
+                        .to_string(),
+                    params: parse_params(decl, "params")?,
+                    ret: type_at(decl, "ret")?,
+                    body: field(decl, "body")?
+                        .as_array()
+                        .ok_or_else(|| LoanwordError("fn body".into()))?
+                        .clone(),
+                });
+            }
+            "class" => {
+                let ty = field(decl, "ty")?
+                    .as_u64()
+                    .ok_or_else(|| LoanwordError("class ty ref".into()))?
+                    as usize;
+                let ctor_node = field(decl, "ctor")?;
+                let sets = field(ctor_node, "sets")?
+                    .as_array()
+                    .ok_or_else(|| LoanwordError("ctor sets".into()))?
+                    .iter()
+                    .map(|set| {
+                        let name = field(set, "name")?
+                            .as_str()
+                            .ok_or_else(|| LoanwordError("set name".into()))?
+                            .to_string();
+                        let is_self =
+                            set.get("self").and_then(Json::as_bool).unwrap_or(false);
+                        let rhs = if is_self {
+                            None
+                        } else {
+                            Some(field(set, "e")?.clone())
+                        };
+                        Ok((name, rhs))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let methods = field(decl, "methods")?
+                    .as_array()
+                    .ok_or_else(|| LoanwordError("class methods".into()))?
+                    .iter()
+                    .map(|method| {
+                        Ok(MethodDecl {
+                            name: field(method, "name")?
+                                .as_str()
+                                .ok_or_else(|| LoanwordError("method name".into()))?
+                                .to_string(),
+                            params: parse_params(method, "params")?,
+                            ret: type_at(method, "ret")?,
+                            body: field(method, "body")?
+                                .as_array()
+                                .ok_or_else(|| LoanwordError("method body".into()))?
+                                .clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                class_decls.push(ClassDecl {
+                    ty,
+                    name: field(decl, "name")?
+                        .as_str()
+                        .ok_or_else(|| LoanwordError("class name".into()))?
+                        .to_string(),
+                    ctor: CtorDecl { params: parse_params(ctor_node, "params")?, sets },
+                    methods,
+                });
+            }
+            other => return err(format!("unsupported decl kind {other:?}")),
+        }
     }
 
     Ok(Artifact {
@@ -349,6 +509,8 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
         line_starts,
         file,
         types: rows,
+        classes,
+        class_decls,
     })
 }
 
@@ -399,6 +561,22 @@ pub fn compile_loanword<'c>(context: &'c Context, text: &str) -> Result<Module<'
 
     for function in &artifact.functions {
         emitter.emit_fn(&module, function)?;
+    }
+    for decl in &artifact.class_decls {
+        emitter.emit_ctor(&module, decl)?;
+        // Methods are plain functions taking `this` first (D-073) —
+        // direct calls; dispatch waits for the itab milestone.
+        for method in &decl.methods {
+            let mut params = vec![("this".to_string(), TsTy::Class(decl.ty))];
+            params.extend(method.params.iter().cloned());
+            let synthetic = TsFn {
+                name: format!("{}__{}", decl.name, method.name),
+                params,
+                ret: method.ret.clone(),
+                body: method.body.clone(),
+            };
+            emitter.emit_fn(&module, &synthetic)?;
+        }
     }
     emitter.emit_main(&module)?;
 
@@ -476,8 +654,36 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 Type::parse(self.context, &self.sum_text(def)?)
                     .ok_or(LoanwordError("sum".into()))
             }
+            TsTy::Class(index) => {
+                // A managed box of a product (D-073); class-typed
+                // fields store type-erased (D-074), closing the knot.
+                Type::parse(self.context, &self.class_box_text(*index)?)
+                    .ok_or(LoanwordError("class box".into()))
+            }
             TsTy::Void => err("void has no value type"),
         }
+    }
+
+    /// `!frk_mem.box<!frk_adt.product<[…]>>` for a class — field slot
+    /// types in declaration order; class refs are `!frk_mem.recref`.
+    fn class_box_text(&self, index: usize) -> Result<String> {
+        let def = self.artifact.class_at(index)?;
+        let mut slots = Vec::new();
+        for (_, ty) in &def.fields {
+            slots.push(self.field_slot_text(ty)?);
+        }
+        Ok(format!(
+            "!frk_mem.box<!frk_adt.product<[{}]>>",
+            slots.join(", ")
+        ))
+    }
+
+    /// The PRODUCT-slot type of a class field: erased for class refs.
+    fn field_slot_text(&self, ty: &TsTy) -> Result<String> {
+        Ok(match ty {
+            TsTy::Class(_) => "!frk_mem.recref".to_string(),
+            other => format!("{}", self.mlir_ty(other)?),
+        })
     }
 
     /// `!frk_adt.sum<[[…],[…]]>` for a union — variant payload types
@@ -606,6 +812,262 @@ impl<'c, 'p> Emitter<'c, 'p> {
         );
         module.body().append_operation(op);
         Ok(())
+    }
+
+    /// `@{Class}__new(params) -> box`: evaluate the constructor's
+    /// `this.f = e` right-hand sides in SOURCE order, then build the
+    /// record in DECLARATION order (class-ref values erase, D-074).
+    fn emit_ctor(&self, module: &Module<'c>, decl: &ClassDecl) -> Result<()> {
+        let location = Location::unknown(self.context);
+        let def = self.artifact.class_at(decl.ty)?.clone();
+        let region = Region::new();
+        let param_types: Vec<(Type, Location)> = decl
+            .ctor
+            .params
+            .iter()
+            .map(|(_, ty)| Ok((self.mlir_ty(ty)?, location)))
+            .collect::<Result<_>>()?;
+        let entry = region.append_block(Block::new(&param_types));
+        let mut env = HashMap::new();
+        for (index, (name, ty)) in decl.ctor.params.iter().enumerate() {
+            let raw = entry
+                .argument(index)
+                .map_err(|e| LoanwordError(e.to_string()))?
+                .to_raw();
+            env.insert(
+                name.clone(),
+                Binding::Value(unsafe { Value::from_raw(raw) }, ty.clone()),
+            );
+        }
+        let mut fcx = Fcx {
+            region: &region,
+            block: entry,
+            env,
+            // No `return` statement can occur inside set expressions,
+            // so the exit protocol is never exercised here.
+            exit: entry,
+            ret: TsTy::Class(decl.ty),
+            terminated: false,
+        };
+        let mut values: HashMap<String, (Value, TsTy)> = HashMap::new();
+        let mut self_fields: Vec<String> = Vec::new();
+        for (name, set_expr) in &decl.ctor.sets {
+            match set_expr {
+                Some(set_expr) => {
+                    let (value, ty) = self.emit_expr(&mut fcx, set_expr)?;
+                    values.insert(name.clone(), (value, ty));
+                }
+                None => self_fields.push(name.clone()),
+            }
+        }
+        let mut product = self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_adt.product_new", location)
+                .add_results(&[Type::parse(self.context, "!frk_adt.product<[]>")
+                    .ok_or(LoanwordError("product".into()))?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )?;
+        let mut grown = Vec::new();
+        for (field_name, field_ty) in &def.fields {
+            let slot_value = if self_fields.contains(field_name) {
+                // The knot (D-074): seed null, back-patch after box_new.
+                if field_ty != &TsTy::Class(decl.ty) {
+                    return err(format!(
+                        "`this.{field_name} = this` needs field type {}, not {field_ty:?}",
+                        def.name
+                    ));
+                }
+                self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_mem.recref_null", location)
+                        .add_results(&[Type::parse(self.context, "!frk_mem.recref")
+                            .ok_or(LoanwordError("recref".into()))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?
+            } else {
+                let (value, ty) = values
+                    .get(field_name)
+                    .cloned()
+                    .ok_or_else(|| {
+                        LoanwordError(format!("constructor did not assign {field_name:?}"))
+                    })?;
+                if &ty != field_ty {
+                    return err(format!(
+                        "field {field_name:?} of {} is {field_ty:?}, constructor assigns {ty:?}",
+                        def.name
+                    ));
+                }
+                if matches!(field_ty, TsTy::Class(_)) {
+                    self.rec_ref(&fcx, value, location)?
+                } else {
+                    value
+                }
+            };
+            grown.push(self.field_slot_text(field_ty)?);
+            let product_ty = Type::parse(
+                self.context,
+                &format!("!frk_adt.product<[{}]>", grown.join(", ")),
+            )
+            .ok_or(LoanwordError("product".into()))?;
+            product = self.op_result(
+                fcx.block,
+                OperationBuilder::new("frk_adt.product_snoc", location)
+                    .add_operands(&[product, slot_value])
+                    .add_results(&[product_ty])
+                    .build()
+                    .map_err(|e| LoanwordError(e.to_string()))?,
+            )?;
+        }
+        let boxed = self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_mem.box_new", location)
+                .add_operands(&[product])
+                .add_results(&[self.mlir_ty(&TsTy::Class(decl.ty))?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )?;
+        // Back-patch the knot fields now that the box exists (D-074).
+        if !self_fields.is_empty() {
+            let i64_type: Type = IntegerType::new(self.context, 64).into();
+            let self_ref = self.rec_ref(&fcx, boxed, location)?;
+            for field_name in &self_fields {
+                let index = def
+                    .fields
+                    .iter()
+                    .position(|(name, _)| name == field_name)
+                    .expect("self field validated against the class");
+                fcx.block.append_operation(
+                    OperationBuilder::new("frk_mem.field_set", location)
+                        .add_attributes(&[(
+                            Identifier::new(self.context, "field"),
+                            IntegerAttribute::new(i64_type, index as i64).into(),
+                        )])
+                        .add_operands(&[boxed, self_ref])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                );
+            }
+        }
+        fcx.block.append_operation(
+            OperationBuilder::new("func.return", location)
+                .add_operands(&[boxed])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        );
+        let signature = FunctionType::new(
+            self.context,
+            &decl
+                .ctor
+                .params
+                .iter()
+                .map(|(_, ty)| self.mlir_ty(ty))
+                .collect::<Result<Vec<_>>>()?,
+            &[self.mlir_ty(&TsTy::Class(decl.ty))?],
+        );
+        let op = melior::dialect::func::func(
+            self.context,
+            StringAttribute::new(self.context, &format!("{}__new", decl.name)),
+            TypeAttribute::new(signature.into()),
+            region,
+            &[],
+            location,
+        );
+        module.body().append_operation(op);
+        Ok(())
+    }
+
+    /// `obj.m(args)` → `func.call @Class__m(this, args…)` (D-073;
+    /// direct — dispatch waits for itabs). Returns None for void.
+    fn emit_mcall<'r>(
+        &self,
+        fcx: &mut Fcx<'c, 'r>,
+        node: &Json,
+        location: Location<'c>,
+    ) -> Result<(Option<Value<'c, 'r>>, TsTy)> {
+        let class = field(node, "c")?
+            .as_u64()
+            .ok_or_else(|| LoanwordError("mcall class ref".into()))? as usize;
+        let method_name = field(node, "m")?
+            .as_str()
+            .ok_or_else(|| LoanwordError("mcall method".into()))?;
+        let decl = self.artifact.class_decl(class)?;
+        let method = decl
+            .methods
+            .iter()
+            .find(|method| method.name == method_name)
+            .ok_or_else(|| {
+                LoanwordError(format!("class {} has no method {method_name:?}", decl.name))
+            })?;
+        let ret = method.ret.clone();
+        let symbol = format!("{}__{}", decl.name, method_name);
+        let (this, this_ty) = self.emit_expr(fcx, field(node, "e")?)?;
+        if this_ty != TsTy::Class(class) {
+            return err(format!("method receiver is {this_ty:?}"));
+        }
+        let mut operands = vec![this];
+        for argument in field(node, "args")?
+            .as_array()
+            .ok_or_else(|| LoanwordError("mcall args".into()))?
+        {
+            operands.push(self.emit_expr(fcx, argument)?.0);
+        }
+        let builder = OperationBuilder::new("func.call", location)
+            .add_attributes(&[(
+                Identifier::new(self.context, "callee"),
+                FlatSymbolRefAttribute::new(self.context, &symbol).into(),
+            )])
+            .add_operands(&operands);
+        if ret == TsTy::Void {
+            fcx.block.append_operation(
+                builder.build().map_err(|e| LoanwordError(e.to_string()))?,
+            );
+            Ok((None, TsTy::Void))
+        } else {
+            let value = self.op_result(
+                fcx.block,
+                builder
+                    .add_results(&[self.mlir_ty(&ret)?])
+                    .build()
+                    .map_err(|e| LoanwordError(e.to_string()))?,
+            )?;
+            Ok((Some(value), ret))
+        }
+    }
+
+    fn rec_ref<'r>(
+        &self,
+        fcx: &Fcx<'c, 'r>,
+        value: Value<'c, 'r>,
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_mem.rec_ref", location)
+                .add_operands(&[value])
+                .add_results(&[Type::parse(self.context, "!frk_mem.recref")
+                    .ok_or(LoanwordError("recref".into()))?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )
+    }
+
+    fn rec_cast<'r>(
+        &self,
+        fcx: &Fcx<'c, 'r>,
+        value: Value<'c, 'r>,
+        class: usize,
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_mem.rec_cast", location)
+                .add_operands(&[value])
+                .add_results(&[self.mlir_ty(&TsTy::Class(class))?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )
     }
 
     fn emit_main(&self, module: &Module<'c>) -> Result<()> {
@@ -754,6 +1216,49 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 );
                 Ok(())
             }
+            "pset" => {
+                // Field mutation (D-073): obj.f = e / this.f = e —
+                // field_set at the slot; class-ref values erase.
+                let name = field(node, "name")?
+                    .as_str()
+                    .ok_or_else(|| LoanwordError("pset name".into()))?;
+                let (target, target_ty) = self.emit_expr(fcx, field(node, "e")?)?;
+                let TsTy::Class(class) = target_ty else {
+                    return err(format!("property assignment on {target_ty:?}"));
+                };
+                let def = self.artifact.class_at(class)?;
+                let index = def
+                    .fields
+                    .iter()
+                    .position(|(field_name, _)| field_name == name)
+                    .ok_or_else(|| {
+                        LoanwordError(format!("class {} has no field {name:?}", def.name))
+                    })?;
+                let field_ty = def.fields[index].1.clone();
+                let (value, value_ty) = self.emit_expr(fcx, field(node, "v")?)?;
+                if value_ty != field_ty {
+                    return err(format!(
+                        "field {name:?} is {field_ty:?}, assignment supplies {value_ty:?}"
+                    ));
+                }
+                let slot_value = if matches!(field_ty, TsTy::Class(_)) {
+                    self.rec_ref(fcx, value, location)?
+                } else {
+                    value
+                };
+                let i64_type: Type = IntegerType::new(self.context, 64).into();
+                fcx.block.append_operation(
+                    OperationBuilder::new("frk_mem.field_set", location)
+                        .add_attributes(&[(
+                            Identifier::new(self.context, "field"),
+                            IntegerAttribute::new(i64_type, index as i64).into(),
+                        )])
+                        .add_operands(&[target, slot_value])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                );
+                Ok(())
+            }
             "if" => {
                 let (condition, _) = self.emit_expr(fcx, field(node, "c")?)?;
                 let then_block = fcx.region.append_block(Block::new(&[]));
@@ -850,6 +1355,12 @@ impl<'c, 'p> Emitter<'c, 'p> {
             "expr" => {
                 // Void calls are legal here (and only here).
                 let inner = field(node, "e")?;
+                if kind(inner)? == "mcall" {
+                    // Method calls in statement position: void is
+                    // fine; a value result simply drops.
+                    let _ = self.emit_mcall(fcx, inner, location)?;
+                    return Ok(());
+                }
                 if kind(inner)? == "call" {
                     let name = field(inner, "name")?
                         .as_str()
@@ -1259,6 +1770,42 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 )?;
                 Ok((value, target.ret.clone()))
             }
+            "new" => {
+                // `new C(args)` → func.call @C__new (D-073).
+                let class = field(node, "c")?
+                    .as_u64()
+                    .ok_or_else(|| LoanwordError("new class ref".into()))?
+                    as usize;
+                let decl = self.artifact.class_decl(class)?;
+                let name = format!("{}__new", decl.name);
+                let mut operands = Vec::new();
+                for argument in field(node, "args")?
+                    .as_array()
+                    .ok_or_else(|| LoanwordError("new args".into()))?
+                {
+                    operands.push(self.emit_expr(fcx, argument)?.0);
+                }
+                let value = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("func.call", location)
+                        .add_attributes(&[(
+                            Identifier::new(self.context, "callee"),
+                            FlatSymbolRefAttribute::new(self.context, &name).into(),
+                        )])
+                        .add_operands(&operands)
+                        .add_results(&[self.mlir_ty(&TsTy::Class(class))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                Ok((value, TsTy::Class(class)))
+            }
+            "mcall" => {
+                let (value, ret) = self.emit_mcall(fcx, node, location)?;
+                match value {
+                    Some(value) => Ok((value, ret)),
+                    None => err("void method call in expression position"),
+                }
+            }
             "obj" => {
                 // Union-variant construction (D-072): product chain +
                 // make_sum, fields in variant declaration order, kind
@@ -1380,6 +1927,45 @@ impl<'c, 'p> Emitter<'c, 'p> {
                     .ok_or_else(|| LoanwordError("prop name".into()))?;
                 let (value, ty) = self.emit_expr(fcx, field(node, "e")?)?;
                 match ty {
+                    TsTy::Class(class) => {
+                        // Field read (D-073): field_get at the slot;
+                        // class-ref fields un-erase on the way out.
+                        let def = self.artifact.class_at(class)?;
+                        let index = def
+                            .fields
+                            .iter()
+                            .position(|(field_name, _)| field_name == name)
+                            .ok_or_else(|| {
+                                LoanwordError(format!(
+                                    "class {} has no field {name:?}",
+                                    def.name
+                                ))
+                            })?;
+                        let field_ty = def.fields[index].1.clone();
+                        let i64_type: Type = IntegerType::new(self.context, 64).into();
+                        let slot_ty =
+                            Type::parse(self.context, &self.field_slot_text(&field_ty)?)
+                                .ok_or(LoanwordError("slot type".into()))?;
+                        let raw = self.op_result(
+                            fcx.block,
+                            OperationBuilder::new("frk_mem.field_get", location)
+                                .add_attributes(&[(
+                                    Identifier::new(self.context, "field"),
+                                    IntegerAttribute::new(i64_type, index as i64).into(),
+                                )])
+                                .add_operands(&[value])
+                                .add_results(&[slot_ty])
+                                .build()
+                                .map_err(|e| LoanwordError(e.to_string()))?,
+                        )?;
+                        let projected = match &field_ty {
+                            TsTy::Class(target) => {
+                                self.rec_cast(fcx, raw, *target, location)?
+                            }
+                            _ => raw,
+                        };
+                        Ok((projected, field_ty))
+                    }
                     TsTy::Variant(def, v) => {
                         let variant = &def.variants[v];
                         if name == "kind" {

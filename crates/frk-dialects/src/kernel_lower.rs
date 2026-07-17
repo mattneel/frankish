@@ -382,6 +382,10 @@ enum Planned<'c, 'a> {
     RecIdentity {
         op: OperationRef<'c, 'a>,
     },
+    /// D-074 construction-knot placeholder: a null pointer.
+    RecrefNull {
+        op: OperationRef<'c, 'a>,
+    },
     ArrayNew {
         op: OperationRef<'c, 'a>,
         die_at: Option<OperationRef<'c, 'a>>,
@@ -1329,6 +1333,7 @@ fn plan_mem<'c, 'a>(
             }
         }
         "rec_ref" | "rec_cast" => Ok(Planned::RecIdentity { op }),
+        "recref_null" => Ok(Planned::RecrefNull { op }),
         "array_new" => {
             let elem = crate::mem::decode_arr(
                 context,
@@ -3869,6 +3874,17 @@ fn apply<'c, 'a>(
         Planned::RecIdentity { op } => {
             rewriter.set_insertion_point_before(op);
             finish(rewriter, op, operand(op, 0)?)
+        }
+        Planned::RecrefNull { op } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let null = result_value(rewriter.insert(
+                OperationBuilder::new("llvm.mlir.zero", location)
+                    .add_results(&[llvm::r#type::pointer(context, 0)])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            finish(rewriter, op, null)
         }
         Planned::TagOf { op } => {
             rewriter.set_insertion_point_before(op);

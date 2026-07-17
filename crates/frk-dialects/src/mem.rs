@@ -91,6 +91,10 @@ irdl.dialect @frk_mem {
     irdl.attributes { "field" = %f }
   }
   irdl.type @recref {}
+  irdl.operation @recref_null {
+    %r = irdl.base @frk_mem::@recref
+    irdl.results(ref: %r)
+  }
   irdl.operation @rec_ref {
     %b = irdl.base @frk_mem::@box
     %r = irdl.base @frk_mem::@recref
@@ -222,6 +226,7 @@ pub(crate) fn verify_op<'c>(
         // Type-erased record references (D-074): both sides of the
         // knot must be a box of a product; the cast's pointee is the
         // FRONTEND's obligation (nominal typing), not checkable here.
+        "recref_null" => Ok(()),
         "rec_ref" => {
             let boxed = operand_type(0)?;
             let elem = decode_box(context, boxed)?;

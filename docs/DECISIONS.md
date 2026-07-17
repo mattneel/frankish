@@ -215,8 +215,17 @@ veto-ledger pattern and most deserve their review.
   verifiability at the cost of a symbol-table coupling in a VALUE
   dialect — defer until a consumer needs the checkability; dyn
   boxing drags the tag machinery into statically-typed code.
-  Revisit: named record decls if a second frontend needs checked
-  casts; niche/nullability when optional fields land.
+  CONSTRUCTION KNOT: `this.next = this` (the standard TS cycle
+  bootstrap) needs the record before its own reference —
+  frk_mem.recref_null() -> recref exists ONLY for this: a
+  placeholder slot value at construction, overwritten by
+  field_set(box, rec_ref(box)) immediately after box_new; reading
+  one is a frontend bug (interp: not-a-box error; native: null
+  deref). retain(null)/trace(null) are no-ops by the DynPair
+  precedent. Revisit: named record decls if a second frontend needs
+  checked casts; niche/nullability when optional fields land (null
+  recref is NOT surface nullability — it never survives a
+  constructor).
 - D-073 [m28/ts2/mem] TS-2 OPENS with the classes core (the human
   picked it; the stage completes over two milestones — interfaces/
   itabs (D-026) and object closures/method values are the SECOND
