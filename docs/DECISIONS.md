@@ -193,6 +193,35 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-071 [m26/scheme] Handler consumption (the human picked it): R7RS
+  exceptions over the v1 handlers — the milestone whose THESIS BAR is
+  ZERO KERNEL DELTAS. `with-exception-handler` + `raise-continuable`
+  are the tail-resumptive pair made surface: the handler's return
+  value IS raise-continuable's value (R7RS 6.11 verbatim — our
+  clause ABI), and R7RS's "the handler runs with the OUTER handler
+  current" rule is EXACTLY the D-069 masking rule, so nested
+  handlers delegating outward need no new semantics. Mapping:
+  (with-exception-handler h thunk) ⇒ frk_ctl.handle{label="exn"}
+  with the CLAUSE lifted from h's lambda plus a synthesized
+  tail-resume epilogue — body value r, then apply κ([r]) in tail
+  position; the thunk lifts prompt-shaped ((captures…, token)→dyn),
+  so escapes from inside handlers compose with call/cc and wind
+  through the EXISTING abort machinery. (raise-continuable e) ⇒
+  frk_ctl.perform{label="exn"}(e) + the D-061 guard.
+  Frontend growth only: thunk-lambda lifting generalizes to n params
+  read from the pack via a new __scm_arg intrinsic (nil-fill,
+  frk.borrows — __lua_arg's scheme twin); Job gains the exn-clause
+  epilogue and handle-body flavors. FENCED: plain `raise` (its
+  handler-returned secondary-error semantics), `guard` sugar,
+  `error` objects, `make-parameter`/`parameterize` (want first-class
+  procedure values + top-level value defines — a named surface rung,
+  not an effects gap). Exit bars: ≥4 chibi-validated corpus cases —
+  basic resumption; nested delegation (a handler re-raising
+  outward); a handler ESCAPING via an enclosing call/cc ACROSS a
+  dynamic-wind (afters fire; the composition case); a reader-style
+  dynamic-value idiom with nested rebinding. Regression 11/11;
+  suite/diff/grid green; the zero-kernel-delta bar holds or the
+  exception is ledgered.
 - D-070 [m25/scheme] r7rs_core v0.1 (the human picked "r7rs_core").
   Pairs, quote, symbols — and DYNAMIC-WIND'S OPEN RULING CLOSES.
   (1) THE D-051 WIDENING FIRES: TAG_PAIR = 6, the first new dyn tag
