@@ -90,6 +90,22 @@ func.func @__scm_display_items(%p: !frk_dyn.dyn) {
   return
 }
 
+// pack[i] with nil-fill (M26, D-071): the scheme twin of __lua_arg —
+// pack-fn parameters and first-class application results read through
+// it. Borrows its pack.
+func.func @__scm_arg(%pack: !frk_mem.arr<!frk_dyn.dyn>, %i: i64) -> !frk_dyn.dyn attributes {frk.borrows} {
+  %len = "frk_mem.array_len"(%pack) : (!frk_mem.arr<!frk_dyn.dyn>) -> i64
+  %in = arith.cmpi slt, %i, %len : i64
+  cf.cond_br %in, ^read, ^nil
+^read:
+  %v = "frk_mem.array_get"(%pack, %i) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
+  return %v : !frk_dyn.dyn
+^nil:
+  %z = arith.constant 0 : i64
+  %n = "frk_dyn.wrap"(%z) {tag = 0 : i64} : (i64) -> !frk_dyn.dyn
+  return %n : !frk_dyn.dyn
+}
+
 func.func @__scm_cons(%a: !frk_dyn.dyn, %d: !frk_dyn.dyn) -> !frk_dyn.dyn {
   %e = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
   %p1 = "frk_adt.product_snoc"(%e, %a) : (!frk_adt.product<[]>, !frk_dyn.dyn) -> !frk_adt.product<[!frk_dyn.dyn]>
@@ -158,4 +174,61 @@ func.func @__scm_eq(%a: !frk_dyn.dyn, %b: !frk_dyn.dyn) -> !frk_dyn.dyn {
   %peq = arith.cmpi eq, %pa, %pb : i64
   %pd = "frk_dyn.wrap"(%peq) {tag = 1 : i64} : (i1) -> !frk_dyn.dyn
   return %pd : !frk_dyn.dyn
+}
+
+// ---- M26 (D-071): the R7RS exception wrappers. STATIC functions —
+// per-site closures differ only in their env (the captured user
+// handler / thunk), so one pair serves every with-exception-handler.
+
+// The tail-resume CLAUSE: (h, pack[v, κ]) → apply h to [v], then
+// apply κ to [r] and return κ's pack — the clause's return IS the
+// resume value (D-069). If h ESCAPED (pending set after its apply),
+// return early: the in-flight abort wins (perform_end preserves it).
+func.func @__scm_exn_clause(%h: !frk_dyn.dyn, %pack: !frk_mem.arr<!frk_dyn.dyn>) -> !frk_mem.arr<!frk_dyn.dyn> {
+  %c0 = arith.constant 0 : i64
+  %e = func.call @__scm_arg(%pack, %c0) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
+  %c1 = arith.constant 1 : i64
+  %kd = func.call @__scm_arg(%pack, %c1) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
+  %hf = "frk_dyn.unwrap"(%h) {tag = 5 : i64} : (!frk_dyn.dyn) -> !frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>
+  %hp = "frk_mem.array_new"(%c1) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
+  "frk_mem.array_set"(%hp, %c0, %e) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+  %pe = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
+  %pp = "frk_adt.product_snoc"(%pe, %hp) : (!frk_adt.product<[]>, !frk_mem.arr<!frk_dyn.dyn>) -> !frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>
+  %hr = "frk_closure.apply"(%hf, %pp) : (!frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>, !frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>) -> !frk_mem.arr<!frk_dyn.dyn>
+  %pend = "frk_ctl.pending"() : () -> i64
+  %z = arith.constant 0 : i64
+  %escaped = arith.cmpi ne, %pend, %z : i64
+  cf.cond_br %escaped, ^divert, ^resume
+^divert:
+  %ep = "frk_mem.array_new"(%z) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
+  return %ep : !frk_mem.arr<!frk_dyn.dyn>
+^resume:
+  %r = func.call @__scm_arg(%hr, %c0) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
+  %kf = "frk_dyn.unwrap"(%kd) {tag = 5 : i64} : (!frk_dyn.dyn) -> !frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>
+  %kp = "frk_mem.array_new"(%c1) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
+  "frk_mem.array_set"(%kp, %c0, %r) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+  %pe2 = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
+  %pp2 = "frk_adt.product_snoc"(%pe2, %kp) : (!frk_adt.product<[]>, !frk_mem.arr<!frk_dyn.dyn>) -> !frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>
+  %kr = "frk_closure.apply"(%kf, %pp2) : (!frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>, !frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>) -> !frk_mem.arr<!frk_dyn.dyn>
+  return %kr : !frk_mem.arr<!frk_dyn.dyn>
+}
+
+// The prompt-shaped BODY: (t, token) → apply the captured thunk with
+// an empty pack; guard (a crossing escape propagates); head.
+func.func @__scm_exn_body(%t: !frk_dyn.dyn, %token: i64) -> !frk_dyn.dyn {
+  %tf = "frk_dyn.unwrap"(%t) {tag = 5 : i64} : (!frk_dyn.dyn) -> !frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>
+  %c0 = arith.constant 0 : i64
+  %ep = "frk_mem.array_new"(%c0) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
+  %pe = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
+  %pp = "frk_adt.product_snoc"(%pe, %ep) : (!frk_adt.product<[]>, !frk_mem.arr<!frk_dyn.dyn>) -> !frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>
+  %rp = "frk_closure.apply"(%tf, %pp) : (!frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>, !frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>) -> !frk_mem.arr<!frk_dyn.dyn>
+  %pend = "frk_ctl.pending"() : () -> i64
+  %escaped = arith.cmpi ne, %pend, %c0 : i64
+  cf.cond_br %escaped, ^divert, ^done
+^divert:
+  %nil = "frk_dyn.wrap"(%c0) {tag = 0 : i64} : (i64) -> !frk_dyn.dyn
+  return %nil : !frk_dyn.dyn
+^done:
+  %r = func.call @__scm_arg(%rp, %c0) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
+  return %r : !frk_dyn.dyn
 }

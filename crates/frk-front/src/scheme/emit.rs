@@ -466,6 +466,8 @@ impl<'c> Emitter<'c> {
         if job.escape.is_some() {
             inputs.push(self.i64_ty());
         } else if job.wind_thunk {
+            // Uniform pack fn (D-070/D-071): parameters — if any —
+            // read out of the pack via __scm_arg (nil-fill).
             inputs.push(self.pack_ty());
         } else {
             inputs.extend(std::iter::repeat_n(self.dyn_ty(), job.params.len()));
@@ -507,6 +509,14 @@ impl<'c> Emitter<'c> {
             // a ONE-element pack (the uniform shape). Divergence (an
             // escape inside the thunk) has already early-returned.
             let l = Location::unknown(self.context);
+            let pack_arg = block_arg(entry, job.captures.len())?;
+            for (index, name) in job.params.clone().iter().enumerate() {
+                let idx = self.const_i64(fcx.block, index as i64, l)?;
+                let value = self
+                    .call(fcx.block, "__scm_arg", &[pack_arg, idx], &[self.dyn_ty()], l)?
+                    .ok_or("__scm_arg produced no value")?;
+                fcx.locals.insert(name.clone(), Local::Val(value));
+            }
             if let Some(value) = self.emit_seq_value(&mut fcx, &job.body.clone())? {
                 let one = self.const_i64(fcx.block, 1, l)?;
                 let pack = self.build(
@@ -592,8 +602,11 @@ impl<'c> Emitter<'c> {
             Expr::Let(kind, binds, body, _) => self.emit_let_value(fcx, *kind, binds, body),
             Expr::App(callee, args, _) => self.emit_app_value(fcx, callee, args, l),
             Expr::Quote(datum, _) => self.emit_quoted(fcx, datum, l).map(Some),
-            Expr::Lambda(_, _, _) => {
-                Err("first-class lambdas are fenced in r7rs_core v0 (only as call/cc receivers)".into())
+            Expr::Lambda(..) => {
+                // First-class lambdas (M26, D-071): a uniform pack-fn
+                // closure wrapped as a fun dyn.
+                let closure = self.emit_lambda_packfn(fcx, expr, l)?;
+                Ok(Some(self.wrap(fcx.block, 5, closure, l)?))
             }
         }
     }
@@ -852,7 +865,128 @@ impl<'c> Emitter<'c> {
             self.emit_guard(fcx, l)?;
             return Ok(Some(result));
         }
+        // First-class application (M26, D-071): the operator evaluates
+        // to a fun dyn; apply through the uniform convention with an
+        // args pack, result = head, guard after (the callee may abort).
+        if fcx.locals.contains_key(op) {
+            let callee = match self.emit_value(fcx, &Expr::Var(op.clone(), Span { start: 0, end: 0 }))? {
+                Some(v) => v,
+                None => return Ok(None),
+            };
+            return self.emit_apply_dyn(fcx, callee, args, l);
+        }
         Err(format!("unbound operator `{op}`"))
+    }
+
+    /// (with-exception-handler h t) as handle{label="exn"} over the
+    /// STATIC wrapper intrinsics, per-site closures carrying h / t in
+    /// their envs (M26, D-071).
+    fn emit_handle_exn<'r>(
+        &mut self,
+        fcx: &mut Fcx<'c, 'r>,
+        handler: Value<'c, 'r>,
+        thunk: Value<'c, 'r>,
+        l: Location<'c>,
+    ) -> R<Value<'c, 'r>> {
+        let empty = Type::parse(self.context, "!frk_adt.product<[]>").ok_or("empty product")?;
+        let dyn_product =
+            Type::parse(self.context, "!frk_adt.product<[!frk_dyn.dyn]>").ok_or("dyn product")?;
+        let mut make = |value: Value<'c, 'r>, callee: &str, ty: Type<'c>| -> R<Value<'c, 'r>> {
+            let base = self.build(fcx.block, "frk_adt.product_new", &[], &[empty], &[], l)?;
+            let env = self.build(
+                fcx.block,
+                "frk_adt.product_snoc",
+                &[base, value],
+                &[dyn_product],
+                &[],
+                l,
+            )?;
+            self.build(
+                fcx.block,
+                "frk_closure.make",
+                &[env],
+                &[ty],
+                &[("callee", FlatSymbolRefAttribute::new(self.context, callee).into())],
+                l,
+            )
+        };
+        let clause = make(handler, "__scm_exn_clause", self.pack_fn_ty())?;
+        let body = make(thunk, "__scm_exn_body", self.fn_ty())?;
+        self.build(
+            fcx.block,
+            "frk_ctl.handle",
+            &[clause, body],
+            &[self.dyn_ty()],
+            &[("label", StringAttribute::new(self.context, "exn").into())],
+            l,
+        )
+    }
+
+    /// Applies a fun-dyn value to evaluated args (M26): unwrap at the
+    /// uniform type, build the pack, closure.apply, head via
+    /// __scm_arg, guard.
+    fn emit_apply_dyn<'r>(
+        &mut self,
+        fcx: &mut Fcx<'c, 'r>,
+        callee: Value<'c, 'r>,
+        args: &[Expr],
+        l: Location<'c>,
+    ) -> R<Option<Value<'c, 'r>>> {
+        let function = self.build(
+            fcx.block,
+            "frk_dyn.unwrap",
+            &[callee],
+            &[self.pack_fn_ty()],
+            &[("tag", IntegerAttribute::new(self.i64_ty(), 5).into())],
+            l,
+        )?;
+        let count = self.const_i64(fcx.block, args.len() as i64, l)?;
+        let pack = self.build(
+            fcx.block,
+            "frk_mem.array_new",
+            &[count],
+            &[self.pack_ty()],
+            &[],
+            l,
+        )?;
+        for (index, arg) in args.iter().enumerate() {
+            let value = match self.emit_value(fcx, arg)? {
+                Some(v) => v,
+                None => return Ok(None),
+            };
+            let idx = self.const_i64(fcx.block, index as i64, l)?;
+            self.build(fcx.block, "frk_mem.array_set", &[pack, idx, value], &[], &[], l)
+                .ok();
+        }
+        let empty = Type::parse(self.context, "!frk_adt.product<[]>").ok_or("empty product")?;
+        let product = self.build(fcx.block, "frk_adt.product_new", &[], &[empty], &[], l)?;
+        let wrapped = Type::parse(
+            self.context,
+            "!frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>",
+        )
+        .ok_or("arg product")?;
+        let arg_product = self.build(
+            fcx.block,
+            "frk_adt.product_snoc",
+            &[product, pack],
+            &[wrapped],
+            &[],
+            l,
+        )?;
+        let result_pack = self.build(
+            fcx.block,
+            "frk_closure.apply",
+            &[function, arg_product],
+            &[self.pack_ty()],
+            &[],
+            l,
+        )?;
+        let zero = self.const_i64(fcx.block, 0, l)?;
+        let head = self
+            .call(fcx.block, "__scm_arg", &[result_pack, zero], &[self.dyn_ty()], l)?
+            .ok_or("__scm_arg produced no value")?;
+        self.emit_guard(fcx, l)?;
+        Ok(Some(head))
     }
 
     fn emit_app_tail<'r>(
@@ -1056,13 +1190,28 @@ impl<'c> Emitter<'c> {
         lambda: &Expr,
         l: Location<'c>,
     ) -> R<Value<'c, 'r>> {
-        let Expr::Lambda(params, body, _) = lambda else {
+        let Expr::Lambda(params, _, _) = lambda else {
             return Err("dynamic-wind takes three (lambda () …) thunks in v0.1".into());
         };
         if !params.is_empty() {
             return Err("dynamic-wind thunks take no parameters".into());
         }
-        let mut bound: HashSet<String> = HashSet::new();
+        self.emit_lambda_packfn(fcx, lambda, l)
+    }
+
+    /// Lifts ANY lambda as a uniform pack-fn closure (M26, D-071):
+    /// (captures…, pack) → pack, parameters read via __scm_arg —
+    /// the shape wind applies directly and first-class values wrap.
+    fn emit_lambda_packfn<'r>(
+        &mut self,
+        fcx: &mut Fcx<'c, 'r>,
+        lambda: &Expr,
+        l: Location<'c>,
+    ) -> R<Value<'c, 'r>> {
+        let Expr::Lambda(params, body, _) = lambda else {
+            return Err("expected a lambda".into());
+        };
+        let mut bound: HashSet<String> = params.iter().cloned().collect();
         let mut free = BTreeSet::new();
         free_names_body(body, &mut bound, &mut free);
         let captures: Vec<Capture> = free
@@ -1077,7 +1226,7 @@ impl<'c> Emitter<'c> {
                 })
             })
             .collect();
-        let symbol = format!("scm_wind{}", self.next_fn);
+        let symbol = format!("scm_fn{}", self.next_fn);
         self.next_fn += 1;
         let empty = Type::parse(self.context, "!frk_adt.product<[]>").ok_or("empty product")?;
         let mut env = self.build(fcx.block, "frk_adt.product_new", &[], &[empty], &[], l)?;
@@ -1116,7 +1265,7 @@ impl<'c> Emitter<'c> {
         self.job_queue.push(Job {
             symbol,
             captures,
-            params: Vec::new(),
+            params: params.clone(),
             escape: None,
             wind_thunk: true,
             body: body.clone(),
@@ -1349,6 +1498,36 @@ impl<'c> Emitter<'c> {
                 }
                 Ok(Some(Some(acc)))
             }
+            "raise-continuable" => {
+                let [e] = args else {
+                    return Err("raise-continuable takes one argument".into());
+                };
+                let Some(ev) = self.emit_value(fcx, e)? else { return Ok(Some(None)) };
+                let r = self.build(
+                    fcx.block,
+                    "frk_ctl.perform",
+                    &[ev],
+                    &[self.dyn_ty()],
+                    &[("label", StringAttribute::new(self.context, "exn").into())],
+                    l,
+                )?;
+                self.emit_guard(fcx, l)?;
+                Ok(Some(Some(r)))
+            }
+            "with-exception-handler" => {
+                // (with-exception-handler h thunk) ⇒ handle{label=exn}
+                // with a synthesized tail-resume CLAUSE wrapping h and
+                // a prompt-shaped BODY wrapping thunk (D-071). Both h
+                // and thunk are general expressions (fun dyns).
+                let [handler, thunk] = args else {
+                    return Err("with-exception-handler takes a handler and a thunk".into());
+                };
+                let Some(hv) = self.emit_value(fcx, handler)? else { return Ok(Some(None)) };
+                let Some(tv) = self.emit_value(fcx, thunk)? else { return Ok(Some(None)) };
+                let r = self.emit_handle_exn(fcx, hv, tv, l)?;
+                self.emit_guard(fcx, l)?;
+                Ok(Some(Some(r)))
+            }
             "dynamic-wind" => {
                 let [before, thunk, after] = args else {
                     return Err("dynamic-wind takes three thunks".into());
@@ -1409,7 +1588,7 @@ fn is_primitive(op: &str) -> bool {
         op,
         "+" | "-" | "*" | "quotient" | "remainder" | "=" | "<" | ">" | "<=" | ">=" | "display"
             | "newline" | "cons" | "car" | "cdr" | "null?" | "pair?" | "eq?" | "list"
-            | "dynamic-wind"
+            | "dynamic-wind" | "with-exception-handler" | "raise-continuable"
     )
 }
 

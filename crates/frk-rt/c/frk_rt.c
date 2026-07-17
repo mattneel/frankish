@@ -458,7 +458,9 @@ int64_t frk_rt_ctl_perform_end(int64_t entry, int64_t marker, int64_t token,
         out[0] = rtag;
         out[1] = rpay;
         if (frk_ctl_was_consumed(marker)) return 1;
-        frk_rt_ctl_abort(token, rtag, rpay);
+        /* M26 (D-071 finding): an in-flight abort (the clause escaped
+         * through an enclosing prompt) WINS — do not clobber it. */
+        if (!frk_ctl_pending) frk_rt_ctl_abort(token, rtag, rpay);
         return 0;
     }
 }

@@ -696,7 +696,14 @@ pub unsafe extern "C" fn frk_rt_ctl_perform_end(
     if ctl_consumed().lock().unwrap().contains(&marker) {
         1
     } else {
-        frk_rt_ctl_abort(token, rtag, rpay);
+        // M26 (D-071 finding): if an abort is ALREADY in flight — the
+        // clause escaped through an enclosing prompt — that escape
+        // WINS; starting an abortive-to-handle here would clobber it.
+        // The interpreter's Err propagation had this right; native
+        // now matches.
+        if CTL_PENDING.load(Ordering::Relaxed) == 0 {
+            frk_rt_ctl_abort(token, rtag, rpay);
+        }
         0
     }
 }
