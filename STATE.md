@@ -23,7 +23,18 @@ M32 closed; TS-3 frozen. The queue:
    shadowing bug (D-080 deferred) — env scope save/restore.
 
 ## In flight
-Nothing.
+M33 (r7rs v0.4 — D-081) underway. FIRST-RANK L3 FINDING, found by
+the M33 design panel and FIXED in the same commit that files it: an
+abort raised in a dynamic-wind BEFORE-thunk was ?-propagated by the
+interp (skips thunk+after — the chibi/R7RS semantics) but native
+CtlWind ran all three closure calls straight-line; witnessed via the
+diff harness in v0.1 vocabulary (interp/chibi "42", both native
+strategies "thunk!after!42"), so it predates M33. Fix: the wind
+lowering reads the pending cell once after before() and selects
+thunk/after against a synthesized @__frk_ctl_skip__ (branch-free);
+pinned by goldens/scheme/wind_before_abort; wind_escape/exn_escape
+(thunk-abort path: after still runs) byte-unchanged. D-081 records
+the full v0.4 design (panel rulings, fences, corpus laws).
 
 ## For the human
 - RESOLVED (2026-07-03): the Rocq anchor — delegated back ("Atli is

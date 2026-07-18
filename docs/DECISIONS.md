@@ -193,6 +193,110 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-081 [m33/scheme/ctl] r7rs_core v0.4 (adversarial panel: three
+  designers + judge, all attacks chibi- or repo-witnessed):
+  make-parameter/parameterize, guard, plain raise, top-level value
+  defines — ZERO KERNEL DELTAS again (the D-071/D-076 bar; D-078's
+  revisit clause consumed by PRICING, not widening). (0) FIRST, A
+  PRE-EXISTING L3 DIVERGENCE FELL: an abort raised in a
+  dynamic-wind BEFORE-thunk is ?-propagated by the interp (skips
+  thunk+after, the chibi/R7RS semantics) but native CtlWind ran
+  all three closure calls straight-line — witnessed through the
+  repo's own diff harness in v0.1 vocabulary (interp/chibi "42";
+  both native strategies "thunk!after!42"), so it predates this
+  milestone. FIXED: the wind lowering reads the pending cell ONCE
+  after before() and selects the thunk/after callees against a
+  synthesized @__frk_ctl_skip__ (identity-on-pack, no user code)
+  — branch-free in the perform_end house style; the single read
+  is load-bearing (a THUNK abort must still run after(), pinned
+  by wind_escape/exn_escape); new golden wind_before_abort pins
+  the fix. (1) TOP-LEVEL VALUE DEFINES ride ONE global cell
+  scm_globals: arr<dyn> — the D-078 single-slot pointer rung
+  AS-IS (the ts_queue pattern's second frontend), NIL-FILLED
+  eagerly at main entry (D-077's "fill REQUIRED" precedent:
+  interp array_new zeroes to Float(0.0), not nil — an unfilled
+  slot was a cross-twin failure-mode split). name→index map is an
+  Emitter field (program-constant, not per-Job); reads are
+  late-bound at use; redefinition = same slot (both
+  chibi-probed). C1' (dyn cells) PRICED AND DEFERRED: ~100-150
+  lines across three crates + two spikes (aggregate zero-init
+  attr; the never-executed box<dyn> load/store/retain path + its
+  mem golden class) + a scheme-identifier symbol mangler across
+  the grid; the honest trigger is N going non-static (top-level
+  set!, REPL incremental defines). NOTE: D-078's prediction was
+  half-stale — parameterize needs NO cells (parameters are heap
+  pairs); top-level defines are the actual consumer. (2)
+  PARAMETERS are closures over a mutable state pair ((cons value
+  nil), cdr reserved) via intrinsics @__scm_param_make/
+  @__scm_param_fn; protocol BY PACK LENGTH with exactly TWO live
+  arms (len 0 get, len 2 raw set) + a trap arm — no dead IR (L1's
+  spirit: unwitnessed arms don't ship). THE CONVERTER IS FENCED
+  (L5: a coverage drill, not a missing kernel idiom — and chibi
+  pins two sharp semantics that couple it to guard: ALL converts
+  precede ANY set (a converter reading a sibling param sees the
+  OLD value), and a raising converter leaves earlier bindings
+  UNBOUND, where the drafted desugar leaked them permanently).
+  Admission tests recorded: panel probes b_convobs/d2_convraise
+  with their chibi bytes; the admitting milestone must use the
+  phase-separated desugar + a convert-only arm. (3) PARAMETERIZE
+  desugars AT THE PARSER (binding lists aren't expression-shaped;
+  the define-of-lambda precedent) onto existing nodes only: eval
+  ALL param exprs, then ALL value exprs (chibi's order), read ALL
+  olds, raw-set all, then wind{no-op before; body; after = raw
+  restore in LIFO order} — LIFO because an aliased param bound
+  twice must restore innermost-first (chibi: body 3, after 1;
+  forward restore yields 2 — param_alias pins it). The no-op
+  before keeps (0) unreachable from parameterize by construction.
+  (4) PLAIN RAISE joins raise-continuable on the ONE "exn" label
+  via a flagged-cons wrapper (cons bool-dyn payload) — a second
+  label is wrong (one handler must catch BOTH kinds) and a flag
+  CELL is unsound (the flag must survive perform→handle ACROSS
+  unwinding, and after-thunks that raise clobber a cell; the flag
+  travels WITH the value). Invariant: every perform{"exn"} wraps,
+  every clause unwraps, guard re-raise re-wraps PRESERVING the
+  original flag. The four existing exn goldens stay
+  byte-identical (all continuable-only; the escape path is
+  payload-blind) — rerun, never re-blessed (L2).
+  Handler-returns-from-raise = a deterministic trap on both twins
+  via NEW registry row frk_rt_scm_trap (the D-080 recipe; it also
+  carries the guard fence trap and the param arity trap — three
+  named messages, not one blurred unhandled-effect). (5) GUARD =
+  abortive static clause (@__scm_guard_clause returns the flagged
+  pair WITHOUT consuming κ — the D-076 shape) + SENTINEL-
+  discriminated dispatch inline at the handle site: the sentinel
+  is a fresh cons, eq? is pointer identity on BOTH twins (pinned
+  by new case pair_identity across abort/perform crossings,
+  including jit-rc), unforgeable; tag discrimination was unusable
+  (any dyn — #f, nil — is a legal scheme body value). The body
+  lifts under a NEW guard-body Job mode — non-tail emit_seq_value
+  + cons(sentinel, value) — NOT the escape-Job tail path (tail
+  calls return the raw value and would skip the wrapper;
+  panel-caught). INVARIANT (both twins): tag-6 payloads wrap ONCE
+  at cons, never re-wrap — interp identity lives in the wrapper
+  Rc, native in the pair pointer; a re-wrap silently diverges
+  eq?. Clauses run post-unwind in guard's dynamic env (chibi
+  P10); else-less no-match re-raises non-continuables from the
+  handle site (P12 parity); CONTINUABLE re-raise traps LOUD (P13
+  needs re-entrant κ — Tier-2; a silent wrong value would be an
+  L3 lie). (test)/(test => proc) clauses are PARSE errors (a lax
+  ((expr)) misparse would diverge silently). (6) CORPUS LAWS,
+  chibi-witnessed: no w-e-h handler may RETURN from a plain raise
+  even under a guard (chibi turns handler-returned into a
+  SECONDARY CATCHABLE exception and exits 0 — "catch everything"
+  was insufficient); no else-less re-raising guard across a user
+  wind with OBSERVABLE thunks (R7RS 4.2.7 re-raises in the
+  ORIGINAL dynamic environment — chibi re-fires winds TWICE,
+  in-out-in-out; unimplementable before Tier-2; parameterize
+  interposed is byte-safe and allowed); parameterize binds
+  genuine parameters only; (p v) spellings trap. FENCED:
+  converter (admission tests above), error objects,
+  define-syntax, internal defines, use-before-define
+  (deterministic nil both twins; chibi errors; off-corpus). 13
+  corpus cases incl. the divergence pin, pair_identity, and
+  define_value; five trap paths unit-tested, never differential.
+  Revisit: the converter at its recorded admission tests; C1' at
+  non-static N; the re-raise dynamic-environment law and the P13
+  trap at the Tier-2 stack-switching rung.
 - D-080 [m32/review] The M32 async diff was ADVERSARIALLY REVIEWED
   (four dimension reviewers, each finding verified by a refutation
   agent) and five confirmed defects the green suite could not see

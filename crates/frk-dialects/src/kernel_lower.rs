@@ -803,6 +803,9 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
     if plans.iter().any(|plan| matches!(plan, Planned::CtlPerform { .. })) {
         synthesize_resumer(context, module)?;
     }
+    if plans.iter().any(|plan| matches!(plan, Planned::CtlWind { .. })) {
+        synthesize_skip(context, module)?;
+    }
     declare_str_runtime(context, module, &plans)?;
 
     let rewriter = IrRewriter::new(context);
@@ -1890,7 +1893,10 @@ fn declare_str_runtime(
                 needed.push(("frk_rt_ctl_resume_mark", false));
             }
             Planned::CtlResume { .. } => needed.push(("frk_rt_ctl_resume_mark", false)),
-            Planned::CtlWind { .. } => needed.push(("frk_rt_ctl_pack_head", false)),
+            Planned::CtlWind { .. } => {
+                needed.push(("frk_rt_ctl_pack_head", false));
+                needed.push(("frk_rt_ctl_pending", false));
+            }
             Planned::ContractNarrow { .. } => {
                 needed.push(("frk_rt_contract_check", false))
             }
@@ -3481,12 +3487,22 @@ fn apply<'c, 'a>(
         Planned::CtlWind { op } => {
             // before(); r := thunk(); after(); yield head(r). A
             // crossing abort re-raises through the ENCLOSING frame's
-            // guard — after() has already run by then (D-070).
+            // guard — after() has already run by then (D-070). An
+            // abort raised INSIDE before() must skip thunk AND after
+            // (the interp ?-propagates before(); chibi agrees — the
+            // M33 panel witnessed the old straight-line lowering
+            // running both, D-081.0): the pending cell is read ONCE
+            // after before() and the two remaining callees select
+            // against @__frk_ctl_skip__, branch-free in the
+            // perform_end house style. The single read is load-
+            // bearing: a THUNK abort must still run after()
+            // (wind_escape/exn_escape pin that path).
             rewriter.set_insertion_point_before(op);
             let location = op.location();
             let i64_type: Type = IntegerType::new(context, 64).into();
             let ptr = llvm::r#type::pointer(context, 0);
             let mut thunk_pack: Option<Value> = None;
+            let mut before_aborted: Option<(Value, Value)> = None; // (i1, skip word)
             for index in 0..3usize {
                 let closure = operand(op, index)?;
                 let fn_ptr = result_value(rewriter.insert(llvm::extract_value(
@@ -3496,6 +3512,25 @@ fn apply<'c, 'a>(
                     ptr,
                     location,
                 )))?;
+                let fn_ptr = if let Some((is_pending, skip_w)) = before_aborted {
+                    let fn_w = result_value(
+                        rewriter
+                            .insert(cast_op("llvm.ptrtoint", fn_ptr, i64_type, location)?),
+                    )?;
+                    let selected = result_value(rewriter.insert(
+                        OperationBuilder::new("arith.select", location)
+                            .add_operands(&[is_pending, skip_w, fn_w])
+                            .add_results(&[i64_type])
+                            .build()
+                            .map_err(|e| e.to_string())?,
+                    ))?;
+                    result_value(
+                        rewriter
+                            .insert(cast_op("llvm.inttoptr", selected, ptr, location)?),
+                    )?
+                } else {
+                    fn_ptr
+                };
                 let env_ptr = result_value(rewriter.insert(llvm::extract_value(
                     context,
                     closure,
@@ -3559,6 +3594,62 @@ fn apply<'c, 'a>(
                         .build()
                         .map_err(|e| e.to_string())?,
                 );
+                if index == 0 {
+                    let pending = result_value(rewriter.insert(direct_call(
+                        context,
+                        "frk_rt_ctl_pending",
+                        &[],
+                        i64_type,
+                        location,
+                    )?))?;
+                    let zero_p =
+                        result_value(rewriter.insert(melior::dialect::arith::constant(
+                            context,
+                            IntegerAttribute::new(i64_type, 0).into(),
+                            location,
+                        )))?;
+                    let is_pending = result_value(rewriter.insert(
+                        OperationBuilder::new("arith.cmpi", location)
+                            .add_attributes(&[(
+                                melior::ir::Identifier::new(context, "predicate"),
+                                IntegerAttribute::new(i64_type, 1).into(), // ne
+                            )])
+                            .add_operands(&[pending, zero_p])
+                            .add_results(&[IntegerType::new(context, 1).into()])
+                            .build()
+                            .map_err(|e| e.to_string())?,
+                    ))?;
+                    // Skip address: func.constant + unrealized cast
+                    // (the MakeClosure recipe — folded after
+                    // FuncToLLVM), as a word for the i64 select.
+                    let skip_type = FunctionType::new(context, &[ptr, ptr], &[ptr]);
+                    let skip_const = result_value(rewriter.insert(
+                        OperationBuilder::new("func.constant", location)
+                            .add_attributes(&[(
+                                melior::ir::Identifier::new(context, "value"),
+                                FlatSymbolRefAttribute::new(context, "__frk_ctl_skip__")
+                                    .into(),
+                            )])
+                            .add_results(&[skip_type.into()])
+                            .build()
+                            .map_err(|e| e.to_string())?,
+                    ))?;
+                    let skip_ptr = result_value(rewriter.insert(
+                        OperationBuilder::new(
+                            "builtin.unrealized_conversion_cast",
+                            location,
+                        )
+                        .add_operands(&[skip_const])
+                        .add_results(&[ptr])
+                        .build()
+                        .map_err(|e| e.to_string())?,
+                    ))?;
+                    let skip_w = result_value(
+                        rewriter
+                            .insert(cast_op("llvm.ptrtoint", skip_ptr, i64_type, location)?),
+                    )?;
+                    before_aborted = Some((is_pending, skip_w));
+                }
                 if index == 1 {
                     thunk_pack = Some(result_value(call)?);
                 }
@@ -4886,7 +4977,7 @@ fn masked_dyn_ptr<'c>(
         IntegerAttribute::new(i64_type, 4).into(),
         location,
     )))?;
-    let five = result_value(rewriter.insert(melior::dialect::arith::constant(
+    let seven = result_value(rewriter.insert(melior::dialect::arith::constant(
         context,
         IntegerAttribute::new(i64_type, 7).into(),
         location,
@@ -4921,10 +5012,10 @@ fn masked_dyn_ptr<'c>(
     // D-070/D-077): sge(tag,4) AND sle(tag,7). The symmetry law
     // (D-057) pairs this site with the tracer arms in both twins.
     let is_ge4 = cmpi(5, tag_v, four)?; // sge
-    let is_le6 = cmpi(3, tag_v, five)?; // sle against the widened bound
+    let is_le7 = cmpi(3, tag_v, seven)?; // sle against the widened bound
     let either = result_value(rewriter.insert(
         OperationBuilder::new("arith.andi", location)
-            .add_operands(&[is_ge4, is_le6])
+            .add_operands(&[is_ge4, is_le7])
             .add_results(&[IntegerType::new(context, 1).into()])
             .build()
             .map_err(|e| e.to_string())?,
@@ -4989,6 +5080,43 @@ fn synthesize_resumer(context: &Context, module: OperationRef<'_, '_>) -> Result
     let function = melior::dialect::func::func(
         context,
         StringAttribute::new(context, "__frk_ctl_resume__"),
+        TypeAttribute::new(FunctionType::new(context, &[ptr, ptr], &[ptr]).into()),
+        region,
+        &[],
+        location,
+    );
+    module_block.append_operation(function);
+    Ok(())
+}
+
+/// Synthesizes `@__frk_ctl_skip__(ptr env, ptr pack) -> ptr` — returns
+/// the received pack untouched, running NO user code. The wind
+/// lowering selects it in place of thunk and after when before()
+/// aborted (D-081.0): the empty pack's head nil-fills to the dead nil
+/// the enclosing D-061 guard diverts past — matching the interp's
+/// ?-propagation of a before() abort.
+fn synthesize_skip(context: &Context, module: OperationRef<'_, '_>) -> Result<(), String> {
+    let module_block = module
+        .region(0)
+        .map_err(|e| e.to_string())?
+        .first_block()
+        .ok_or_else(|| "module without a body".to_string())?;
+    let location = module.location();
+    let ptr = llvm::r#type::pointer(context, 0);
+
+    let block = Block::new(&[(ptr, location), (ptr, location)]);
+    let pack: Value = block.argument(1).map_err(|e| e.to_string())?.into();
+    block.append_operation(
+        OperationBuilder::new("func.return", location)
+            .add_operands(&[pack])
+            .build()
+            .map_err(|e| e.to_string())?,
+    );
+    let region = Region::new();
+    region.append_block(block);
+    let function = melior::dialect::func::func(
+        context,
+        StringAttribute::new(context, "__frk_ctl_skip__"),
         TypeAttribute::new(FunctionType::new(context, &[ptr, ptr], &[ptr]).into()),
         region,
         &[],
