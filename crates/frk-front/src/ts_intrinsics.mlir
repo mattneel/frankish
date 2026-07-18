@@ -1,13 +1,17 @@
 // TS-3b async intrinsics (D-078/D-079) — the seed-module surface's
 // fourth frontend. Pure kernel IR: promises are records, the microtask
-// queue is a global-cells FIFO of (continuation, value) slot pairs in a
-// flat 512-slot dyn array (256 tasks; overflow is out of corpus law —
-// the interp traps deterministically on the array bound).
+// queue is a global-cells RING BUFFER of (continuation, value) slot
+// pairs. The ring bounds PENDING tasks (256), not lifetime tasks — and
+// genuine overflow of either the queue or a promise's subscriber list
+// aborts DETERMINISTICALLY via frk_rt_async_trap on both twins (never a
+// write past the array, which the native array_set would not catch).
 //
 // Promise record: box<product<[state f64 (0 pending / 1 resolved),
 // value dyn, cbs arr<dyn> (16 subscriber slots), cbcount f64]>>.
 // Continuations are pack closures fn<[arr<dyn>],[arr<dyn>]> wrapped as
 // tag-5 dyns; the drain applies each with a one-element pack [value].
+
+func.func private @frk_rt_async_trap(i64)
 
 "frk_mem.global_decl"() {sym = "ts_qinit", cell = f64} : () -> ()
 "frk_mem.global_decl"() {sym = "ts_qhead", cell = f64} : () -> ()
@@ -34,13 +38,27 @@ func.func @__ts_qensure() {
 
 func.func @__ts_queue_push(%cont: !frk_dyn.dyn, %val: !frk_dyn.dyn) {
   func.call @__ts_qensure() : () -> ()
+  %hc = "frk_mem.global_get"() {sym = "ts_qhead"} : () -> !frk_mem.box<f64>
+  %tc = "frk_mem.global_get"() {sym = "ts_qtail"} : () -> !frk_mem.box<f64>
+  %hf = "frk_mem.box_get"(%hc) : (!frk_mem.box<f64>) -> f64
+  %tf = "frk_mem.box_get"(%tc) : (!frk_mem.box<f64>) -> f64
+  // Pending = tail - head. Overflow only if 256 tasks queued at once.
+  %pending = arith.subf %tf, %hf : f64
+  %capf = arith.constant 256.0 : f64
+  %over = arith.cmpf oge, %pending, %capf : f64
+  cf.cond_br %over, ^trap, ^ok
+^trap:
+  %kq = arith.constant 1 : i64
+  func.call @frk_rt_async_trap(%kq) : (i64) -> ()
+  return
+^ok:
   %qc = "frk_mem.global_get"() {sym = "ts_queue"} : () -> !frk_mem.box<!frk_mem.arr<!frk_dyn.dyn>>
   %q = "frk_mem.box_get"(%qc) : (!frk_mem.box<!frk_mem.arr<!frk_dyn.dyn>>) -> !frk_mem.arr<!frk_dyn.dyn>
-  %tc = "frk_mem.global_get"() {sym = "ts_qtail"} : () -> !frk_mem.box<f64>
-  %tf = "frk_mem.box_get"(%tc) : (!frk_mem.box<f64>) -> f64
   %t = arith.fptosi %tf : f64 to i64
+  %capi = arith.constant 256 : i64
+  %ring = arith.remsi %t, %capi : i64
   %two = arith.constant 2 : i64
-  %base = arith.muli %t, %two : i64
+  %base = arith.muli %ring, %two : i64
   "frk_mem.array_set"(%q, %base, %cont) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
   %one = arith.constant 1 : i64
   %vslot = arith.addi %base, %one : i64
@@ -82,6 +100,14 @@ func.func @__ts_await_promise(%p: !frk_mem.box<!frk_adt.product<[f64, !frk_dyn.d
 ^subscribe:
   %cbs = "frk_mem.field_get"(%p) {field = 2 : i64} : (!frk_mem.box<!frk_adt.product<[f64, !frk_dyn.dyn, !frk_mem.arr<!frk_dyn.dyn>, f64]>>) -> !frk_mem.arr<!frk_dyn.dyn>
   %nf = "frk_mem.field_get"(%p) {field = 3 : i64} : (!frk_mem.box<!frk_adt.product<[f64, !frk_dyn.dyn, !frk_mem.arr<!frk_dyn.dyn>, f64]>>) -> f64
+  %cbcap = arith.constant 16.0 : f64
+  %full = arith.cmpf oge, %nf, %cbcap : f64
+  cf.cond_br %full, ^cbtrap, ^cbok
+^cbtrap:
+  %ks = arith.constant 2 : i64
+  func.call @frk_rt_async_trap(%ks) : (i64) -> ()
+  return
+^cbok:
   %n = arith.fptosi %nf : f64 to i64
   "frk_mem.array_set"(%cbs, %n, %cont) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
   %onef = arith.constant 1.0 : f64
@@ -122,10 +148,15 @@ func.func @__ts_resolve(%p: !frk_mem.box<!frk_adt.product<[f64, !frk_dyn.dyn, !f
   return
 }
 
-// The drain (rule 5): pop-head-and-apply until empty. Tail-recursive;
-// the M14 law keeps it at one stack frame.
+// The drain (rule 5): pop-head-and-apply until empty. An explicit CFG
+// LOOP (not self-recursion) — constant stack regardless of how many
+// microtasks run, so a long-lived async program cannot exhaust the
+// native stack (found by the M32 review: the in-process JIT runs on a
+// small thread stack).
 func.func @__ts_drain() {
   func.call @__ts_qensure() : () -> ()
+  cf.br ^loop
+^loop:
   %hc = "frk_mem.global_get"() {sym = "ts_qhead"} : () -> !frk_mem.box<f64>
   %tc = "frk_mem.global_get"() {sym = "ts_qtail"} : () -> !frk_mem.box<f64>
   %hf = "frk_mem.box_get"(%hc) : (!frk_mem.box<f64>) -> f64
@@ -139,8 +170,10 @@ func.func @__ts_drain() {
   %qc = "frk_mem.global_get"() {sym = "ts_queue"} : () -> !frk_mem.box<!frk_mem.arr<!frk_dyn.dyn>>
   %q = "frk_mem.box_get"(%qc) : (!frk_mem.box<!frk_mem.arr<!frk_dyn.dyn>>) -> !frk_mem.arr<!frk_dyn.dyn>
   %h = arith.fptosi %hf : f64 to i64
+  %capi = arith.constant 256 : i64
+  %ring = arith.remsi %h, %capi : i64
   %two = arith.constant 2 : i64
-  %base = arith.muli %h, %two : i64
+  %base = arith.muli %ring, %two : i64
   %cont = "frk_mem.array_get"(%q, %base) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
   %onei = arith.constant 1 : i64
   %vslot = arith.addi %base, %onei : i64
@@ -152,8 +185,7 @@ func.func @__ts_drain() {
   %pe = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
   %pp = "frk_adt.product_snoc"(%pe, %pk) : (!frk_adt.product<[]>, !frk_mem.arr<!frk_dyn.dyn>) -> !frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>
   %r = "frk_closure.apply"(%fn, %pp) : (!frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>, !frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>) -> !frk_mem.arr<!frk_dyn.dyn>
-  func.call @__ts_drain() : () -> ()
-  return
+  cf.br ^loop
 ^ret:
   return
 }

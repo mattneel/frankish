@@ -566,6 +566,17 @@ pub extern "C" fn frk_rt_lua_error(code: i64) {
     std::process::abort();
 }
 
+/// The async runtime's fixed-capacity guard (D-079): the microtask
+/// queue (kind 1) and a promise's subscriber list (kind 2) are bounded
+/// arrays; overflow aborts DETERMINISTICALLY here rather than writing
+/// past the array on the native path — the two twins agree.
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_async_trap(kind: i64) {
+    let what = if kind == 1 { "microtask queue" } else { "promise subscriber list" };
+    eprintln!("frk: async {what} capacity exceeded (D-079)");
+    std::process::abort();
+}
+
 // ---- control effects (M15; κ_frk, D-060): the result-passing
 // carrier for escape continuations. NO unwinder (Tier-0/wasm) — abort
 // sets a process-global "pending cell", every non-tail caller checks

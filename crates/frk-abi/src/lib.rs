@@ -197,6 +197,7 @@ pub const RT_ABI: &[RtFn] = &[
     RtFn { name: "frk_rt_print_str", args: &[PtrConstU8], ret: None, lane: Lane::Ts, jit: Capture, interp: Builtin },
     // ---- Lua: print protocol + runtime errors (D-054/D-056) ----
     RtFn { name: "frk_rt_lua_error", args: &[I64], ret: None, lane: Lane::Lua, jit: Real, interp: Builtin },
+    RtFn { name: "frk_rt_async_trap", args: &[I64], ret: None, lane: Lane::Lua, jit: Real, interp: Builtin },
     RtFn { name: "frk_rt_print_lua_str", args: &[PtrConstU8], ret: None, lane: Lane::Lua, jit: Capture, interp: Builtin },
     // ---- Scheme: the display protocol (M15) ----
     RtFn { name: "frk_rt_scm_display_bool", args: &[I64], ret: None, lane: Lane::Scheme, jit: Capture, interp: Builtin },

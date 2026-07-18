@@ -20,6 +20,7 @@ pub(crate) fn register(registry: &mut HashMap<&'static str, Box<dyn Eval>>) {
     registry.insert("arith.subi", Box::new(SubI));
     registry.insert("arith.muli", Box::new(MulI));
     registry.insert("arith.divsi", Box::new(DivSI));
+    registry.insert("arith.remsi", Box::new(RemSI));
     registry.insert("arith.cmpi", Box::new(CmpI));
     registry.insert("arith.select", Box::new(Select));
     registry.insert("arith.addf", Box::new(FloatBin(|a, b| a + b)));
@@ -321,6 +322,27 @@ impl Eval for DivSI {
             return Err(EvalError::Trap("arith.divsi: signed overflow".into()));
         }
         continue_with_result(frame, op, Value::from_signed(dividend / divisor, width)?)
+    }
+}
+
+struct RemSI;
+impl Eval for RemSI {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let (lhs, rhs) = binary_operands(frame, op)?;
+        let (dividend, divisor) = (lhs.as_signed()?, rhs.as_signed()?);
+        if divisor == 0 {
+            return Err(EvalError::Trap("arith.remsi: division by zero".into()));
+        }
+        let width = lhs.width()?;
+        // The one overflow corner: MIN % -1 is 0 (LLVM/MLIR semantics),
+        // not UB, unlike the matching divsi.
+        let remainder = if divisor == -1 { 0 } else { dividend % divisor };
+        continue_with_result(frame, op, Value::from_signed(remainder, width)?)
     }
 }
 

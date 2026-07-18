@@ -38,7 +38,24 @@ Curated test262 slice per stage (license: BSD) + tsc baseline-derived cases
 + hand corpus per idiom. node/V8 is ground truth through canon filter.
 
 ## Status
-TS-3 IN PROGRESS — exceptions SHIPPED (2026-07-17, m30-done,
+TS-3 SHIPPED, STAGE FROZEN (2026-07-17, m32-done; D-076/D-078/
+D-079, over two milestones). Async/await (m32-done): async bodies
+split at top-level awaits into continuation closures; promises are
+records; the microtask queue is a D-078 global-cells FIFO drained
+after main. The tick model was ADVERSARIALLY PANEL-CERTIFIED
+against node (~38k randomized differential programs, zero in-fence
+divergences) BEFORE implementation, and its five load-bearing
+hardenings are fences: awaitless async fns resolve synchronously;
+static await dispatch presumes type soundness (TS-4's any boundary
+must add a dynamic is-promise check — recorded); then-named
+methods excluded; lets require initializers (kills use-before-
+assign); no throw/try inside async bodies; return only as the
+final async statement; async values are num/str/bool/void.
+Stage fences carried: .then/.catch surface, Promise.resolve/all,
+thenables, promise-returning async returns, top-level await,
+async arrows/methods, generators (the Tier-2 rung).
+
+Previously — exceptions (m30-done,
 D-076): throw/try/catch/finally as PURE CONSUMPTION of the κ_frk
 effects machinery — throw = perform{__exn} (payload evaluated then
 discarded; catch admits only the ES2019 optional-binding form

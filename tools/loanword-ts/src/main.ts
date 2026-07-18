@@ -915,13 +915,24 @@ function asyncDecl(top: ts.FunctionDeclaration): Json {
     return { name: p.name.text, ty: annotationType(p.type, p) };
   });
   const ret = annotationType(top.type, top); // must be Promise<T> (tsc enforces)
+  // Interface-typed async parameters are refused (D-079): an interface
+  // value's method table is a borrow of the converting frame's stack,
+  // and a continuation runs after that frame returns — the table
+  // pointer would be stale. (Interface locals are already fenced.)
+  for (const p of top.parameters) {
+    const text = p.type?.getText(sourceFile) ?? "";
+    if (ifaces.has(text))
+      fail(p, "an interface-typed async parameter (borrows do not survive suspension, D-079)");
+  }
   const body = top.body!.statements;
-  // Fences: no stray awaits, no throw/try, return only last.
+  // Fences: no stray awaits, no throw/try/nested-return; return last.
   const checkNested = (n: ts.Node, allowAwait: boolean): void => {
     if (ts.isAwaitExpression(n) && !allowAwait)
       fail(n, "await outside `const x = await e;` / `await e;` (D-079)");
     if (ts.isThrowStatement(n) || ts.isTryStatement(n))
       fail(n, "throw/try inside an async body (no rejection semantics, D-079)");
+    if (ts.isReturnStatement(n))
+      fail(n, "a return nested in control flow inside an async body (return must be the final statement, D-079)");
     n.forEachChild((c) => checkNested(c, false));
   };
   const awaitOperandInfo = (operand: ts.Expression): { p: boolean; ty: number } => {
@@ -995,6 +1006,8 @@ function asyncDecl(top: ts.FunctionDeclaration): Json {
     ) {
       const decl = statement.declarationList.declarations[0];
       if (!ts.isIdentifier(decl.name)) fail(decl, "a destructuring await binding");
+      if (!(statement.declarationList.flags & ts.NodeFlags.Const))
+        fail(decl, "a `let` await binding — use `const x = await e` (D-079)");
       const operand = decl.initializer as ts.AwaitExpression;
       const info = awaitOperandInfo(operand.expression);
       checkNested(operand.expression, false);
@@ -1026,6 +1039,30 @@ function asyncDecl(top: ts.FunctionDeclaration): Json {
     out.push(stmt(statement));
   });
   return { k: "afn", name, params, ret, body: out, span: span(top) };
+}
+
+// Exceptions (TS-3a) and async (TS-3b) are separate stages; their
+// COMPOSITION is out of scope (a throw reaching an async body has JS
+// rejection semantics the runtime does not model). Fence the pairing
+// at the whole-program level — sound and uncircumventable (D-079).
+{
+  let hasAsync = false;
+  let hasExn = false;
+  const scan = (n: ts.Node): void => {
+    if (
+      ts.isFunctionDeclaration(n) &&
+      ts.getModifiers(n)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
+    )
+      hasAsync = true;
+    if (ts.isThrowStatement(n) || ts.isTryStatement(n)) hasExn = true;
+    n.forEachChild(scan);
+  };
+  sourceFile.statements.forEach(scan);
+  if (hasAsync && hasExn)
+    fail(
+      sourceFile,
+      "a program mixing async/await with throw/try — the two TS-3 stages do not compose yet (D-079)"
+    );
 }
 
 const decls: Json[] = [];

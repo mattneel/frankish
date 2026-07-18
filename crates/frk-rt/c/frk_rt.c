@@ -348,6 +348,14 @@ void frk_rt_lua_error(int64_t code) {
     abort();
 }
 
+/* Async fixed-capacity guard (D-079): deterministic abort on overflow
+ * of the microtask queue (kind 1) or a subscriber list (kind 2). */
+void frk_rt_async_trap(int64_t kind) {
+    fprintf(stderr, "frk: async %s capacity exceeded (D-079)\n",
+            kind == 1 ? "microtask queue" : "promise subscriber list");
+    abort();
+}
+
 /* ---- control effects (M15; κ_frk, D-060): the exact mirror of the
  * Rust twin's result-passing carrier. NO unwinder (this file targets
  * wasm32 among others). Single-threaded per run; a well-formed program

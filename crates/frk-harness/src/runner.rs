@@ -589,6 +589,16 @@ fn builtin_for(name: &str) -> Option<frk_interp::Builtin> {
                 arguments[0].as_signed()?
             )))
         }),
+        "frk_rt_async_trap" => Box::new(|arguments, _output| {
+            let what = if arguments[0].as_signed()? == 1 {
+                "microtask queue"
+            } else {
+                "promise subscriber list"
+            };
+            Err(frk_interp::EvalError::Trap(format!(
+                "async {what} capacity exceeded (D-079)"
+            )))
+        }),
         _ => return None,
     })
 }
@@ -646,6 +656,7 @@ fn jit_symbol(name: &str) -> Option<*mut ()> {
         "frk_rt_contract_check" => frk_rt::frk_rt_contract_check as *mut (),
         // Lua errors bind REAL (stderr + abort — not captured output).
         "frk_rt_lua_error" => frk_rt::frk_rt_lua_error as *mut (),
+        "frk_rt_async_trap" => frk_rt::frk_rt_async_trap as *mut (),
         // Capture shims (stdout is protocol output, D-047).
         "frk_rt_print_f64" => capture_print_f64 as *mut (),
         "frk_rt_print_bool" => capture_print_bool as *mut (),

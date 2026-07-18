@@ -76,6 +76,26 @@ fn divsi_truncates_toward_zero() {
 }
 
 #[test]
+fn remsi_matches_llvm_semantics() {
+    // Sign of the result follows the DIVIDEND (7 % -3 = 1), and the
+    // MIN % -1 corner is 0, not overflow (unlike divsi) — M32.
+    let result = interpret_i64(
+        r#"func.func @main() -> i64 {
+            %a = arith.constant 7 : i64
+            %b = arith.constant -3 : i64
+            %r = arith.remsi %a, %b : i64
+            %neg = arith.constant -7 : i64
+            %c3 = arith.constant 3 : i64
+            %r2 = arith.remsi %neg, %c3 : i64
+            %sum = arith.addi %r, %r2 : i64
+            return %sum : i64
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(result, 1 + -1); // (7 % -3 = 1) + (-7 % 3 = -1)
+}
+
+#[test]
 fn divsi_by_zero_traps() {
     let error = interpret_i64(
         r#"func.func @main() -> i64 {

@@ -47,6 +47,7 @@ void frk_rt_print_bool(int64_t);
 void frk_rt_print_f64(double);
 void frk_rt_print_str(const uint8_t *);
 void frk_rt_lua_error(int64_t);
+void frk_rt_async_trap(int64_t);
 void frk_rt_print_lua_str(const uint8_t *);
 void frk_rt_scm_display_bool(int64_t);
 void frk_rt_scm_display_num(double);

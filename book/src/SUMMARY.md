@@ -48,6 +48,7 @@
 - [ml_core — the OCaml Slice](specimens/ml-core.md)
 - [TS-0 and loanword](specimens/ts0.md)
 - [TS-1 — Narrowing as Contract](specimens/ts1.md)
+- [TS-3 — Exceptions and Async on the Effects Lane](specimens/ts3.md)
 - [femto_lua and the Pack Convention](specimens/femto-lua.md)
 - [r7rs_core — Scheme Forces frk.ctl](specimens/r7rs.md)
 
