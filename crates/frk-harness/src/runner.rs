@@ -599,6 +599,16 @@ fn builtin_for(name: &str) -> Option<frk_interp::Builtin> {
                 "async {what} capacity exceeded (D-079)"
             )))
         }),
+        "frk_rt_coro_trap" => Box::new(|arguments, _output| {
+            let what = match arguments[0].as_signed()? {
+                1 => "one-shot violation (κ_frk)",
+                2 => "attempt to yield across an intrinsic boundary (D-084)",
+                3 => "attempt to yield from the main chunk (D-084)",
+                4 => "cannot resume dead coroutine (wrap, D-084)",
+                _ => "error in coroutine body (fenced, D-084)",
+            };
+            Err(frk_interp::EvalError::Trap(format!("coroutine {what}")))
+        }),
         "frk_rt_scm_trap" => Box::new(|arguments, _output| {
             let what = match arguments[0].as_signed()? {
                 1 => "exception handler returned (raise)",
@@ -670,6 +680,7 @@ fn jit_symbol(name: &str) -> Option<*mut ()> {
         // Lua errors bind REAL (stderr + abort — not captured output).
         "frk_rt_lua_error" => frk_rt::frk_rt_lua_error as *mut (),
         "frk_rt_async_trap" => frk_rt::frk_rt_async_trap as *mut (),
+        "frk_rt_coro_trap" => frk_rt::frk_rt_coro_trap as *mut (),
         // Scheme fence traps bind REAL for the same reason (D-081).
         "frk_rt_scm_trap" => frk_rt::frk_rt_scm_trap as *mut (),
         // Capture shims (stdout is protocol output, D-047).

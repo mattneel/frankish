@@ -664,6 +664,12 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
                 _ => continue,
             };
             for (site, index) in sites {
+                // Capture stores never CONSUME ownership (D-084.4):
+                // registering one here could mark a value transferred
+                // whose only real use is a borrow.
+                if site.attribute("frk.capture").is_ok() {
+                    continue;
+                }
                 if let Ok(value) = site.operand(*index) {
                     *owned_operands.entry(value.to_raw().ptr as usize).or_insert(0) += 1;
                 }
@@ -795,6 +801,14 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
         };
         for (op, index) in sites {
             if let Ok(value) = op.operand(*index) {
+                // A frk.capture store ALWAYS retains (D-084.4): its
+                // operand's use graph never saw it, so neither the
+                // transfer elision nor the sharing analysis may
+                // decide its retain.
+                if op.attribute("frk.capture").is_ok() {
+                    retain_shared.insert((op.to_raw().ptr as usize, *index), true);
+                    continue;
+                }
                 let count = use_counts
                     .get(&(value.to_raw().ptr as usize))
                     .copied()
@@ -1006,13 +1020,24 @@ fn collect<'c, 'a>(
             call_results.insert(op.to_raw().ptr as usize, result.to_raw().ptr as usize);
         }
     }
-    for index in 0..op.operand_count() {
-        if let Ok(operand) = op.operand(index) {
-            let key = operand.to_raw().ptr as usize;
-            *use_counts.entry(key).or_insert(0) += 1;
-            let entry = use_sites.entry(key).or_insert((Vec::new(), false));
-            entry.0.push(op.to_raw().ptr as usize);
-            entry.1 |= escapes;
+    // CAPTURE STORES ARE PLANNER-INVISIBLE (M35, D-084.4): a store
+    // carrying the `frk.capture` unit attr (a guard cold path parking
+    // frame state) is excluded from the use graph entirely — counting
+    // it would flip hot-path sole-use transfers into shared retains
+    // (a per-execution leak on paths that never suspend) and defeat
+    // wrap_transferred so die_at frees the payload on BOTH guard arms
+    // (UAF on first resume). Capture semantics: always retain (below);
+    // the resume reload consumes the frame's reference.
+    let is_capture = op.attribute("frk.capture").is_ok();
+    if !is_capture {
+        for index in 0..op.operand_count() {
+            if let Ok(operand) = op.operand(index) {
+                let key = operand.to_raw().ptr as usize;
+                *use_counts.entry(key).or_insert(0) += 1;
+                let entry = use_sites.entry(key).or_insert((Vec::new(), false));
+                entry.0.push(op.to_raw().ptr as usize);
+                entry.1 |= escapes;
+            }
         }
     }
 

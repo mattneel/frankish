@@ -356,6 +356,17 @@ void frk_rt_async_trap(int64_t kind) {
     abort();
 }
 
+/* Coroutine fence traps (M35, D-084): mirrors the Rust twin. */
+void frk_rt_coro_trap(int64_t code) {
+    fprintf(stderr, "frk: coroutine %s\n",
+            code == 1   ? "one-shot violation (\xce\xba_frk)"
+            : code == 2 ? "attempt to yield across an intrinsic boundary (D-084)"
+            : code == 3 ? "attempt to yield from the main chunk (D-084)"
+            : code == 4 ? "cannot resume dead coroutine (wrap, D-084)"
+                        : "error in coroutine body (fenced, D-084)");
+    abort();
+}
+
 /* Scheme fence traps (D-081): 1 = handler returned from plain raise;
  * 2 = continuable re-raise through an else-less guard (Tier-2);
  * 3 = parameter protocol arity. Mirrors the Rust twin exactly. */

@@ -577,6 +577,26 @@ pub extern "C" fn frk_rt_async_trap(kind: i64) {
     std::process::abort();
 }
 
+/// The coroutine fence traps (M35, D-084): named deterministic aborts
+/// — 1 = one-shot violation (the keystone, wording per calculus §2;
+/// unreachable through the lua surface, witnessed by the K2 drill);
+/// 2 = yield across an intrinsic/metamethod/iterator boundary (lua5.1
+/// refuses the same shapes, catchably — ours aborts, unit-only);
+/// 3 = yield from the main chunk; 4 = wrap re-raising a dead-resume;
+/// 5 = an error inside a coroutine body (the body-error fence).
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_coro_trap(code: i64) {
+    let what = match code {
+        1 => "one-shot violation (κ_frk)",
+        2 => "attempt to yield across an intrinsic boundary (D-084)",
+        3 => "attempt to yield from the main chunk (D-084)",
+        4 => "cannot resume dead coroutine (wrap, D-084)",
+        _ => "error in coroutine body (fenced, D-084)",
+    };
+    eprintln!("frk: coroutine {what}");
+    std::process::abort();
+}
+
 /// The scheme fence traps (D-081): deterministic aborts for paths the
 /// oracle serves with full continuations or secondary catchable
 /// exceptions we deliberately do not model — 1 = an exception handler
@@ -1340,6 +1360,37 @@ mod tests {
             frk_rt_rc_release(p);
             frk_rt_rc_release(p); // to zero: leaf frees immediately
         }
+    }
+
+
+    #[test]
+    fn suspended_thread_drop_cascades_without_collect() {
+        // M35 (D-084.6): releasing a suspended thread whose chain was
+        // never resumed cascades chain -> frame env -> captured box by
+        // PURE rc — no cycle machinery involved. Shapes as the emitter
+        // builds them: dyn-pair wordmaps + a leaf capture box.
+        let frees_before = frk_rt_rc_free_count();
+        let capture = frk_rt_rc_alloc(8, LAYOUT_LEAF);
+        let frame_env = frk_rt_rc_alloc(16, layout_wordmap(&[1]));
+        let chain = frk_rt_rc_alloc(32, layout_wordmap(&[2, 0, 2, 0]));
+        let thread = frk_rt_rc_alloc(32, layout_wordmap(&[2, 0, 2, 0]));
+        unsafe {
+            (frame_env as *mut u64).write(capture as u64);
+            (chain as *mut i64).write(4); // head: the frame env (managed tag)
+            (chain as *mut i64).add(1).write(frame_env as i64);
+            (chain as *mut i64).add(2).write(0); // next: nil
+            (chain as *mut i64).add(3).write(0);
+            (thread as *mut i64).write(6); // chain slot: tag-6 pair
+            (thread as *mut i64).add(1).write(chain as i64);
+            (thread as *mut i64).add(2).write(0);
+            (thread as *mut i64).add(3).write(0);
+            frk_rt_rc_release(thread); // 1 -> 0: the whole spine dies
+        }
+        assert_eq!(
+            frk_rt_rc_free_count() - frees_before,
+            4,
+            "drop-without-resume cascades thread -> chain -> frame -> capture (D-084)"
+        );
     }
 
     #[test]
