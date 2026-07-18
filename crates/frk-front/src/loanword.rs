@@ -617,11 +617,15 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
                 let TsTy::PromiseT(of) = ret else {
                     return err("async functions return Promise<T> (D-079)");
                 };
+                let afn_name = field(decl, "name")?
+                    .as_str()
+                    .ok_or_else(|| LoanwordError("afn name".into()))?;
+                // The M34 audit's F1/F2: this path skipped the reserve
+                // — `async function main` / `__ts_drain` died in MLIR
+                // symbol redefinition instead of the loud refusal.
+                reserve(afn_name)?;
                 async_fns.push(AsyncFn {
-                    name: field(decl, "name")?
-                        .as_str()
-                        .ok_or_else(|| LoanwordError("afn name".into()))?
-                        .to_string(),
+                    name: afn_name.to_string(),
                     params: parse_params(decl, "params")?,
                     ret_of: *of,
                     body: field(decl, "body")?

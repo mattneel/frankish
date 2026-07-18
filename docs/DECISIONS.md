@@ -218,9 +218,29 @@ veto-ledger pattern and most deserve their review.
   redefinition failures mid-lowering; the M24 __frk_ctl_resume__
   class closes with it (stricter-is-deterministic, D-038
   precedent). Unit-tested rejections (never differential — chibi/
-  node happily run such programs). Revisit: the __-prefix rule if
-  a real-world TS corpus import ever needs such names (then
-  mangle, don't admit).
+  node happily run such programs). AUDITED (single adversarial
+  reviewer, every claim node-witnessed): fixes (1) and (2) HELD
+  against every attack — nested shadows, both-arm lets, param
+  shadowing, capture-by-box across the restore, per-iteration
+  while-let arrows (correct for free: box_new re-executes each
+  iteration), async-segment shadowing, all-throw value fns/
+  methods/both-arm-ifs. Fix (3) had a hole the audit caught and
+  this milestone closed: the ASYNC-fn parse path skipped the
+  reserve (async `main`/`__ts_drain` died in MLIR redefinition) —
+  wired + unit-pinned. DEFERRED TO TS-4 with the design recorded:
+  composed-symbol collisions the prefix rule cannot express (user
+  fn `a__new` vs class a's ctor symbol; a method literally named
+  `new`) — TS-4's monomorphized generics rewrite the class symbol
+  scheme anyway; adopt DOT-SEPARATED synthesized names then
+  (`__ctor.C`, `__m.C.x` — dots are legal in MLIR/LLVM symbols and
+  impossible in TS identifiers, killing the ambiguity class
+  outright). CORPUS LAW, recorded: no uncaught top-level throw in
+  TS corpus — the unhandled-effect trap is a process abort
+  in-process (the documented D-069 pattern shared by every abort
+  class; one such case takes down an in-process diff run).
+  Revisit: the __-prefix rule if a real-world TS corpus import
+  ever needs such names (then mangle, don't admit); the dot
+  scheme at TS-4.
 - D-082 [m33/review] The M33 diff was ADVERSARIALLY REVIEWED (four
   dimension reviewers, every finding refutation-verified — the
   D-080 verifier class, load-bearing again): ELEVEN confirmed

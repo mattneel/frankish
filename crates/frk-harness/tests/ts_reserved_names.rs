@@ -39,3 +39,21 @@ fn user_main_is_refused() {
     .expect_err("a user function named main must be refused");
     assert!(error.contains("synthesized entry"), "{error}");
 }
+
+#[test]
+fn async_fn_names_go_through_the_same_reserve() {
+    // The M34 audit's F1/F2: the afn parse path skipped the reserve.
+    let main_error = run_ts(
+        "resv-amain",
+        "async function main(): Promise<void> {\n  const x = await 1;\n  console.log(x);\n}\nmain();\n",
+    )
+    .expect_err("an async function named main must be refused");
+    assert!(main_error.contains("synthesized entry"), "{main_error}");
+
+    let drain_error = run_ts(
+        "resv-adrain",
+        "async function __ts_drain(): Promise<number> {\n  const a = await 2;\n  return a;\n}\nasync function go(): Promise<void> {\n  const v = await __ts_drain();\n  console.log(v);\n}\ngo();\n",
+    )
+    .expect_err("an async function named __ts_drain must be refused");
+    assert!(drain_error.contains("reserved for synthesized symbols"), "{drain_error}");
+}

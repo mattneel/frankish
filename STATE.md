@@ -1,32 +1,31 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-18 (M33 session)
-Phase: M33 complete (tag m33-done). r7rs v0.4 SHIPPED — top-level
-value defines, make-parameter/parameterize, guard, plain raise
-(D-081), with TWO pre-existing L3 divergences felled en route
-(wind-before-abort at design time; the live-pending-during-after
-class at review time) and the D-082 adversarial diff review landing
-five fixes the green suite could not see. Tree: green — `make test`
-60 blocks; diff 142 cases 0 divergent (8 runners); grid 127/127 ×
-BOTH strategies × 4 triples + s390x (rerun green on the final tree).
+Updated: 2026-07-18 (M33+M34 session)
+Phase: M34 complete (tag m34-done). TS emitter hygiene SHIPPED
+(D-083): block-scoped let (the D-080 landmine), throw-at-end-of-
+function (M27 dead-join class), and the synthesized-symbol
+namespace reserve — audited adversarially, the one hole the audit
+found (async-fn names skipping the reserve) closed in-milestone.
+Tree: green — `make test` 61 blocks; diff 144 cases 0 divergent
+(8 runners); grid 139/139 × BOTH strategies × 4 triples + s390x.
 
 ## Next action
-M33 closed. The queue (user-ratified 2026-07-18):
-1. M34 — the TS emitter hygiene milestone: the pre-existing
-   block-`let`-through-`if` shadowing bug (D-080 deferred; env
-   scope save/restore — the scheme twin of this fix landed in
-   D-082.4, use it as the model), PLUS the two D-082 landmines:
-   throw-at-end-of-void-fn leaves a predecessor-less return block
-   (M27 dead-join class, native lowering refuses loudly), and
-   user top-level names colliding with synthesized __frk_*/
-   __finally_* symbols.
-2. M35 — tier-2: the stack-switching rung (re-entrant κ / winds) —
+M33+M34 closed. The queue (user-ratified 2026-07-18):
+1. M35 — tier-2: the stack-switching rung (re-entrant κ / winds) —
    coroutines; generators (deferred from TS async) consume it.
-   NOTE from D-082: the wind save/merge pairing becomes a STACK
-   when winds re-enter.
-3. M36 — ts-4: generics (monomorphized), sealed-world switch, any/
+   NOTES: D-082 — the wind save/merge pairing becomes a STACK when
+   winds re-enter; κ_frk keystone — κ stays ONE-SHOT (re-entrant ≠
+   multi-shot; SPEC §14 full call/cc stays a non-goal); D-069
+   named the rung ("full re-entrant one-shot κ — non-tail resume,
+   stored continuations, clause code after body-rest"); revisit
+   hooks waiting on it: P13 guard re-raise, R7RS 4.2.7 re-raise
+   environment, TS generators/yield, coroutines.
+2. M36 — ts-4: generics (monomorphized), sealed-world switch, any/
    gradual boundary as contract ops — frk_contract's second act;
-   the D-079 static-await-dispatch soundness note comes due here.
+   the D-079 static-await-dispatch soundness note comes due; ALSO
+   owed here (D-083): the dot-separated synthesized-symbol scheme
+   (`__ctor.C`, `__m.C.x`) killing the composed-collision class
+   while generics rewrite class symbols anyway.
 
 ## In flight
 Nothing.
@@ -52,6 +51,38 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m34-done — Shipped: TS emitter hygiene (D-083) — three fixes, all
+node-witnessed first (L1). (1) BLOCK-SCOPED LET: the flat env
+snapshot-restores at every block scope (if arms each from the
+OUTER snapshot; while bodies; catch arms) — the D-080 landmine
+falls; assignments unaffected (they mutate through the binding's
+box, the same soundness argument as scheme's ScopeUndo). (2)
+THROW-AT-END-OF-FUNCTION: an all-paths-throw function never
+targets its exit block; the predecessor-less func.return survived
+FuncToLLVM and broke translation (M27 dead-join class, bisected to
+m32-done during M33). Fcx tracks exit_used; emit_fn and the
+synthesized main DETACH the orphan. (3) SYNTHESIZED-SYMBOL
+NAMESPACE: __-prefixed user fn/method/async-fn names and user
+`main` refused loudly at the loanword frontier (the M24
+__frk_ctl_resume__ class closes). AUDIT (one adversarial reviewer,
+node-witnessed): fixes 1-2 held everything thrown at them —
+incl. capture-by-box across restores, per-iteration while-let
+arrows (correct for FREE: box_new re-executes per iteration), and
+async-segment shadowing; the audit caught the afn parse path
+skipping the reserve (fixed + pinned in-milestone) and two
+composed-collision shapes deferred to TS-4 with the dot-separated
+symbol design recorded in D-083. Corpus: ts0/let_scope +
+ts3/throw_fn_end. Suite 61; diff 144/0; grid 139/139 × 2 × 5.
+
+M34 EXTRACTION: (1) capture-by-box made block scoping FREE — the
+env map restore can never lose a write because writes never lived
+in the map; representation choices made for mutation semantics
+(D-047's boxes) keep paying in unrelated fixes. (2) A reserve
+rule is only as good as its coverage of PARSE PATHS — the audit's
+one real find was a path (afn) added after the rule's siblings;
+when adding a namespace rule, grep for every construction of the
+thing being named, not the one in front of you.
+
 m33-done — Shipped: r7rs v0.4 (D-081/D-082) — top-level value
 defines, make-parameter/parameterize, guard, plain raise. ZERO
 KERNEL DELTAS: no new ops or types anywhere; the one runtime
