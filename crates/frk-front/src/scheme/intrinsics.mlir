@@ -347,6 +347,57 @@ func.func @__scm_exn_clause(%h: !frk_dyn.dyn, %pack: !frk_mem.arr<!frk_dyn.dyn>)
   return %kr : !frk_mem.arr<!frk_dyn.dyn>
 }
 
+// ---- M33 (D-081.2): parameters. A parameter object is a uniform
+// pack-fn closure over a mutable state PAIR — (cons value '()), the
+// cdr reserved for the fenced converter. Protocol BY PACK LENGTH,
+// exactly two live arms (no dead IR): len 0 → get (car); len 2 →
+// RAW set (the parameterize desugar's bind/restore spelling — never
+// converts, so restores can't double-convert when the converter
+// lands); anything else → the D-081 arity trap ((p v) user setter
+// spellings are outside the surface). INVARIANT (D-081.5): the state
+// pair's dyn is wrapped ONCE by __scm_cons — no path here re-wraps a
+// tag-6 payload (interp eq?-identity lives in the wrapper Rc).
+
+func.func @__scm_param_fn(%cell: !frk_dyn.dyn, %pack: !frk_mem.arr<!frk_dyn.dyn>) -> !frk_mem.arr<!frk_dyn.dyn> {
+  %len = "frk_mem.array_len"(%pack) : (!frk_mem.arr<!frk_dyn.dyn>) -> i64
+  %z = arith.constant 0 : i64
+  %one = arith.constant 1 : i64
+  %isget = arith.cmpi eq, %len, %z : i64
+  cf.cond_br %isget, ^get, ^checkset
+^get:
+  %v = func.call @__scm_car(%cell) : (!frk_dyn.dyn) -> !frk_dyn.dyn
+  %gp = "frk_mem.array_new"(%one) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
+  "frk_mem.array_set"(%gp, %z, %v) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+  return %gp : !frk_mem.arr<!frk_dyn.dyn>
+^checkset:
+  %two = arith.constant 2 : i64
+  %isset = arith.cmpi eq, %len, %two : i64
+  cf.cond_br %isset, ^set, ^trap
+^set:
+  %nv = "frk_mem.array_get"(%pack, %z) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
+  %ignored = func.call @__scm_setcar(%cell, %nv) : (!frk_dyn.dyn, !frk_dyn.dyn) -> !frk_dyn.dyn
+  %sp = "frk_mem.array_new"(%one) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
+  %nil = "frk_dyn.wrap"(%z) {tag = 0 : i64} : (i64) -> !frk_dyn.dyn
+  "frk_mem.array_set"(%sp, %z, %nil) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+  return %sp : !frk_mem.arr<!frk_dyn.dyn>
+^trap:
+  %code = arith.constant 3 : i64
+  func.call @frk_rt_scm_trap(%code) : (i64) -> ()
+  %dead = "frk_mem.array_new"(%z) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
+  return %dead : !frk_mem.arr<!frk_dyn.dyn>
+}
+
+func.func @__scm_param_make(%init: !frk_dyn.dyn) -> !frk_dyn.dyn {
+  %z = arith.constant 0 : i64
+  %nil = "frk_dyn.wrap"(%z) {tag = 0 : i64} : (i64) -> !frk_dyn.dyn
+  %cell = func.call @__scm_cons(%init, %nil) : (!frk_dyn.dyn, !frk_dyn.dyn) -> !frk_dyn.dyn
+  %pe = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
+  %env = "frk_adt.product_snoc"(%pe, %cell) : (!frk_adt.product<[]>, !frk_dyn.dyn) -> !frk_adt.product<[!frk_dyn.dyn]>
+  %cl = "frk_closure.make"(%env) {callee = @__scm_param_fn} : (!frk_adt.product<[!frk_dyn.dyn]>) -> !frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>
+  %d = "frk_dyn.wrap"(%cl) {tag = 5 : i64} : (!frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>) -> !frk_dyn.dyn
+  return %d : !frk_dyn.dyn
+}
+
 // The prompt-shaped BODY: (t, token) → apply the captured thunk with
 // an empty pack; guard (a crossing escape propagates); head.
 func.func @__scm_exn_body(%t: !frk_dyn.dyn, %token: i64) -> !frk_dyn.dyn {

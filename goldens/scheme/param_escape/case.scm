@@ -1,0 +1,10 @@
+(import (scheme base) (scheme write))
+(define p (make-parameter 'old))
+(display
+  (call/cc (lambda (k)
+    (parameterize ((p 'new))
+      (display (p)) (newline)
+      (k 'escaped)
+      (display 'unreached) (newline)))))
+(newline)
+(display (p)) (newline)

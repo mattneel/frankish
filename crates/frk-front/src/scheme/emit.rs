@@ -1707,6 +1707,20 @@ impl<'c> Emitter<'c> {
                 }
                 Ok(Some(Some(acc)))
             }
+            "make-parameter" => {
+                let [init] = args else {
+                    return Err(
+                        "(make-parameter init converter) is fenced in v0.4 — the \
+                         converter waits on its recorded admission tests (D-081)"
+                            .into(),
+                    );
+                };
+                let Some(iv) = self.emit_value(fcx, init)? else { return Ok(Some(None)) };
+                let r = self
+                    .call(fcx.block, "__scm_param_make", &[iv], &[self.dyn_ty()], l)?
+                    .ok_or("param_make produced no value")?;
+                Ok(Some(Some(r)))
+            }
             "raise-continuable" | "raise" => {
                 let [e] = args else {
                     return Err(format!("{op} takes one argument"));
@@ -1810,6 +1824,7 @@ fn is_primitive(op: &str) -> bool {
             | "substring" | "vector" | "make-vector" | "vector-ref" | "vector-set!"
             | "vector-length"
             | "dynamic-wind" | "with-exception-handler" | "raise-continuable" | "raise"
+            | "make-parameter"
     )
 }
 

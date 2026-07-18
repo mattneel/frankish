@@ -1,0 +1,8 @@
+(import (scheme base) (scheme write))
+(define p (make-parameter 1))
+(define q (make-parameter 10))
+(parameterize ((p 2) (q 20) (p 3))
+  (display (p)) (newline)
+  (display (q)) (newline))
+(display (p)) (newline)
+(display (q)) (newline)

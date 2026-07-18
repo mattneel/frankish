@@ -157,6 +157,7 @@ fn parse_list(items: &[Datum], span: Span) -> Result<Expr, String> {
             "let" => return parse_let(LetKind::Let, items, span),
             "let*" => return parse_let(LetKind::LetStar, items, span),
             "letrec" => return parse_let(LetKind::LetRec, items, span),
+            "parameterize" => return parse_parameterize(items, span),
             "define" => {
                 return Err("nested define is fenced in r7rs_core v0".to_string());
             }
@@ -203,6 +204,88 @@ fn parse_lambda(items: &[Datum], span: Span) -> Result<Expr, String> {
     };
     let body = parse_body(&items[2..])?;
     Ok(Expr::Lambda(params, body, span))
+}
+
+/// A gensym for the parameterize desugar: space-prefixed names are
+/// unspellable as source symbols; span.start disambiguates sites.
+fn gname(kind: &str, span: Span, index: usize) -> String {
+    format!(" {kind}{}_{}", span.start, index)
+}
+
+/// (parameterize ((p v) …) body…) — D-081.3, desugared HERE onto
+/// existing nodes only (binding lists are not expression-shaped; the
+/// define-of-lambda precedent). Order, chibi-pinned: ALL param exprs,
+/// then ALL value exprs, then ALL old reads (aliased params must see
+/// pre-set values); raw-set all; then dynamic-wind with a NO-OP
+/// before (keeps the D-081.0 wind-before-abort path unreachable from
+/// parameterize by construction) and a LIFO raw restore in the
+/// after-thunk (an aliased param bound twice restores
+/// innermost-first — param_alias pins it). Raw sets are the 2-arg
+/// protocol spelling: they never convert, so restores cannot
+/// double-convert when the fenced converter lands.
+fn parse_parameterize(items: &[Datum], span: Span) -> Result<Expr, String> {
+    let bindings = match items.get(1) {
+        Some(Datum::List(pairs, _)) => {
+            let mut out = Vec::new();
+            for pair in pairs {
+                let Datum::List(kv, _) = pair else {
+                    return Err("a parameterize binding is (param expr)".to_string());
+                };
+                let [param, value] = kv.as_slice() else {
+                    return Err("a parameterize binding is (param expr)".to_string());
+                };
+                out.push((parse_expr(param)?, parse_expr(value)?));
+            }
+            out
+        }
+        _ => return Err("parameterize expects a binding list".to_string()),
+    };
+    if bindings.is_empty() {
+        return Err("parameterize needs at least one binding".to_string());
+    }
+    let body = parse_body(&items[2..])?;
+    let mut binds: Vec<(String, Expr)> = Vec::new();
+    for (index, (param, _)) in bindings.iter().enumerate() {
+        binds.push((gname("prm", span, index), param.clone()));
+    }
+    for (index, (_, value)) in bindings.iter().enumerate() {
+        binds.push((gname("new", span, index), value.clone()));
+    }
+    for index in 0..bindings.len() {
+        binds.push((
+            gname("old", span, index),
+            Expr::App(
+                Box::new(Expr::Var(gname("prm", span, index), span)),
+                Vec::new(),
+                span,
+            ),
+        ));
+    }
+    let raw_set = |param_index: usize, arg: String| {
+        Expr::App(
+            Box::new(Expr::Var(gname("prm", span, param_index), span)),
+            vec![Expr::Var(arg, span), Expr::Int(0, span)],
+            span,
+        )
+    };
+    let mut seq: Vec<Expr> = Vec::new();
+    for index in 0..bindings.len() {
+        seq.push(raw_set(index, gname("new", span, index)));
+    }
+    let mut restore: Vec<Expr> = Vec::new();
+    for index in (0..bindings.len()).rev() {
+        restore.push(raw_set(index, gname("old", span, index)));
+    }
+    seq.push(Expr::App(
+        Box::new(Expr::Var("dynamic-wind".to_string(), span)),
+        vec![
+            Expr::Lambda(Vec::new(), vec![Expr::Bool(false, span)], span),
+            Expr::Lambda(Vec::new(), body, span),
+            Expr::Lambda(Vec::new(), restore, span),
+        ],
+        span,
+    ));
+    Ok(Expr::Let(LetKind::LetStar, binds, seq, span))
 }
 
 fn parse_let(kind: LetKind, items: &[Datum], span: Span) -> Result<Expr, String> {
