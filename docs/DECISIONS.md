@@ -193,6 +193,72 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-078 [m32/mem] GLOBAL CELLS — the named rung lands (module-level
+  mutable state; the blocker both scheme's parameterize and TS
+  async's microtask queue shared). Surface: `frk_mem.global_decl
+  {sym, type}` (a module-level declaration) + `frk_mem.global_get
+  {sym} -> !frk_mem.box<T>` (yields THE cell). The insight that
+  keeps it small: an LLVM global slot IS a box — global_get lowers
+  to llvm.mlir.addressof, no allocation, no init hook; cells start
+  ZERO (zeroinitializer). The interp mirrors with a lazily-created
+  named Value::Box per sym, zeroed per type (f64 → 0.0; pointer-
+  kinded types → a GUARDED zero in the recref_null tradition:
+  reading one before initialization is a frontend bug, so consumers
+  keep an f64 flag cell and check it first — the queue intrinsics
+  do exactly this). v0 fence: SINGLE-SLOT cell types only (f64,
+  integers, pointer-kinded); dyn/product cells are a later widening.
+  box_set/field machinery works on global-backed boxes unchanged
+  (retains included — the payload_retain path is type-driven, not
+  provenance-driven). Revisit: multi-slot cells + initializer
+  expressions when a consumer prices them; parameterize consumes
+  this rung next.
+- D-079 [m32/ts3/async] TS-3 COMPLETES with async/await (the human
+  picked it; the stage freezes at exit). NOT the tsc __awaiter
+  runtime port — the same SEMANTICS by direct emission: async
+  bodies split at await points into CONTINUATION CLOSURES (the
+  M29/M30 capture rule: params by value, lets by box — state
+  across awaits is the boxes, for free), promises are RECORDS
+  (box of [state f64, value dyn×2, cbs vector, cbcount f64]), and
+  the microtask queue is a GLOBAL-CELLS (D-078) FIFO of (cont .
+  value) PAIRS in a fixed 256-slot vector (overflow = a
+  deterministic trap; corpus law bounds queues). TICK MODEL
+  (adversarially panel-checked against node): calling an async fn
+  runs synchronously to the first await, returns a pending
+  promise; await plain-value and await resolved-promise both queue
+  the continuation immediately (one tick — the ES2019 rule); await
+  pending-promise subscribes (queued at resolution, subscription
+  order); resolution queues ALL subscribers FIFO; main drains
+  after its synchronous body until empty. FENCED LOUD to keep
+  tick-exactness provable: returning a promise from an async fn
+  (the thenable-resolution tick minefield), Promise.resolve/
+  reject/all/.then/.catch surface, thenables, await outside the
+  two statement forms (const x = await e / await e) or nested in
+  control flow inside async bodies, try/catch around await,
+  top-level await, async values beyond number/string/boolean/void,
+  async methods/arrows. The emitter grows the seed-module surface
+  (TS gains intrinsics.mlir — the M17 pattern's fourth frontend):
+  __ts_await_value/_await_promise/_resolve/_queue_push/_drain over
+  the global cells. Await-of-promise vs await-of-value dispatch is
+  STATIC (the producer knows e's type) — no runtime awaitable
+  probing. PANEL-HARDENED (three adversarial agents, ~38k
+  randomized differential programs vs node 26, zero in-fence
+  divergences, mutation-tested harnesses): (a) an async fn with NO
+  await resolves synchronously — its promise is pending IFF the
+  body suspended (rule-1 wording fixed; the emitter resolves
+  before returning in the awaitless path); (b) static await
+  dispatch is sound ONLY under type soundness — no any/casts exist
+  in this slice, and TS-4's gradual boundary must add a dynamic
+  is-promise check at await sites (recorded for TS-4); (c) a user
+  method literally named `then` makes a thenable — excluded here
+  because class-typed awaits are fenced, named so TS-4 remembers;
+  (d) the D-047 initializer-required let rule kills the
+  use-before-assign promise hazard (tsc's definite assignment
+  stops at closure boundaries — ours doesn't need to); (e) NO
+  throw/try inside async bodies (rejection semantics are absent by
+  design — an in-async throw would diverge catastrophically);
+  `return` only as the final statement of an async body. Revisit:
+  the fences at TS-4 or when a corpus case prices them;
+  generators/yield at the Tier-2 stack-switching rung.
 - D-077 [m31/scheme/dyn] r7rs_core v0.3 (the human picked
   "pairs-mut"): pair MUTATION, strings, vectors. (1) set-car!/
   set-cdr! are frk_mem.field_set{0/1} on the UNWRAPPED pair box —

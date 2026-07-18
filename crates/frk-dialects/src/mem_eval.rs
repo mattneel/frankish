@@ -16,6 +16,8 @@ pub(crate) fn register_eval(interp: &mut Interp<'_, '_>) {
     interp.register_eval("frk_mem.rec_ref", Box::new(RecIdentity));
     interp.register_eval("frk_mem.rec_cast", Box::new(RecIdentity));
     interp.register_eval("frk_mem.recref_null", Box::new(RecrefNull));
+    interp.register_eval("frk_mem.global_decl", Box::new(GlobalDecl));
+    interp.register_eval("frk_mem.global_get", Box::new(GlobalGet));
     interp.register_eval("frk_mem.array_new", Box::new(ArrayNew));
     interp.register_eval("frk_mem.array_get", Box::new(ArrayGet));
     interp.register_eval("frk_mem.array_set", Box::new(ArraySet));
@@ -239,6 +241,55 @@ impl Eval for RecIdentity {
         let value = operand_value(frame, op, 0)?;
         value.as_box()?; // must be a record either way
         continue_with_result(frame, op, value)
+    }
+}
+
+/// D-078: the declaration is declarative — a no-op at eval time.
+struct GlobalDecl;
+impl Eval for GlobalDecl {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        continue_with_results(frame, op, &[])
+    }
+}
+
+/// D-078: yields THE named cell, lazily created zeroed per the box's
+/// element type (pointer-kinded zeros are guarded garbage — the
+/// recref_null tradition; consumers flag-check before reading).
+struct GlobalGet;
+impl Eval for GlobalGet {
+    fn eval<'c, 'a>(
+        &self,
+        interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        use melior::ir::attribute::StringAttribute;
+        let sym = op
+            .attribute("sym")
+            .ok()
+            .and_then(|a| StringAttribute::try_from(a).ok())
+            .ok_or_else(|| EvalError::Malformed("global_get without sym".into()))?
+            .value()
+            .to_string();
+        use melior::ir::ValueLike;
+        let elem = melior::ir::Type::from(
+            op.result(0)
+                .map_err(|_| EvalError::Malformed("global_get without a result".into()))?
+                .r#type(),
+        )
+        .to_string();
+        let zero = if elem.contains("f64") && !elem.contains("arr") && !elem.contains("product") {
+            Value::Float(0.0)
+        } else {
+            Value::Int { bits: 0, width: 64 }
+        };
+        let cell = interp.global_cell(&sym, zero);
+        continue_with_result(frame, op, cell)
     }
 }
 

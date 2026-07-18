@@ -110,6 +110,10 @@ pub struct Interp<'c, 'a> {
     /// abort unwinds atomically (no user code runs between the abort
     /// raising the signal and its prompt catching it).
     ctl_aborted: std::cell::RefCell<Option<Value>>,
+    /// Global cells (D-078): one shared Value::Box per sym, created
+    /// lazily zeroed. The reference mirror of native zeroinitialized
+    /// module globals.
+    globals: std::cell::RefCell<HashMap<String, Value>>,
     /// Live effect handlers, innermost last (κ_frk v1, D-069):
     /// (label, clause closure, handle token, masked). Masked entries
     /// are skipped by dispatch — the handler-free-for-ℓ context rule
@@ -147,6 +151,7 @@ impl<'c, 'a> Interp<'c, 'a> {
             ctl_prompts: std::cell::RefCell::new(Vec::new()),
             ctl_next_token: Cell::new(1),
             ctl_aborted: std::cell::RefCell::new(None),
+            globals: std::cell::RefCell::new(HashMap::new()),
             ctl_handlers: std::cell::RefCell::new(Vec::new()),
             ctl_markers: std::cell::RefCell::new(std::collections::HashMap::new()),
         })
@@ -246,6 +251,16 @@ impl<'c, 'a> Interp<'c, 'a> {
     }
 
     /// Parks the aborting value for the catching prompt to collect.
+    /// The shared cell for a global sym (D-078), created lazily with
+    /// `zero` on first touch. Every caller gets the SAME Value::Box.
+    pub fn global_cell(&self, sym: &str, zero: Value) -> Value {
+        self.globals
+            .borrow_mut()
+            .entry(sym.to_string())
+            .or_insert_with(|| Value::boxed(zero))
+            .clone()
+    }
+
     pub fn ctl_set_aborted(&self, value: Value) {
         *self.ctl_aborted.borrow_mut() = Some(value);
     }

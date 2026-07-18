@@ -383,6 +383,17 @@ enum Planned<'c, 'a> {
     RecIdentity {
         op: OperationRef<'c, 'a>,
     },
+    /// D-078: a module-level cell declaration — becomes a mutable
+    /// zeroinitialized llvm global; the global slot IS the box.
+    GlobalDecl {
+        op: OperationRef<'c, 'a>,
+        sym: String,
+    },
+    /// D-078: addressof the cell — no allocation, no init hook.
+    GlobalGet {
+        op: OperationRef<'c, 'a>,
+        sym: String,
+    },
     /// D-074 construction-knot placeholder: a null pointer.
     RecrefNull {
         op: OperationRef<'c, 'a>,
@@ -1355,6 +1366,30 @@ fn plan_mem<'c, 'a>(
         }
         "rec_ref" | "rec_cast" => Ok(Planned::RecIdentity { op }),
         "recref_null" => Ok(Planned::RecrefNull { op }),
+        "global_decl" | "global_get" => {
+            let sym = op
+                .attribute("sym")
+                .ok()
+                .and_then(|a| StringAttribute::try_from(a).ok())
+                .map(|a| a.value().to_string())
+                .ok_or_else(|| "global op without a sym".to_string())?;
+            if suffix == "global_decl" {
+                let cell = op
+                    .attribute("cell")
+                    .ok()
+                    .and_then(|a| TypeAttribute::try_from(a).ok())
+                    .map(|a| a.value())
+                    .ok_or_else(|| "global_decl without a cell type".to_string())?;
+                if slot_kind(context, cell)?.slots() != 1 {
+                    return Err(
+                        "multi-slot global cells are fenced (D-078: single-slot v0)".into(),
+                    );
+                }
+                Ok(Planned::GlobalDecl { op, sym })
+            } else {
+                Ok(Planned::GlobalGet { op, sym })
+            }
+        }
         "array_new" => {
             let elem = crate::mem::decode_arr(
                 context,
@@ -4028,6 +4063,64 @@ fn apply<'c, 'a>(
         Planned::RecIdentity { op } => {
             rewriter.set_insertion_point_before(op);
             finish(rewriter, op, operand(op, 0)?)
+        }
+        Planned::GlobalDecl { op, sym } => {
+            let location = op.location();
+            let i64_type: Type = IntegerType::new(context, 64).into();
+            let module = root_module(op)?;
+            let body = module
+                .region(0)
+                .map_err(|e| e.to_string())?
+                .first_block()
+                .ok_or_else(|| "module without a body".to_string())?;
+            let global = OperationBuilder::new("llvm.mlir.global", location)
+                .add_attributes(&[
+                    (
+                        melior::ir::Identifier::new(context, "sym_name"),
+                        StringAttribute::new(context, &format!("__frk_g_{sym}")).into(),
+                    ),
+                    (
+                        melior::ir::Identifier::new(context, "global_type"),
+                        TypeAttribute::new(i64_type).into(),
+                    ),
+                    (
+                        melior::ir::Identifier::new(context, "value"),
+                        IntegerAttribute::new(i64_type, 0).into(),
+                    ),
+                    (
+                        melior::ir::Identifier::new(context, "linkage"),
+                        Attribute::parse(context, "#llvm.linkage<internal>").ok_or("linkage")?,
+                    ),
+                    (
+                        melior::ir::Identifier::new(context, "addr_space"),
+                        Attribute::parse(context, "0 : i32").ok_or("addr_space")?,
+                    ),
+                    (
+                        melior::ir::Identifier::new(context, "visibility_"),
+                        Attribute::parse(context, "0 : i64").ok_or("visibility")?,
+                    ),
+                ])
+                .add_regions([Region::new()])
+                .build()
+                .map_err(|e| e.to_string())?;
+            body.insert_operation(0, global);
+            rewriter.erase_op(op);
+            Ok(())
+        }
+        Planned::GlobalGet { op, sym } => {
+            rewriter.set_insertion_point_before(op);
+            let location = op.location();
+            let address = result_value(rewriter.insert(
+                OperationBuilder::new("llvm.mlir.addressof", location)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(context, "global_name"),
+                        FlatSymbolRefAttribute::new(context, &format!("__frk_g_{sym}")).into(),
+                    )])
+                    .add_results(&[llvm::r#type::pointer(context, 0)])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            ))?;
+            finish(rewriter, op, address)
         }
         Planned::RecrefNull { op } => {
             rewriter.set_insertion_point_before(op);

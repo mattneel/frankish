@@ -50,6 +50,8 @@ interface Array<T> { readonly length: number; [n: number]: T; }
 interface ReadonlyArray<T> { readonly length: number; readonly [n: number]: T; }
 interface ConcatArray<T> {}
 interface TemplateStringsArray {}
+interface PromiseLike<T> { then<R>(onfulfilled: (value: T) => R | PromiseLike<R>): PromiseLike<R>; }
+interface Promise<T> { then<R>(onfulfilled: (value: T) => R | PromiseLike<R>): Promise<R>; }
 declare const console: { log(x: number | boolean | string): void };
 `;
 const preludeName = "__frk_prelude.d.ts";
@@ -344,6 +346,19 @@ function annotationType(node: ts.TypeNode | undefined, owner: ts.Node): number {
     });
     return internType({ k: "fn", params, ret: annotationType(node.type, node) });
   }
+  if (
+    ts.isTypeReferenceNode(node) &&
+    ts.isIdentifier(node.typeName) &&
+    node.typeName.text === "Promise"
+  ) {
+    const arg = node.typeArguments?.[0];
+    if (!arg || node.typeArguments!.length !== 1)
+      fail(node, "Promise without exactly one type argument");
+    const ofText = arg.getText(sourceFile);
+    if (!["number", "string", "boolean", "void"].includes(ofText))
+      fail(arg, `async value type \`${ofText}\` (num/str/bool/void only, D-079)`);
+    return internType({ k: "promise", of: annotationType(arg, node) });
+  }
   const text = node.getText(sourceFile);
   if (text === "number") return internType({ k: "num" });
   if (text === "boolean") return internType({ k: "bool" });
@@ -516,7 +531,12 @@ function expr(node: ts.Expression): Json {
       span: span(node),
     };
   }
+  if (ts.isAwaitExpression(node)) {
+    fail(node, "await outside an async function body statement (D-079)");
+  }
   if (ts.isArrowFunction(node)) {
+    if (ts.getModifiers(node)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword))
+      fail(node, "an async arrow (D-079)");
     // Object closures (D-075): annotated params, EXPRESSION body,
     // captures computed here (tsc knows the bindings) — parameters
     // by value, let-locals by their box, downstream.
@@ -878,6 +898,136 @@ function classDecl(top: ts.ClassDeclaration): Json {
   return { k: "class", name, ty: cls.rowIdx, ctor, methods, span: span(top) };
 }
 
+/// D-079: is this checker type the (recorded) Promise type?
+function isPromiseType(type: ts.Type): boolean {
+  return type.symbol?.name === "Promise";
+}
+
+/// An async function declaration → the afn decl node: awaits appear
+/// ONLY as `const x = await e;` / `await e;` at body top level;
+/// `return` only as the final statement; no throw/try inside (the
+/// panel-certified fences — rejections do not exist here).
+function asyncDecl(top: ts.FunctionDeclaration): Json {
+  const name = top.name!.text;
+  const params: Json[] = top.parameters.map((p) => {
+    if (!ts.isIdentifier(p.name)) fail(p, "a destructuring parameter");
+    if (p.questionToken || p.initializer) fail(p, "an optional/defaulted parameter");
+    return { name: p.name.text, ty: annotationType(p.type, p) };
+  });
+  const ret = annotationType(top.type, top); // must be Promise<T> (tsc enforces)
+  const body = top.body!.statements;
+  // Fences: no stray awaits, no throw/try, return only last.
+  const checkNested = (n: ts.Node, allowAwait: boolean): void => {
+    if (ts.isAwaitExpression(n) && !allowAwait)
+      fail(n, "await outside `const x = await e;` / `await e;` (D-079)");
+    if (ts.isThrowStatement(n) || ts.isTryStatement(n))
+      fail(n, "throw/try inside an async body (no rejection semantics, D-079)");
+    n.forEachChild((c) => checkNested(c, false));
+  };
+  const awaitOperandInfo = (operand: ts.Expression): { p: boolean; ty: number } => {
+    const type = checker.getTypeAtLocation(operand);
+    if (isPromiseType(type)) {
+      // Result type = the promise's payload, from the awaited expr's
+      // static type argument.
+      const args = (type as ts.TypeReference).typeArguments ?? [];
+      const payload = args[0] ? checker.typeToString(args[0]) : "void";
+      const row =
+        payload === "number"
+          ? internType({ k: "num" })
+          : payload === "string"
+            ? internType({ k: "str" })
+            : payload === "boolean"
+              ? internType({ k: "bool" })
+              : internType({ k: "void" });
+      return { p: true, ty: row };
+    }
+    const flags = type.flags;
+    if (flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral))
+      return { p: false, ty: internType({ k: "num" }) };
+    if (flags & (ts.TypeFlags.String | ts.TypeFlags.StringLiteral))
+      return { p: false, ty: internType({ k: "str" }) };
+    if (flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral))
+      return { p: false, ty: internType({ k: "bool" }) };
+    fail(operand, `awaiting a \`${checker.typeToString(type)}\` (num/str/bool/Promise only, D-079)`);
+  };
+  // Captures for the continuation after split index i: identifiers in
+  // the remaining statements whose declarations sit INSIDE this fn
+  // BEFORE the split point.
+  const contCaptures = (rest: readonly ts.Statement[], splitStart: number): string[] => {
+    const caps: string[] = [];
+    const visit = (n: ts.Node): void => {
+      if (ts.isIdentifier(n)) {
+        const symbol = checker.getSymbolAtLocation(n);
+        const declaration = symbol?.valueDeclaration;
+        if (
+          declaration &&
+          declaration.getSourceFile() === sourceFile &&
+          (ts.isVariableDeclaration(declaration) || ts.isParameter(declaration)) &&
+          declaration.getStart(sourceFile) >= top.getStart(sourceFile) &&
+          declaration.getEnd() < splitStart &&
+          !caps.includes(n.text)
+        ) {
+          caps.push(n.text);
+        }
+      }
+      n.forEachChild(visit);
+    };
+    for (const statement of rest) visit(statement);
+    return caps;
+  };
+  const out: Json[] = [];
+  body.forEach((statement, index) => {
+    const isLast = index === body.length - 1;
+    if (ts.isReturnStatement(statement)) {
+      if (!isLast) fail(statement, "return before the end of an async body (D-079)");
+      out.push({
+        k: "aret",
+        e: statement.expression ? expr(statement.expression) : null,
+        span: span(statement),
+      });
+      return;
+    }
+    if (
+      ts.isVariableStatement(statement) &&
+      statement.declarationList.declarations.length === 1 &&
+      statement.declarationList.declarations[0].initializer &&
+      ts.isAwaitExpression(statement.declarationList.declarations[0].initializer)
+    ) {
+      const decl = statement.declarationList.declarations[0];
+      if (!ts.isIdentifier(decl.name)) fail(decl, "a destructuring await binding");
+      const operand = decl.initializer as ts.AwaitExpression;
+      const info = awaitOperandInfo(operand.expression);
+      checkNested(operand.expression, false);
+      out.push({
+        k: "awaitlet",
+        name: decl.name.text,
+        e: expr(operand.expression),
+        p: info.p,
+        ty: info.ty,
+        caps: contCaptures(body.slice(index + 1), statement.getStart(sourceFile)),
+        span: span(statement),
+      });
+      return;
+    }
+    if (ts.isExpressionStatement(statement) && ts.isAwaitExpression(statement.expression)) {
+      const operand = statement.expression;
+      const info = awaitOperandInfo(operand.expression);
+      checkNested(operand.expression, false);
+      out.push({
+        k: "awaitexpr",
+        e: expr(operand.expression),
+        p: info.p,
+        caps: contCaptures(body.slice(index + 1), statement.getStart(sourceFile)),
+        span: span(statement),
+      });
+      return;
+    }
+    checkNested(statement, false);
+    out.push(stmt(statement));
+  });
+  return { k: "afn", name, params, ret, body: out, span: span(top) };
+}
+
 const decls: Json[] = [];
 const stmts: Json[] = [];
 for (const top of sourceFile.statements) {
@@ -893,6 +1043,10 @@ for (const top of sourceFile.statements) {
     if (!top.name) fail(top, "an anonymous function declaration");
     if (!top.body) fail(top, "a bodyless function declaration");
     if (top.typeParameters) fail(top, "a generic function (TS-4 territory)");
+    if (ts.getModifiers(top)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) {
+      decls.push(asyncDecl(top));
+      continue;
+    }
     const params: Json[] = top.parameters.map((p) => {
       if (!ts.isIdentifier(p.name)) fail(p, "a destructuring parameter");
       if (p.questionToken || p.initializer) fail(p, "an optional/defaulted parameter");

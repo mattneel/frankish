@@ -90,6 +90,17 @@ irdl.dialect @frk_mem {
     irdl.operands(box: %b, value: %v)
     irdl.attributes { "field" = %f }
   }
+  irdl.operation @global_decl {
+    %n = irdl.base "#builtin.string"
+    %t = irdl.base "#builtin.type"
+    irdl.attributes { "sym" = %n, "cell" = %t }
+  }
+  irdl.operation @global_get {
+    %n = irdl.base "#builtin.string"
+    %b = irdl.base @frk_mem::@box
+    irdl.results(cell: %b)
+    irdl.attributes { "sym" = %n }
+  }
   irdl.type @recref {}
   irdl.operation @recref_null {
     %r = irdl.base @frk_mem::@recref
@@ -227,6 +238,13 @@ pub(crate) fn verify_op<'c>(
         // knot must be a box of a product; the cast's pointee is the
         // FRONTEND's obligation (nominal typing), not checkable here.
         "recref_null" => Ok(()),
+        // Global cells (D-078): shallow checks — sym present; the
+        // cell type single-slot rule is enforced at plan time.
+        "global_decl" | "global_get" => {
+            op.attribute("sym")
+                .map_err(|_| "global op without a sym attribute".to_string())?;
+            Ok(())
+        }
         "rec_ref" => {
             let boxed = operand_type(0)?;
             let elem = decode_box(context, boxed)?;

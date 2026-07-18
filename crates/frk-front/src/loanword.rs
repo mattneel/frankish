@@ -141,7 +141,13 @@ enum TsTy {
     Iface(usize),
     /// A closure value (D-075): !frk_closure.fn by signature.
     Fn(Rc<FnDef>),
+    /// A promise (D-079): a record box {state, value dyn, cbs, count}.
+    PromiseT(Box<TsTy>),
 }
+
+/// The promise record's box type (D-079).
+const PROMISE_BOX: &str =
+    "!frk_mem.box<!frk_adt.product<[f64, !frk_dyn.dyn, !frk_mem.arr<!frk_dyn.dyn>, f64]>>";
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct FnDef {
@@ -188,6 +194,15 @@ struct ClassDecl {
     methods: Vec<MethodDecl>,
 }
 
+/// An async function (D-079): awaits appear only at body top level.
+struct AsyncFn {
+    name: String,
+    params: Vec<(String, TsTy)>,
+    /// Promise<T>'s payload type.
+    ret_of: TsTy,
+    body: Vec<Json>,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct UnionDef {
     variants: Vec<VariantDef>,
@@ -230,6 +245,8 @@ struct Artifact {
     class_decls: Vec<ClassDecl>,
     /// Interface definitions by type-row index (D-075).
     ifaces: HashMap<usize, IfaceDef>,
+    /// Async functions (D-079).
+    async_fns: Vec<AsyncFn>,
 }
 
 impl Artifact {
@@ -381,6 +398,10 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
                 }
                 Row::Ty(TsTy::Union(Rc::new(UnionDef { variants })))
             }
+            "promise" => {
+                let of = resolved_ty(field(row, "of")?)?;
+                Row::Ty(TsTy::PromiseT(Box::new(of)))
+            }
             "cref" => {
                 // D-074: a class reference by name — forward-legal.
                 let name = field(row, "name")?
@@ -493,6 +514,7 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
 
     let mut functions = Vec::new();
     let mut class_decls = Vec::new();
+    let mut async_fns = Vec::new();
     for decl in field(&document, "decls")?
         .as_array()
         .ok_or_else(|| LoanwordError("decls must be an array".into()))?
@@ -566,6 +588,24 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
                     methods,
                 });
             }
+            "afn" => {
+                let ret = type_at(decl, "ret")?;
+                let TsTy::PromiseT(of) = ret else {
+                    return err("async functions return Promise<T> (D-079)");
+                };
+                async_fns.push(AsyncFn {
+                    name: field(decl, "name")?
+                        .as_str()
+                        .ok_or_else(|| LoanwordError("afn name".into()))?
+                        .to_string(),
+                    params: parse_params(decl, "params")?,
+                    ret_of: *of,
+                    body: field(decl, "body")?
+                        .as_array()
+                        .ok_or_else(|| LoanwordError("afn body".into()))?
+                        .clone(),
+                });
+            }
             other => return err(format!("unsupported decl kind {other:?}")),
         }
     }
@@ -582,6 +622,7 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
         classes,
         class_decls,
         ifaces: iface_defs,
+        async_fns,
     })
 }
 
@@ -592,7 +633,13 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
 /// output happens through the print runtime.
 pub fn compile_loanword<'c>(context: &'c Context, text: &str) -> Result<Module<'c>> {
     let artifact = parse_artifact(text)?;
-    let module = Module::new(Location::unknown(context));
+    let module = if artifact.async_fns.is_empty() {
+        Module::new(Location::unknown(context))
+    } else {
+        // The seed-module surface's fourth frontend (M17 → D-079).
+        crate::intrinsics::seed_module(context, "ts", include_str!("ts_intrinsics.mlir"))
+            .map_err(LoanwordError)?
+    };
 
     let emitter = Emitter {
         context,
@@ -654,6 +701,9 @@ pub fn compile_loanword<'c>(context: &'c Context, text: &str) -> Result<Module<'
             };
             emitter.emit_fn(&module, &synthetic)?;
         }
+    }
+    for afn in &artifact.async_fns {
+        emitter.emit_async_fn(afn)?;
     }
     emitter.emit_main(&module)?;
 
@@ -768,6 +818,8 @@ impl<'c, 'p> Emitter<'c, 'p> {
             }
             TsTy::Iface(_) => Type::parse(self.context, "!frk_dyn.iface")
                 .ok_or(LoanwordError("iface".into())),
+            TsTy::PromiseT(_) => Type::parse(self.context, PROMISE_BOX)
+                .ok_or(LoanwordError("promise".into())),
             TsTy::Fn(def) => {
                 let mut params = Vec::new();
                 for ty in &def.params {
@@ -1098,6 +1150,415 @@ impl<'c, 'p> Emitter<'c, 'p> {
         );
         module.body().append_operation(op);
         Ok(())
+    }
+
+    /// Wraps a typed value as a fat dyn (D-079 transit): num→2,
+    /// bool→1, str→3 (an frk_str rides tag 3 IN TRANSIT ONLY — the
+    /// dyn is queued, never inspected), void callers pass nil.
+    fn wrap_dyn<'r>(
+        &self,
+        fcx: &Fcx<'c, 'r>,
+        value: Value<'c, 'r>,
+        ty: &TsTy,
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        let i64_type: Type = IntegerType::new(self.context, 64).into();
+        let tag = match ty {
+            TsTy::Num => 2,
+            TsTy::Bool => 1,
+            TsTy::Str => 3,
+            other => return err(format!("no dyn transit for {other:?} (D-079)")),
+        };
+        self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_dyn.wrap", location)
+                .add_attributes(&[(
+                    Identifier::new(self.context, "tag"),
+                    IntegerAttribute::new(i64_type, tag).into(),
+                )])
+                .add_operands(&[value])
+                .add_results(&[Type::parse(self.context, "!frk_dyn.dyn")
+                    .ok_or(LoanwordError("dyn".into()))?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )
+    }
+
+    fn unwrap_dyn<'r>(
+        &self,
+        fcx: &Fcx<'c, 'r>,
+        value: Value<'c, 'r>,
+        ty: &TsTy,
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        let i64_type: Type = IntegerType::new(self.context, 64).into();
+        let tag = match ty {
+            TsTy::Num => 2,
+            TsTy::Bool => 1,
+            TsTy::Str => 3,
+            other => return err(format!("no dyn transit for {other:?} (D-079)")),
+        };
+        self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_dyn.unwrap", location)
+                .add_attributes(&[(
+                    Identifier::new(self.context, "tag"),
+                    IntegerAttribute::new(i64_type, tag).into(),
+                )])
+                .add_operands(&[value])
+                .add_results(&[self.mlir_ty(ty)?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )
+    }
+
+    /// An async function (D-079): `@name(params) -> promise` — the
+    /// body runs synchronously to its first await; the rest lifts as
+    /// continuation pack closures queued through the intrinsics.
+    fn emit_async_fn(&self, afn: &AsyncFn) -> Result<()> {
+        let location = Location::unknown(self.context);
+        let promise_ty = TsTy::PromiseT(Box::new(afn.ret_of.clone()));
+        let region = Region::new();
+        let param_types: Vec<(Type, Location)> = afn
+            .params
+            .iter()
+            .map(|(_, ty)| Ok((self.mlir_ty(ty)?, location)))
+            .collect::<Result<_>>()?;
+        let entry = region.append_block(Block::new(&param_types));
+        let mut env = HashMap::new();
+        for (index, (name, ty)) in afn.params.iter().enumerate() {
+            let raw = entry
+                .argument(index)
+                .map_err(|e| LoanwordError(e.to_string()))?
+                .to_raw();
+            env.insert(
+                name.clone(),
+                Binding::Value(unsafe { Value::from_raw(raw) }, ty.clone()),
+            );
+        }
+        let mut fcx = Fcx {
+            region: &region,
+            block: entry,
+            env,
+            exit: entry, // returns are handled by the segment walker
+            ret: promise_ty.clone(),
+            terminated: false,
+            guard: GuardShape::Ts(promise_ty.clone()),
+        };
+        let promise = self.op_result(
+            fcx.block,
+            OperationBuilder::new("func.call", location)
+                .add_attributes(&[(
+                    Identifier::new(self.context, "callee"),
+                    FlatSymbolRefAttribute::new(self.context, "__ts_promise_new").into(),
+                )])
+                .add_results(&[Type::parse(self.context, PROMISE_BOX)
+                    .ok_or(LoanwordError("promise".into()))?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )?;
+        fcx.env.insert(
+            " promise".to_string(), // a space: no user identifier collides
+            Binding::Value(promise, promise_ty),
+        );
+        self.emit_async_segments(&mut fcx, afn, &afn.body, true, location)?;
+
+        let signature = FunctionType::new(
+            self.context,
+            &afn.params
+                .iter()
+                .map(|(_, ty)| self.mlir_ty(ty))
+                .collect::<Result<Vec<_>>>()?,
+            &[Type::parse(self.context, PROMISE_BOX).ok_or(LoanwordError("promise".into()))?],
+        );
+        let op = melior::dialect::func::func(
+            self.context,
+            StringAttribute::new(self.context, &afn.name),
+            TypeAttribute::new(signature.into()),
+            region,
+            &[],
+            location,
+        );
+        self.module.body().append_operation(op);
+        Ok(())
+    }
+
+    /// Walks async body statements: ordinary ones emit in place; an
+    /// await splits — the rest lifts into `@{name}__seg{N}` and the
+    /// current function closes (outer: return the promise;
+    /// continuation: return the empty pack).
+    fn emit_async_segments<'r>(
+        &self,
+        fcx: &mut Fcx<'c, 'r>,
+        afn: &AsyncFn,
+        stmts: &[Json],
+        outer: bool,
+        location: Location<'c>,
+    ) -> Result<()> {
+        let close = |emitter: &Self, fcx: &mut Fcx<'c, 'r>| -> Result<()> {
+            if outer {
+                let Some(Binding::Value(promise, _)) = fcx.env.get(" promise").cloned() else {
+                    return err("async fn without its promise binding");
+                };
+                fcx.block.append_operation(
+                    OperationBuilder::new("func.return", location)
+                        .add_operands(&[promise])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                );
+                Ok(())
+            } else {
+                let mut pack_fcx_guard = fcx.guard.clone();
+                std::mem::swap(&mut fcx.guard, &mut pack_fcx_guard);
+                fcx.guard = GuardShape::Pack;
+                emitter.poison_return(fcx, location)?; // empty pack
+                fcx.guard = pack_fcx_guard;
+                Ok(())
+            }
+        };
+        let resolve_with = |emitter: &Self,
+                            fcx: &mut Fcx<'c, 'r>,
+                            value: Option<(Value<'c, 'r>, TsTy)>|
+         -> Result<()> {
+            let Some(Binding::Value(promise, _)) = fcx.env.get(" promise").cloned() else {
+                return err("async fn without its promise binding");
+            };
+            let payload = match value {
+                Some((value, ty)) => emitter.wrap_dyn(fcx, value, &ty, location)?,
+                None => emitter.nil_dyn(fcx, location)?,
+            };
+            fcx.block.append_operation(
+                OperationBuilder::new("func.call", location)
+                    .add_attributes(&[(
+                        Identifier::new(self.context, "callee"),
+                        FlatSymbolRefAttribute::new(self.context, "__ts_resolve").into(),
+                    )])
+                    .add_operands(&[promise, payload])
+                    .build()
+                    .map_err(|e| LoanwordError(e.to_string()))?,
+            );
+            Ok(())
+        };
+
+        for (index, statement) in stmts.iter().enumerate() {
+            match kind(statement)? {
+                "awaitlet" | "awaitexpr" => {
+                    let is_let = kind(statement)? == "awaitlet";
+                    // Captures for the continuation: producer-computed
+                    // names + the promise binding, always.
+                    let (mut caps, mut cap_values) =
+                        self.resolve_captures(fcx, field(statement, "caps")?)?;
+                    let Some(Binding::Value(promise, pty)) =
+                        fcx.env.get(" promise").cloned()
+                    else {
+                        return err("async fn without its promise binding");
+                    };
+                    caps.push((" promise".to_string(), pty, false));
+                    cap_values.push(promise);
+
+                    let seg = self.arrow_counter.get();
+                    self.arrow_counter.set(seg + 1);
+                    let symbol = format!("{}__seg{}", afn.name, seg);
+
+                    // The continuation function.
+                    {
+                        let inner_location = Location::unknown(self.context);
+                        let inner_region = Region::new();
+                        let mut arg_types: Vec<(Type, Location)> = Vec::new();
+                        for (_, ty, boxed) in &caps {
+                            arg_types.push((
+                                Type::parse(
+                                    self.context,
+                                    &self.capture_slot_text(ty, *boxed)?,
+                                )
+                                .ok_or(LoanwordError("capture slot".into()))?,
+                                inner_location,
+                            ));
+                        }
+                        let pack_ty =
+                            Type::parse(self.context, "!frk_mem.arr<!frk_dyn.dyn>")
+                                .ok_or(LoanwordError("pack".into()))?;
+                        arg_types.push((pack_ty, inner_location));
+                        let inner_entry =
+                            inner_region.append_block(Block::new(&arg_types));
+                        let mut inner_env = HashMap::new();
+                        for (position, (name, ty, boxed)) in caps.iter().enumerate() {
+                            let raw = inner_entry
+                                .argument(position)
+                                .map_err(|e| LoanwordError(e.to_string()))?
+                                .to_raw();
+                            let value = unsafe { Value::from_raw(raw) };
+                            inner_env.insert(
+                                name.clone(),
+                                if *boxed {
+                                    Binding::Boxed(value, ty.clone())
+                                } else {
+                                    Binding::Value(value, ty.clone())
+                                },
+                            );
+                        }
+                        let mut inner = Fcx {
+                            region: &inner_region,
+                            block: inner_entry,
+                            env: inner_env,
+                            exit: inner_entry,
+                            ret: TsTy::Void,
+                            terminated: false,
+                            guard: GuardShape::Pack,
+                        };
+                        if is_let {
+                            // Bind the awaited value from the pack head.
+                            let name = field(statement, "name")?
+                                .as_str()
+                                .ok_or_else(|| LoanwordError("awaitlet name".into()))?;
+                            let ty = match self.artifact.types.get(
+                                field(statement, "ty")?
+                                    .as_u64()
+                                    .ok_or_else(|| LoanwordError("awaitlet ty".into()))?
+                                    as usize,
+                            ) {
+                                Some(Row::Ty(ty)) => ty.clone(),
+                                _ => return err("awaitlet type ref"),
+                            };
+                            let raw = inner_entry
+                                .argument(caps.len())
+                                .map_err(|e| LoanwordError(e.to_string()))?
+                                .to_raw();
+                            let pack: Value = unsafe { Value::from_raw(raw) };
+                            let i64_type: Type =
+                                IntegerType::new(self.context, 64).into();
+                            let zero = self.op_result(
+                                inner.block,
+                                melior::dialect::arith::constant(
+                                    self.context,
+                                    IntegerAttribute::new(i64_type, 0).into(),
+                                    inner_location,
+                                ),
+                            )?;
+                            let head = self.op_result(
+                                inner.block,
+                                OperationBuilder::new("frk_mem.array_get", inner_location)
+                                    .add_operands(&[pack, zero])
+                                    .add_results(&[Type::parse(
+                                        self.context,
+                                        "!frk_dyn.dyn",
+                                    )
+                                    .ok_or(LoanwordError("dyn".into()))?])
+                                    .build()
+                                    .map_err(|e| LoanwordError(e.to_string()))?,
+                            )?;
+                            let bound =
+                                self.unwrap_dyn(&inner, head, &ty, inner_location)?;
+                            inner
+                                .env
+                                .insert(name.to_string(), Binding::Value(bound, ty));
+                        }
+                        self.emit_async_segments(
+                            &mut inner,
+                            afn,
+                            &stmts[index + 1..],
+                            false,
+                            inner_location,
+                        )?;
+                        let signature = FunctionType::new(
+                            self.context,
+                            &arg_types.iter().map(|(ty, _)| *ty).collect::<Vec<_>>(),
+                            &[pack_ty],
+                        );
+                        let op = melior::dialect::func::func(
+                            self.context,
+                            StringAttribute::new(self.context, &symbol),
+                            TypeAttribute::new(signature.into()),
+                            inner_region,
+                            &[],
+                            inner_location,
+                        );
+                        self.module.body().append_operation(op);
+                    }
+
+                    // Dispatch at the await site.
+                    const PACK_FN: &str = "!frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>";
+                    let cont = self.make_closure_over(
+                        fcx,
+                        &cap_values,
+                        &caps,
+                        &symbol,
+                        PACK_FN,
+                        location,
+                    )?;
+                    let i64_type: Type = IntegerType::new(self.context, 64).into();
+                    let cont_dyn = self.op_result(
+                        fcx.block,
+                        OperationBuilder::new("frk_dyn.wrap", location)
+                            .add_attributes(&[(
+                                Identifier::new(self.context, "tag"),
+                                IntegerAttribute::new(i64_type, 5).into(),
+                            )])
+                            .add_operands(&[cont])
+                            .add_results(&[Type::parse(self.context, "!frk_dyn.dyn")
+                                .ok_or(LoanwordError("dyn".into()))?])
+                            .build()
+                            .map_err(|e| LoanwordError(e.to_string()))?,
+                    )?;
+                    let is_promise = field(statement, "p")?
+                        .as_bool()
+                        .ok_or_else(|| LoanwordError("await p flag".into()))?;
+                    let (subject, subject_ty) =
+                        self.emit_expr(fcx, field(statement, "e")?)?;
+                    if is_promise {
+                        if !matches!(subject_ty, TsTy::PromiseT(_)) {
+                            return err(format!("await-promise of {subject_ty:?}"));
+                        }
+                        fcx.block.append_operation(
+                            OperationBuilder::new("func.call", location)
+                                .add_attributes(&[(
+                                    Identifier::new(self.context, "callee"),
+                                    FlatSymbolRefAttribute::new(
+                                        self.context,
+                                        "__ts_await_promise",
+                                    )
+                                    .into(),
+                                )])
+                                .add_operands(&[subject, cont_dyn])
+                                .build()
+                                .map_err(|e| LoanwordError(e.to_string()))?,
+                        );
+                    } else {
+                        let wrapped =
+                            self.wrap_dyn(fcx, subject, &subject_ty, location)?;
+                        fcx.block.append_operation(
+                            OperationBuilder::new("func.call", location)
+                                .add_attributes(&[(
+                                    Identifier::new(self.context, "callee"),
+                                    FlatSymbolRefAttribute::new(
+                                        self.context,
+                                        "__ts_await_value",
+                                    )
+                                    .into(),
+                                )])
+                                .add_operands(&[wrapped, cont_dyn])
+                                .build()
+                                .map_err(|e| LoanwordError(e.to_string()))?,
+                        );
+                    }
+                    return close(self, fcx);
+                }
+                "aret" => {
+                    let value = match statement.get("e").filter(|e| !e.is_null()) {
+                        Some(node) => Some(self.emit_expr(fcx, node)?),
+                        None => None,
+                    };
+                    resolve_with(self, fcx, value)?;
+                    return close(self, fcx);
+                }
+                _ => self.emit_stmt(fcx, statement)?,
+            }
+        }
+        // Fell off the end: a void async body — resolve nil (the
+        // awaitless path resolves SYNCHRONOUSLY, the panel's rule-1
+        // correction: pending iff suspended).
+        resolve_with(self, fcx, None)?;
+        close(self, fcx)
     }
 
     /// try/catch/finally (D-076, ORDER-CORRECTED): the clause is a
@@ -1765,6 +2226,25 @@ impl<'c, 'p> Emitter<'c, 'p> {
                         .map_err(|e| LoanwordError(e.to_string()))?,
                 )?)
             }
+            GuardShape::Ts(TsTy::PromiseT(_)) => {
+                let null = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_mem.recref_null", location)
+                        .add_results(&[Type::parse(self.context, "!frk_mem.recref")
+                            .ok_or(LoanwordError("recref".into()))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                Some(self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_mem.rec_cast", location)
+                        .add_operands(&[null])
+                        .add_results(&[Type::parse(self.context, PROMISE_BOX)
+                            .ok_or(LoanwordError("promise".into()))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?)
+            }
             GuardShape::Ts(other) => {
                 return err(format!(
                     "guarded early return has no poison for {other:?} (fenced, D-076)"
@@ -2229,6 +2709,19 @@ impl<'c, 'p> Emitter<'c, 'p> {
         };
         for statement in &self.artifact.top {
             self.emit_stmt(&mut fcx, statement)?;
+        }
+        if !self.artifact.async_fns.is_empty() && !fcx.terminated {
+            // The drain (D-079 rule 5): after the synchronous body,
+            // run microtasks until the queue is empty.
+            fcx.block.append_operation(
+                OperationBuilder::new("func.call", location)
+                    .add_attributes(&[(
+                        Identifier::new(self.context, "callee"),
+                        FlatSymbolRefAttribute::new(self.context, "__ts_drain").into(),
+                    )])
+                    .build()
+                    .map_err(|e| LoanwordError(e.to_string()))?,
+            );
         }
         if !fcx.terminated {
             fcx.block
@@ -2908,6 +3401,37 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 let name = field(node, "name")?
                     .as_str()
                     .ok_or_else(|| LoanwordError("call name".into()))?;
+                if let Some(afn) = self
+                    .artifact
+                    .async_fns
+                    .iter()
+                    .find(|afn| afn.name == name)
+                {
+                    // A call to an async fn (D-079): runs synchronously
+                    // to its first await, yields the promise.
+                    let mut operands = Vec::new();
+                    for argument in field(node, "args")?
+                        .as_array()
+                        .ok_or_else(|| LoanwordError("call args".into()))?
+                    {
+                        operands.push(self.emit_expr(fcx, argument)?.0);
+                    }
+                    let ret = TsTy::PromiseT(Box::new(afn.ret_of.clone()));
+                    let value = self.op_result(
+                        fcx.block,
+                        OperationBuilder::new("func.call", location)
+                            .add_attributes(&[(
+                                Identifier::new(self.context, "callee"),
+                                FlatSymbolRefAttribute::new(self.context, name).into(),
+                            )])
+                            .add_operands(&operands)
+                            .add_results(&[self.mlir_ty(&ret)?])
+                            .build()
+                            .map_err(|e| LoanwordError(e.to_string()))?,
+                    )?;
+                    self.guard(fcx, location)?;
+                    return Ok((value, ret));
+                }
                 let target = self
                     .artifact
                     .functions
