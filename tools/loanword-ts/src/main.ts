@@ -536,6 +536,7 @@ function expr(node: ts.Expression): Json {
         const declaration = symbol?.valueDeclaration;
         if (
           declaration &&
+          declaration.getSourceFile() === sourceFile &&
           (ts.isVariableDeclaration(declaration) || ts.isParameter(declaration)) &&
           (declaration.getEnd() < node.getStart(sourceFile) ||
             declaration.getStart(sourceFile) > node.end) &&
@@ -716,7 +717,80 @@ function stmt(node: ts.Statement): Json {
       span: span(node),
     };
   }
+  if (ts.isThrowStatement(node)) {
+    // D-076: the payload evaluates for its effects and is discarded
+    // (unobservable under the optional-binding catch fence).
+    return { k: "throw", e: expr(node.expression), span: span(node) };
+  }
+  if (ts.isTryStatement(node)) {
+    return tryStatement(node);
+  }
   fail(node, `statement kind ${ts.SyntaxKind[node.kind]}`);
+}
+
+/// Free outer bindings of a statement region — the M29 arrow rule
+/// generalized: parameters and let-locals declared OUTSIDE the region
+/// capture (by value / by box downstream).
+function capturesOf(root: ts.Node): string[] {
+  const captures: string[] = [];
+  const visit = (n: ts.Node): void => {
+    if (n.kind === ts.SyntaxKind.ThisKeyword)
+      fail(n, "`this` inside a try region (lift it to a local first — D-076)");
+    if (ts.isReturnStatement(n))
+      fail(n, "`return` inside try/catch/finally (fenced, D-076)");
+    if (ts.isIdentifier(n)) {
+      const symbol = checker.getSymbolAtLocation(n);
+      const declaration = symbol?.valueDeclaration;
+      if (
+        declaration &&
+        declaration.getSourceFile() === sourceFile &&
+        (ts.isVariableDeclaration(declaration) || ts.isParameter(declaration)) &&
+        (declaration.getEnd() < root.getStart(sourceFile) ||
+          declaration.getStart(sourceFile) > root.end) &&
+        !captures.includes(n.text)
+      ) {
+        captures.push(n.text);
+      }
+    }
+    n.forEachChild(visit);
+  };
+  visit(root);
+  return captures;
+}
+
+function tryStatement(node: ts.TryStatement): Json {
+  // D-076: catch admits ONLY the optional-binding form (`catch {`).
+  if (node.catchClause?.variableDeclaration)
+    fail(
+      node.catchClause,
+      "a binding catch (catch (e) — waits for typeof narrowing, D-076)"
+    );
+  const body = node.tryBlock.statements.map(stmt);
+  const bcap = capturesOf(node.tryBlock);
+  let catchBody: Json = null;
+  let ccap: string[] = [];
+  if (node.catchClause) {
+    catchBody = node.catchClause.block.statements.map(stmt);
+    ccap = capturesOf(node.catchClause.block);
+  }
+  let finallyBody: Json = null;
+  let fcap: string[] = [];
+  if (node.finallyBlock) {
+    finallyBody = node.finallyBlock.statements.map(stmt);
+    fcap = capturesOf(node.finallyBlock);
+  }
+  if (!node.catchClause && !node.finallyBlock)
+    fail(node, "a try with neither catch nor finally");
+  return {
+    k: "try",
+    body,
+    bcap,
+    catch: catchBody,
+    ccap,
+    finally: finallyBody,
+    fcap,
+    span: span(node),
+  };
 }
 
 function block(node: ts.Statement): Json {

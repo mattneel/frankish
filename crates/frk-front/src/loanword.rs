@@ -599,6 +599,7 @@ pub fn compile_loanword<'c>(context: &'c Context, text: &str) -> Result<Module<'
         artifact: &artifact,
         module: &module,
         arrow_counter: std::cell::Cell::new(0),
+        exn_mark_emitted: std::cell::Cell::new(false),
     };
 
     // Print runtime declarations (bodyless; every execution path
@@ -672,6 +673,8 @@ struct Emitter<'c, 'p> {
     /// to the module mid-expression.
     module: &'p Module<'c>,
     arrow_counter: std::cell::Cell<usize>,
+    /// The static abortive marker clause (D-076), emitted at most once.
+    exn_mark_emitted: std::cell::Cell<bool>,
 }
 
 /// One local: parameters bind values, `let` locals bind boxes.
@@ -679,6 +682,27 @@ struct Emitter<'c, 'p> {
 enum Binding<'c, 'r> {
     Value(Value<'c, 'r>, TsTy),
     Boxed(Value<'c, 'r>, TsTy),
+}
+
+/// What a D-061 guard's early return must synthesize (D-076): the
+/// enclosing function's poison shape. Poison is NEVER observable — it
+/// exists only on the unwind path.
+/// The two lifted-region shapes (D-076).
+#[derive(Clone, Copy)]
+enum LiftShape {
+    /// A try body: `(captures…, token: i64) -> !frk_dyn.dyn`.
+    Body,
+    /// A clause/finally/wind function: `(captures…, pack) -> pack`.
+    Pack,
+}
+
+#[derive(Clone)]
+enum GuardShape {
+    Ts(TsTy),
+    /// A lifted try body: returns !frk_dyn.dyn.
+    Dyn,
+    /// A lifted clause/wind function: returns an empty pack.
+    Pack,
 }
 
 struct Fcx<'c, 'r> {
@@ -692,6 +716,8 @@ struct Fcx<'c, 'r> {
     /// emitted); remaining statements in the block are tsc-legal dead
     /// code and are dropped.
     terminated: bool,
+    /// D-076: the guard discipline's poison shape for this function.
+    guard: GuardShape,
 }
 
 impl<'c, 'p> Emitter<'c, 'p> {
@@ -842,6 +868,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
             exit,
             ret: function.ret.clone(),
             terminated: false,
+            guard: GuardShape::Ts(function.ret.clone()),
         };
         for statement in &function.body {
             self.emit_stmt(&mut fcx, statement)?;
@@ -942,6 +969,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
             exit: entry,
             ret: TsTy::Class(decl.ty),
             terminated: false,
+            guard: GuardShape::Ts(TsTy::Class(decl.ty)),
         };
         let mut values: HashMap<String, (Value, TsTy)> = HashMap::new();
         let mut self_fields: Vec<String> = Vec::new();
@@ -1069,6 +1097,783 @@ impl<'c, 'p> Emitter<'c, 'p> {
             location,
         );
         module.body().append_operation(op);
+        Ok(())
+    }
+
+    /// try/catch/finally (D-076, ORDER-CORRECTED): the clause is a
+    /// static MARKER that just aborts — catch statements run INLINE at
+    /// the handle site AFTER the prompt returns, so a `finally` (wind)
+    /// crossed by the unwind fires BEFORE the catch code: the JS order,
+    /// on both twins, by construction.
+    fn emit_try<'r>(
+        &self,
+        fcx: &mut Fcx<'c, 'r>,
+        node: &Json,
+        location: Location<'c>,
+    ) -> Result<()> {
+        const PACK_FN: &str =
+            "!frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>";
+        const BODY_FN: &str = "!frk_closure.fn<[i64], [!frk_dyn.dyn]>";
+
+        let body = field(node, "body")?
+            .as_array()
+            .ok_or_else(|| LoanwordError("try body".into()))?
+            .clone();
+        let (bcaps, bvals) = self.resolve_captures(fcx, field(node, "bcap")?)?;
+        let catch_stmts = node.get("catch").filter(|c| !c.is_null()).cloned();
+        let finally_stmts = node.get("finally").filter(|f| !f.is_null()).cloned();
+
+        let index = self.arrow_counter.get();
+        self.arrow_counter.set(index + 1);
+
+        // The result dyn whose tag discriminates normal (nil) from
+        // caught (the marker's bool).
+        let outcome: Value<'c, 'r> = if let Some(catch_json) = &catch_stmts {
+            let _ = catch_json;
+            self.ensure_exn_mark()?;
+            let body_symbol = format!("__try_body_{index}");
+            self.emit_lifted(&body_symbol, &bcaps, LiftShape::Body, &body)?;
+
+            if finally_stmts.is_none() {
+                let clause =
+                    self.make_closure_over(fcx, &[], &[], "__exn_mark", PACK_FN, location)?;
+                let body_closure =
+                    self.make_closure_over(fcx, &bvals, &bcaps, &body_symbol, BODY_FN, location)?;
+                self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_ctl.handle", location)
+                        .add_attributes(&[(
+                            Identifier::new(self.context, "label"),
+                            StringAttribute::new(self.context, "__exn").into(),
+                        )])
+                        .add_operands(&[clause, body_closure])
+                        .add_results(&[Type::parse(self.context, "!frk_dyn.dyn")
+                            .ok_or(LoanwordError("dyn".into()))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?
+            } else {
+                // try/catch/finally: the wind thunk wraps the handle
+                // and passes the outcome out as its pack head.
+                let finally_body = finally_stmts
+                    .as_ref()
+                    .unwrap()
+                    .as_array()
+                    .ok_or_else(|| LoanwordError("finally body".into()))?
+                    .clone();
+                let (fcaps, fvals) = self.resolve_captures(fcx, field(node, "fcap")?)?;
+                let finally_symbol = format!("__finally_{index}");
+                self.emit_lifted(&finally_symbol, &fcaps, LiftShape::Pack, &finally_body)?;
+                let thunk_symbol = format!("__wind_thunk_{index}");
+                self.emit_wind_thunk(&thunk_symbol, &bcaps, &body_symbol)?;
+                let nop_symbol = format!("__nop_{index}");
+                self.emit_lifted(&nop_symbol, &[], LiftShape::Pack, &[])?;
+
+                let before =
+                    self.make_closure_over(fcx, &[], &[], &nop_symbol, PACK_FN, location)?;
+                let thunk = self.make_closure_over(
+                    fcx,
+                    &bvals,
+                    &bcaps,
+                    &thunk_symbol,
+                    PACK_FN,
+                    location,
+                )?;
+                let after = self.make_closure_over(
+                    fcx,
+                    &fvals,
+                    &fcaps,
+                    &finally_symbol,
+                    PACK_FN,
+                    location,
+                )?;
+                self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_ctl.wind", location)
+                        .add_operands(&[before, thunk, after])
+                        .add_results(&[Type::parse(self.context, "!frk_dyn.dyn")
+                            .ok_or(LoanwordError("dyn".into()))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?
+            }
+        } else {
+            // try/finally without catch: wind around the plain body;
+            // an escaping throw re-raises past the after.
+            let finally_body = finally_stmts
+                .ok_or_else(|| LoanwordError("try without catch or finally".into()))?
+                .as_array()
+                .ok_or_else(|| LoanwordError("finally body".into()))?
+                .clone();
+            let (fcaps, fvals) = self.resolve_captures(fcx, field(node, "fcap")?)?;
+            let body_symbol = format!("__try_pack_{index}");
+            self.emit_lifted(&body_symbol, &bcaps, LiftShape::Pack, &body)?;
+            let finally_symbol = format!("__finally_{index}");
+            self.emit_lifted(&finally_symbol, &fcaps, LiftShape::Pack, &finally_body)?;
+            let nop_symbol = format!("__nop_{index}");
+            self.emit_lifted(&nop_symbol, &[], LiftShape::Pack, &[])?;
+            let before = self.make_closure_over(fcx, &[], &[], &nop_symbol, PACK_FN, location)?;
+            let thunk =
+                self.make_closure_over(fcx, &bvals, &bcaps, &body_symbol, PACK_FN, location)?;
+            let after =
+                self.make_closure_over(fcx, &fvals, &fcaps, &finally_symbol, PACK_FN, location)?;
+            self.op_result(
+                fcx.block,
+                OperationBuilder::new("frk_ctl.wind", location)
+                    .add_operands(&[before, thunk, after])
+                    .add_results(&[Type::parse(self.context, "!frk_dyn.dyn")
+                        .ok_or(LoanwordError("dyn".into()))?])
+                    .build()
+                    .map_err(|e| LoanwordError(e.to_string()))?,
+            )?
+        };
+
+        // A throw ESCAPING this construct (from the finally itself, or
+        // a try/finally with no catch) is still in flight here.
+        self.guard(fcx, location)?;
+
+        if let Some(catch_json) = catch_stmts {
+            // Dispatch on the outcome tag: nil = normal, else caught —
+            // the catch statements run INLINE, after any finally.
+            let i64_type: Type = IntegerType::new(self.context, 64).into();
+            let tag = self.op_result(
+                fcx.block,
+                OperationBuilder::new("frk_dyn.tag_of", location)
+                    .add_operands(&[outcome])
+                    .add_results(&[i64_type])
+                    .build()
+                    .map_err(|e| LoanwordError(e.to_string()))?,
+            )?;
+            let zero = self.op_result(
+                fcx.block,
+                melior::dialect::arith::constant(
+                    self.context,
+                    IntegerAttribute::new(i64_type, 0).into(),
+                    location,
+                ),
+            )?;
+            let caught = self.op_result(
+                fcx.block,
+                OperationBuilder::new("arith.cmpi", location)
+                    .add_attributes(&[(
+                        Identifier::new(self.context, "predicate"),
+                        IntegerAttribute::new(i64_type, 1).into(), // ne
+                    )])
+                    .add_operands(&[tag, zero])
+                    .add_results(&[IntegerType::new(self.context, 1).into()])
+                    .build()
+                    .map_err(|e| LoanwordError(e.to_string()))?,
+            )?;
+            let catch_block = fcx.region.append_block(Block::new(&[]));
+            let join_block = fcx.region.append_block(Block::new(&[]));
+            fcx.block.append_operation(self.cond_br(
+                caught,
+                catch_block,
+                join_block,
+                location,
+            )?);
+            fcx.block = catch_block;
+            fcx.terminated = false;
+            for statement in catch_json
+                .as_array()
+                .ok_or_else(|| LoanwordError("catch body".into()))?
+            {
+                self.emit_stmt(fcx, statement)?;
+            }
+            if !fcx.terminated {
+                fcx.block
+                    .append_operation(self.br(join_block, None, location)?);
+            }
+            fcx.block = join_block;
+            fcx.terminated = false;
+        }
+        Ok(())
+    }
+
+    /// The static marker clause (D-076): abortive by construction —
+    /// returns [true-dyn] WITHOUT applying κ, so perform_end aborts to
+    /// the handle and the catch code runs at the site instead.
+    fn ensure_exn_mark(&self) -> Result<()> {
+        if self.exn_mark_emitted.get() {
+            return Ok(());
+        }
+        self.exn_mark_emitted.set(true);
+        let location = Location::unknown(self.context);
+        let pack_ty = Type::parse(self.context, "!frk_mem.arr<!frk_dyn.dyn>")
+            .ok_or(LoanwordError("pack".into()))?;
+        let region = Region::new();
+        let entry = region.append_block(Block::new(&[(pack_ty, location)]));
+        let fcx_like_block = entry;
+        let i64_type: Type = IntegerType::new(self.context, 64).into();
+        let one = self.op_result(
+            fcx_like_block,
+            melior::dialect::arith::constant(
+                self.context,
+                IntegerAttribute::new(IntegerType::new(self.context, 1).into(), 1).into(),
+                location,
+            ),
+        )?;
+        let marker = self.op_result(
+            fcx_like_block,
+            OperationBuilder::new("frk_dyn.wrap", location)
+                .add_attributes(&[(
+                    Identifier::new(self.context, "tag"),
+                    IntegerAttribute::new(i64_type, 1).into(),
+                )])
+                .add_operands(&[one])
+                .add_results(&[Type::parse(self.context, "!frk_dyn.dyn")
+                    .ok_or(LoanwordError("dyn".into()))?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )?;
+        let len = self.op_result(
+            fcx_like_block,
+            melior::dialect::arith::constant(
+                self.context,
+                IntegerAttribute::new(i64_type, 1).into(),
+                location,
+            ),
+        )?;
+        let pack = self.op_result(
+            fcx_like_block,
+            OperationBuilder::new("frk_mem.array_new", location)
+                .add_operands(&[len])
+                .add_results(&[pack_ty])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )?;
+        let zero = self.op_result(
+            fcx_like_block,
+            melior::dialect::arith::constant(
+                self.context,
+                IntegerAttribute::new(i64_type, 0).into(),
+                location,
+            ),
+        )?;
+        fcx_like_block.append_operation(
+            OperationBuilder::new("frk_mem.array_set", location)
+                .add_operands(&[pack, zero, marker])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        );
+        fcx_like_block.append_operation(
+            OperationBuilder::new("func.return", location)
+                .add_operands(&[pack])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        );
+        let signature = FunctionType::new(self.context, &[pack_ty], &[pack_ty]);
+        let op = melior::dialect::func::func(
+            self.context,
+            StringAttribute::new(self.context, "__exn_mark"),
+            TypeAttribute::new(signature.into()),
+            region,
+            &[],
+            location,
+        );
+        self.module.body().append_operation(op);
+        Ok(())
+    }
+
+    /// Resolves producer-computed capture names against the current
+    /// env: (name, ty, boxed) + the values (cells for boxed).
+    fn resolve_captures<'r>(
+        &self,
+        fcx: &Fcx<'c, 'r>,
+        names: &Json,
+    ) -> Result<(Vec<(String, TsTy, bool)>, Vec<Value<'c, 'r>>)> {
+        let mut caps = Vec::new();
+        let mut values = Vec::new();
+        for name in names
+            .as_array()
+            .ok_or_else(|| LoanwordError("captures".into()))?
+        {
+            let name = name
+                .as_str()
+                .ok_or_else(|| LoanwordError("capture name".into()))?;
+            match fcx.env.get(name).cloned() {
+                Some(Binding::Value(value, ty)) => {
+                    caps.push((name.to_string(), ty, false));
+                    values.push(value);
+                }
+                Some(Binding::Boxed(cell, ty)) => {
+                    caps.push((name.to_string(), ty, true));
+                    values.push(cell);
+                }
+                None => return err(format!("try region captures unknown {name:?}")),
+            }
+        }
+        Ok((caps, values))
+    }
+
+    fn capture_slot_text(&self, ty: &TsTy, boxed: bool) -> Result<String> {
+        if boxed {
+            Ok(format!("!frk_mem.box<{}>", self.mlir_ty(ty)?))
+        } else {
+            Ok(format!("{}", self.mlir_ty(ty)?))
+        }
+    }
+
+    /// Lifts a statement list into `@symbol(captures…, extra) -> …`
+    /// (D-076): Body = (…, token: i64) -> dyn; Pack = (…, pack) -> pack.
+    fn emit_lifted(
+        &self,
+        symbol: &str,
+        captures: &[(String, TsTy, bool)],
+        shape: LiftShape,
+        stmts: &[Json],
+    ) -> Result<()> {
+        let location = Location::unknown(self.context);
+        let region = Region::new();
+        let mut arg_types: Vec<(Type, Location)> = Vec::new();
+        for (_, ty, boxed) in captures {
+            arg_types.push((
+                Type::parse(self.context, &self.capture_slot_text(ty, *boxed)?)
+                    .ok_or(LoanwordError("capture slot".into()))?,
+                location,
+            ));
+        }
+        let (extra_ty, result_ty): (Type, Type) = match shape {
+            LiftShape::Body => (
+                IntegerType::new(self.context, 64).into(),
+                Type::parse(self.context, "!frk_dyn.dyn").ok_or(LoanwordError("dyn".into()))?,
+            ),
+            LiftShape::Pack => {
+                let pack = Type::parse(self.context, "!frk_mem.arr<!frk_dyn.dyn>")
+                    .ok_or(LoanwordError("pack".into()))?;
+                (pack, pack)
+            }
+        };
+        arg_types.push((extra_ty, location));
+        let entry = region.append_block(Block::new(&arg_types));
+        let mut env = HashMap::new();
+        for (position, (name, ty, boxed)) in captures.iter().enumerate() {
+            let raw = entry
+                .argument(position)
+                .map_err(|e| LoanwordError(e.to_string()))?
+                .to_raw();
+            let value = unsafe { Value::from_raw(raw) };
+            env.insert(
+                name.clone(),
+                if *boxed {
+                    Binding::Boxed(value, ty.clone())
+                } else {
+                    Binding::Value(value, ty.clone())
+                },
+            );
+        }
+        let mut fcx = Fcx {
+            region: &region,
+            block: entry,
+            env,
+            exit: entry, // `return` is producer-fenced inside try regions
+            ret: TsTy::Void,
+            terminated: false,
+            guard: match shape {
+                LiftShape::Body => GuardShape::Dyn,
+                LiftShape::Pack => GuardShape::Pack,
+            },
+        };
+        for statement in stmts {
+            self.emit_stmt(&mut fcx, statement)?;
+        }
+        if !fcx.terminated {
+            // Normal completion — return the shape's unit.
+            match shape {
+                LiftShape::Body => {
+                    let nil = self.nil_dyn(&fcx, location)?;
+                    fcx.block.append_operation(
+                        OperationBuilder::new("func.return", location)
+                            .add_operands(&[nil])
+                            .build()
+                            .map_err(|e| LoanwordError(e.to_string()))?,
+                    );
+                }
+                LiftShape::Pack => {
+                    self.poison_return(&mut fcx, location)?; // empty pack
+                }
+            }
+        }
+        let signature = FunctionType::new(
+            self.context,
+            &arg_types.iter().map(|(ty, _)| *ty).collect::<Vec<_>>(),
+            &[result_ty],
+        );
+        let op = melior::dialect::func::func(
+            self.context,
+            StringAttribute::new(self.context, symbol),
+            TypeAttribute::new(signature.into()),
+            region,
+            &[],
+            location,
+        );
+        self.module.body().append_operation(op);
+        Ok(())
+    }
+
+    /// The wind thunk for try/catch/finally (D-076): runs the handle
+    /// (static marker clause) inside the wind extent and passes the
+    /// outcome out as its pack head — the catch dispatch happens at
+    /// the try site, AFTER the finally.
+    fn emit_wind_thunk(
+        &self,
+        symbol: &str,
+        bcaps: &[(String, TsTy, bool)],
+        body_symbol: &str,
+    ) -> Result<()> {
+        const PACK_FN: &str =
+            "!frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>";
+        const BODY_FN: &str = "!frk_closure.fn<[i64], [!frk_dyn.dyn]>";
+        let location = Location::unknown(self.context);
+        let region = Region::new();
+        let mut arg_types: Vec<(Type, Location)> = Vec::new();
+        for (_, ty, boxed) in bcaps {
+            arg_types.push((
+                Type::parse(self.context, &self.capture_slot_text(ty, *boxed)?)
+                    .ok_or(LoanwordError("capture slot".into()))?,
+                location,
+            ));
+        }
+        let pack_ty = Type::parse(self.context, "!frk_mem.arr<!frk_dyn.dyn>")
+            .ok_or(LoanwordError("pack".into()))?;
+        arg_types.push((pack_ty, location));
+        let entry = region.append_block(Block::new(&arg_types));
+        let fcx = Fcx {
+            region: &region,
+            block: entry,
+            env: HashMap::new(),
+            exit: entry,
+            ret: TsTy::Void,
+            terminated: false,
+            guard: GuardShape::Pack,
+        };
+        let arg_at = |position: usize| -> Result<Value> {
+            let raw = entry
+                .argument(position)
+                .map_err(|e| LoanwordError(e.to_string()))?
+                .to_raw();
+            Ok(unsafe { Value::from_raw(raw) })
+        };
+        let bvals: Vec<Value> = (0..bcaps.len()).map(arg_at).collect::<Result<_>>()?;
+        let clause = self.make_closure_over(&fcx, &[], &[], "__exn_mark", PACK_FN, location)?;
+        let body_closure =
+            self.make_closure_over(&fcx, &bvals, bcaps, body_symbol, BODY_FN, location)?;
+        let outcome = self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_ctl.handle", location)
+                .add_attributes(&[(
+                    Identifier::new(self.context, "label"),
+                    StringAttribute::new(self.context, "__exn").into(),
+                )])
+                .add_operands(&[clause, body_closure])
+                .add_results(&[Type::parse(self.context, "!frk_dyn.dyn")
+                    .ok_or(LoanwordError("dyn".into()))?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )?;
+        // Pack the outcome as the head — the wind's value.
+        let i64_type: Type = IntegerType::new(self.context, 64).into();
+        let one = self.op_result(
+            fcx.block,
+            melior::dialect::arith::constant(
+                self.context,
+                IntegerAttribute::new(i64_type, 1).into(),
+                location,
+            ),
+        )?;
+        let result_pack = self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_mem.array_new", location)
+                .add_operands(&[one])
+                .add_results(&[pack_ty])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )?;
+        let zero = self.op_result(
+            fcx.block,
+            melior::dialect::arith::constant(
+                self.context,
+                IntegerAttribute::new(i64_type, 0).into(),
+                location,
+            ),
+        )?;
+        fcx.block.append_operation(
+            OperationBuilder::new("frk_mem.array_set", location)
+                .add_operands(&[result_pack, zero, outcome])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        );
+        fcx.block.append_operation(
+            OperationBuilder::new("func.return", location)
+                .add_operands(&[result_pack])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        );
+        let signature = FunctionType::new(
+            self.context,
+            &arg_types.iter().map(|(ty, _)| *ty).collect::<Vec<_>>(),
+            &[pack_ty],
+        );
+        let op = melior::dialect::func::func(
+            self.context,
+            StringAttribute::new(self.context, symbol),
+            TypeAttribute::new(signature.into()),
+            region,
+            &[],
+            location,
+        );
+        self.module.body().append_operation(op);
+        Ok(())
+    }
+
+    /// A closure over resolved capture values (env product + make).
+    fn make_closure_over<'r>(
+        &self,
+        fcx: &Fcx<'c, 'r>,
+        values: &[Value<'c, 'r>],
+        caps: &[(String, TsTy, bool)],
+        callee: &str,
+        fn_ty_text: &str,
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        let mut product = self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_adt.product_new", location)
+                .add_results(&[Type::parse(self.context, "!frk_adt.product<[]>")
+                    .ok_or(LoanwordError("product".into()))?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )?;
+        let mut grown = Vec::new();
+        for (value, (_, ty, boxed)) in values.iter().zip(caps.iter()) {
+            grown.push(self.capture_slot_text(ty, *boxed)?);
+            let product_ty = Type::parse(
+                self.context,
+                &format!("!frk_adt.product<[{}]>", grown.join(", ")),
+            )
+            .ok_or(LoanwordError("product".into()))?;
+            product = self.op_result(
+                fcx.block,
+                OperationBuilder::new("frk_adt.product_snoc", location)
+                    .add_operands(&[product, *value])
+                    .add_results(&[product_ty])
+                    .build()
+                    .map_err(|e| LoanwordError(e.to_string()))?,
+            )?;
+        }
+        self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_closure.make", location)
+                .add_attributes(&[(
+                    Identifier::new(self.context, "callee"),
+                    FlatSymbolRefAttribute::new(self.context, callee).into(),
+                )])
+                .add_operands(&[product])
+                .add_results(&[Type::parse(self.context, fn_ty_text)
+                    .ok_or(LoanwordError("fn type".into()))?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )
+    }
+
+    /// Appends a poison `func.return` in the CURRENT block (D-076):
+    /// the value exists only on the unwind path, never observed.
+    fn poison_return<'r>(&self, fcx: &mut Fcx<'c, 'r>, location: Location<'c>) -> Result<()> {
+        let value: Option<Value<'c, 'r>> = match fcx.guard.clone() {
+            GuardShape::Ts(TsTy::Void) => None,
+            GuardShape::Ts(TsTy::Num) => Some(self.const_f64(fcx, 0.0, location)?),
+            GuardShape::Ts(TsTy::Bool) => Some(self.const_bool(fcx, false, location)?),
+            GuardShape::Ts(TsTy::Str) => Some(self.str_lit(fcx, "0", location)?),
+            GuardShape::Ts(TsTy::Class(index)) => {
+                // The D-074 placeholder's second life.
+                let null = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_mem.recref_null", location)
+                        .add_results(&[Type::parse(self.context, "!frk_mem.recref")
+                            .ok_or(LoanwordError("recref".into()))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                Some(self.rec_cast(fcx, null, index, location)?)
+            }
+            GuardShape::Ts(TsTy::Arr(elem)) => {
+                let i64_type: Type = IntegerType::new(self.context, 64).into();
+                let zero = self.op_result(
+                    fcx.block,
+                    melior::dialect::arith::constant(
+                        self.context,
+                        IntegerAttribute::new(i64_type, 0).into(),
+                        location,
+                    ),
+                )?;
+                Some(self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_mem.array_new", location)
+                        .add_operands(&[zero])
+                        .add_results(&[self.mlir_ty(&TsTy::Arr(elem))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?)
+            }
+            GuardShape::Ts(TsTy::Union(def) | TsTy::Variant(def, _)) => {
+                // Variant 0 with zeroed fields (num/bool/str only in
+                // the D-072 slice).
+                let mut product = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_adt.product_new", location)
+                        .add_results(&[Type::parse(self.context, "!frk_adt.product<[]>")
+                            .ok_or(LoanwordError("product".into()))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                let mut grown = Vec::new();
+                for (_, ty) in def.variants[0].fields.clone() {
+                    let zero = match ty {
+                        TsTy::Num => self.const_f64(fcx, 0.0, location)?,
+                        TsTy::Bool => self.const_bool(fcx, false, location)?,
+                        TsTy::Str => self.str_lit(fcx, "0", location)?,
+                        other => {
+                            return err(format!("no poison for union field {other:?}"))
+                        }
+                    };
+                    grown.push(format!("{}", self.mlir_ty(&ty)?));
+                    let product_ty = Type::parse(
+                        self.context,
+                        &format!("!frk_adt.product<[{}]>", grown.join(", ")),
+                    )
+                    .ok_or(LoanwordError("product".into()))?;
+                    product = self.op_result(
+                        fcx.block,
+                        OperationBuilder::new("frk_adt.product_snoc", location)
+                            .add_operands(&[product, zero])
+                            .add_results(&[product_ty])
+                            .build()
+                            .map_err(|e| LoanwordError(e.to_string()))?,
+                    )?;
+                }
+                let i64_type: Type = IntegerType::new(self.context, 64).into();
+                Some(self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_adt.make_sum", location)
+                        .add_attributes(&[(
+                            Identifier::new(self.context, "variant"),
+                            IntegerAttribute::new(i64_type, 0).into(),
+                        )])
+                        .add_operands(&[product])
+                        .add_results(&[self.mlir_ty(&TsTy::Union(def.clone()))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?)
+            }
+            GuardShape::Ts(other) => {
+                return err(format!(
+                    "guarded early return has no poison for {other:?} (fenced, D-076)"
+                ));
+            }
+            GuardShape::Dyn => Some(self.nil_dyn(fcx, location)?),
+            GuardShape::Pack => {
+                let i64_type: Type = IntegerType::new(self.context, 64).into();
+                let zero = self.op_result(
+                    fcx.block,
+                    melior::dialect::arith::constant(
+                        self.context,
+                        IntegerAttribute::new(i64_type, 0).into(),
+                        location,
+                    ),
+                )?;
+                Some(self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_mem.array_new", location)
+                        .add_operands(&[zero])
+                        .add_results(&[Type::parse(
+                            self.context,
+                            "!frk_mem.arr<!frk_dyn.dyn>",
+                        )
+                        .ok_or(LoanwordError("pack".into()))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?)
+            }
+        };
+        let operands: Vec<Value> = value.into_iter().collect();
+        fcx.block.append_operation(
+            OperationBuilder::new("func.return", location)
+                .add_operands(&operands)
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        );
+        Ok(())
+    }
+
+    /// A nil fat value (tag 0, zero payload).
+    fn nil_dyn<'r>(&self, fcx: &Fcx<'c, 'r>, location: Location<'c>) -> Result<Value<'c, 'r>> {
+        let i64_type: Type = IntegerType::new(self.context, 64).into();
+        let zero = self.op_result(
+            fcx.block,
+            melior::dialect::arith::constant(
+                self.context,
+                IntegerAttribute::new(i64_type, 0).into(),
+                location,
+            ),
+        )?;
+        self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_dyn.wrap", location)
+                .add_attributes(&[(
+                    Identifier::new(self.context, "tag"),
+                    IntegerAttribute::new(i64_type, 0).into(),
+                )])
+                .add_operands(&[zero])
+                .add_results(&[Type::parse(self.context, "!frk_dyn.dyn")
+                    .ok_or(LoanwordError("dyn".into()))?])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )
+    }
+
+    /// The D-061 guard (D-076): after a user call, check the pending
+    /// cell; unwinding returns poison, otherwise continue in a fresh
+    /// block.
+    fn guard<'r>(&self, fcx: &mut Fcx<'c, 'r>, location: Location<'c>) -> Result<()> {
+        let i64_type: Type = IntegerType::new(self.context, 64).into();
+        let pending = self.op_result(
+            fcx.block,
+            OperationBuilder::new("frk_ctl.pending", location)
+                .add_results(&[i64_type])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )?;
+        let zero = self.op_result(
+            fcx.block,
+            melior::dialect::arith::constant(
+                self.context,
+                IntegerAttribute::new(i64_type, 0).into(),
+                location,
+            ),
+        )?;
+        let unwinding = self.op_result(
+            fcx.block,
+            OperationBuilder::new("arith.cmpi", location)
+                .add_attributes(&[(
+                    Identifier::new(self.context, "predicate"),
+                    IntegerAttribute::new(i64_type, 1).into(), // ne
+                )])
+                .add_operands(&[pending, zero])
+                .add_results(&[IntegerType::new(self.context, 1).into()])
+                .build()
+                .map_err(|e| LoanwordError(e.to_string()))?,
+        )?;
+        let unwind_block = fcx.region.append_block(Block::new(&[]));
+        let continue_block = fcx.region.append_block(Block::new(&[]));
+        fcx.block.append_operation(self.cond_br(
+            unwinding,
+            unwind_block,
+            continue_block,
+            location,
+        )?);
+        fcx.block = unwind_block;
+        self.poison_return(fcx, location)?;
+        fcx.block = continue_block;
         Ok(())
     }
 
@@ -1237,6 +2042,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 exit: entry, // expression bodies cannot `return`
                 ret: ret.clone(),
                 terminated: false,
+                guard: GuardShape::Ts(ret.clone()),
             };
             let (body, body_ty) = self.emit_expr(&mut inner, field(node, "e")?)?;
             if body_ty != ret {
@@ -1358,6 +2164,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
             fcx.block.append_operation(
                 builder.build().map_err(|e| LoanwordError(e.to_string()))?,
             );
+            self.guard(fcx, location)?;
             Ok((None, TsTy::Void))
         } else {
             let value = self.op_result(
@@ -1367,6 +2174,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
                     .build()
                     .map_err(|e| LoanwordError(e.to_string()))?,
             )?;
+            self.guard(fcx, location)?;
             Ok((Some(value), ret))
         }
     }
@@ -1417,6 +2225,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
             exit,
             ret: TsTy::Void,
             terminated: false,
+            guard: GuardShape::Ts(TsTy::Void),
         };
         for statement in &self.artifact.top {
             self.emit_stmt(&mut fcx, statement)?;
@@ -1667,6 +2476,31 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 fcx.terminated = false;
                 Ok(())
             }
+            "throw" => {
+                // D-076: evaluate for effects, discard, perform, and
+                // return poison unconditionally — natively the pending
+                // cell routes past it; on the interp the Abort never
+                // comes back. Both twins agree by construction.
+                let _ = self.emit_expr(fcx, field(node, "e")?)?;
+                let nil = self.nil_dyn(fcx, location)?;
+                let _ = self.op_result(
+                    fcx.block,
+                    OperationBuilder::new("frk_ctl.perform", location)
+                        .add_attributes(&[(
+                            Identifier::new(self.context, "label"),
+                            StringAttribute::new(self.context, "__exn").into(),
+                        )])
+                        .add_operands(&[nil])
+                        .add_results(&[Type::parse(self.context, "!frk_dyn.dyn")
+                            .ok_or(LoanwordError("dyn".into()))?])
+                        .build()
+                        .map_err(|e| LoanwordError(e.to_string()))?,
+                )?;
+                self.poison_return(fcx, location)?;
+                fcx.terminated = true;
+                Ok(())
+            }
+            "try" => self.emit_try(fcx, node, location),
             "ret" => {
                 let value = match node.get("e").filter(|e| !e.is_null()) {
                     Some(expr) => Some(self.emit_expr(fcx, expr)?.0),
@@ -1724,6 +2558,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
                                 .build()
                                 .map_err(|e| LoanwordError(e.to_string()))?,
                         );
+                        self.guard(fcx, location)?;
                         return Ok(());
                     }
                 }
@@ -2103,6 +2938,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
                         .build()
                         .map_err(|e| LoanwordError(e.to_string()))?,
                 )?;
+                self.guard(fcx, location)?;
                 Ok((value, target.ret.clone()))
             }
             "new" => {
@@ -2132,6 +2968,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
                         .build()
                         .map_err(|e| LoanwordError(e.to_string()))?,
                 )?;
+                self.guard(fcx, location)?;
                 Ok((value, TsTy::Class(class)))
             }
             "mcall" => {
@@ -2232,6 +3069,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
                         .build()
                         .map_err(|e| LoanwordError(e.to_string()))?,
                 )?;
+                self.guard(fcx, location)?;
                 Ok((result, ret))
             }
             "arrow" => self.emit_arrow(fcx, node, location),
@@ -2252,6 +3090,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
                         .build()
                         .map_err(|e| LoanwordError(e.to_string()))?,
                 )?;
+                self.guard(fcx, location)?;
                 Ok((result, def.ret.clone()))
             }
             "obj" => {

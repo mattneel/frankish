@@ -193,6 +193,46 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-076 [m30/ts3/ctl] TS-3 OPENS with exceptions on the effects lane
+  (the human picked it; async/await state machines are the stage's
+  second half, next TS milestone). ZERO KERNEL DELTAS is the bar
+  again (the D-071 precedent): JS exceptions are the ABORTIVE
+  clause class κ_frk already carries. (1) MAPPING: `throw e` ⇒
+  evaluate e for its effects then DISCARD it and
+  frk_ctl.perform{label="__exn"}(nil dyn) — the payload is
+  UNOBSERVABLE in this slice because catch admits ONLY the
+  optional-binding form (`catch {`, ES2019); binding catch waits
+  for typeof narrowing, which wants the dyn-tag/TS-1-promotion
+  unification and deserves its own milestone. After a throw the
+  emitter returns poison unconditionally: natively the pending
+  cell routes past it (D-061), on the interp the Abort propagates
+  and never comes back — both twins agree by construction.
+  `try/catch` ⇒ frk_ctl.handle{label="__exn"} with a per-site
+  ABORTIVE clause — a lifted @__catch_N(captures…, pack) -> pack
+  that runs the catch statements and returns WITHOUT applying κ
+  (D-069's consumed-else-abort does the rest); the body lifts as
+  @__try_body_N(captures…, token) -> dyn, the scheme shapes
+  verbatim. `finally` ⇒ frk_ctl.wind (nop before, the try/catch
+  as the thunk, finally as after — JS's always-runs law IS wind's
+  law). Lifted blocks capture BY BINDING (the M29 arrow rule:
+  params by value, lets by box), so mutation inside try is visible
+  outside — the JS law again. (2) THE GUARD DISCIPLINE: the TS
+  emitter adopts D-061 wholesale — every non-tail user call
+  (call/new/mcall/imcall/fcall) is followed by a pending check +
+  early poison return. TS's TYPED returns make poison a table:
+  num 0.0, bool false, str a dead literal, void nothing, class
+  rec_cast(recref_null) (the D-074 placeholder's second life),
+  arr array_new(0), union variant-0 with zeroed fields; fn/iface
+  returns are FENCED until a case needs them. Poison is NEVER
+  observable — it exists only on the unwind path. (3) FENCED
+  LOUD: binding catch, `return` inside try/catch/finally regions
+  (early exits crossing prompt/wind scopes — the structured-exit
+  rung), rethrow-refinement idioms needing the payload, throw
+  across iface_call boundaries is NOT fenced (the evidence stack
+  is dynamic — it just works and the corpus witnesses it).
+  Revisit: binding catch + typeof narrowing (unify with D-072's
+  promotion over dyn tags); return-inside-try at the async
+  milestone (the state machine forces structured exits anyway).
 - D-075 [m29/ts2/dyn] TS-2 COMPLETES (the human picked it):
   structural interfaces on D-026's itabs + object closures — the
   stage freezes at this milestone's exit. (1) INTERFACES: method-
