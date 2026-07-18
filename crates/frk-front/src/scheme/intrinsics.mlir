@@ -62,7 +62,8 @@ func.func @__scm_display(%value: !frk_dyn.dyn) {
 // lists ride the trampoline/musttail machinery), other → " . " +
 // display + ")" (dotted).
 func.func @__scm_display_items(%p: !frk_dyn.dyn) {
-  %cell = "frk_dyn.unwrap"(%p) {tag = 6 : i64} : (!frk_dyn.dyn) -> !frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>
+  %cellb = "frk_dyn.unwrap"(%p) {tag = 6 : i64} : (!frk_dyn.dyn) -> !frk_mem.box<!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>>
+  %cell = "frk_mem.box_get"(%cellb) : (!frk_mem.box<!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>>) -> !frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>
   %car = "frk_adt.get"(%cell) {field = 0 : i64} : (!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>) -> !frk_dyn.dyn
   %cdr = "frk_adt.get"(%cell) {field = 1 : i64} : (!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>) -> !frk_dyn.dyn
   func.call @__scm_display(%car) : (!frk_dyn.dyn) -> ()
@@ -106,24 +107,139 @@ func.func @__scm_arg(%pack: !frk_mem.arr<!frk_dyn.dyn>, %i: i64) -> !frk_dyn.dyn
   return %n : !frk_dyn.dyn
 }
 
+// A pair is a BOXED product (D-077): mutation needs the shared cell —
+// interp aliases share the Rc, native aliases share the heap cell.
 func.func @__scm_cons(%a: !frk_dyn.dyn, %d: !frk_dyn.dyn) -> !frk_dyn.dyn {
   %e = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
   %p1 = "frk_adt.product_snoc"(%e, %a) : (!frk_adt.product<[]>, !frk_dyn.dyn) -> !frk_adt.product<[!frk_dyn.dyn]>
   %p2 = "frk_adt.product_snoc"(%p1, %d) : (!frk_adt.product<[!frk_dyn.dyn]>, !frk_dyn.dyn) -> !frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>
-  %pair = "frk_dyn.wrap"(%p2) {tag = 6 : i64} : (!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>) -> !frk_dyn.dyn
+  %cell = "frk_mem.box_new"(%p2) : (!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>) -> !frk_mem.box<!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>>
+  %pair = "frk_dyn.wrap"(%cell) {tag = 6 : i64} : (!frk_mem.box<!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>>) -> !frk_dyn.dyn
   return %pair : !frk_dyn.dyn
 }
 
 func.func @__scm_car(%p: !frk_dyn.dyn) -> !frk_dyn.dyn {
-  %cell = "frk_dyn.unwrap"(%p) {tag = 6 : i64} : (!frk_dyn.dyn) -> !frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>
-  %car = "frk_adt.get"(%cell) {field = 0 : i64} : (!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>) -> !frk_dyn.dyn
+  %cell = "frk_dyn.unwrap"(%p) {tag = 6 : i64} : (!frk_dyn.dyn) -> !frk_mem.box<!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>>
+  %car = "frk_mem.field_get"(%cell) {field = 0 : i64} : (!frk_mem.box<!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>>) -> !frk_dyn.dyn
   return %car : !frk_dyn.dyn
 }
 
 func.func @__scm_cdr(%p: !frk_dyn.dyn) -> !frk_dyn.dyn {
-  %cell = "frk_dyn.unwrap"(%p) {tag = 6 : i64} : (!frk_dyn.dyn) -> !frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>
-  %cdr = "frk_adt.get"(%cell) {field = 1 : i64} : (!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>) -> !frk_dyn.dyn
+  %cell = "frk_dyn.unwrap"(%p) {tag = 6 : i64} : (!frk_dyn.dyn) -> !frk_mem.box<!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>>
+  %cdr = "frk_mem.field_get"(%cell) {field = 1 : i64} : (!frk_mem.box<!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>>) -> !frk_dyn.dyn
   return %cdr : !frk_dyn.dyn
+}
+
+// Pair mutation (M31, D-077): the M28 record rung, consumed by scheme.
+func.func @__scm_setcar(%p: !frk_dyn.dyn, %v: !frk_dyn.dyn) -> !frk_dyn.dyn {
+  %cell = "frk_dyn.unwrap"(%p) {tag = 6 : i64} : (!frk_dyn.dyn) -> !frk_mem.box<!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>>
+  "frk_mem.field_set"(%cell, %v) {field = 0 : i64} : (!frk_mem.box<!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>>, !frk_dyn.dyn) -> ()
+  %z = arith.constant 0 : i64
+  %nil = "frk_dyn.wrap"(%z) {tag = 0 : i64} : (i64) -> !frk_dyn.dyn
+  return %nil : !frk_dyn.dyn
+}
+
+func.func @__scm_setcdr(%p: !frk_dyn.dyn, %v: !frk_dyn.dyn) -> !frk_dyn.dyn {
+  %cell = "frk_dyn.unwrap"(%p) {tag = 6 : i64} : (!frk_dyn.dyn) -> !frk_mem.box<!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>>
+  "frk_mem.field_set"(%cell, %v) {field = 1 : i64} : (!frk_mem.box<!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>>, !frk_dyn.dyn) -> ()
+  %z = arith.constant 0 : i64
+  %nil = "frk_dyn.wrap"(%z) {tag = 0 : i64} : (i64) -> !frk_dyn.dyn
+  return %nil : !frk_dyn.dyn
+}
+
+// Strings (M31, D-077): tag-3 bstrs like symbols; interning makes
+// string=? a pointer compare even for dynamic strings.
+func.func @__scm_strapp(%a: !frk_dyn.dyn, %b: !frk_dyn.dyn) -> !frk_dyn.dyn {
+  %sa = "frk_dyn.unwrap"(%a) {tag = 3 : i64} : (!frk_dyn.dyn) -> !frk_bstr.str
+  %sb = "frk_dyn.unwrap"(%b) {tag = 3 : i64} : (!frk_dyn.dyn) -> !frk_bstr.str
+  %r = "frk_bstr.concat"(%sa, %sb) : (!frk_bstr.str, !frk_bstr.str) -> !frk_bstr.str
+  %d = "frk_dyn.wrap"(%r) {tag = 3 : i64} : (!frk_bstr.str) -> !frk_dyn.dyn
+  return %d : !frk_dyn.dyn
+}
+
+func.func @__scm_strlen(%s: !frk_dyn.dyn) -> !frk_dyn.dyn {
+  %b = "frk_dyn.unwrap"(%s) {tag = 3 : i64} : (!frk_dyn.dyn) -> !frk_bstr.str
+  %n = "frk_bstr.len"(%b) : (!frk_bstr.str) -> i64
+  %f = arith.sitofp %n : i64 to f64
+  %d = "frk_dyn.wrap"(%f) {tag = 2 : i64} : (f64) -> !frk_dyn.dyn
+  return %d : !frk_dyn.dyn
+}
+
+func.func @__scm_streq(%a: !frk_dyn.dyn, %b: !frk_dyn.dyn) -> !frk_dyn.dyn {
+  %sa = "frk_dyn.unwrap"(%a) {tag = 3 : i64} : (!frk_dyn.dyn) -> !frk_bstr.str
+  %sb = "frk_dyn.unwrap"(%b) {tag = 3 : i64} : (!frk_dyn.dyn) -> !frk_bstr.str
+  %e = "frk_bstr.eq"(%sa, %sb) : (!frk_bstr.str, !frk_bstr.str) -> i1
+  %d = "frk_dyn.wrap"(%e) {tag = 1 : i64} : (i1) -> !frk_dyn.dyn
+  return %d : !frk_dyn.dyn
+}
+
+// R7RS (substring s start end): 0-based, end-exclusive — adapted to
+// bstr.sub's Lua convention (1-based, inclusive): sub(start+1, end).
+func.func @__scm_substr(%s: !frk_dyn.dyn, %from: !frk_dyn.dyn, %to: !frk_dyn.dyn) -> !frk_dyn.dyn {
+  %b = "frk_dyn.unwrap"(%s) {tag = 3 : i64} : (!frk_dyn.dyn) -> !frk_bstr.str
+  %ff = "frk_dyn.unwrap"(%from) {tag = 2 : i64} : (!frk_dyn.dyn) -> f64
+  %tf = "frk_dyn.unwrap"(%to) {tag = 2 : i64} : (!frk_dyn.dyn) -> f64
+  %fi = arith.fptosi %ff : f64 to i64
+  %ti = arith.fptosi %tf : f64 to i64
+  %one = arith.constant 1 : i64
+  %fi1 = arith.addi %fi, %one : i64
+  %r = "frk_bstr.sub"(%b, %fi1, %ti) : (!frk_bstr.str, i64, i64) -> !frk_bstr.str
+  %d = "frk_dyn.wrap"(%r) {tag = 3 : i64} : (!frk_bstr.str) -> !frk_dyn.dyn
+  return %d : !frk_dyn.dyn
+}
+
+// Vectors (M31, D-077): TAG_VECTOR = 7 over !frk_mem.arr<!frk_dyn.dyn>.
+func.func @__scm_vec_ref(%v: !frk_dyn.dyn, %i: !frk_dyn.dyn) -> !frk_dyn.dyn {
+  %a = "frk_dyn.unwrap"(%v) {tag = 7 : i64} : (!frk_dyn.dyn) -> !frk_mem.arr<!frk_dyn.dyn>
+  %f = "frk_dyn.unwrap"(%i) {tag = 2 : i64} : (!frk_dyn.dyn) -> f64
+  %n = arith.fptosi %f : f64 to i64
+  %e = "frk_mem.array_get"(%a, %n) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
+  return %e : !frk_dyn.dyn
+}
+
+func.func @__scm_vec_set(%v: !frk_dyn.dyn, %i: !frk_dyn.dyn, %x: !frk_dyn.dyn) -> !frk_dyn.dyn {
+  %a = "frk_dyn.unwrap"(%v) {tag = 7 : i64} : (!frk_dyn.dyn) -> !frk_mem.arr<!frk_dyn.dyn>
+  %f = "frk_dyn.unwrap"(%i) {tag = 2 : i64} : (!frk_dyn.dyn) -> f64
+  %n = arith.fptosi %f : f64 to i64
+  "frk_mem.array_set"(%a, %n, %x) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+  %z = arith.constant 0 : i64
+  %nil = "frk_dyn.wrap"(%z) {tag = 0 : i64} : (i64) -> !frk_dyn.dyn
+  return %nil : !frk_dyn.dyn
+}
+
+func.func @__scm_vec_len(%v: !frk_dyn.dyn) -> !frk_dyn.dyn {
+  %a = "frk_dyn.unwrap"(%v) {tag = 7 : i64} : (!frk_dyn.dyn) -> !frk_mem.arr<!frk_dyn.dyn>
+  %n = "frk_mem.array_len"(%a) : (!frk_mem.arr<!frk_dyn.dyn>) -> i64
+  %f = arith.sitofp %n : i64 to f64
+  %d = "frk_dyn.wrap"(%f) {tag = 2 : i64} : (f64) -> !frk_dyn.dyn
+  return %d : !frk_dyn.dyn
+}
+
+// make-vector with a REQUIRED fill (R7RS's unspecified default is
+// refused, D-077): tail-recursive fill.
+func.func @__scm_vec_fill(%a: !frk_mem.arr<!frk_dyn.dyn>, %i: i64, %n: i64, %fill: !frk_dyn.dyn) -> !frk_dyn.dyn {
+  %done = arith.cmpi sge, %i, %n : i64
+  cf.cond_br %done, ^ret, ^body
+^body:
+  "frk_mem.array_set"(%a, %i, %fill) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+  %one = arith.constant 1 : i64
+  %next = arith.addi %i, %one : i64
+  %r = func.call @__scm_vec_fill(%a, %next, %n, %fill) : (!frk_mem.arr<!frk_dyn.dyn>, i64, i64, !frk_dyn.dyn) -> !frk_dyn.dyn
+  return %r : !frk_dyn.dyn
+^ret:
+  %z = arith.constant 0 : i64
+  %nil = "frk_dyn.wrap"(%z) {tag = 0 : i64} : (i64) -> !frk_dyn.dyn
+  return %nil : !frk_dyn.dyn
+}
+
+func.func @__scm_make_vector(%k: !frk_dyn.dyn, %fill: !frk_dyn.dyn) -> !frk_dyn.dyn {
+  %f = "frk_dyn.unwrap"(%k) {tag = 2 : i64} : (!frk_dyn.dyn) -> f64
+  %n = arith.fptosi %f : f64 to i64
+  %a = "frk_mem.array_new"(%n) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
+  %z = arith.constant 0 : i64
+  %ignored = func.call @__scm_vec_fill(%a, %z, %n, %fill) : (!frk_mem.arr<!frk_dyn.dyn>, i64, i64, !frk_dyn.dyn) -> !frk_dyn.dyn
+  %d = "frk_dyn.wrap"(%a) {tag = 7 : i64} : (!frk_mem.arr<!frk_dyn.dyn>) -> !frk_dyn.dyn
+  return %d : !frk_dyn.dyn
 }
 
 func.func @__scm_nullp(%v: !frk_dyn.dyn) -> !frk_dyn.dyn {

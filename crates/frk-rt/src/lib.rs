@@ -168,7 +168,7 @@ unsafe fn for_each_child(payload: *mut u8, mut visit: impl FnMut(*mut u8)) {
                             continue; // empty or tombstone
                         }
                         for (tag, pay) in [(*slot.add(1), *slot.add(2)), (*slot.add(3), *slot.add(4))] {
-                            if (4..=6).contains(&tag) {
+                            if (4..=7).contains(&tag) {
                                 visit_word(pay as u64);
                             }
                         }
@@ -196,7 +196,7 @@ unsafe fn for_each_child(payload: *mut u8, mut visit: impl FnMut(*mut u8)) {
                         while index + 1 < length * 2 {
                             let tag = *words.add((1 + index) as usize);
                             let pay = *words.add((2 + index) as usize);
-                            if (4..=6).contains(&tag) {
+                            if (4..=7).contains(&tag) {
                                 visit_word(pay as u64);
                             }
                             index += 2;
@@ -219,7 +219,7 @@ unsafe fn for_each_child(payload: *mut u8, mut visit: impl FnMut(*mut u8)) {
                         }
                         2 => {
                             let tag = *words.add(index);
-                            if index + 1 < word_count && ((4..=6).contains(&tag)) {
+                            if index + 1 < word_count && ((4..=7).contains(&tag)) {
                                 visit_word(*words.add(index + 1) as u64);
                             }
                             index += 2;
@@ -1363,6 +1363,55 @@ mod tests {
             frk_rt_rc_free_count() - frees_rec,
             2,
             "the record-shaped dead ring collects (D-073 Tier-2 witness)"
+        );
+
+        // M31 (D-077): PAIR MUTATION makes cyclic cons cells real —
+        // two pair boxes ([car dyn, cdr dyn] = codes 2,0,2,0) whose
+        // cdrs point at each other as tag-6 dyns, dead-ringed.
+        let frees_pair = frk_rt_rc_free_count();
+        let p1 = frk_rt_rc_alloc(32, layout_wordmap(&[2, 0, 2, 0]));
+        let p2 = frk_rt_rc_alloc(32, layout_wordmap(&[2, 0, 2, 0]));
+        unsafe {
+            for p in [p1, p2] {
+                (p as *mut i64).write(2); // car: a number
+                (p as *mut i64).add(1).write(0);
+            }
+            (p1 as *mut i64).add(2).write(6); // cdr: tag pair
+            (p1 as *mut i64).add(3).write(p2 as i64);
+            frk_rt_rc_retain(p2);
+            (p2 as *mut i64).add(2).write(6);
+            (p2 as *mut i64).add(3).write(p1 as i64);
+            frk_rt_rc_retain(p1);
+            frk_rt_rc_release(p1);
+            frk_rt_rc_release(p2);
+            frk_rt_rc_collect();
+        }
+        assert_eq!(
+            frk_rt_rc_free_count() - frees_pair,
+            2,
+            "the cyclic cons ring collects (D-077 — mutation's cycles)"
+        );
+
+        // And a VECTOR (arr<dyn>, tag 7) holding a pair: the cascade
+        // crosses the array-dyn tracer arm into the wordmap arm.
+        let frees_vec = frk_rt_rc_free_count();
+        let pair = frk_rt_rc_alloc(32, layout_wordmap(&[2, 0, 2, 0]));
+        let vec = frk_rt_rc_alloc(8 + 2 * 16, LAYOUT_ARRAY_DYN);
+        unsafe {
+            (pair as *mut i64).write(2);
+            (pair as *mut i64).add(2).write(0);
+            let words = vec as *mut i64;
+            words.write(2); // len
+            words.add(1).write(2); // [0] a number
+            words.add(2).write(41);
+            words.add(3).write(6); // [1] the pair
+            words.add(4).write(pair as i64);
+            frk_rt_rc_release(vec); // count 1 -> 0: cascade frees pair too
+        }
+        assert_eq!(
+            frk_rt_rc_free_count() - frees_vec,
+            2,
+            "a vector's dyn elements cascade (D-077 tag-7 tracing)"
         );
     }
 

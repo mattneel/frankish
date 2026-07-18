@@ -21,6 +21,8 @@ pub enum Expr {
     App(Box<Expr>, Vec<Expr>, Span),
     /// `(quote d)` / `'d` — the datum as data (v0.1, D-070).
     Quote(Datum, Span),
+    /// A string literal (M31, D-077).
+    Str(String, Span),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,7 +54,8 @@ impl Expr {
             | Expr::Lambda(_, _, s)
             | Expr::Begin(_, s)
             | Expr::App(_, _, s)
-            | Expr::Quote(_, s) => *s,
+            | Expr::Quote(_, s)
+            | Expr::Str(_, s) => *s,
         }
     }
 }
@@ -137,6 +140,7 @@ fn parse_expr(datum: &Datum) -> Result<Expr, String> {
         Datum::Int(value, span) => Ok(Expr::Int(*value, *span)),
         Datum::Bool(value, span) => Ok(Expr::Bool(*value, *span)),
         Datum::Symbol(name, span) => Ok(Expr::Var(name.clone(), *span)),
+        Datum::Str(text, span) => Ok(Expr::Str(text.clone(), *span)),
         Datum::List(items, span) => parse_list(items, *span),
     }
 }

@@ -602,6 +602,7 @@ impl<'c> Emitter<'c> {
             Expr::Let(kind, binds, body, _) => self.emit_let_value(fcx, *kind, binds, body),
             Expr::App(callee, args, _) => self.emit_app_value(fcx, callee, args, l),
             Expr::Quote(datum, _) => self.emit_quoted(fcx, datum, l).map(Some),
+            Expr::Str(text, _) => self.symbol_dyn(fcx.block, text, l).map(Some),
             Expr::Lambda(..) => {
                 // First-class lambdas (M26, D-071): a uniform pack-fn
                 // closure wrapped as a fun dyn.
@@ -1156,8 +1157,9 @@ impl<'c> Emitter<'c> {
         self.wrap(b, 3, lit, l)
     }
 
-    /// Quoted data (D-070): fixnums, booleans, symbols (interned
-    /// bstrs), and proper/improper lists via right-folded cons.
+    /// Quoted data (D-070): fixnums, booleans, symbols/strings
+    /// (interned bstrs), and proper/improper lists via right-folded
+    /// cons.
     fn emit_quoted<'r>(
         &mut self,
         fcx: &mut Fcx<'c, 'r>,
@@ -1168,6 +1170,7 @@ impl<'c> Emitter<'c> {
             Datum::Int(v, _) => self.num_dyn(fcx.block, *v as f64, l),
             Datum::Bool(v, _) => self.bool_dyn(fcx.block, *v, l),
             Datum::Symbol(name, _) => self.symbol_dyn(fcx.block, name, l),
+            Datum::Str(text, _) => self.symbol_dyn(fcx.block, text, l),
             Datum::List(items, _) => {
                 let mut acc = self.nil_dyn(fcx.block, l)?;
                 for item in items.iter().rev() {
@@ -1454,19 +1457,29 @@ impl<'c> Emitter<'c> {
                 self.call(fcx.block, "frk_rt_scm_newline", &[], &[], l)?;
                 Ok(Some(Some(self.num_dyn(fcx.block, 0.0, l)?)))
             }
-            "cons" | "eq?" => {
+            "cons" | "eq?" | "set-car!" | "set-cdr!" | "string-append" | "string=?"
+            | "vector-ref" | "make-vector" => {
                 let [a, b] = args else {
                     return Err(format!("`{op}` takes two arguments"));
                 };
                 let Some(av) = self.emit_value(fcx, a)? else { return Ok(Some(None)) };
                 let Some(bv) = self.emit_value(fcx, b)? else { return Ok(Some(None)) };
-                let callee = if op == "cons" { "__scm_cons" } else { "__scm_eq" };
+                let callee = match op {
+                    "cons" => "__scm_cons",
+                    "eq?" => "__scm_eq",
+                    "set-car!" => "__scm_setcar",
+                    "set-cdr!" => "__scm_setcdr",
+                    "string-append" => "__scm_strapp",
+                    "string=?" => "__scm_streq",
+                    "vector-ref" => "__scm_vec_ref",
+                    _ => "__scm_make_vector",
+                };
                 let r = self
                     .call(fcx.block, callee, &[av, bv], &[self.dyn_ty()], l)?
                     .ok_or("intrinsic produced no value")?;
                 Ok(Some(Some(r)))
             }
-            "car" | "cdr" | "null?" | "pair?" => {
+            "car" | "cdr" | "null?" | "pair?" | "string-length" | "vector-length" => {
                 let [a] = args else {
                     return Err(format!("`{op}` takes one argument"));
                 };
@@ -1475,12 +1488,52 @@ impl<'c> Emitter<'c> {
                     "car" => "__scm_car",
                     "cdr" => "__scm_cdr",
                     "null?" => "__scm_nullp",
+                    "string-length" => "__scm_strlen",
+                    "vector-length" => "__scm_vec_len",
                     _ => "__scm_pairp",
                 };
                 let r = self
                     .call(fcx.block, callee, &[av], &[self.dyn_ty()], l)?
                     .ok_or("intrinsic produced no value")?;
                 Ok(Some(Some(r)))
+            }
+            "substring" | "vector-set!" => {
+                let [a, b, c] = args else {
+                    return Err(format!("`{op}` takes three arguments"));
+                };
+                let Some(av) = self.emit_value(fcx, a)? else { return Ok(Some(None)) };
+                let Some(bv) = self.emit_value(fcx, b)? else { return Ok(Some(None)) };
+                let Some(cv) = self.emit_value(fcx, c)? else { return Ok(Some(None)) };
+                let callee = if op == "substring" { "__scm_substr" } else { "__scm_vec_set" };
+                let r = self
+                    .call(fcx.block, callee, &[av, bv, cv], &[self.dyn_ty()], l)?
+                    .ok_or("intrinsic produced no value")?;
+                Ok(Some(Some(r)))
+            }
+            "vector" => {
+                // Arity-known construction: array_new + sets + wrap 7.
+                let mut values = Vec::new();
+                for arg in args {
+                    match self.emit_value(fcx, arg)? {
+                        Some(v) => values.push(v),
+                        None => return Ok(Some(None)),
+                    }
+                }
+                let len = self.const_i64(fcx.block, values.len() as i64, l)?;
+                let arr_ty = Type::parse(self.context, "!frk_mem.arr<!frk_dyn.dyn>")
+                    .ok_or("arr type")?;
+                let arr = self.build(fcx.block, "frk_mem.array_new", &[len], &[arr_ty], &[], l)?;
+                for (index, value) in values.into_iter().enumerate() {
+                    let i = self.const_i64(fcx.block, index as i64, l)?;
+                    fcx.block.append_operation(
+                        OperationBuilder::new("frk_mem.array_set", l)
+                            .add_operands(&[arr, i, value])
+                            .build()
+                            .map_err(|e| e.to_string())?,
+                    );
+                }
+                let d = self.wrap(fcx.block, 7, arr, l)?;
+                Ok(Some(Some(d)))
             }
             "list" => {
                 let mut values = Vec::new();
@@ -1588,6 +1641,9 @@ fn is_primitive(op: &str) -> bool {
         op,
         "+" | "-" | "*" | "quotient" | "remainder" | "=" | "<" | ">" | "<=" | ">=" | "display"
             | "newline" | "cons" | "car" | "cdr" | "null?" | "pair?" | "eq?" | "list"
+            | "set-car!" | "set-cdr!" | "string-append" | "string-length" | "string=?"
+            | "substring" | "vector" | "make-vector" | "vector-ref" | "vector-set!"
+            | "vector-length"
             | "dynamic-wind" | "with-exception-handler" | "raise-continuable"
     )
 }
@@ -1614,7 +1670,7 @@ fn free_names(expr: &Expr, bound: &mut HashSet<String>, out: &mut BTreeSet<Strin
             free_names(c, bound, out);
         }
         Expr::Begin(exprs, _) => free_names_body(exprs, bound, out),
-        Expr::Quote(_, _) => {}
+        Expr::Quote(_, _) | Expr::Str(_, _) => {}
         Expr::App(callee, args, _) => {
             free_names(callee, bound, out);
             for a in args {

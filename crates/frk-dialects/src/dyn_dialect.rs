@@ -104,10 +104,14 @@ pub const TAG_TABLE: i64 = 4;
 pub const TAG_FUN: i64 = 5;
 /// A cons cell (M25, D-070): payload = boxed product<[dyn, dyn]>.
 /// MANAGED — the D-051 widening: every retain/trace frontier site
-/// accepts 4..=6 (the D-057 symmetry law names them all).
+/// accepts the managed range (4..=7 since D-077; the D-057 symmetry
+/// law names every site).
 pub const TAG_PAIR: i64 = 6;
-// Widened to 7 at M25 (D-070): TAG_PAIR = 6 joins the closed space.
-const TAG_LIMIT: i64 = 7;
+/// A vector (M31, D-077): payload = !frk_mem.arr<!frk_dyn.dyn>.
+/// MANAGED — the third D-051 widening; the managed range is 4..=7.
+pub const TAG_VECTOR: i64 = 7;
+// Widened to 8 at M31 (D-077): TAG_VECTOR = 7 joins the closed space.
+const TAG_LIMIT: i64 = 8;
 
 pub(crate) fn tag_attr(op: OperationRef<'_, '_>) -> Result<i64, String> {
     let tag = op

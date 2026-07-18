@@ -13,6 +13,9 @@ pub enum Datum {
     Int(i64, Span),
     /// `#t` / `#f`.
     Bool(bool, Span),
+    /// A string literal (M31, D-077): a tag-3 bstr like symbols; the
+    /// slice fences the predicates that could tell them apart.
+    Str(String, Span),
     /// A proper list `( d… )`.
     List(Vec<Datum>, Span),
 }
@@ -26,7 +29,11 @@ pub struct Span {
 impl Datum {
     pub fn span(&self) -> Span {
         match self {
-            Datum::Symbol(_, s) | Datum::Int(_, s) | Datum::Bool(_, s) | Datum::List(_, s) => *s,
+            Datum::Symbol(_, s)
+            | Datum::Int(_, s)
+            | Datum::Bool(_, s)
+            | Datum::Str(_, s)
+            | Datum::List(_, s) => *s,
         }
     }
 }
@@ -36,6 +43,7 @@ enum Tok {
     Open(usize),
     Close(usize),
     Quote(usize),
+    Str(String, usize, usize),
     Atom(String, usize, usize),
 }
 
@@ -44,6 +52,7 @@ fn is_delimiter(byte: u8) -> bool {
         || byte == b'('
         || byte == b')'
         || byte == b';'
+        || byte == b'"'
         || byte == b'\''
 }
 
@@ -62,6 +71,42 @@ fn tokenize(source: &str) -> Result<Vec<Tok>, String> {
         } else if byte == b'\'' {
             tokens.push(Tok::Quote(i));
             i += 1;
+        } else if byte == b'"' {
+            // String literal (D-077): minimal escapes \\ \" \n.
+            let start = i;
+            i += 1;
+            let mut text = String::new();
+            loop {
+                if i >= bytes.len() {
+                    return Err("unterminated string literal".to_string());
+                }
+                match bytes[i] {
+                    b'"' => {
+                        i += 1;
+                        break;
+                    }
+                    b'\\' => {
+                        i += 1;
+                        match bytes.get(i) {
+                            Some(b'n') => text.push('\n'),
+                            Some(b'"') => text.push('"'),
+                            Some(b'\\') => text.push('\\'),
+                            other => {
+                                return Err(format!(
+                                    "unsupported string escape {other:?} (D-077 slice)"
+                                ));
+                            }
+                        }
+                        i += 1;
+                    }
+                    byte if byte.is_ascii() && byte != b'\n' => {
+                        text.push(byte as char);
+                        i += 1;
+                    }
+                    _ => return Err("non-ASCII string literal (D-056 fence)".to_string()),
+                }
+            }
+            tokens.push(Tok::Str(text, start, i));
         } else if byte == b'(' {
             tokens.push(Tok::Open(i));
             i += 1;
@@ -132,6 +177,10 @@ fn read_datum(tokens: &[Tok], position: &mut usize, source_len: usize) -> Result
         Tok::Atom(text, start, end) => {
             *position += 1;
             atom(text, *start, *end)
+        }
+        Tok::Str(text, start, end) => {
+            *position += 1;
+            Ok(Datum::Str(text.clone(), Span { start: *start, end: *end }))
         }
         Tok::Open(start) => {
             let list_start = *start;

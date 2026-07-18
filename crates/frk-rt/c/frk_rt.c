@@ -108,9 +108,9 @@ static void frk_for_each_child(unsigned char *payload, frk_visit_fn visit) {
                 for (int64_t i = 0; i < cap; i++) {
                     int64_t *s = slots + i * 5;
                     if (s[0] != 1) continue;
-                    if (s[1] >= 4 && s[1] <= 6 && s[2])
+                    if (s[1] >= 4 && s[1] <= 7 && s[2])
                         visit((unsigned char *)(intptr_t)s[2]);
-                    if (s[3] >= 4 && s[3] <= 6 && s[4])
+                    if (s[3] >= 4 && s[3] <= 7 && s[4])
                         visit((unsigned char *)(intptr_t)s[4]);
                 }
             break;
@@ -126,7 +126,7 @@ static void frk_for_each_child(unsigned char *payload, frk_visit_fn visit) {
             } else {
                 for (int64_t i = 0; i + 1 < len * 2; i += 2) {
                     int64_t tag = words[1 + i];
-                    if (tag >= 4 && tag <= 6 && words[2 + i])
+                    if (tag >= 4 && tag <= 7 && words[2 + i])
                         visit((unsigned char *)(intptr_t)words[2 + i]);
                 }
             }
@@ -143,7 +143,7 @@ static void frk_for_each_child(unsigned char *payload, frk_visit_fn visit) {
                     w += 1;
                 } else if (code == 2) {
                     int64_t tag = words[w];
-                    if (w + 1 < count && tag >= 4 && tag <= 6 && words[w + 1])
+                    if (w + 1 < count && tag >= 4 && tag <= 7 && words[w + 1])
                         visit((unsigned char *)(intptr_t)words[w + 1]);
                     w += 2;
                 } else {

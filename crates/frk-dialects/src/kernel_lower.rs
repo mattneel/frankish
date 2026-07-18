@@ -1340,10 +1340,11 @@ fn plan_mem<'c, 'a>(
                 .collect::<Result<Vec<_>, _>>()?;
             let offset = total_slots(&kinds[..field]);
             let kind = kinds[field].clone();
-            if matches!(kind, SlotKind::Words { .. } | SlotKind::Closure) {
-                return Err(
-                    "multi-slot record fields are fenced (D-073: num/bool/str/refs)".into(),
-                );
+            // Words fields (dyn pairs et al.) read/write slot-wise
+            // (D-077 — scheme's mutable pairs); closures stay fenced
+            // (their mapped struct is {ptr,ptr}, not i64 words).
+            if matches!(kind, SlotKind::Closure) {
+                return Err("closure record fields are fenced (D-073)".into());
             }
             if suffix == "field_get" {
                 Ok(Planned::FieldGet { op, offset, kind })
@@ -3894,6 +3895,40 @@ fn apply<'c, 'a>(
             let i64_type: Type = IntegerType::new(context, 64).into();
             let ptr = llvm::r#type::pointer(context, 0);
             let boxed = operand(op, 0)?;
+            // Multi-slot fields (dyn pairs — D-077): loop the words
+            // and rebuild the mapped struct.
+            if let SlotKind::Words { slots, mapped } = &kind {
+                let mut rebuilt =
+                    result_value(rewriter.insert(llvm::undef(*mapped, location)))?;
+                for index in 0..*slots {
+                    let slot = result_value(rewriter.insert(gep_op(
+                        context,
+                        boxed,
+                        offset + index,
+                        ptr,
+                        location,
+                    )?))?;
+                    let word = result_value(rewriter.insert(
+                        OperationBuilder::new("llvm.load", location)
+                            .add_attributes(&[(
+                                melior::ir::Identifier::new(context, "ordering"),
+                                Attribute::parse(context, "0 : i64").ok_or("ordering attr")?,
+                            )])
+                            .add_operands(&[slot])
+                            .add_results(&[i64_type])
+                            .build()
+                            .map_err(|e| e.to_string())?,
+                    ))?;
+                    rebuilt = result_value(rewriter.insert(llvm::insert_value(
+                        context,
+                        rebuilt,
+                        DenseI64ArrayAttribute::new(context, &[index as i64]),
+                        word,
+                        location,
+                    )))?;
+                }
+                return finish(rewriter, op, rebuilt);
+            }
             let slot =
                 result_value(rewriter.insert(gep_op(context, boxed, offset, ptr, location)?))?;
             let word = result_value(rewriter.insert(
@@ -3941,6 +3976,28 @@ fn apply<'c, 'a>(
                 .copied()
                 .unwrap_or(false);
             maybe_retain(context, rewriter, strategy, field_retain, value, shared, location)?;
+            // Multi-slot fields (dyn pairs — D-077): store slot-wise.
+            if let SlotKind::Words { slots, .. } = &kind {
+                for index in 0..*slots {
+                    let word = result_value(rewriter.insert(llvm::extract_value(
+                        context,
+                        value,
+                        DenseI64ArrayAttribute::new(context, &[index as i64]),
+                        i64_type,
+                        location,
+                    )))?;
+                    let slot = result_value(rewriter.insert(gep_op(
+                        context,
+                        boxed,
+                        offset + index,
+                        ptr,
+                        location,
+                    )?))?;
+                    rewriter.insert(store_op(context, word, slot, location)?);
+                }
+                rewriter.erase_op(op);
+                return Ok(());
+            }
             let word = match kind {
                 SlotKind::Ptr { .. } => result_value(rewriter.insert(cast_op(
                     "llvm.ptrtoint",
@@ -4738,7 +4795,7 @@ fn masked_dyn_ptr<'c>(
     )))?;
     let five = result_value(rewriter.insert(melior::dialect::arith::constant(
         context,
-        IntegerAttribute::new(i64_type, 6).into(),
+        IntegerAttribute::new(i64_type, 7).into(),
         location,
     )))?;
     let zero = result_value(rewriter.insert(melior::dialect::arith::constant(
@@ -4767,10 +4824,9 @@ fn masked_dyn_ptr<'c>(
             .map(|r| unsafe { Value::from_raw(r.to_raw()) })
             .map_err(|e| e.to_string())
     };
-    // Managed tags are the RANGE 4..=6 (table, fun, pair — D-070):
-    // sge(tag,4) AND sle(tag,6). The five constant is retired to a
-    // six by the widening; the symmetry law (D-057) pairs this site
-    // with the tracer arms in both twins.
+    // Managed tags are the RANGE 4..=7 (table, fun, pair, vector —
+    // D-070/D-077): sge(tag,4) AND sle(tag,7). The symmetry law
+    // (D-057) pairs this site with the tracer arms in both twins.
     let is_ge4 = cmpi(5, tag_v, four)?; // sge
     let is_le6 = cmpi(3, tag_v, five)?; // sle against the widened bound
     let either = result_value(rewriter.insert(

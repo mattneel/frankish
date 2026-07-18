@@ -64,6 +64,29 @@ int main(void) {
     frk_rt_rc_release(n2);
     frk_rt_rc_collect();
     printf("%llu\n", (unsigned long long)frk_rt_rc_free_count()); /* 8 */
+
+    /* M31 (D-077): cyclic cons ring — dyn-pair wordmap [2,0,2,0] */
+    /* codes: word0 tag, word1 pay, word2 tag, word3 pay -> 2,0,2,0 */
+    uint64_t pair_wm = (2ULL << 4) | (0ULL << 6) | (2ULL << 8) | (0ULL << 10);
+    unsigned char *q1 = frk_rt_rc_alloc(32, pair_wm);
+    unsigned char *q2 = frk_rt_rc_alloc(32, pair_wm);
+    ((int64_t *)q1)[0] = 2; ((int64_t *)q2)[0] = 2;
+    ((int64_t *)q1)[2] = 6; ((int64_t *)q1)[3] = (int64_t)(intptr_t)q2; frk_rt_rc_retain(q2);
+    ((int64_t *)q2)[2] = 6; ((int64_t *)q2)[3] = (int64_t)(intptr_t)q1; frk_rt_rc_retain(q1);
+    frk_rt_rc_release(q1);
+    frk_rt_rc_release(q2);
+    frk_rt_rc_collect();
+    printf("%llu\n", (unsigned long long)frk_rt_rc_free_count()); /* 10 */
+
+    /* And a vector (arr<dyn>) holding a pair: cascade crosses arms */
+    unsigned char *pp = frk_rt_rc_alloc(32, pair_wm);
+    ((int64_t *)pp)[0] = 2; ((int64_t *)pp)[2] = 0;
+    unsigned char *vv = frk_rt_rc_alloc(8 + 32, 2ULL | (2ULL << 2));
+    ((int64_t *)vv)[0] = 2;
+    ((int64_t *)vv)[1] = 2; ((int64_t *)vv)[2] = 41;
+    ((int64_t *)vv)[3] = 6; ((int64_t *)vv)[4] = (int64_t)(intptr_t)pp;
+    frk_rt_rc_release(vv);
+    printf("%llu\n", (unsigned long long)frk_rt_rc_free_count()); /* 12 */
     return 0;
 }
 "#;
@@ -84,7 +107,7 @@ int main(void) {
     let lines: Vec<&str> = std::str::from_utf8(&output.stdout).unwrap().lines().collect();
     assert_eq!(
         lines,
-        ["2", "2", "4", "4", "6", "8"],
-        "the C twin's cascade/dead-cycle/live-cycle/record-ring story matches the Rust twin's"
+        ["2", "2", "4", "4", "6", "8", "10", "12"],
+        "the C twin's cascade/cycle/record-ring/pair-ring/vector story matches the Rust twin's"
     );
 }

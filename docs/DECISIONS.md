@@ -193,6 +193,37 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-077 [m31/scheme/dyn] r7rs_core v0.3 (the human picked
+  "pairs-mut"): pair MUTATION, strings, vectors. (1) set-car!/
+  set-cdr! are frk_mem.field_set{0/1} on the UNWRAPPED pair box —
+  the M28 record rung consumed by a second language, zero new
+  kernel ops; results are unspecified-in-R7RS and emit nil.
+  MUTATION REOPENS THE CYCLE QUESTION (the M26 caution): the purple
+  candidate machinery is GENERIC (any non-leaf release buffers), so
+  cyclic pairs already participate — both collector twins gain a
+  PAIR-CYCLE drill (dyn-pair wordmap codes) to witness it, the M28
+  record-ring pattern at dyn layout. (2) TAG_VECTOR = 7 — the THIRD
+  D-051 widening, walked by the D-070 checklist: TAG_LIMIT 8, the
+  managed range 4..=6 → 4..=7 at masked_dyn_ptr and the three
+  tracer arms in EACH twin; the payload is a plain !frk_mem.arr
+  <!frk_dyn.dyn> (M13's two-slot elements — the machinery predates
+  the need, again). Surface: make-vector (fill REQUIRED — R7RS's
+  unspecified default refused), vector, vector-ref/-set!/-length;
+  #(...) literals fenced (reader growth rides a later slice).
+  (3) STRINGS are tag-3 bstrs LIKE SYMBOLS — one tag serves both
+  because the slice fences symbol?/string? (the predicates are the
+  only observers of the difference; splitting tags when a case
+  forces it is a fourth widening, named now). Interning makes
+  string=? a pointer compare even for DYNAMIC strings (bstr concat
+  interns — the Lua ruling pays again); string-length is byte
+  length == char length under the D-056 ASCII fence; substring
+  [0-based, end-exclusive) adapts to bstr.sub's convention at
+  emission. string-set! FENCED (mutable strings are their own
+  rung against interning). display of tag-3 prints raw contents —
+  correct for strings by R7RS display law. Fences v0.4+:
+  string-ref/chars, symbol?/string?, #-literals, string-set!,
+  list->vector/vector->list, parameterize (still queued).
+  Revisit: the tag split at the first predicate-driven case.
 - D-076 [m30/ts3/ctl] TS-3 OPENS with exceptions on the effects lane
   (the human picked it; async/await state machines are the stage's
   second half, next TS milestone). ZERO KERNEL DELTAS is the bar
