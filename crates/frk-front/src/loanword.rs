@@ -512,6 +512,28 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
             .collect::<Result<Vec<_>>>()
     };
 
+    // Synthesized-symbol namespace (M34; the D-082 landmine): user
+    // top-level names flow into MLIR symbols verbatim, and the
+    // emitter synthesizes __-prefixed functions (__exn_mark,
+    // __try_body_N, __wind_thunk_N, __frk_ctl_* from the lowering)
+    // plus the @main entry. Refuse the collisions LOUDLY at the
+    // frontier instead of dying in MLIR symbol redefinition
+    // (stricter-is-deterministic, the D-038 precedent).
+    let reserve = |name: &str| -> Result<()> {
+        if name.starts_with("__") {
+            return err(format!(
+                "`{name}`: names beginning with __ are reserved for synthesized \
+                 symbols (D-082)"
+            ));
+        }
+        if name == "main" {
+            return err(
+                "`main` collides with the synthesized entry function (D-082)".to_string(),
+            );
+        }
+        Ok(())
+    };
+
     let mut functions = Vec::new();
     let mut class_decls = Vec::new();
     let mut async_fns = Vec::new();
@@ -521,11 +543,12 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
     {
         match kind(decl)? {
             "fn" => {
+                let fn_name = field(decl, "name")?
+                    .as_str()
+                    .ok_or_else(|| LoanwordError("fn name".into()))?;
+                reserve(fn_name)?;
                 functions.push(TsFn {
-                    name: field(decl, "name")?
-                        .as_str()
-                        .ok_or_else(|| LoanwordError("fn name".into()))?
-                        .to_string(),
+                    name: fn_name.to_string(),
                     params: parse_params(decl, "params")?,
                     ret: type_at(decl, "ret")?,
                     body: field(decl, "body")?
@@ -564,11 +587,12 @@ fn parse_artifact(text: &str) -> Result<Artifact> {
                     .ok_or_else(|| LoanwordError("class methods".into()))?
                     .iter()
                     .map(|method| {
+                        let method_name = field(method, "name")?
+                            .as_str()
+                            .ok_or_else(|| LoanwordError("method name".into()))?;
+                        reserve(method_name)?;
                         Ok(MethodDecl {
-                            name: field(method, "name")?
-                                .as_str()
-                                .ok_or_else(|| LoanwordError("method name".into()))?
-                                .to_string(),
+                            name: method_name.to_string(),
                             params: parse_params(method, "params")?,
                             ret: type_at(method, "ret")?,
                             body: field(method, "body")?
@@ -761,6 +785,12 @@ struct Fcx<'c, 'r> {
     env: HashMap<String, Binding<'c, 'r>>,
     /// The function's return protocol: exit block + result type.
     exit: BlockRef<'c, 'r>,
+    /// Whether anything ever branched to `exit` (M34): a function
+    /// whose every path throws leaves the exit block predecessor-less
+    /// — FuncToLLVM skips unreachable blocks and the surviving
+    /// func.return breaks translation (the M27 dead-join class). The
+    /// finalizers detach the block instead when this is still false.
+    exit_used: std::cell::Cell<bool>,
     ret: TsTy,
     /// True once the current block is terminated (a `return` was
     /// emitted); remaining statements in the block are tsc-legal dead
@@ -918,6 +948,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
             block: entry,
             env,
             exit,
+            exit_used: std::cell::Cell::new(false),
             ret: function.ret.clone(),
             terminated: false,
             guard: GuardShape::Ts(function.ret.clone()),
@@ -933,16 +964,19 @@ impl<'c, 'p> Emitter<'c, 'p> {
         if !fcx.terminated {
             match &function.ret {
                 TsTy::Void => {
+                    fcx.exit_used.set(true);
                     fcx.block
                         .append_operation(self.br(fcx.exit, None, location)?);
                 }
                 TsTy::Num => {
                     let zero = self.const_f64(&fcx, 0.0, location)?;
+                    fcx.exit_used.set(true);
                     fcx.block
                         .append_operation(self.br(fcx.exit, Some(zero), location)?);
                 }
                 TsTy::Bool => {
                     let value = self.const_bool(&fcx, false, location)?;
+                    fcx.exit_used.set(true);
                     fcx.block
                         .append_operation(self.br(fcx.exit, Some(value), location)?);
                 }
@@ -957,23 +991,31 @@ impl<'c, 'p> Emitter<'c, 'p> {
             }
         }
 
-        // exit: func.return its argument (if any).
-        let operands: Vec<Value> = match &function.ret {
-            TsTy::Void => vec![],
-            _ => {
-                let raw = exit
-                    .argument(0)
-                    .map_err(|e| LoanwordError(e.to_string()))?
-                    .to_raw();
-                vec![unsafe { Value::from_raw(raw) }]
-            }
-        };
-        exit.append_operation(
-            OperationBuilder::new("func.return", location)
-                .add_operands(&operands)
-                .build()
-                .map_err(|e| LoanwordError(e.to_string()))?,
-        );
+        // exit: func.return its argument (if any). A function whose
+        // every path throws never targets exit — detach the orphan
+        // instead of leaving a predecessor-less func.return for the
+        // LLVM translation to choke on (M34; the M27 dead-join class,
+        // bisected to the D-076 throw-at-end-of-body shape).
+        if fcx.exit_used.get() {
+            let operands: Vec<Value> = match &function.ret {
+                TsTy::Void => vec![],
+                _ => {
+                    let raw = exit
+                        .argument(0)
+                        .map_err(|e| LoanwordError(e.to_string()))?
+                        .to_raw();
+                    vec![unsafe { Value::from_raw(raw) }]
+                }
+            };
+            exit.append_operation(
+                OperationBuilder::new("func.return", location)
+                    .add_operands(&operands)
+                    .build()
+                    .map_err(|e| LoanwordError(e.to_string()))?,
+            );
+        } else {
+            drop(unsafe { exit.detach() });
+        }
 
         let op = melior::dialect::func::func(
             self.context,
@@ -1019,6 +1061,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
             // No `return` statement can occur inside set expressions,
             // so the exit protocol is never exercised here.
             exit: entry,
+            exit_used: std::cell::Cell::new(false),
             ret: TsTy::Class(decl.ty),
             terminated: false,
             guard: GuardShape::Ts(TsTy::Class(decl.ty)),
@@ -1240,7 +1283,8 @@ impl<'c, 'p> Emitter<'c, 'p> {
             region: &region,
             block: entry,
             env,
-            exit: entry, // returns are handled by the segment walker
+            exit: entry,
+            exit_used: std::cell::Cell::new(false), // returns are handled by the segment walker
             ret: promise_ty.clone(),
             terminated: false,
             guard: GuardShape::Ts(promise_ty.clone()),
@@ -1402,6 +1446,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
                             block: inner_entry,
                             env: inner_env,
                             exit: inner_entry,
+                            exit_used: std::cell::Cell::new(false),
                             ret: TsTy::Void,
                             terminated: false,
                             guard: GuardShape::Pack,
@@ -1735,12 +1780,15 @@ impl<'c, 'p> Emitter<'c, 'p> {
             )?);
             fcx.block = catch_block;
             fcx.terminated = false;
+            // The catch arm is a block scope too (M34).
+            let saved_env = fcx.env.clone();
             for statement in catch_json
                 .as_array()
                 .ok_or_else(|| LoanwordError("catch body".into()))?
             {
                 self.emit_stmt(fcx, statement)?;
             }
+            fcx.env = saved_env;
             if !fcx.terminated {
                 fcx.block
                     .append_operation(self.br(join_block, None, location)?);
@@ -1927,7 +1975,8 @@ impl<'c, 'p> Emitter<'c, 'p> {
             region: &region,
             block: entry,
             env,
-            exit: entry, // `return` is producer-fenced inside try regions
+            exit: entry,
+            exit_used: std::cell::Cell::new(false), // `return` is producer-fenced inside try regions
             ret: TsTy::Void,
             terminated: false,
             guard: match shape {
@@ -2004,6 +2053,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
             block: entry,
             env: HashMap::new(),
             exit: entry,
+            exit_used: std::cell::Cell::new(false),
             ret: TsTy::Void,
             terminated: false,
             guard: GuardShape::Pack,
@@ -2519,7 +2569,8 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 region: &region,
                 block: entry,
                 env,
-                exit: entry, // expression bodies cannot `return`
+                exit: entry,
+            exit_used: std::cell::Cell::new(false), // expression bodies cannot `return`
                 ret: ret.clone(),
                 terminated: false,
                 guard: GuardShape::Ts(ret.clone()),
@@ -2703,6 +2754,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
             block: entry,
             env: HashMap::new(),
             exit,
+            exit_used: std::cell::Cell::new(false),
             ret: TsTy::Void,
             terminated: false,
             guard: GuardShape::Ts(TsTy::Void),
@@ -2724,14 +2776,21 @@ impl<'c, 'p> Emitter<'c, 'p> {
             );
         }
         if !fcx.terminated {
+            fcx.exit_used.set(true);
             fcx.block
                 .append_operation(self.br(fcx.exit, None, location)?);
         }
-        exit.append_operation(
-            OperationBuilder::new("func.return", location)
-                .build()
-                .map_err(|e| LoanwordError(e.to_string()))?,
-        );
+        if fcx.exit_used.get() {
+            exit.append_operation(
+                OperationBuilder::new("func.return", location)
+                    .build()
+                    .map_err(|e| LoanwordError(e.to_string()))?,
+            );
+        } else {
+            // Every top-level path threw: same orphan-exit treatment
+            // as emit_fn (M34).
+            drop(unsafe { exit.detach() });
+        }
         let op = melior::dialect::func::func(
             self.context,
             StringAttribute::new(self.context, "main"),
@@ -2910,6 +2969,11 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 // TS-1's trailing if/else-return shape). Statements
                 // after a fully-returning if are tsc-visible dead code
                 // and drop like statements after `return`.
+                // Each arm is a BLOCK SCOPE (M34; the D-080 landmine):
+                // a `let` inside an arm must not survive it — the flat
+                // env is snapshot-restored per arm. Assignments are
+                // unaffected (they mutate through the binding's box).
+                let saved_env = fcx.env.clone();
                 let mut fallthroughs = Vec::new();
                 for (start, statements) in [
                     (then_block, Some(field(node, "then")?)),
@@ -2917,6 +2981,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 ] {
                     fcx.block = start;
                     fcx.terminated = false;
+                    fcx.env = saved_env.clone();
                     if let Some(list) = statements {
                         for statement in list
                             .as_array()
@@ -2929,6 +2994,7 @@ impl<'c, 'p> Emitter<'c, 'p> {
                         fallthroughs.push(fcx.block);
                     }
                 }
+                fcx.env = saved_env;
                 if fallthroughs.is_empty() {
                     fcx.terminated = true;
                     return Ok(());
@@ -2955,12 +3021,16 @@ impl<'c, 'p> Emitter<'c, 'p> {
 
                 fcx.block = body;
                 fcx.terminated = false;
+                // The loop body is a block scope (M34) — per-iteration
+                // lets do not leak past the loop.
+                let saved_env = fcx.env.clone();
                 for statement in field(node, "body")?
                     .as_array()
                     .ok_or_else(|| LoanwordError("while body".into()))?
                 {
                     self.emit_stmt(fcx, statement)?;
                 }
+                fcx.env = saved_env;
                 if !fcx.terminated {
                     fcx.block
                         .append_operation(self.br(head, None, location)?);
@@ -3001,11 +3071,13 @@ impl<'c, 'p> Emitter<'c, 'p> {
                 };
                 match (fcx.ret.clone(), value) {
                     (TsTy::Void, None) => {
+                        fcx.exit_used.set(true);
                         fcx.block
                             .append_operation(self.br(fcx.exit, None, location)?);
                     }
                     (TsTy::Void, Some(_)) => return err("return with a value in void"),
                     (_, Some(value)) => {
+                        fcx.exit_used.set(true);
                         fcx.block
                             .append_operation(self.br(fcx.exit, Some(value), location)?);
                     }

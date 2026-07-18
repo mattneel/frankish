@@ -193,6 +193,34 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-083 [m34/ts] TS EMITTER HYGIENE — the D-080 landmine and both
+  D-082 landmines fall in one focused milestone, all three fixes
+  landing with node-verified witnesses (L1). (1) BLOCK-SCOPED LET:
+  the flat env HashMap gains snapshot-restore at every block scope
+  (if arms — each arm from the OUTER snapshot, both restored after;
+  while bodies; catch arms) — a let inside a block no longer
+  overwrites an outer binding for the rest of the function.
+  Assignments are unaffected: they mutate through the binding's
+  BOX, so restoring the map never loses a write (the same reason
+  the scheme ScopeUndo fix was sound, D-082.4). Pinned by
+  ts0/let_scope (all three scopes, node bytes). (2) THROW-AT-END-
+  OF-FUNCTION (the M27 dead-join class, bisected to m32-done): a
+  function whose every path throws never targets its exit block —
+  the predecessor-less func.return survived FuncToLLVM unconverted
+  and broke translation. Fcx tracks exit_used; the finalizers
+  (emit_fn AND the synthesized main) detach the orphan block
+  instead of appending its return. Pinned by ts3/throw_fn_end
+  (throw-terminated void fn + a value fn with a throwing arm).
+  (3) SYNTHESIZED-SYMBOL NAMESPACE: user fn/method names beginning
+  with __ are refused at the loanword frontier ("reserved for
+  synthesized symbols"), as is a user `main` (collides with the
+  synthesized entry) — loud diagnostics instead of MLIR symbol-
+  redefinition failures mid-lowering; the M24 __frk_ctl_resume__
+  class closes with it (stricter-is-deterministic, D-038
+  precedent). Unit-tested rejections (never differential — chibi/
+  node happily run such programs). Revisit: the __-prefix rule if
+  a real-world TS corpus import ever needs such names (then
+  mangle, don't admit).
 - D-082 [m33/review] The M33 diff was ADVERSARIALLY REVIEWED (four
   dimension reviewers, every finding refutation-verified — the
   D-080 verifier class, load-bearing again): ELEVEN confirmed
