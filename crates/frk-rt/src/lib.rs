@@ -168,7 +168,7 @@ unsafe fn for_each_child(payload: *mut u8, mut visit: impl FnMut(*mut u8)) {
                             continue; // empty or tombstone
                         }
                         for (tag, pay) in [(*slot.add(1), *slot.add(2)), (*slot.add(3), *slot.add(4))] {
-                            if (4..=7).contains(&tag) {
+                            if (4..=8).contains(&tag) {
                                 visit_word(pay as u64);
                             }
                         }
@@ -196,7 +196,7 @@ unsafe fn for_each_child(payload: *mut u8, mut visit: impl FnMut(*mut u8)) {
                         while index + 1 < length * 2 {
                             let tag = *words.add((1 + index) as usize);
                             let pay = *words.add((2 + index) as usize);
-                            if (4..=7).contains(&tag) {
+                            if (4..=8).contains(&tag) {
                                 visit_word(pay as u64);
                             }
                             index += 2;
@@ -219,7 +219,7 @@ unsafe fn for_each_child(payload: *mut u8, mut visit: impl FnMut(*mut u8)) {
                         }
                         2 => {
                             let tag = *words.add(index);
-                            if index + 1 < word_count && ((4..=7).contains(&tag)) {
+                            if index + 1 < word_count && ((4..=8).contains(&tag)) {
                                 visit_word(*words.add(index + 1) as u64);
                             }
                             index += 2;
@@ -1482,6 +1482,57 @@ mod tests {
             frk_rt_rc_free_count() - frees_vec,
             2,
             "a vector's dyn elements cascade (D-077 tag-7 tracing)"
+        );
+
+        // M35 (D-084): the TAG_THREAD = 8 widening drill — the fourth
+        // D-051 widening's L1 verifier, red if ANY tracer arm or
+        // masked_dyn_ptr misses tag 8. A thread-record-shaped cell
+        // (dyn slots at codes 2,0,2,0) dead-rings THROUGH a table
+        // SLOT holding the thread as a tag-8 dyn and a vector element
+        // doing the same: thread -> chain pair -> vector -> table ->
+        // slot(tag 8) -> thread. All three arms participate.
+        let frees_thread = frk_rt_rc_free_count();
+        let thread = frk_rt_rc_alloc(32, layout_wordmap(&[2, 0, 2, 0]));
+        let chain = frk_rt_rc_alloc(32, layout_wordmap(&[2, 0, 2, 0]));
+        let vec8 = frk_rt_rc_alloc(8 + 16, LAYOUT_ARRAY_DYN);
+        let shell = frk_rt_rc_alloc(32, 1); // TABLE_SHELL layout
+        frk_rt_table_init(shell as i64);
+        unsafe {
+            // thread's slot 0: the chain (a tag-6 pair dyn).
+            (thread as *mut i64).write(6);
+            (thread as *mut i64).add(1).write(chain as i64);
+            frk_rt_rc_retain(chain);
+            (thread as *mut i64).add(2).write(0);
+            (thread as *mut i64).add(3).write(0);
+            // chain's slot 0: the vector (tag 7).
+            (chain as *mut i64).write(7);
+            (chain as *mut i64).add(1).write(vec8 as i64);
+            frk_rt_rc_retain(vec8);
+            (chain as *mut i64).add(2).write(0);
+            (chain as *mut i64).add(3).write(0);
+            // vector's one element: the table (tag 4).
+            let words = vec8 as *mut i64;
+            words.write(1); // len
+            words.add(1).write(4);
+            words.add(2).write(shell as i64);
+            frk_rt_rc_retain(shell);
+            // table slot 1.0 -> the THREAD as a tag-8 dyn: the cycle
+            // closes through the widened slot arm.
+            frk_rt_table_raw_set(shell as i64, 2, 1.0f64.to_bits() as i64, 8, thread as i64);
+            frk_rt_rc_retain(thread);
+            // Drop all externals: pure rc stalls (every count 1).
+            frk_rt_rc_release(thread);
+            frk_rt_rc_release(chain);
+            frk_rt_rc_release(vec8);
+            frk_rt_rc_release(shell);
+        }
+        assert_eq!(frk_rt_rc_free_count(), frees_thread, "tag-8 ring survives rc");
+        unsafe { frk_rt_rc_collect() };
+        assert_eq!(
+            frk_rt_rc_free_count() - frees_thread,
+            4,
+            "the tag-8 thread ring collects through table slot, vector \
+             element, and wordmap arms (D-084 widening drill)"
         );
     }
 

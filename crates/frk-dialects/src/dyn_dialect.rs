@@ -110,8 +110,12 @@ pub const TAG_PAIR: i64 = 6;
 /// A vector (M31, D-077): payload = !frk_mem.arr<!frk_dyn.dyn>.
 /// MANAGED — the third D-051 widening; the managed range is 4..=7.
 pub const TAG_VECTOR: i64 = 7;
-// Widened to 8 at M31 (D-077): TAG_VECTOR = 7 joins the closed space.
-const TAG_LIMIT: i64 = 8;
+/// A lua coroutine thread (M35, D-084): payload = the boxed thread
+/// record {status, started, chain head, resumer, body, stash}.
+/// MANAGED — the fourth D-051 widening; the managed range is 4..=8.
+pub const TAG_THREAD: i64 = 8;
+// Widened to 9 at M35 (D-084): TAG_THREAD = 8 joins the closed space.
+const TAG_LIMIT: i64 = 9;
 
 pub(crate) fn tag_attr(op: OperationRef<'_, '_>) -> Result<i64, String> {
     let tag = op

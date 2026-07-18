@@ -193,6 +193,212 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-084 [m35/lua] femto_lua v0.4 — COROUTINES AS THE RESUMABLE-FRAME
+  PATTERN (adversarial panel: three designers + judge; every
+  load-bearing claim repo-, spike-, or oracle-witnessed). THE
+  ALTITUDE RULING: THIN — a whole-frontend lua-emitter transform +
+  runtime rows + one dyn tag; frk_ctl grows NOTHING (the fifth
+  zero-kernel-op consumer milestone: D-070/71/76/81, now lua).
+  D-069's revisit clause RESOLVES: the specimen-forces-multi-
+  suspension trigger FIRED (these coroutines), and "when coroutines
+  land on LLVM coro" resolves as PRICED AND REJECTED — opaque coro
+  frames carry no layout word (breaks the M12 retain==trace law,
+  blinds the cycle collector), CoroSplit parity across melior-JIT
+  and per-triple clang-22 is unproven, elision perturbs D-041
+  alloc goldens, and cross-CALL suspension needs frame chaining
+  anyway; stackful side stacks are killed by musl-static (no
+  makecontext), the zero-asm C99 twin, and core wasm's
+  unaddressable stack (D-016). ZERO stacks switch; the shape is
+  segmented one-shot frame chains over the D-011 result-passing
+  channel (the Koka camp). The rung is RENAMED in new text: THE
+  RE-ENTRANT RUNG (kernel re-entrant κ + winds), and it REMAINS
+  FENCED — M35 consumes the coroutine consumer as a frontend
+  pattern; remaining consumers: scheme P13 + R7RS 4.2.7 (unfence
+  together), re-entrant winds. The manifest phrase "coroutines
+  arrive with frk.ctl" is glossed at v0.4: they arrive with the ctl
+  GUARD DISCIPLINE and runtime rows — the lua tree emitted zero
+  frk_ctl ops before M35 (the dossier premise "guards already
+  exist in lua" was FALSE; grep-verified) and still emits zero
+  frk_ctl ops after. WHY NOT CARRIER OPS: the interp evaluates the
+  SAME transformed IR, so a frk_ctl.suspend's reference semantics
+  would be "whatever the runtime does" — violating the calculus §2
+  contract structure (D-061's interp-degenerate pending op was
+  licensed by the interp's DISJOINT real-unwind mechanism;
+  suspension has none). The ops wait for the re-entrant rung,
+  where the interp explicit-frame build (Step::Suspend through the
+  seven ctl_eval evaluators + closure Apply + run_cfg) restores
+  the forced-general-vs-fast-path license structure. L3 under
+  THIN: interp and native run the same transformed IR (the runtime
+  rows keep two implementations, so representation divergence —
+  the M24 wasm32 class, s390x endianness in frame records — stays
+  matrix-catchable); lua5.1 is the load-bearing transform oracle
+  (D-008's third-oracle role, the D-056.2/D-068/D-079/D-081 line).
+  RULINGS:
+  (1) A FRAME IS A CLOSURE, NEVER A RAW FN ADDRESS: each captured
+  frame is frk_closure.make over product [i64 resume-state, dyn
+  chain-next, typed captures (box ptrs code-1, dyn code-2, raw
+  f64/i64 code-0)] at the uniform (envref, pack)→pack convention —
+  the interp cannot run an address word (Value::Closure is
+  symbol-named; no func.constant evaluator), so address frames
+  fork L3. Spike-proven green on interp/jit-arena/jit-rc; the
+  spike ships as the pattern's first golden. Field budget ~10
+  direct; overflow spills to a nested arr<dyn> (layout_wordmap and
+  both tracers stop at 30 words — beyond it, tracing AND
+  cascade-release silently stop). Measured captures: mean 1.9,
+  max 4.
+  (2) THE SUSPEND CHANNEL IS PARALLEL, NEVER A THIRD PENDING
+  STATE: suspend flag + chain accumulator + parked pack +
+  current-thread ptr ride lua-emitter-owned D-078 global cells —
+  zero pending-cell changes in either twin; the escape-wins and
+  D-082 save/merge protocols assume two states and stay untouched.
+  ONE suspension in flight (synchronous bubbling on one stack),
+  consumed at the nearest resume boundary — stack discipline IS
+  the chain targeting; the resumer link exists only for the
+  status protocol. TAG_THREAD = 8 (fourth D-051 widening, D-070
+  checklist: TAG_LIMIT 9, managed range 4..=8 at masked_dyn_ptr,
+  three tracer arms × two twins, lua TAG consts + type()/tostring
+  arms; kinds_layout unchanged — tag-agnostic). Thread record =
+  {status, STARTED flag, chain head, resumer link, body closure,
+  stash}. STARTED is load-bearing: chain-emptiness cannot
+  discriminate a virgin coroutine — a tail-position yield
+  captures NOTHING (D-064's absent frame is semantically CORRECT)
+  yet the next resume's pack becomes the RETURN pack
+  (oracle-pinned, co_tail_yield).
+  (3) RESUME = REBUILD-BY-RECALLING, OUTERMOST-IN: capture
+  PREPENDS (frames return outward → the head is the outermost
+  frame; no reversal); the walker re-enters frames as ordinary
+  NON-TAIL calls (mid-walk yields reuse the same guards — no
+  splice logic; future wind re-entry comes out outside-in for
+  free); ONE delivery rule — empty chain-rest ⇒ deliver the
+  resume pack (innermost delivery AND the empty tail-yield chain,
+  one rule). STATUS FLIPS suspended→running BEFORE the first
+  chain cell is consumed: otherwise a mid-rebuild self-resume
+  observes 'suspended' and the one-shot trap becomes
+  lua-reachable where lua5.1 answers a TUPLE — an L3 divergence;
+  co_misc's in-body self-resume is the standing witness.
+  Trampoline REJECTED: a driver frame between every logical
+  caller/callee breaks native-stack==logical-stack (the ground
+  under D-061/D-064/D-067 reasoning) and fires wind before()
+  thunks in the wrong order; its O(1) deep-generator win is a
+  NAMED future optimization. DEPTH: chain ≤ live non-tail frames
+  at capture, and the rebuild re-enters non-tail (atli's
+  recursive-bound warning honored), so D-029's 1024 cap bounds
+  both ends UNAMENDED. "500k-deep" is unimplementable (lua5.1
+  dies under 20k; interp caps at 1024): the scale goldens are
+  co_deep800 (800 frames, pending arithmetic each) and co_cycles
+  (100k yield/resume CYCLES — the tail_recursion precedent
+  number — flat memory witnessed by the rt linearity drill).
+  Nested coroutines' rebuilt frames SUM on the one native stack
+  (lua has per-thread stacks) — corpus-law-bounded, named.
+  (4) CAPTURE-AT-GUARD, TYPED, LICENSED, PLANNER-INVISIBLE: only
+  modules mentioning `coroutine` transform (per-call licensing is
+  UNSOUND — mutable _G; every user call is closure.apply through
+  dyn, no static call graph; the calculus §3 "module containing
+  ctl ops" grain), gated by a FORCED-TRANSFORM differential leg
+  over all 18 existing cases incl. tail_recursion at 100k (the
+  musttail canary — the transform must never guard a tail site).
+  Existing goldens stay byte-identical (×1.00, zero re-blesses);
+  coroutine modules pay a measured ×1.60 program-IR. Residue is
+  captured on the guard COLD PATH only, never always-boxed
+  (boxing NumFor's raw f64s would churn every numeric loop's
+  D-041 alloc goldens): NumFor {counter,to,step}; GenFor
+  BODY-position yields {iter_fn,state,next_control} — the GenFor
+  HEAD apply is an oracle-conformant TRAP site (lua5.1 REJECTS
+  iterator-yield: "attempt to yield across metamethod/C-call
+  boundary"; probe-pinned), rpack never captures; the vararg
+  private arr; envref recovery; box POINTERS themselves; sibling
+  explist temps. EMITTER LAWS: a guard sits between every
+  licensed non-tail call and ANY consumption of its result (the
+  explist engine must never read a suspended dummy — co_explist
+  pins it); resume-reachable blocks are emitted with explicit
+  block args for dominance-carried live-ins. CAPTURE STORES CARRY
+  A frk.capture UNIT ATTR (the D-061 ctl_body-attr recipe — zero
+  new ops) EXCLUDED from the rc planner's use graph, semantics
+  "always retain at capture; the resume reload consumes the
+  frame's reference": ordinary stores would flip hot-path
+  transfers into shared retains (a per-execution leak on paths
+  that never suspend) and defeat wrap_transferred so die_at frees
+  the payload on BOTH guard arms before the cold path captures it
+  (UAF on first resume — the D-082.2 wrap class one hop deeper;
+  both vectors panel-confirmed against the planner source). Hot-
+  path rc plans stay byte-identical; the ~8% die_at losses where
+  guards split blocks (37/458 measured) are a NAMED leak-bias
+  regression, blessed with an L2 reason, confined by the license.
+  (5) SURFACE v0.4: create/resume/yield/status/wrap + type()
+  (newly seeded; type(co)="thread"). THREE tuple guards, bytes
+  oracle-pinned: "cannot resume dead/running/NORMAL coroutine" —
+  the third (resuming your own resumer) is reachable in-slice via
+  nesting and was absent from the dossier. The one-shot trap is
+  UNREACHABLE through the lua surface (the tuples pre-empt every
+  route): it ships as a K2-level twin drill (chain double-consume
+  with the status guard bypassed), wording "one-shot violation
+  (κ_frk)" per calculus §2 — the keystone witnessed, not trusted.
+  FENCED LOUD: body-error catching (resume-as-pcall
+  false+message) — body errors keep the deterministic abort;
+  wrap's dead-re-raise = the abort path; the chain machinery M35
+  builds is most of the future unwind boundary, so the fence is a
+  rung, not a dead end. Yield across intrinsics = deterministic
+  trap via NEW check+trap guards at the intrinsics' two apply
+  sites (__lua_index fn-form, __lua_setindex) + the GenFor head —
+  WITHOUT them a metamethod yield silently skips the intrinsic
+  frame and corrupts the chain; oracle-conformant in refusal, the
+  FORM differs (lua5.1 catches at resume, exit 0; ours aborts) —
+  unit-tested, never differential. yield-from-main = trap (5.1
+  refuses too, exit 1). tostring(co) never goldened (address
+  bytes; canon rule). Handlers/winds inside coroutine bodies:
+  fence VACUOUS by construction (zero frk_ctl ops in the lua
+  tree) — corpus law, no trap machinery.
+  (6) COLLECTOR OBLIGATIONS: the tag-8-slot cycle drill
+  (thread→chain→frame→env→box→table→thread; both twins,
+  byte-equal free counts) lands in the SAME COMMIT as the
+  widening — red if any tracer arm is missed; drop-without-resume
+  cascades by pure rc (exact counts); resume-consumes linearity
+  (1000 iterations — the walk must CONSUME cells; the keystone
+  pays: zero multi-shot means zero frame copying). Parked-but-
+  referenced chains at exit are LIVE, not leaks. Suspended frames
+  must never live in a resetting arena — v0 arenas are process-
+  lifetime (D-041): safe by LAW now, not by accident; arena
+  coroutine churn grows without bound (correct, never reclaimed)
+  — arena-leg coroutine goldens stay modest.
+  (7) ATLI (β revisit HALF-fires: no stacks switch, no frames in
+  arenas — consulted, not consumed): one-shot κ ⇒ chain memory
+  demand is ADDITIVE (Σ statically-bounded per-frame records —
+  no n·β term, by affinity; the emitter knows each frame's max
+  capture set); drop/tail-resume clauses stay frame-free (capture
+  must not tax them); the arena-placement license (bounded frame
+  ⇒ arena-placeable) is NAMED with revisit "a per-coroutine
+  nursery region exists" and atli's inverted-soundness gate
+  (high-water ≤ β; corrupted-β trap) as its mandatory verifier
+  shape.
+  (8) THE RE-ENTRANT RUNG (successor milestone) OWNS, recorded so
+  its consumers have entry points: per-continuation migration of
+  the five ctl cells (pending 4-word cell, prompt Vec, evidence
+  stack+masks, wind save/merge — a reified wind-frame STACK per
+  D-082's revisit — interp ctl_aborted); κ reified as a stored
+  chain value (frk_ctl.resume grows the non-tail case; the
+  resumable-frame pattern is its native lowering candidate); the
+  interp explicit-frame build; TWO state-checks that are silent-
+  wrong by inspection today and must become traps THERE: a yield
+  crossing wind_save is stashed and re-delivered (before() never
+  re-fires; a later abort skips after()), and perform_end's
+  escape-wins test reads a suspension as an in-flight escape and
+  drops the clause result. Re-entrant winds re-fire outside-in
+  (chibi-pinned this panel: before/after/before/after/
+  outer-caught); P13 and R7RS 4.2.7 unfence TOGETHER (one
+  mechanism); admission tests = D-081's chibi probes +
+  q_reraise_wind. TS GENERATORS consume the PATTERN, not shared
+  machinery (TS params are BY VALUE per M29 — records carry
+  values, not box pointers; the three D-079 async fences resolve
+  there; generator objects/next()/return()/throw()/yield* priced
+  at admission) — NOT gated on the kernel rung.
+  Corpus: 17 differential goldens, all bytes lua5.1-pinned BEFORE
+  implementation (the M33 method); six trap shapes unit-only.
+  Revisit: the re-entrant rung at its recorded entry points; the
+  body-error fence at the first pcall/error consumer; the arena
+  license at a per-coroutine nursery; the deep-generator walk
+  optimization if a corpus case prices O(depth) resume; the queue
+  item said "stack-switching rung" — the consumer-first
+  reinterpretation is batched For-the-human at exit.
 - D-083 [m34/ts] TS EMITTER HYGIENE — the D-080 landmine and both
   D-082 landmines fall in one focused milestone, all three fixes
   landing with node-verified witnesses (L1). (1) BLOCK-SCOPED LET:

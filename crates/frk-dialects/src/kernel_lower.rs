@@ -5055,9 +5055,9 @@ fn masked_dyn_ptr<'c>(
         IntegerAttribute::new(i64_type, 4).into(),
         location,
     )))?;
-    let seven = result_value(rewriter.insert(melior::dialect::arith::constant(
+    let eight = result_value(rewriter.insert(melior::dialect::arith::constant(
         context,
-        IntegerAttribute::new(i64_type, 7).into(),
+        IntegerAttribute::new(i64_type, 8).into(),
         location,
     )))?;
     let zero = result_value(rewriter.insert(melior::dialect::arith::constant(
@@ -5086,14 +5086,15 @@ fn masked_dyn_ptr<'c>(
             .map(|r| unsafe { Value::from_raw(r.to_raw()) })
             .map_err(|e| e.to_string())
     };
-    // Managed tags are the RANGE 4..=7 (table, fun, pair, vector —
-    // D-070/D-077): sge(tag,4) AND sle(tag,7). The symmetry law
-    // (D-057) pairs this site with the tracer arms in both twins.
+    // Managed tags are the RANGE 4..=8 (table, fun, pair, vector,
+    // thread — D-070/D-077/D-084): sge(tag,4) AND sle(tag,8). The
+    // symmetry law (D-057) pairs this site with the tracer arms in
+    // both twins.
     let is_ge4 = cmpi(5, tag_v, four)?; // sge
-    let is_le7 = cmpi(3, tag_v, seven)?; // sle against the widened bound
+    let is_le8 = cmpi(3, tag_v, eight)?; // sle against the widened bound
     let either = result_value(rewriter.insert(
         OperationBuilder::new("arith.andi", location)
-            .add_operands(&[is_ge4, is_le7])
+            .add_operands(&[is_ge4, is_le8])
             .add_results(&[IntegerType::new(context, 1).into()])
             .build()
             .map_err(|e| e.to_string())?,
