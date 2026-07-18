@@ -18,6 +18,7 @@ func.func private @frk_rt_scm_display_num(f64)
 func.func private @frk_rt_scm_display_bool(i64)
 func.func private @frk_rt_scm_display_str(!frk_bstr.str)
 func.func private @frk_rt_scm_newline()
+func.func private @frk_rt_scm_trap(i64)
 
 // display's tag dispatch (D-070): numbers via the %.14g twin printer,
 // booleans as #t/#f (extended i1 → i64: wasm enforces exact widths,
@@ -292,19 +293,28 @@ func.func @__scm_eq(%a: !frk_dyn.dyn, %b: !frk_dyn.dyn) -> !frk_dyn.dyn {
   return %pd : !frk_dyn.dyn
 }
 
-// ---- M26 (D-071): the R7RS exception wrappers. STATIC functions —
-// per-site closures differ only in their env (the captured user
-// handler / thunk), so one pair serves every with-exception-handler.
+// ---- M26 (D-071) / M33 (D-081.4): the R7RS exception wrappers.
+// STATIC functions — per-site closures differ only in their env (the
+// captured user handler / thunk), so one pair serves every
+// with-exception-handler.
 
-// The tail-resume CLAUSE: (h, pack[v, κ]) → apply h to [v], then
-// apply κ to [r] and return κ's pack — the clause's return IS the
-// resume value (D-069). If h ESCAPED (pending set after its apply),
-// return early: the in-flight abort wins (perform_end preserves it).
+// The CLAUSE: (h, pack[(flag . e), κ]) — every perform{"exn"} carries
+// a FLAGGED PAIR (D-081.4: #t = raise-continuable, #f = plain raise;
+// the flag travels WITH the value because after-thunks run between
+// perform and handle and would clobber any cell). Apply h to [e];
+// if h ESCAPED (pending set) return early — the in-flight abort wins
+// (perform_end preserves it). Then the flag decides: #t → apply κ to
+// [r], the clause's return IS the resume value (D-069); #f → the
+// handler RETURNED from a non-continuable raise — the deterministic
+// D-081 trap (chibi raises a secondary exception; we refuse loud).
 func.func @__scm_exn_clause(%h: !frk_dyn.dyn, %pack: !frk_mem.arr<!frk_dyn.dyn>) -> !frk_mem.arr<!frk_dyn.dyn> {
   %c0 = arith.constant 0 : i64
-  %e = func.call @__scm_arg(%pack, %c0) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
+  %we = func.call @__scm_arg(%pack, %c0) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
   %c1 = arith.constant 1 : i64
   %kd = func.call @__scm_arg(%pack, %c1) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
+  %wcell = "frk_dyn.unwrap"(%we) {tag = 6 : i64} : (!frk_dyn.dyn) -> !frk_mem.box<!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>>
+  %flagd = "frk_mem.field_get"(%wcell) {field = 0 : i64} : (!frk_mem.box<!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>>) -> !frk_dyn.dyn
+  %e = "frk_mem.field_get"(%wcell) {field = 1 : i64} : (!frk_mem.box<!frk_adt.product<[!frk_dyn.dyn, !frk_dyn.dyn]>>) -> !frk_dyn.dyn
   %hf = "frk_dyn.unwrap"(%h) {tag = 5 : i64} : (!frk_dyn.dyn) -> !frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>
   %hp = "frk_mem.array_new"(%c1) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
   "frk_mem.array_set"(%hp, %c0, %e) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
@@ -314,10 +324,18 @@ func.func @__scm_exn_clause(%h: !frk_dyn.dyn, %pack: !frk_mem.arr<!frk_dyn.dyn>)
   %pend = "frk_ctl.pending"() : () -> i64
   %z = arith.constant 0 : i64
   %escaped = arith.cmpi ne, %pend, %z : i64
-  cf.cond_br %escaped, ^divert, ^resume
+  cf.cond_br %escaped, ^divert, ^flagcheck
 ^divert:
   %ep = "frk_mem.array_new"(%z) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
   return %ep : !frk_mem.arr<!frk_dyn.dyn>
+^flagcheck:
+  %flag = "frk_dyn.unwrap"(%flagd) {tag = 1 : i64} : (!frk_dyn.dyn) -> i1
+  cf.cond_br %flag, ^resume, ^returned
+^returned:
+  %code = arith.constant 1 : i64
+  func.call @frk_rt_scm_trap(%code) : (i64) -> ()
+  %dead = "frk_mem.array_new"(%z) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
+  return %dead : !frk_mem.arr<!frk_dyn.dyn>
 ^resume:
   %r = func.call @__scm_arg(%hr, %c0) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
   %kf = "frk_dyn.unwrap"(%kd) {tag = 5 : i64} : (!frk_dyn.dyn) -> !frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>

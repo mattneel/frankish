@@ -1707,15 +1707,24 @@ impl<'c> Emitter<'c> {
                 }
                 Ok(Some(Some(acc)))
             }
-            "raise-continuable" => {
+            "raise-continuable" | "raise" => {
                 let [e] = args else {
-                    return Err("raise-continuable takes one argument".into());
+                    return Err(format!("{op} takes one argument"));
                 };
                 let Some(ev) = self.emit_value(fcx, e)? else { return Ok(Some(None)) };
+                // D-081.4: both raise kinds ride the ONE "exn" label
+                // behind a flagged-cons wrapper (#t continuable, #f
+                // plain) — the flag travels WITH the value because
+                // wind after-thunks run between perform and handle
+                // and would clobber any cell. The clause unwraps.
+                let flag = self.bool_dyn(fcx.block, op == "raise-continuable", l)?;
+                let wrapped = self
+                    .call(fcx.block, "__scm_cons", &[flag, ev], &[self.dyn_ty()], l)?
+                    .ok_or("cons produced no value")?;
                 let r = self.build(
                     fcx.block,
                     "frk_ctl.perform",
-                    &[ev],
+                    &[wrapped],
                     &[self.dyn_ty()],
                     &[("label", StringAttribute::new(self.context, "exn").into())],
                     l,
@@ -1800,7 +1809,7 @@ fn is_primitive(op: &str) -> bool {
             | "set-car!" | "set-cdr!" | "string-append" | "string-length" | "string=?"
             | "substring" | "vector" | "make-vector" | "vector-ref" | "vector-set!"
             | "vector-length"
-            | "dynamic-wind" | "with-exception-handler" | "raise-continuable"
+            | "dynamic-wind" | "with-exception-handler" | "raise-continuable" | "raise"
     )
 }
 
