@@ -670,6 +670,29 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
             }
         }
 
+        // Transfer propagates THROUGH DynWrap (M33 review, D-081): an
+        // allocation consumed by a wrap whose own result is sole-use
+        // owning-stored has forfeited its reference to the store's
+        // container — a block-exit release would spend it twice (the
+        // M12 double-spend, one hop deeper). Witnessed by a (vector …)
+        // literal stored into the globals array: array_new has TWO
+        // uses (its own element array_set + the wrap), so the direct
+        // sole-use test can never see the transfer.
+        let mut wrap_results: HashMap<usize, Vec<usize>> = HashMap::new();
+        for plan in &plans {
+            if let Planned::DynWrap { op, payload_retain, .. } = plan {
+                if *payload_retain == RetainKind::None {
+                    continue;
+                }
+                if let (Ok(operand), Ok(result)) = (op.operand(0), op.result(0)) {
+                    wrap_results
+                        .entry(operand.to_raw().ptr as usize)
+                        .or_default()
+                        .push(result.to_raw().ptr as usize);
+                }
+            }
+        }
+
         for plan in &mut plans {
             let (op, die_at, gated) = match plan {
                 Planned::BoxNew { op, die_at, .. } => (*op, die_at, false),
@@ -696,8 +719,17 @@ pub fn lower_kernel(module: OperationRef<'_, '_>, strategy: Strategy) -> Result<
                 Some((users, escapes)) => {
                     let transferred = users.len() == 1
                         && owned_operands.get(&key).copied().unwrap_or(0) >= 1;
+                    let wrap_transferred = wrap_results.get(&key).is_some_and(|wraps| {
+                        wraps.iter().any(|wrap_key| {
+                            matches!(use_sites.get(wrap_key), Some((wrap_users, _))
+                                if wrap_users.len() == 1
+                                    && owned_operands.get(wrap_key).copied().unwrap_or(0)
+                                        >= 1)
+                        })
+                    });
                     !*escapes
                         && !transferred
+                        && !wrap_transferred
                         && users
                             .iter()
                             .all(|user| op_blocks.get(user).copied() == Some(def_block))

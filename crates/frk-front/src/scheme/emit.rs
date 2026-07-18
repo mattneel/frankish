@@ -232,6 +232,41 @@ enum Local<'c, 'r> {
     Tok(Value<'c, 'r>),
 }
 
+/// Scope restoration for let/letrec bindings (M33 review): each entry
+/// records the SHADOWED prior binding (None = the name was fresh).
+/// Applied by the binder's caller after the body — in reverse, so a
+/// name bound twice in one binding list restores its true outer state.
+#[derive(Default)]
+struct ScopeUndo<'c, 'r> {
+    locals: Vec<(String, Option<Local<'c, 'r>>)>,
+    procs: Vec<(String, Option<ProcInfo>)>,
+}
+
+impl<'c, 'r> ScopeUndo<'c, 'r> {
+    fn apply(self, fcx: &mut Fcx<'c, 'r>) {
+        for (name, previous) in self.locals.into_iter().rev() {
+            match previous {
+                Some(local) => {
+                    fcx.locals.insert(name, local);
+                }
+                None => {
+                    fcx.locals.remove(&name);
+                }
+            }
+        }
+        for (name, previous) in self.procs.into_iter().rev() {
+            match previous {
+                Some(info) => {
+                    fcx.procs.insert(name, info);
+                }
+                None => {
+                    fcx.procs.remove(&name);
+                }
+            }
+        }
+    }
+}
+
 impl<'c> Emitter<'c> {
     fn dyn_ty(&self) -> Type<'c> {
         Type::parse(self.context, "!frk_dyn.dyn").expect("dyn")
@@ -909,7 +944,7 @@ impl<'c> Emitter<'c> {
             params: Vec::new(),
             escape: None,
             wind_thunk: false,
-            guard_sentinel: Some(sentinel_name),
+            guard_sentinel: Some(sentinel_name.clone()),
             body: body.to_vec(),
             procs: fcx.procs.clone(),
         });
@@ -941,11 +976,17 @@ impl<'c> Emitter<'c> {
 
         // Caught: head IS the flag (bool dyn); e = cdr. Clauses run
         // HERE — in guard's dynamic environment, after unwind (chibi
-        // P10) — with var bound to the condition.
+        // P10) — with var bound to the condition. The binding is
+        // SCOPED (M33 review): R7RS scopes the guard var to the
+        // clauses only, and the condition SSA value lives in this
+        // branch block — a leak would make any later use of the name
+        // a non-dominating operand (verification failure on legal
+        // programs).
         fcx.block = bcaught;
         let condition = self
             .call(fcx.block, "__scm_cdr", &[outcome], &[self.dyn_ty()], l)?
             .ok_or("cdr produced no value")?;
+        let shadowed_var = fcx.locals.get(var).copied();
         fcx.locals.insert(var.to_string(), Local::Val(condition));
         let mut diverged = false;
         for (test, clause_body) in clauses {
@@ -1003,6 +1044,19 @@ impl<'c> Emitter<'c> {
             }
         }
         fcx.block = join;
+        // Unwind the guard-var and sentinel bindings (M33 review):
+        // R7RS scopes the var to the clauses only, and the condition
+        // SSA value lives in the caught branch — a leaked binding
+        // makes any later use of the name a non-dominating operand.
+        match shadowed_var {
+            Some(previous) => {
+                fcx.locals.insert(var.to_string(), previous);
+            }
+            None => {
+                fcx.locals.remove(var);
+            }
+        }
+        fcx.locals.remove(&sentinel_name);
         Ok(Some(block_arg(join, 0)?))
     }
 
@@ -1036,16 +1090,19 @@ impl<'c> Emitter<'c> {
                 self.emit_tail(fcx, last)
             }
             Expr::Let(kind, binds, body, _) => {
-                if self.bind_let(fcx, *kind, binds)?.is_none() {
+                let Some(undo) = self.bind_let(fcx, *kind, binds)? else {
                     return Ok(());
-                }
+                };
                 let (last, init) = body.split_last().ok_or("empty let body")?;
                 for e in init {
                     if self.emit_value(fcx, e)?.is_none() {
+                        undo.apply(fcx);
                         return Ok(());
                     }
                 }
-                self.emit_tail(fcx, last)
+                let result = self.emit_tail(fcx, last);
+                undo.apply(fcx);
+                result
             }
             Expr::App(callee, args, _) => self.emit_app_tail(fcx, callee, args, l),
             // literals / var / (values that just return)
@@ -1118,36 +1175,46 @@ impl<'c> Emitter<'c> {
         binds: &[(String, Expr)],
         body: &[Expr],
     ) -> R<Option<Value<'c, 'r>>> {
-        if self.bind_let(fcx, kind, binds)?.is_none() {
+        let Some(undo) = self.bind_let(fcx, kind, binds)? else {
             return Ok(None);
-        }
-        self.emit_seq_value(fcx, body)
+        };
+        let value = self.emit_seq_value(fcx, body);
+        undo.apply(fcx);
+        value
     }
 
     /// Binds a let/let*/letrec's bindings into `fcx.locals`/`fcx.procs`.
-    /// Returns None if a binding initializer diverged.
+    /// Returns None if a binding initializer diverged (already
+    /// restored), else the scope undo the CALLER applies after the
+    /// body — bindings must not leak (M33 review: since D-081.1 a
+    /// leaked let binding permanently shadows a same-named global,
+    /// and sibling if-branches would see the other arm's bindings).
     fn bind_let<'r>(
         &mut self,
         fcx: &mut Fcx<'c, 'r>,
         kind: LetKind,
         binds: &[(String, Expr)],
-    ) -> R<Option<()>> {
+    ) -> R<Option<ScopeUndo<'c, 'r>>> {
+        let mut undo = ScopeUndo::default();
         // letrec of lambdas → mutually-recursive lifted procedures.
         if kind == LetKind::LetRec && binds.iter().all(|(_, e)| matches!(e, Expr::Lambda(..))) {
-            self.bind_letrec_procs(fcx, binds)?;
-            return Ok(Some(()));
+            self.bind_letrec_procs(fcx, binds, &mut undo)?;
+            return Ok(Some(undo));
         }
-        // let / let* / letrec of values: sequential or parallel value
-        // bindings (v0 treats let and let* alike for the corpus — no
-        // shadowing hazard in the cases; letrec-of-values is rare).
+        // let / let* / letrec of values: sequential value bindings
+        // (v0 treats let and let* alike for the corpus).
         for (name, init) in binds {
             let v = match self.emit_value(fcx, init)? {
                 Some(v) => v,
-                None => return Ok(None),
+                None => {
+                    undo.apply(fcx);
+                    return Ok(None);
+                }
             };
+            undo.locals.push((name.clone(), fcx.locals.get(name).copied()));
             fcx.locals.insert(name.clone(), Local::Val(v));
         }
-        Ok(Some(()))
+        Ok(Some(undo))
     }
 
     /// Lifts a letrec group of lambdas: shared capture set = the union
@@ -1157,6 +1224,7 @@ impl<'c> Emitter<'c> {
         &mut self,
         fcx: &mut Fcx<'c, 'r>,
         binds: &[(String, Expr)],
+        undo: &mut ScopeUndo<'c, 'r>,
     ) -> R<()> {
         let sibling_names: HashSet<String> = binds.iter().map(|(n, _)| n.clone()).collect();
         // Union of free vars across all bodies, minus siblings + own
@@ -1199,7 +1267,16 @@ impl<'c> Emitter<'c> {
             }
         }
         for (name, info, _) in &members {
+            undo.procs.push((name.clone(), fcx.procs.get(name).cloned()));
             fcx.procs.insert(name.clone(), info.clone());
+            // A letrec name shadows any same-named enclosing LOCAL for
+            // the extent of the letrec (locals resolve first since the
+            // M33 dispatch-order fix, so the shadowed local must step
+            // aside and come back with the undo).
+            if fcx.locals.contains_key(name) {
+                undo.locals.push((name.clone(), fcx.locals.get(name).copied()));
+                fcx.locals.remove(name);
+            }
         }
         // The lifted bodies see the enclosing top procs plus all
         // siblings.
@@ -1240,13 +1317,25 @@ impl<'c> Emitter<'c> {
         if op == "call/cc" || op == "call-with-current-continuation" || op == "call/ec" {
             return self.emit_callcc(fcx, args, l);
         }
-        if let Some(v) = self.emit_primitive(fcx, op, args, l)? {
-            return Ok(v);
-        }
+        // USER BINDINGS RESOLVE BEFORE PRIMITIVES (M33 review): R7RS
+        // scoping is locals, then top level (procs and value defines —
+        // where a define REPLACES the (scheme base) import), then the
+        // builtins. Primitive-first dispatch silently hijacked a
+        // chibi-legal (let ((raise …)) (raise 21)).
         // Escape application: (k v) → abort; never returns.
         if let Some(Local::Tok(token)) = fcx.locals.get(op).copied() {
             self.emit_escape(fcx, token, args, l)?;
             return Ok(None);
+        }
+        // First-class application (M26, D-071): the operator evaluates
+        // to a fun dyn; apply through the uniform convention with an
+        // args pack, result = head, guard after (the callee may abort).
+        if fcx.locals.contains_key(op) {
+            let callee = match self.emit_value(fcx, &Expr::Var(op.clone(), Span { start: 0, end: 0 }))? {
+                Some(v) => v,
+                None => return Ok(None),
+            };
+            return self.emit_apply_dyn(fcx, callee, args, l);
         }
         // Procedure application.
         if let Some(info) = fcx.procs.get(op).cloned() {
@@ -1261,21 +1350,14 @@ impl<'c> Emitter<'c> {
             self.emit_guard(fcx, l)?;
             return Ok(Some(result));
         }
-        // First-class application (M26, D-071): the operator evaluates
-        // to a fun dyn; apply through the uniform convention with an
-        // args pack, result = head, guard after (the callee may abort).
-        if fcx.locals.contains_key(op) {
-            let callee = match self.emit_value(fcx, &Expr::Var(op.clone(), Span { start: 0, end: 0 }))? {
-                Some(v) => v,
-                None => return Ok(None),
-            };
-            return self.emit_apply_dyn(fcx, callee, args, l);
-        }
         // Global-valued operator (D-081.1): read the slot, apply as a
         // fun dyn — (define p (make-parameter …)) then (p) rides this.
         if let Some(index) = self.globals.get(op).copied() {
             let callee = self.global_read(fcx, index, l)?;
             return self.emit_apply_dyn(fcx, callee, args, l);
+        }
+        if let Some(v) = self.emit_primitive(fcx, op, args, l)? {
+            return Ok(v);
         }
         Err(format!("unbound operator `{op}`"))
     }
@@ -1402,12 +1484,14 @@ impl<'c> Emitter<'c> {
             return Err("only symbol operators are supported in r7rs_core v0".into());
         };
         // Direct procedure tail call → func.call feeding func.return
-        // (M14 tail shape; no guard).
+        // (M14 tail shape; no guard). Locals shadow procs (M33
+        // dispatch-order fix), and a proc named like a primitive is
+        // the PROC (user top level replaces the import) — so the only
+        // exclusions are the special forms and any local binding.
         if op != "call/cc"
             && op != "call-with-current-continuation"
             && op != "call/ec"
-            && !is_primitive(op)
-            && fcx.locals.get(op).map(|b| matches!(b, Local::Tok(_))) != Some(true)
+            && !fcx.locals.contains_key(op)
         {
             if let Some(info) = fcx.procs.get(op).cloned() {
                 let operands = match self.eval_call_operands(fcx, &info, args)? {

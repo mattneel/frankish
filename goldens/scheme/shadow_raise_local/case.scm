@@ -1,0 +1,5 @@
+(import (scheme base) (scheme write))
+(guard (e (#t (display 'caught)))
+  (let ((raise (lambda (n) (* n 2))))
+    (display (raise 21))))
+(newline)

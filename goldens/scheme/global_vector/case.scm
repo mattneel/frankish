@@ -1,0 +1,7 @@
+(import (scheme base) (scheme write))
+(define v (vector 8))
+(define (rd) (vector-ref v 0))
+(display (rd))
+(display (cons 1 2))
+(display (rd))
+(newline)

@@ -1,0 +1,5 @@
+(import (scheme base) (scheme write))
+(let ((e 10))
+  (let ((r (guard (e (else 0)) 1)))
+    (display r) (newline)
+    (display e) (newline)))

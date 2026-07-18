@@ -193,6 +193,66 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-082 [m33/review] The M33 diff was ADVERSARIALLY REVIEWED (four
+  dimension reviewers, every finding refutation-verified — the
+  D-080 verifier class, load-bearing again): ELEVEN confirmed
+  findings deduplicating to FIVE fixes, all landed in-milestone
+  with their witnesses as goldens. (1) THE ROOT-CAUSE CLASS
+  (first-rank, four findings, one cause): natively, code running
+  INSIDE a wind's after() saw the in-flight abort's pending cell —
+  multi-call after bodies truncated at the first D-061 guard
+  (pre-existing since M25), NESTED winds inside after() skipped by
+  the D-081.0 skip-select (a REGRESSION of that fix), all but the
+  first LIFO parameterize restore lost on escape, and in-after
+  raise-continuable resumptions diverted. The interp holds the
+  thunk's abort in a LOCAL while after() runs; native now mirrors
+  it: frk_rt_ctl_wind_save/wind_merge suspend the four pending
+  words around the after() call (merge = last-writer-wins, the
+  interp's `after()?; outcome?` order). Pinned by wind_in_after,
+  wind_after_calls, after_raise, param_escape_multi, and the TS
+  twin ts3/finally_nested. (2) jit-rc FREED A LIVE GLOBAL VECTOR
+  (first-rank): the die_at planner's sole-use transfer test cannot
+  see a transfer THROUGH DynWrap — a (vector …) literal's
+  array_new has two uses (its own element sets + the wrap), so
+  wrap-then-sole-use-store elided the retain AND kept the die_at
+  release: the M12 double-spend one hop deeper, freeing the vector
+  while scm_globals held it (reuse-bits witness). Fix: transfer
+  propagates through DynWrap (wrap consumed + wrap result
+  sole-use-owned ⇒ no die_at). Pinned by global_vector +
+  param_in_vector under jit-rc. (3) GUARD'S VAR LEAKED a
+  non-dominating SSA value into the flat env — chibi-legal
+  programs failed MLIR verification on ALL runners (R7RS scopes
+  the var to the clauses); the binding is now saved/restored
+  around the dispatch, sentinel entry removed. Pinned by
+  guard_var_shadow. (4) LET BINDINGS NEVER SCOPE-POPPED — benign
+  until D-081.1 gave same-named globals something to shadow
+  (unanimous-twin divergence vs chibi); bind_let now returns a
+  ScopeUndo applied by both callers (letrec proc names get the
+  same treatment, incl. stepping aside a shadowed local). Pinned
+  by shadow_let_global. (5) DISPATCH ORDER: primitives resolved
+  before user bindings, so M33's new is_primitive rows (raise,
+  make-parameter) newly hijacked chibi-legal local rebindings;
+  resolution is now locals → procs → globals → primitives (R7RS:
+  a top-level define REPLACES the import). Pinned by
+  shadow_raise_local. REFUTED (correctly excluded): display of a
+  caught vector payload (pre-existing display gap, off-surface);
+  deep parameterize recursion tripping the interp's D-029 frame
+  cap (the cap working as written). LANDMINES RECORDED, both
+  pre-existing classes, deferred to the TS emitter milestone: a
+  TS function whose body ENDS with throw leaves a
+  predecessor-less trailing return block (M27 dead-join class —
+  bisected to m32-done; native lowering refuses loudly; no golden
+  hits it) and user TS top-level names colliding with synthesized
+  symbols (__frk_ctl_skip__/__frk_ctl_resume__ — loud
+  redefinition error, M24 class). EXTRACTION: the D-080 lesson
+  generalizes — the green suite proves the shapes you wrote;
+  adversarial review finds the STATE the shapes share. Every
+  first-rank finding here was a piece of PROCESS-GLOBAL state
+  (the pending cell, the flat env map, the die_at ledger) read by
+  code that could not know whose state it was; the fixes all
+  scope the state to its owner. Revisit: the after()-context
+  suspend at the Tier-2 re-entrant rung (winds that re-enter make
+  the save/merge pairing a stack).
 - D-081 [m33/scheme/ctl] r7rs_core v0.4 (adversarial panel: three
   designers + judge, all attacks chibi- or repo-witnessed):
   make-parameter/parameterize, guard, plain raise, top-level value

@@ -1,0 +1,7 @@
+(import (scheme base) (scheme write))
+(define x 1)
+(define (f x) (+ x 10))
+(display (f 5)) (newline)
+(display x) (newline)
+(let ((x 50)) (display x) (newline))
+(display x) (newline)
