@@ -17,3 +17,14 @@ pub fn compile_lua<'c>(
     let chunk = ast::parse(source).map_err(|e| e.to_string())?;
     emit::emit(context, file, source, &chunk)
 }
+
+/// The D-084 forced-transform gate: the resumable-frame transform ON
+/// for a module that never mentions coroutines.
+pub fn compile_lua_forced<'c>(
+    context: &'c Context,
+    file: &str,
+    source: &str,
+) -> Result<Module<'c>, String> {
+    let chunk = ast::parse(source).map_err(|e| e.to_string())?;
+    emit::emit_with_license(context, file, source, &chunk, true)
+}

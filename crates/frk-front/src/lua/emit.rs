@@ -49,6 +49,20 @@ pub fn emit<'c>(
     source: &str,
     chunk: &LBlock,
 ) -> Result<Module<'c>> {
+    emit_with_license(context, file, source, chunk, false)
+}
+
+/// D-084's license gate hook: `forced` turns the resumable-frame
+/// transform ON regardless of the module mention — the harness leg
+/// that proves the transform is semantics-neutral on the whole
+/// pre-M35 corpus.
+pub fn emit_with_license<'c>(
+    context: &'c Context,
+    file: &str,
+    source: &str,
+    chunk: &LBlock,
+    forced: bool,
+) -> Result<Module<'c>> {
     // The seed module (M17, D-062): the plain-dyn protocol helpers are
     // kernel IR in intrinsics.mlir; the emitter appends around them.
     let module = crate::intrinsics::seed_module(
@@ -72,7 +86,7 @@ pub fn emit<'c>(
         // transform (per-call licensing is unsound — mutable _G, no
         // static call graph). Unlicensed modules emit byte-identical
         // IR to pre-M35.
-        licensed: source.contains("coroutine"),
+        licensed: forced || source.contains("coroutine"),
     };
 
     emitter.emit_main(&module, chunk)?;
@@ -1802,6 +1816,12 @@ impl<'c> Emitter<'c> {
                 let state = self.pack_get(fcx.block, triple, 1, location)?;
                 let control0 = self.pack_get(fcx.block, triple, 2, location)?;
 
+                if fcx.suspend.is_some() {
+                    return self.emit_genfor_licensed(
+                        fcx, names, iter_fn, state, control0, body, location,
+                    );
+                }
+
                 let head = fcx
                     .region
                     .append_block(Block::new(&[(self.dyn_ty(), location)]));
@@ -1848,7 +1868,27 @@ impl<'c> Emitter<'c> {
                 let location = self.loc_at(*span);
                 // The engine keeps the single-call no-copy forwarding
                 // (the D-063 tail-call fast path) and adds `...` and
-                // mixed explists (D-068).
+                // mixed explists (D-068). A TAIL call is NEVER guarded
+                // (D-084, the calculus tail/guard law): its suspension
+                // propagates for free — the callee's suspended dummy
+                // becomes our return pack and this frame is correctly
+                // ABSENT from the chain (D-064's absent tail frame is
+                // semantically right; co_tail_yield pins it). The
+                // forced-transform gate's 100k-frame canary caught a
+                // guarded tail as a stack overflow on day one.
+                if let [Expr::Call(callee, arguments, _)] = values.as_slice() {
+                    let callee_value = self.emit_expr(fcx, callee)?;
+                    let base = fcx.live_temps.len();
+                    fcx.live_temps.push(callee_value);
+                    let pack = self.emit_explist_pack(fcx, arguments, location)?;
+                    let callee_value = fcx.live_temps[base];
+                    fcx.live_temps.truncate(base);
+                    let raw =
+                        self.call_lua_pack(fcx.block, callee_value, pack, location)?;
+                    ret(fcx.block, &[raw], location)?;
+                    fcx.terminated = true;
+                    return Ok(());
+                }
                 let pack = self.emit_explist_pack(fcx, values, location)?;
                 ret(fcx.block, &[pack], location)?;
                 fcx.terminated = true;
@@ -2012,6 +2052,131 @@ impl<'c> Emitter<'c> {
                 Ok(())
             }
         }
+    }
+
+    /// The LICENSED generic for (D-084.4's GenFor residue): the
+    /// triple (iter_fn/state/next_control — all dyns) threads through
+    /// head/body/done AND live_temps; the HEAD apply is an
+    /// oracle-conformant TRAP boundary (lua5.1 refuses iterator
+    /// yields: "attempt to yield across metamethod/C-call boundary").
+    #[allow(clippy::too_many_arguments)]
+    fn emit_genfor_licensed<'r>(
+        &mut self,
+        fcx: &mut Fcx<'c, 'r>,
+        names: &[String],
+        iter_fn: Value<'c, 'r>,
+        state: Value<'c, 'r>,
+        control0: Value<'c, 'r>,
+        body: &LBlock,
+        location: Location<'c>,
+    ) -> Result<()> {
+        let spec = self.live_spec(fcx);
+        let mut arg_types = vec![
+            (self.dyn_ty(), location), // iter_fn
+            (self.dyn_ty(), location), // state
+            (self.dyn_ty(), location), // control
+        ];
+        arg_types.extend(self.live_arg_types(&spec, location));
+        let head = fcx.region.append_block(Block::new(&arg_types));
+        let bbody = fcx.region.append_block(Block::new(&arg_types));
+        let done_types = self.live_arg_types(&spec, location);
+        let done = fcx.region.append_block(Block::new(&done_types));
+
+        let mut entry_args = vec![iter_fn, state, control0];
+        entry_args.extend(self.live_arg_values(fcx, &spec)?);
+        self.br(fcx.block, head, &entry_args, location)?;
+
+        fcx.block = head;
+        self.live_rebind(fcx, head, 3, &spec)?;
+        let hiter = block_arg(head, 0)?;
+        let hstate = block_arg(head, 1)?;
+        let hcontrol = block_arg(head, 2)?;
+        let rpack = self.call_lua(fcx.block, hiter, &[hstate, hcontrol], location)?;
+        // The iterator apply is the D-084.5 boundary: a yield crossing
+        // it is the deterministic trap, exactly where lua5.1 errors.
+        let flag = self.read_susp_flag(fcx.block, location)?;
+        let trap_block = fcx.region.append_block(Block::new(&[]));
+        let go_block = fcx.region.append_block(Block::new(&[]));
+        self.cond_br(fcx.block, flag, trap_block, go_block, location)?;
+        let code = self.const_i64(trap_block, 2, location)?;
+        self.call(trap_block, "frk_rt_coro_trap", &[code], &[], location)?;
+        let dead = self.make_pack(trap_block, &[], location)?;
+        ret(trap_block, &[dead], location)?;
+
+        fcx.block = go_block;
+        let next_control = self.pack_get(fcx.block, rpack, 0, location)?;
+        let tag = self.tag_of(fcx.block, next_control, location)?;
+        let zero = self.const_i64(fcx.block, 0, location)?;
+        let is_nil = self.cmpi(fcx.block, 0, tag, zero, location)?;
+        let done_args = self.live_arg_values(fcx, &spec)?;
+        let mut body_args = vec![hiter, hstate, next_control];
+        body_args.extend(self.live_arg_values(fcx, &spec)?);
+        self.cond_br_two_args(
+            fcx.block, is_nil, done, &done_args, bbody, &body_args, location,
+        )?;
+
+        fcx.block = bbody;
+        self.live_rebind(fcx, bbody, 3, &spec)?;
+        fcx.terminated = false;
+        let biter = block_arg(bbody, 0)?;
+        let bstate = block_arg(bbody, 1)?;
+        let bcontrol = block_arg(bbody, 2)?;
+        // Names bind from a per-iteration re-read: name values came
+        // from rpack, which is HEAD-defined and not resume-safe —
+        // instead the loop names re-derive from the iterator protocol:
+        // name 0 IS the control; further names re-fetch via a fresh
+        // iterator call... no: rpack's values are bound BEFORE any
+        // body guard (the boxes are built here, first thing), and the
+        // BOXES then travel — only the raw rpack must not cross a
+        // guard. Bind first, drop rpack.
+        let temp_base = fcx.live_temps.len();
+        fcx.live_temps.push(biter);
+        fcx.live_temps.push(bstate);
+        fcx.live_temps.push(bcontrol);
+        fcx.scope_shadows.push(Vec::new());
+        for (index, name) in names.iter().enumerate() {
+            let value = if index == 0 {
+                bcontrol
+            } else {
+                self.pack_get(fcx.block, rpack, index as i64, location)?
+            };
+            let boxed = self.build(
+                fcx.block,
+                "frk_mem.box_new",
+                &[value],
+                &[self.box_ty()],
+                &[],
+                location,
+            )?;
+            self.bind_local(fcx, name, boxed);
+        }
+        fcx.break_targets.push((done, spec.clone()));
+        self.emit_block(fcx, body)?;
+        fcx.break_targets.pop();
+        let frame = fcx.scope_shadows.pop().expect("genfor scope");
+        for (name, previous) in frame.into_iter().rev() {
+            match previous {
+                Some(value) => {
+                    fcx.env.insert(name, value);
+                }
+                None => {
+                    fcx.env.remove(&name);
+                }
+            }
+        }
+        let iter_now = fcx.live_temps[temp_base];
+        let state_now = fcx.live_temps[temp_base + 1];
+        let control_now = fcx.live_temps[temp_base + 2];
+        fcx.live_temps.truncate(temp_base);
+        if !fcx.terminated {
+            let mut back_args = vec![iter_now, state_now, control_now];
+            back_args.extend(self.live_arg_values(fcx, &spec)?);
+            self.br(fcx.block, head, &back_args, location)?;
+        }
+        fcx.block = done;
+        self.live_rebind(fcx, done, 0, &spec)?;
+        fcx.terminated = false;
+        Ok(())
     }
 
     /// The LICENSED numeric for (D-084.4's NumFor residue): the loop
@@ -2381,8 +2546,14 @@ impl<'c> Emitter<'c> {
             return Ok(block_arg(join, 0)?);
         }
 
+        // The binary-left residue (D-084.4): lhs rides live_temps
+        // across the rhs, which may contain a suspending call.
         let left = self.emit_expr(fcx, lhs)?;
+        let temp_base = fcx.live_temps.len();
+        fcx.live_temps.push(left);
         let right = self.emit_expr(fcx, rhs)?;
+        let left = fcx.live_temps[temp_base];
+        fcx.live_temps.truncate(temp_base);
         match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
                 let a = self.unwrap(fcx.block, TAG_NUM, self.f64_ty(), left, location)?;

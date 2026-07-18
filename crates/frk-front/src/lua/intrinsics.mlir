@@ -486,6 +486,22 @@
     %17 = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
     %18 = "frk_adt.product_snoc"(%17, %16) : (!frk_adt.product<[]>, !frk_mem.arr<!frk_dyn.dyn>) -> !frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>
     %19 = "frk_closure.apply"(%15, %18) : (!frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>, !frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>) -> !frk_mem.arr<!frk_dyn.dyn>
+    // M35 (D-084.5): the metamethod apply is the intrinsic boundary —
+    // a yield crossing it is the deterministic trap (lua5.1 refuses
+    // the same shape, "attempt to yield across metamethod/C-call
+    // boundary"); silently continuing would corrupt the chain.
+    %ixg_fc = "frk_mem.global_get"() {sym = "lua_susp"} : () -> !frk_mem.box<f64>
+    %ixg_fv = "frk_mem.box_get"(%ixg_fc) : (!frk_mem.box<f64>) -> f64
+    %ixg_z = arith.constant 0.000000e+00 : f64
+    %ixg_is = arith.cmpf one, %ixg_fv, %ixg_z : f64
+    cf.cond_br %ixg_is, ^ix_boundary, ^ix_deliver
+  ^ix_boundary:
+    %ixg_code = arith.constant 2 : i64
+    call @frk_rt_coro_trap(%ixg_code) : (i64) -> ()
+    %ixg_zi = arith.constant 0 : i64
+    %ixg_dead = "frk_dyn.wrap"(%ixg_zi) {tag = 0 : i64} : (i64) -> !frk_dyn.dyn
+    return %ixg_dead : !frk_dyn.dyn
+  ^ix_deliver:
     %c0_i64_4 = arith.constant 0 : i64
     %20 = call @__lua_arg(%19, %c0_i64_4) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
     return %20 : !frk_dyn.dyn
@@ -620,6 +636,17 @@
     %si_p0 = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
     %si_p1 = "frk_adt.product_snoc"(%si_p0, %si_pack) : (!frk_adt.product<[]>, !frk_mem.arr<!frk_dyn.dyn>) -> !frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>
     %si_r = "frk_closure.apply"(%si_f, %si_p1) : (!frk_closure.fn<[!frk_mem.arr<!frk_dyn.dyn>], [!frk_mem.arr<!frk_dyn.dyn>]>, !frk_adt.product<[!frk_mem.arr<!frk_dyn.dyn>]>) -> !frk_mem.arr<!frk_dyn.dyn>
+    // M35 (D-084.5): __newindex's metamethod apply is a boundary too.
+    %sig_fc = "frk_mem.global_get"() {sym = "lua_susp"} : () -> !frk_mem.box<f64>
+    %sig_fv = "frk_mem.box_get"(%sig_fc) : (!frk_mem.box<f64>) -> f64
+    %sig_z = arith.constant 0.000000e+00 : f64
+    %sig_is = arith.cmpf one, %sig_fv, %sig_z : f64
+    cf.cond_br %sig_is, ^si_boundary, ^si_done
+  ^si_boundary:
+    %sig_code = arith.constant 2 : i64
+    call @frk_rt_coro_trap(%sig_code) : (i64) -> ()
+    return
+  ^si_done:
     return
   }
 

@@ -1,0 +1,4 @@
+outer: starting inner
+inner:	false	cannot resume normal coroutine
+outer:	true	done-inner
+main:	true	outer-done
