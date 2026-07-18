@@ -1,25 +1,25 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M29 complete (tag m29-done). TS-2 SHIPPED AND FROZEN
-(D-075): structural interfaces on D-026's itabs (dictionary interp
-/ real-itab native, the matrix arbitrates) + object closures
-(arrows onto frk_closure, captures by binding). Five specimens,
-five languages, one kernel.
-Tree: green — `make test` 53 blocks; diff 104 cases 0 divergent (8
-runners); grid 99/99 × BOTH strategies × 4 triples + s390x canary.
+Phase: M30 complete (tag m30-done). TS-3a exceptions (D-076):
+throw/try/catch/finally as pure κ_frk consumption — the ORDER
+finding (finally-before-catch ⇒ marker clause + inline catch at
+the handle site), the TS guard discipline + typed poison table.
+Zero kernel deltas. Async/await is TS-3's second half.
+Tree: green — `make test` 53 blocks; diff 108 cases 0 divergent (8
+runners); grid 103/103 × BOTH strategies × 4 triples + s390x.
 
 ## Next action
-M29 closed; TS-2 frozen. The queue:
-1. parameterize: r7rs v0.3 — make-parameter/parameterize (global
-   cells rung), guard sugar, plain raise.
-2. pairs-mut: r7rs structured data — set-car!/set-cdr!, strings,
+M30 closed. The queue:
+1. ts-3b: async/await — the downlevel state-machine transform +
+   a drain-the-microtask-queue runtime loop; node's ordering is
+   the oracle; TS-3 freezes when it ships.
+2. parameterize: r7rs v0.3 — make-parameter/parameterize, guard
+   sugar, plain raise.
+3. pairs-mut: r7rs structured data — set-car!/set-cdr!, strings,
    vectors.
-3. tier-2: the stack-switching rung (re-entrant κ / winds), at
-   coroutines.
-4. ts-3: async/await via the ported tsc downlevel state-machine
-   transform + exceptions (the manifest's next stage; wants the
-   effects lane it now has).
+4. tier-2: the stack-switching rung (re-entrant κ / winds) —
+   coroutines; ts-3b generators would also consume it.
 
 ## In flight
 Nothing.
@@ -45,6 +45,41 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m30-done — Shipped: TS-3a — JS exceptions on the effects lane,
+ZERO KERNEL DELTAS (D-076; the D-071 bar held again). throw =
+evaluate + perform{__exn}(nil) + unconditional poison return (the
+payload is unobservable: catch is optional-binding only until
+typeof narrowing). THE ORDER FINDING: κ_frk's clause-at-perform-
+site runs handler code before the unwind crosses winds, but JS
+runs finally FIRST — node caught the interp red-handed. The fix
+SIMPLIFIED the design: the clause is a static marker (@__exn_mark,
+abortive by not applying κ); catch statements run INLINE at the
+handle site dispatched on the outcome tag — finally-then-catch on
+both twins by construction, and no catch lifting or capture
+plumbing at all. finally = wind verbatim (try/catch/finally wraps
+the handle in the wind thunk, outcome as pack head). The TS
+emitter adopts D-061 wholesale: guards after every user call, a
+typed poison table (class returns = rec_cast(recref_null) — the
+placeholder's second life; fn/iface returns fenced). Try regions
+lift by the M29 capture rule. Also caught: ambient prelude decls
+leaking into computed captures; a silently-missed guard insertion
+at the call arm (found by cross_fn's suppressed-print witness).
+Corpus 4 cases; suite 53; diff 108/0; grid 103/103 × 5 × 2.
+
+M30 EXTRACTION: (1) ordering semantics are ORACLE-OWNED — the
+finally-before-catch law was invisible to every hand-written ctl
+golden and to the interp itself; only the upstream oracle caught
+it. Third time (after M26's escape-clobber and M27's demotion
+witness) that a real consumer found what constructed tests could
+not. (2) When handler code must run in unwind ORDER, the clause
+should carry ZERO user code — marker clauses + site dispatch is
+strictly simpler than clause lifting AND strictly more correct
+for abortive-only languages; note for future abortive consumers.
+(3) The guard discipline generalizes to typed returns via a
+poison table, and D-074's construction placeholder turned out to
+be the class-return poison for free — machinery built for one
+knot untying another.
+
 m29-done — Shipped: TS-2's second half; THE STAGE FREEZES (D-075).
 Structural interfaces cash D-026: !frk_dyn.iface = {obj, itab}
 two-slot; iface_make(box){methods} at sealed-world conversion
@@ -862,6 +897,29 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-17 (thirty-second entry)
+    Milestone/step: M30 complete, tagged m30-done
+    Green? yes — 53 blocks; 108/0 (8 runners); grid 103/103 × 5 × 2
+    Did:
+    - D-076; producer try/throw/captures + fences; consumer guard
+      discipline + poison table + @__exn_mark + inline-catch site
+      dispatch + wind thunks; 4 goldens; manifest TS-3-in-progress
+    Next: queue to the user (ts-3b async / parameterize / pairs-mut
+    / tier-2)
+    Landmines:
+    - catch code MUST NOT move into the clause — the marker design
+      IS the finally-before-catch order; any "optimization" that
+      inlines catch into the clause reintroduces the M30 bug
+    - the site guard after handle/wind is LOAD-BEARING (finally
+      that throws; uncaught try/finally) — it looks redundant next
+      to the tag dispatch and is not
+    - poison values are never observable BY CONSTRUCTION — but rc
+      retain/release does not run on poison paths; do not add
+      managed poison shapes without walking the retain story
+    - guard insertion sites are enumerable: call/new/mcall/imcall/
+      fcall + void-call stmt; a NEW call-shaped node kind must add
+      its guard or cross_fn-style suppressed prints will diverge
 
     Session end: 2026-07-17 (thirty-first entry)
     Milestone/step: M29 complete, tagged m29-done; TS-2 frozen

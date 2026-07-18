@@ -38,6 +38,20 @@ Curated test262 slice per stage (license: BSD) + tsc baseline-derived cases
 + hand corpus per idiom. node/V8 is ground truth through canon filter.
 
 ## Status
+TS-3 IN PROGRESS — exceptions SHIPPED (2026-07-17, m30-done,
+D-076): throw/try/catch/finally as PURE CONSUMPTION of the κ_frk
+effects machinery — throw = perform{__exn} (payload evaluated then
+discarded; catch admits only the ES2019 optional-binding form
+until typeof narrowing lands), catch = a static ABORTIVE marker
+clause + inline catch code at the handle site (the order finding:
+JS runs finally BEFORE catch, so handler code cannot run at the
+perform site — node caught it), finally = frk_ctl.wind. The TS
+emitter adopts the D-061 guard discipline wholesale, with a typed
+poison table (recref_null's second life for class returns).
+Async/await via the downlevel state-machine transform is the
+stage's second half. Fences: binding catch (typeof narrowing),
+return inside try regions, throw payloads as values.
+
 TS-2 SHIPPED, STAGE FROZEN (2026-07-17, m29-done; D-073/D-074/
 D-075, over two milestones):
 - Classes core (m28-done): monomorphic classes as MANAGED BOXES OF
