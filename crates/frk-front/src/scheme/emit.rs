@@ -2146,18 +2146,6 @@ impl<'c> Emitter<'c> {
     }
 }
 
-fn is_primitive(op: &str) -> bool {
-    matches!(
-        op,
-        "+" | "-" | "*" | "quotient" | "remainder" | "=" | "<" | ">" | "<=" | ">=" | "display"
-            | "newline" | "cons" | "car" | "cdr" | "null?" | "pair?" | "eq?" | "list"
-            | "set-car!" | "set-cdr!" | "string-append" | "string-length" | "string=?"
-            | "substring" | "vector" | "make-vector" | "vector-ref" | "vector-set!"
-            | "vector-length"
-            | "dynamic-wind" | "with-exception-handler" | "raise-continuable" | "raise"
-            | "make-parameter"
-    )
-}
 
 // ---- free-name analysis ----
 

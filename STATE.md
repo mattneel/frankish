@@ -1,40 +1,35 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M32 complete (tag m32-done). TS-3 SHIPPED AND FROZEN — async/
-await (D-079) on the global-cells rung (D-078); the tick model was
-adversarially panel-certified against node BEFORE implementation,
-and the async DIFF was adversarially reviewed AFTER (D-080) — five
-real defects the green suite could not see were found and fixed in
-the milestone. Global cells also unblock scheme's parameterize.
-Tree: green — `make test` 55 blocks; diff 118 cases 0 divergent (8
-runners); grid 113/113 × BOTH strategies × 4 triples + s390x.
+Updated: 2026-07-18 (M33 session)
+Phase: M33 complete (tag m33-done). r7rs v0.4 SHIPPED — top-level
+value defines, make-parameter/parameterize, guard, plain raise
+(D-081), with TWO pre-existing L3 divergences felled en route
+(wind-before-abort at design time; the live-pending-during-after
+class at review time) and the D-082 adversarial diff review landing
+five fixes the green suite could not see. Tree: green — `make test`
+60 blocks; diff 142 cases 0 divergent (8 runners); grid 127/127 ×
+BOTH strategies × 4 triples + s390x (rerun green on the final tree).
 
 ## Next action
-M32 closed; TS-3 frozen. The queue:
-1. parameterize: r7rs v0.4 — make-parameter/parameterize NOW that
-   the global-cells rung (D-078) exists; guard sugar; plain raise.
-2. tier-2: the stack-switching rung (re-entrant κ / winds) —
+M33 closed. The queue (user-ratified 2026-07-18):
+1. M34 — the TS emitter hygiene milestone: the pre-existing
+   block-`let`-through-`if` shadowing bug (D-080 deferred; env
+   scope save/restore — the scheme twin of this fix landed in
+   D-082.4, use it as the model), PLUS the two D-082 landmines:
+   throw-at-end-of-void-fn leaves a predecessor-less return block
+   (M27 dead-join class, native lowering refuses loudly), and
+   user top-level names colliding with synthesized __frk_*/
+   __finally_* symbols.
+2. M35 — tier-2: the stack-switching rung (re-entrant κ / winds) —
    coroutines; generators (deferred from TS async) consume it.
-3. ts-4: generics (monomorphized), sealed-world switch, any/
+   NOTE from D-082: the wind save/merge pairing becomes a STACK
+   when winds re-enter.
+3. M36 — ts-4: generics (monomorphized), sealed-world switch, any/
    gradual boundary as contract ops — frk_contract's second act;
    the D-079 static-await-dispatch soundness note comes due here.
-4. let-scope fix: the pre-existing block-`let`-through-`if`
-   shadowing bug (D-080 deferred) — env scope save/restore.
 
 ## In flight
-M33 (r7rs v0.4 — D-081) underway. FIRST-RANK L3 FINDING, found by
-the M33 design panel and FIXED in the same commit that files it: an
-abort raised in a dynamic-wind BEFORE-thunk was ?-propagated by the
-interp (skips thunk+after — the chibi/R7RS semantics) but native
-CtlWind ran all three closure calls straight-line; witnessed via the
-diff harness in v0.1 vocabulary (interp/chibi "42", both native
-strategies "thunk!after!42"), so it predates M33. Fix: the wind
-lowering reads the pending cell once after before() and selects
-thunk/after against a synthesized @__frk_ctl_skip__ (branch-free);
-pinned by goldens/scheme/wind_before_abort; wind_escape/exn_escape
-(thunk-abort path: after still runs) byte-unchanged. D-081 records
-the full v0.4 design (panel rulings, fences, corpus laws).
+Nothing.
 
 ## For the human
 - RESOLVED (2026-07-03): the Rocq anchor — delegated back ("Atli is
@@ -57,6 +52,72 @@ the full v0.4 design (panel rulings, fences, corpus laws).
   now and expensive later.
 
 ## Milestone log
+m33-done — Shipped: r7rs v0.4 (D-081/D-082) — top-level value
+defines, make-parameter/parameterize, guard, plain raise. ZERO
+KERNEL DELTAS: no new ops or types anywhere; the one runtime
+growth is three registry rows (frk_rt_scm_trap + the wind
+save/merge pair). THE SHAPE OF THE MILESTONE: design panel BEFORE
+(three designers + judge; every attack chibi- or repo-witnessed),
+implementation in seven verifier-first commits, adversarial diff
+review AFTER (D-082) — and BOTH panels caught first-rank L3
+divergences the 130+-case green matrix could not see. DESIGN
+(D-081): top-level defines ride ONE scm_globals arr<dyn> behind a
+D-078 pointer cell, nil-filled at main entry (the ts_queue
+pattern's second frontend; the dyn-cell widening priced and
+deferred to non-static N); parameters are closures over mutable
+state pairs — NO cells (D-078's prediction was half-stale) — with
+a two-arm pack-length protocol and a trap arm; parameterize
+desugars at the parser onto wind (eval all params, all values,
+all olds, raw-set all, LIFO restore; no-op before); both raise
+kinds ride one "exn" label behind a flagged cons (the flag
+travels WITH the value); guard = abortive static clause +
+SENTINEL-IDENTITY dispatch at the handle site, post-unwind, with
+the continuable re-raise fenced LOUD to Tier-2 (P13 needs
+re-entrant κ). The converter is FENCED with recorded admission
+tests. PANEL FINDS: (0) pre-existing wind-before-abort native
+divergence (fixed: branch-free skip-select against a synthesized
+@__frk_ctl_skip__); the interp array_new Float-zero/native-nil
+failure-mode split behind unfilled slots; the escape-Job tail
+path would have skipped guard's sentinel wrapper. REVIEW FINDS
+(D-082, 11 confirmed → 5 fixes, all pinned by goldens): the
+live-pending-during-after() ROOT CAUSE (four findings — after
+bodies truncated, nested winds skipped, restores lost,
+resumptions diverted; fixed by frk_rt_ctl_wind_save/merge
+suspending the pending cell around after(), the interp's local-
+variable hold made native); the rc DOUBLE-SPEND through DynWrap
+(a vector literal wrap-transferred into the globals array kept
+its die_at release — jit-rc freed a LIVE global; transfer now
+propagates through wraps); guard-var and let bindings leaking
+from the flat env (ScopeUndo; the guard leak REFUSED chibi-legal
+programs, the let leak silently shadowed globals); primitives
+dispatching before user bindings (raise/make-parameter hijacked
+chibi-legal rebindings; now locals → procs → globals →
+primitives). Landmines for M34 (both pre-existing classes):
+TS throw-at-end-of-void-fn (M27 dead-join; loud native refusal)
+and synthesized-symbol collisions (__frk_*, M24 class). Corpus:
+42 scheme cases (22 new) + ts3/finally_nested. Suite 60; diff
+142/0; grid 127/127 × 2 × 4 + s390x.
+
+M33 EXTRACTION: (1) THE TWO-PANEL DISCIPLINE IS NOW 2-FOR-2 — the
+design panel found a divergence writable in v0.1 vocabulary that
+had sat unwitnessed for eight milestones, and the diff review
+found five more; every first-rank find in both was PROCESS-GLOBAL
+STATE read by code that could not know whose state it was (the
+pending cell during after(), the flat env map across scopes, the
+die_at ledger across a wrap). The fix pattern is always the same:
+scope the state to its owner (suspend/merge, ScopeUndo, transfer-
+through-wrap). (2) ORACLE PROBES BEFORE DESIGN pay twice: the 18
+chibi probes pinned semantics no spec text settles (converter-on-
+init, LIFO restore under aliasing, unwind-before-clause order,
+re-raise continuability) AND became the corpus bytes — every new
+golden was chibi-verified before implementation and green on all
+runners at first contact. (3) The zero-kernel-delta bar held a
+FOURTH time for scheme (D-070/D-071/D-076/D-081): dynamic
+binding, exceptions-with-classes, and post-unwind dispatch all
+composed from wind + pairs + closures + one global cell — the
+kernel library keeps refusing to grow for new idioms, which is
+the thesis.
+
 m32-done — Shipped: async/await; TS-3 FREEZES (D-078/D-079/
 D-080). TWO RUNGS. GLOBAL CELLS (D-078): global_decl/global_get —
 an LLVM global slot IS a box (global_get = one addressof, no

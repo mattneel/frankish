@@ -143,7 +143,14 @@ unwinding, with normal completion discriminated from a caught
 condition by **sentinel allocation identity** — tags can't do it,
 because `#f` and `'()` are legal body values. What R7RS's else-less
 re-raise really wants — re-entering the original dynamic environment
-— is re-entrant κ, named and fenced to the Tier-2 rung.
+— is re-entrant κ, named and fenced to the Tier-2 rung. The
+post-diff adversarial review (D-082) then earned its keep exactly as
+D-080 had: eleven confirmed findings, five fixes — the deepest being
+that natively, code running *inside* a wind's after() could see the
+in-flight abort's pending cell (the interp holds it in a local; the
+runtime now suspends and re-merges it around after()), and that the
+rc release planner could not see ownership transfer *through* a
+`dyn.wrap`, double-spending a global vector's one reference.
 
 r7rs_core is v0.4 SHIPPED. It forced `frk_ctl` into existence, made tail
 calls load-bearing corpus-wide, and demonstrated the calling-convention

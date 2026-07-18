@@ -17,7 +17,12 @@ re-raise of non-continuables propagates to outer guards with payload
 and flag preserved). ALSO: a PRE-EXISTING L3 divergence fell — an
 abort raised in a dynamic-wind BEFORE-thunk now skips thunk AND
 after natively, matching interp/chibi (goldens/scheme/
-wind_before_abort pins it). 33-case corpus vs chibi.
+wind_before_abort pins it). THE POST-DIFF ADVERSARIAL REVIEW
+(D-082) then found eleven defects the green suite could not see —
+five fixes, all landed in-milestone with witness goldens (the
+after()-context suspend, the rc wrap-transfer rule, guard-var/let
+scope restoration, locals-before-primitives dispatch). 42-case
+corpus vs chibi.
 
 CORPUS LAWS (D-081, chibi-witnessed): no w-e-h handler may RETURN
 normally from a plain raise, even under an enclosing guard (chibi
