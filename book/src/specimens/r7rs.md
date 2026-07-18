@@ -111,7 +111,19 @@ its in-flight abort clobbered by the native perform's abortive path
 — escape now wins in both twins, witnessed by an escape crossing a
 dynamic-wind out of a handler on every runner.
 
-r7rs_core is v0.2 SHIPPED. It forced `frk_ctl` into existence, made tail
+At v0.3 (M31) the specimen went MUTABLE: `set-car!`/`set-cdr!`
+forced the pair representation honest — a cons cell had been a
+wrapped product *by value*, sound only while nothing could write to
+it; it is now a **boxed** product whose aliases share the cell on
+both twins, and mutation is the M28 `field_set` rung consumed by a
+second language. Cyclic cons rings became constructible and both
+collector twins drill them to identical free counts. Strings arrived
+as interned tag-3 byte strings (so `string=?` on a dynamically
+appended string is a pointer compare), and vectors as the THIRD dyn
+tag widening (`TAG_VECTOR = 7` over `arr<dyn>` — machinery that had
+existed since femto_lua's tables, waiting for a consumer).
+
+r7rs_core is v0.3 SHIPPED. It forced `frk_ctl` into existence, made tail
 calls load-bearing corpus-wide, and demonstrated the calling-convention
 fork — the fourth language on the kernel, and the one that proved the
 control lane.

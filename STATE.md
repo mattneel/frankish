@@ -1,25 +1,24 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M30 complete (tag m30-done). TS-3a exceptions (D-076):
-throw/try/catch/finally as pure κ_frk consumption — the ORDER
-finding (finally-before-catch ⇒ marker clause + inline catch at
-the handle site), the TS guard discipline + typed poison table.
-Zero kernel deltas. Async/await is TS-3's second half.
-Tree: green — `make test` 53 blocks; diff 108 cases 0 divergent (8
-runners); grid 103/103 × BOTH strategies × 4 triples + s390x.
+Phase: M31 complete (tag m31-done). r7rs v0.3 (D-077): pair
+mutation (boxed cons cells — the honest representation; cyclic
+rings collect), strings (interned bstrs), vectors (TAG_VECTOR = 7,
+the third widening). The M28 field rung consumed by scheme; the
+D-073 multi-slot field fence fell to its second consumer.
+Tree: green — `make test` 54 blocks; diff 113 cases 0 divergent (8
+runners); grid 108/108 × BOTH strategies × 4 triples + s390x.
 
 ## Next action
-M30 closed. The queue:
+M31 closed. The queue:
 1. ts-3b: async/await — the downlevel state-machine transform +
-   a drain-the-microtask-queue runtime loop; node's ordering is
-   the oracle; TS-3 freezes when it ships.
-2. parameterize: r7rs v0.3 — make-parameter/parameterize, guard
-   sugar, plain raise.
-3. pairs-mut: r7rs structured data — set-car!/set-cdr!, strings,
-   vectors.
-4. tier-2: the stack-switching rung (re-entrant κ / winds) —
+   microtask drain; node ordering as oracle; TS-3 freezes.
+2. parameterize: r7rs v0.4 — make-parameter/parameterize (global
+   cells rung), guard sugar, plain raise.
+3. tier-2: the stack-switching rung (re-entrant κ / winds) —
    coroutines; ts-3b generators would also consume it.
+4. ts-4: generics (monomorphized), sealed-world switch, any/
+   gradual boundary as contract ops — frk_contract's second act.
 
 ## In flight
 Nothing.
@@ -45,6 +44,39 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m31-done — Shipped: r7rs v0.3 (D-077) — pair mutation, strings,
+vectors. THE REPRESENTATION FINDING: cons cells were wrap(product)
+BY VALUE — sound while immutable, a LIE the moment set-car!
+exists; aliasing was unobservable so nothing had caught it. cons
+now boxes the product (interp: shared Rc; native: shared heap
+cell) and set-car!/set-cdr! are field_set{0/1} — the M28 record
+rung's second consumer, which also FELLED the D-073 multi-slot
+field fence (dyn fields now read/write slot-wise in the field-op
+lowering). TAG_VECTOR = 7: the third D-051 widening, walked by the
+D-070 checklist (TAG_LIMIT 8; 4..=7 at masked_dyn_ptr + three
+tracer arms × two twins); vectors are arr<dyn> — M13 machinery
+that waited eighteen milestones for its consumer. The collector
+twins drill the new shapes to identical counts (cyclic cons ring;
+vector cascading into its pair): 2/2/4/4/6/8/10/12. Strings =
+interned tag-3 bstrs (string=? is pointer eq even for DYNAMIC
+strings — the Lua interning ruling pays a third time); substring
+adapts R7RS [0,end) to Lua 1-based-inclusive at emission; the
+symbol/string tag split is a NAMED future widening, fenced behind
+the predicates. Corpus 16 scheme cases (5 new); suite 54; diff
+113/0; grid 108/108 × 5 × 2.
+
+M31 EXTRACTION: (1) IMMUTABILITY HIDES REPRESENTATION LIES — a
+by-value aggregate is indistinguishable from a shared cell until
+the first write; any future "pure value" representation choice
+should be audited against the mutation that might arrive later
+(vectors were born boxed for this reason). (2) The fence-falls
+pattern: D-073's Words-field fence was honest scoping, and its
+fall was PRICED by the second consumer, not speculated — two
+milestones of not building it cost one afternoon of building it
+right. (3) Tag widenings are now ROUTINE: the D-070 checklist
+turned a representation-frontier walk into a mechanical edit —
+the third widening took minutes, not a milestone.
+
 m30-done — Shipped: TS-3a — JS exceptions on the effects lane,
 ZERO KERNEL DELTAS (D-076; the D-071 bar held again). throw =
 evaluate + perform{__exn}(nil) + unconditional poison return (the
@@ -897,6 +929,29 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-17 (thirty-third entry)
+    Milestone/step: M31 complete, tagged m31-done
+    Green? yes — 54 blocks; 113/0 (8 runners); grid 108/108 × 5 × 2
+    Did:
+    - D-077; TAG_VECTOR widening (all D-057 sites, both twins);
+      cons/car/cdr → boxed form + setcar/setcdr/str*/vec*
+      intrinsics; reader string literals; Words-field lowering
+      (fence fell); collector drills (pair ring, vector cascade);
+      5 chibi corpus cases; manifest v0.3; book current
+    Next: queue to the user (ts-3b / parameterize / tier-2 / ts-4)
+    Landmines:
+    - cons cells are BOXED now — any new pair-touching intrinsic
+      must unwrap to the BOX and box_get/field_get, never to a
+      bare product; the old form would silently deep-copy
+    - strings and symbols SHARE tag 3 — symbol?/string? stay
+      fenced until the tag split (a named widening); code that
+      branches on tag 3 sees both
+    - substring maps R7RS [start,end) to bstr.sub(start+1, end) —
+      off-by-one edits here break byte-equality with chibi
+    - display of vectors/pairs-containing-vectors is UNIMPLEMENTED
+      (display dispatch has no tag-7 arm) — corpus law keeps
+      vectors out of display until a case prices the arm
 
     Session end: 2026-07-17 (thirty-second entry)
     Milestone/step: M30 complete, tagged m30-done

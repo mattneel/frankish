@@ -1,6 +1,20 @@
-# specimen: r7rs_core — v0.2 SHIPPED (D-071; m26-done)
+# specimen: r7rs_core — v0.3 SHIPPED (D-077; m31-done)
 
-Status: v0.2 shipped (M26): R7RS exceptions —
+Status: v0.3 shipped (M31): PAIR MUTATION (set-car!/set-cdr! as
+frk_mem.field_set on the boxed cons cell — the representation went
+honest: aliases share the cell on both twins; cyclic cons rings
+collect, drilled in both collectors), STRINGS (tag-3 bstrs like
+symbols — interned, so string=? is a pointer compare even for
+dynamic strings; append/length/=?/substring; the symbol?/string?
+predicates are fenced until the tag split), and VECTORS
+(TAG_VECTOR = 7 over arr<dyn> — the third D-051 widening;
+make-vector with required fill, vector, -ref/-set!/-length).
+16-case corpus vs chibi. Fences v0.4+: string-ref/chars,
+string-set!, symbol?/string?/vector?, #(...) literals,
+list->vector, make-parameter/parameterize, guard, plain raise,
+top-level value defines, define-syntax.
+
+Previously — v0.2 (D-071; m26-done): R7RS exceptions —
 with-exception-handler + raise-continuable over the v1 handlers
 (handle{label=exn}; the handler's return IS raise-continuable's
 value; nested handlers delegate outward via the D-069 masking rule)
