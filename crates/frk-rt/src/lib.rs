@@ -577,6 +577,24 @@ pub extern "C" fn frk_rt_async_trap(kind: i64) {
     std::process::abort();
 }
 
+/// The scheme fence traps (D-081): deterministic aborts for paths the
+/// oracle serves with full continuations or secondary catchable
+/// exceptions we deliberately do not model — 1 = an exception handler
+/// returned normally from a plain (non-continuable) raise; 2 = an
+/// else-less guard re-raising a CONTINUABLE condition (needs
+/// re-entrant κ — the Tier-2 stack-switching rung); 3 = a parameter
+/// object applied at an arity outside its two-arm protocol.
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_scm_trap(code: i64) {
+    let what = match code {
+        1 => "exception handler returned (raise)",
+        2 => "guard re-raise of a continuable condition is fenced (Tier-2 stack switching)",
+        _ => "parameter protocol arity",
+    };
+    eprintln!("frk: scheme {what} (D-081)");
+    std::process::abort();
+}
+
 // ---- control effects (M15; κ_frk, D-060): the result-passing
 // carrier for escape continuations. NO unwinder (Tier-0/wasm) — abort
 // sets a process-global "pending cell", every non-tail caller checks

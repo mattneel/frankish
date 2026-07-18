@@ -356,6 +356,19 @@ void frk_rt_async_trap(int64_t kind) {
     abort();
 }
 
+/* Scheme fence traps (D-081): 1 = handler returned from plain raise;
+ * 2 = continuable re-raise through an else-less guard (Tier-2);
+ * 3 = parameter protocol arity. Mirrors the Rust twin exactly. */
+void frk_rt_scm_trap(int64_t code) {
+    fprintf(stderr, "frk: scheme %s (D-081)\n",
+            code == 1
+                ? "exception handler returned (raise)"
+                : code == 2
+                    ? "guard re-raise of a continuable condition is fenced (Tier-2 stack switching)"
+                    : "parameter protocol arity");
+    abort();
+}
+
 /* ---- control effects (M15; κ_frk, D-060): the exact mirror of the
  * Rust twin's result-passing carrier. NO unwinder (this file targets
  * wasm32 among others). Single-threaded per run; a well-formed program

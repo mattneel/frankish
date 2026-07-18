@@ -204,6 +204,7 @@ pub const RT_ABI: &[RtFn] = &[
     RtFn { name: "frk_rt_scm_display_num", args: &[F64], ret: None, lane: Lane::Scheme, jit: Capture, interp: Builtin },
     RtFn { name: "frk_rt_scm_display_str", args: &[PtrConstU8], ret: None, lane: Lane::Scheme, jit: Capture, interp: Builtin },
     RtFn { name: "frk_rt_scm_newline", args: &[], ret: None, lane: Lane::Scheme, jit: Capture, interp: Builtin },
+    RtFn { name: "frk_rt_scm_trap", args: &[I64], ret: None, lane: Lane::Scheme, jit: Real, interp: Builtin },
 ];
 
 /// Looks up one registry row.
