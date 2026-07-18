@@ -1,0 +1,7 @@
+body: before helper
+true	helper	1
+true	helper	2
+body: helper returned	helper-done
+true	body	99
+true	body-done
+dead

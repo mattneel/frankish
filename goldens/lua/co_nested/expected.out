@@ -1,0 +1,6 @@
+outer: resume inner ->	true	inner-1
+main:	true	outer-1
+main: status inner/outer	suspended	suspended
+outer: resume inner ->	true	inner-2
+outer: status(inner)	suspended
+main:	true	outer-done

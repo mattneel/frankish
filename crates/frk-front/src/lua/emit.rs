@@ -1856,31 +1856,44 @@ impl<'c> Emitter<'c> {
             }
             Stat::If(arms, otherwise, span) => {
                 let location = self.loc_at(*span);
-                let join = fcx.region.append_block(Block::new(&[]));
+                // Licensed fns thread live-ins through the join and
+                // both arms (D-084's dominance law) — a guard inside
+                // an arm makes the join resume-reachable.
+                let spec = self.live_spec(fcx);
+                let arg_types = self.live_arg_types(&spec, location);
+                let join = fcx.region.append_block(Block::new(&arg_types));
                 for (condition, body) in arms {
                     let condition_value = self.emit_expr(fcx, condition)?;
                     let truthy = self
                         .call(fcx.block, "__lua_truthy", &[condition_value], &[self.i1_ty()], location)?
                         .expect("result");
-                    let bthen = fcx.region.append_block(Block::new(&[]));
-                    let belse = fcx.region.append_block(Block::new(&[]));
-                    self.cond_br(fcx.block, truthy, bthen, belse, location)?;
+                    let bthen = fcx.region.append_block(Block::new(&arg_types));
+                    let belse = fcx.region.append_block(Block::new(&arg_types));
+                    let branch_args = self.live_arg_values(fcx, &spec)?;
+                    self.cond_br_two_args(
+                        fcx.block, truthy, bthen, &branch_args, belse, &branch_args, location,
+                    )?;
                     fcx.block = bthen;
+                    self.live_rebind(fcx, bthen, 0, &spec)?;
                     fcx.terminated = false;
                     self.emit_block(fcx, body)?;
                     if !fcx.terminated {
-                        self.br(fcx.block, join, &[], location)?;
+                        let out_args = self.live_arg_values(fcx, &spec)?;
+                        self.br(fcx.block, join, &out_args, location)?;
                     }
                     fcx.block = belse;
+                    self.live_rebind(fcx, belse, 0, &spec)?;
                     fcx.terminated = false;
                 }
                 if let Some(body) = otherwise {
                     self.emit_block(fcx, body)?;
                 }
                 if !fcx.terminated {
-                    self.br(fcx.block, join, &[], location)?;
+                    let out_args = self.live_arg_values(fcx, &spec)?;
+                    self.br(fcx.block, join, &out_args, location)?;
                 }
                 fcx.block = join;
+                self.live_rebind(fcx, join, 0, &spec)?;
                 fcx.terminated = false;
                 Ok(())
             }
@@ -1936,6 +1949,12 @@ impl<'c> Emitter<'c> {
                     }
                     None => self.const_f64(fcx.block, 1.0, location)?,
                 };
+
+                if fcx.suspend.is_some() {
+                    return self.emit_numfor_licensed(
+                        fcx, variable, from, to, step, body, location,
+                    );
+                }
 
                 let head = fcx
                     .region
@@ -1993,6 +2012,134 @@ impl<'c> Emitter<'c> {
                 Ok(())
             }
         }
+    }
+
+    /// The LICENSED numeric for (D-084.4's NumFor residue): the loop
+    /// state (counter/to/step) rides as WRAPPED NUM DYNS threaded
+    /// through the loop blocks AND fcx.live_temps — so a guard inside
+    /// the body captures them into the frame and the resume path
+    /// rebinds them like any live-in. The raw f64s are unwrapped at
+    /// the two points that compute (the head compare, the back-edge
+    /// add).
+    #[allow(clippy::too_many_arguments)]
+    fn emit_numfor_licensed<'r>(
+        &mut self,
+        fcx: &mut Fcx<'c, 'r>,
+        variable: &str,
+        from: Value<'c, 'r>,
+        to: Value<'c, 'r>,
+        step: Value<'c, 'r>,
+        body: &LBlock,
+        location: Location<'c>,
+    ) -> Result<()> {
+        let from_d = self.wrap(fcx.block, TAG_NUM, from, location)?;
+        let to_d = self.wrap(fcx.block, TAG_NUM, to, location)?;
+        let step_d = self.wrap(fcx.block, TAG_NUM, step, location)?;
+
+        let spec = self.live_spec(fcx);
+        let mut arg_types = vec![
+            (self.dyn_ty(), location),
+            (self.dyn_ty(), location),
+            (self.dyn_ty(), location),
+        ];
+        arg_types.extend(self.live_arg_types(&spec, location));
+        let head = fcx.region.append_block(Block::new(&arg_types));
+        let bbody = fcx.region.append_block(Block::new(&arg_types));
+        let done_types = self.live_arg_types(&spec, location);
+        let done = fcx.region.append_block(Block::new(&done_types));
+
+        let mut entry_args = vec![from_d, to_d, step_d];
+        entry_args.extend(self.live_arg_values(fcx, &spec)?);
+        self.br(fcx.block, head, &entry_args, location)?;
+
+        // Head: unwrap for the bounds compare.
+        fcx.block = head;
+        self.live_rebind(fcx, head, 3, &spec)?;
+        let counter_d = block_arg(head, 0)?;
+        let hto_d = block_arg(head, 1)?;
+        let hstep_d = block_arg(head, 2)?;
+        let counter = self.unwrap(head, TAG_NUM, self.f64_ty(), counter_d, location)?;
+        let hto = self.unwrap(head, TAG_NUM, self.f64_ty(), hto_d, location)?;
+        let hstep = self.unwrap(head, TAG_NUM, self.f64_ty(), hstep_d, location)?;
+        let zero = self.const_f64(head, 0.0, location)?;
+        let ascending = self.cmpf(head, 2, hstep, zero, location)?; // ogt
+        let le = self.cmpf(head, 5, counter, hto, location)?; // ole
+        let ge = self.cmpf(head, 3, counter, hto, location)?; // oge
+        let keep = self.build(
+            head,
+            "arith.select",
+            &[ascending, le, ge],
+            &[self.i1_ty()],
+            &[],
+            location,
+        )?;
+        let mut body_args = vec![counter_d, hto_d, hstep_d];
+        body_args.extend(self.live_arg_values(fcx, &spec)?);
+        let done_args = self.live_arg_values(fcx, &spec)?;
+        self.cond_br_two_args(head, keep, bbody, &body_args, done, &done_args, location)?;
+
+        // Body: fresh box per iteration (5.1 closes upvalues per
+        // loop); the three loop dyns ride live_temps for the guards.
+        fcx.block = bbody;
+        self.live_rebind(fcx, bbody, 3, &spec)?;
+        fcx.terminated = false;
+        let bcounter_d = block_arg(bbody, 0)?;
+        let bto_d = block_arg(bbody, 1)?;
+        let bstep_d = block_arg(bbody, 2)?;
+        let boxed = self.build(
+            fcx.block,
+            "frk_mem.box_new",
+            &[bcounter_d],
+            &[self.box_ty()],
+            &[],
+            location,
+        )?;
+        let temp_base = fcx.live_temps.len();
+        fcx.live_temps.push(bcounter_d);
+        fcx.live_temps.push(bto_d);
+        fcx.live_temps.push(bstep_d);
+        fcx.scope_shadows.push(Vec::new());
+        self.bind_local(fcx, variable, boxed);
+        fcx.break_targets.push((done, spec.clone()));
+        self.emit_block(fcx, body)?;
+        fcx.break_targets.pop();
+        let frame = fcx.scope_shadows.pop().expect("numfor scope");
+        for (name, previous) in frame.into_iter().rev() {
+            match previous {
+                Some(value) => {
+                    fcx.env.insert(name, value);
+                }
+                None => {
+                    fcx.env.remove(&name);
+                }
+            }
+        }
+        let counter_now = fcx.live_temps[temp_base];
+        let to_now = fcx.live_temps[temp_base + 1];
+        let step_now = fcx.live_temps[temp_base + 2];
+        fcx.live_temps.truncate(temp_base);
+        if !fcx.terminated {
+            let counter_raw =
+                self.unwrap(fcx.block, TAG_NUM, self.f64_ty(), counter_now, location)?;
+            let step_raw =
+                self.unwrap(fcx.block, TAG_NUM, self.f64_ty(), step_now, location)?;
+            let next = self.build(
+                fcx.block,
+                "arith.addf",
+                &[counter_raw, step_raw],
+                &[self.f64_ty()],
+                &[],
+                location,
+            )?;
+            let next_d = self.wrap(fcx.block, TAG_NUM, next, location)?;
+            let mut back_args = vec![next_d, to_now, step_now];
+            back_args.extend(self.live_arg_values(fcx, &spec)?);
+            self.br(fcx.block, head, &back_args, location)?;
+        }
+        fcx.block = done;
+        self.live_rebind(fcx, done, 0, &spec)?;
+        fcx.terminated = false;
+        Ok(())
     }
 
     /// Emits a call and returns its RAW values pack (D-058). In
