@@ -23,6 +23,16 @@ pub enum Expr {
     Quote(Datum, Span),
     /// A string literal (M31, D-077).
     Str(String, Span),
+    /// `(guard (var clause… [else …]) body…)` — D-081.5. Clauses are
+    /// `(test expr…)` pairs; `(test)` and `(test => proc)` are
+    /// PARSE-TIME rejections (a lax misparse would silently diverge).
+    Guard {
+        var: String,
+        clauses: Vec<(Expr, Vec<Expr>)>,
+        else_body: Option<Vec<Expr>>,
+        body: Vec<Expr>,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +66,7 @@ impl Expr {
             | Expr::App(_, _, s)
             | Expr::Quote(_, s)
             | Expr::Str(_, s) => *s,
+            Expr::Guard { span, .. } => *span,
         }
     }
 }
@@ -158,6 +169,7 @@ fn parse_list(items: &[Datum], span: Span) -> Result<Expr, String> {
             "let*" => return parse_let(LetKind::LetStar, items, span),
             "letrec" => return parse_let(LetKind::LetRec, items, span),
             "parameterize" => return parse_parameterize(items, span),
+            "guard" => return parse_guard(items, span),
             "define" => {
                 return Err("nested define is fenced in r7rs_core v0".to_string());
             }
@@ -286,6 +298,60 @@ fn parse_parameterize(items: &[Datum], span: Span) -> Result<Expr, String> {
         span,
     ));
     Ok(Expr::Let(LetKind::LetStar, binds, seq, span))
+}
+
+/// (guard (var clause… [else expr…]) body…) — D-081.5. Admitted
+/// clause forms: (test expr…) and a final (else expr…). REJECTED at
+/// parse (chibi honors both, so a lax parse would silently diverge):
+/// (test => proc), and (test) with no expressions (R7RS yields the
+/// test's value — fenced until a case prices it).
+fn parse_guard(items: &[Datum], span: Span) -> Result<Expr, String> {
+    let Some(Datum::List(spec, _)) = items.get(1) else {
+        return Err("guard expects a (var clause…) spec".to_string());
+    };
+    let Some(Datum::Symbol(var, _)) = spec.first() else {
+        return Err("guard's spec starts with the condition variable".to_string());
+    };
+    let mut clauses = Vec::new();
+    let mut else_body = None;
+    for clause in &spec[1..] {
+        let Datum::List(kv, _) = clause else {
+            return Err("a guard clause is (test expr…) or (else expr…)".to_string());
+        };
+        if else_body.is_some() {
+            return Err("guard's else clause must be last".to_string());
+        }
+        match kv.as_slice() {
+            [Datum::Symbol(head, _), rest @ ..] if head == "else" => {
+                if rest.is_empty() {
+                    return Err("guard's else clause needs a body".to_string());
+                }
+                else_body = Some(parse_body(rest)?);
+            }
+            [_, Datum::Symbol(arrow, _), ..] if arrow == "=>" => {
+                return Err(
+                    "guard (test => proc) clauses are fenced in v0.4 (D-081)".to_string()
+                );
+            }
+            [test, rest @ ..] => {
+                if rest.is_empty() {
+                    return Err(
+                        "guard (test) clauses without expressions are fenced in v0.4 \
+                         (D-081) — a bare test yields the test's value in R7RS and a \
+                         lax parse would silently diverge"
+                            .to_string(),
+                    );
+                }
+                clauses.push((parse_expr(test)?, parse_body(rest)?));
+            }
+            [] => return Err("a guard clause is (test expr…)".to_string()),
+        }
+    }
+    if clauses.is_empty() && else_body.is_none() {
+        return Err("guard needs at least one clause".to_string());
+    }
+    let body = parse_body(&items[2..])?;
+    Ok(Expr::Guard { var: var.clone(), clauses, else_body, body, span })
 }
 
 fn parse_let(kind: LetKind, items: &[Datum], span: Span) -> Result<Expr, String> {

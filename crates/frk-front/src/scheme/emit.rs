@@ -72,6 +72,12 @@ struct Job {
     /// A dynamic-wind thunk (D-070): lifted as (captures…, pack) →
     /// pack — the uniform shape frk_ctl.wind applies.
     wind_thunk: bool,
+    /// A guard BODY (D-081.5): (captures…, token) → dyn, the body
+    /// emitted NON-TAIL and the result wrapped as (sentinel . value)
+    /// — NOT the escape-Job tail path, whose tail calls return the
+    /// raw value and would skip the wrapper (panel-caught). Names
+    /// the sentinel's gensym capture.
+    guard_sentinel: Option<String>,
     body: Vec<Expr>,
     procs: HashMap<String, ProcInfo>,
 }
@@ -177,6 +183,7 @@ pub fn emit<'c>(
                 params: params.clone(),
                 escape: None,
                 wind_thunk: false,
+                guard_sentinel: None,
                 body: body.clone(),
                 procs: top.clone(),
             });
@@ -502,7 +509,9 @@ impl<'c> Emitter<'c> {
                 CapKind::Tok => self.i64_ty(),
             });
         }
-        if job.escape.is_some() {
+        if job.escape.is_some() || job.guard_sentinel.is_some() {
+            // Escape receivers and guard bodies are prompt-shaped:
+            // (captures…, token). Guard bodies ignore the token.
             inputs.push(self.i64_ty());
         } else if job.wind_thunk {
             // Uniform pack fn (D-070/D-071): parameters — if any —
@@ -529,6 +538,10 @@ impl<'c> Emitter<'c> {
         if let Some(escape) = &job.escape {
             let token = block_arg(entry, job.captures.len())?;
             locals.insert(escape.clone(), Local::Tok(token));
+        } else if job.guard_sentinel.is_some() {
+            // Token received, unbound: guard-body escapes ride
+            // captured OUTER tokens; this handle's abort channel is
+            // the clause's unconsumed κ.
         } else {
             for (index, name) in job.params.iter().enumerate() {
                 let v = block_arg(entry, job.captures.len() + index)?;
@@ -579,6 +592,24 @@ impl<'c> Emitter<'c> {
                 self.ret_raw(fcx.block, &[pack], l)?;
             }
             self.func(module, &job.symbol, &inputs, &[self.pack_ty()], region, false);
+            return Ok(());
+        }
+        if let Some(sentinel_name) = &job.guard_sentinel {
+            // D-081.5: NON-TAIL body evaluation (the escape-Job tail
+            // path would return raw values, skipping the wrapper),
+            // then the sentinel wrap: (sentinel . value).
+            let l = Location::unknown(self.context);
+            if let Some(value) = self.emit_seq_value(&mut fcx, &job.body.clone())? {
+                let sentinel = match fcx.locals.get(sentinel_name.as_str()).copied() {
+                    Some(Local::Val(v)) => v,
+                    _ => return Err("guard sentinel capture missing".into()),
+                };
+                let wrapped = self
+                    .call(fcx.block, "__scm_cons", &[sentinel, value], &[self.dyn_ty()], l)?
+                    .ok_or("cons produced no value")?;
+                self.ret(fcx.block, &[wrapped], l)?;
+            }
+            self.func(module, &job.symbol, &inputs, &[self.dyn_ty()], region, false);
             return Ok(());
         }
         self.emit_body_tail(&mut fcx, &job.body)?;
@@ -759,7 +790,220 @@ impl<'c> Emitter<'c> {
                 let closure = self.emit_lambda_packfn(fcx, expr, l)?;
                 Ok(Some(self.wrap(fcx.block, 5, closure, l)?))
             }
+            Expr::Guard { var, clauses, else_body, body, .. } => {
+                let var = var.clone();
+                let clauses = clauses.clone();
+                let else_body = else_body.clone();
+                let body = body.clone();
+                self.emit_guard_expr(fcx, &var, &clauses, else_body.as_deref(), &body, l)
+            }
         }
+    }
+
+    /// (guard (var clause… [else …]) body…) — D-081.5. The body lifts
+    /// under the guard-body Job mode returning (sentinel . value);
+    /// the STATIC abortive clause carries the flagged raise pair out
+    /// as the abort value; dispatch runs INLINE here, after
+    /// unwinding, discriminated by sentinel ALLOCATION IDENTITY
+    /// (tags can't discriminate — #f/'() are legal body values).
+    fn emit_guard_expr<'r>(
+        &mut self,
+        fcx: &mut Fcx<'c, 'r>,
+        var: &str,
+        clauses: &[(Expr, Vec<Expr>)],
+        else_body: Option<&[Expr]>,
+        body: &[Expr],
+        l: Location<'c>,
+    ) -> R<Option<Value<'c, 'r>>> {
+        // The sentinel: a FRESH cons, never user-visible, alive from
+        // creation to comparison — identity unforgeable. Wrapped once
+        // by __scm_cons, never re-wrapped (the D-081 tag-6 invariant:
+        // interp eq?-identity lives in the wrapper Rc).
+        let nil_a = self.nil_dyn(fcx.block, l)?;
+        let nil_b = self.nil_dyn(fcx.block, l)?;
+        let sentinel = self
+            .call(fcx.block, "__scm_cons", &[nil_a, nil_b], &[self.dyn_ty()], l)?
+            .ok_or("cons produced no value")?;
+        let sentinel_name = format!(" grd{}", self.next_fn);
+        fcx.locals.insert(sentinel_name.clone(), Local::Val(sentinel));
+
+        // Lift the body: captures = free(body) ∩ locals, plus the
+        // sentinel gensym (rides the existing Capture machinery).
+        let mut bound: HashSet<String> = HashSet::new();
+        let mut free = BTreeSet::new();
+        free_names_body(body, &mut bound, &mut free);
+        free.insert(sentinel_name.clone());
+        let captures: Vec<Capture> = free
+            .into_iter()
+            .filter_map(|name| {
+                fcx.locals.get(&name).map(|local| Capture {
+                    name,
+                    kind: match local {
+                        Local::Val(_) => CapKind::Val,
+                        Local::Tok(_) => CapKind::Tok,
+                    },
+                })
+            })
+            .collect();
+        let symbol = format!("scm_grd{}", self.next_fn);
+        self.next_fn += 1;
+        let empty = Type::parse(self.context, "!frk_adt.product<[]>").ok_or("empty product")?;
+        let mut env = self.build(fcx.block, "frk_adt.product_new", &[], &[empty], &[], l)?;
+        let mut field_types: Vec<String> = Vec::new();
+        for capture in &captures {
+            let value = match fcx.locals.get(&capture.name).copied() {
+                Some(Local::Val(v)) | Some(Local::Tok(v)) => v,
+                None => return Err(format!("capture `{}` not in scope", capture.name)),
+            };
+            field_types.push(match capture.kind {
+                CapKind::Val => "!frk_dyn.dyn".to_string(),
+                CapKind::Tok => "i64".to_string(),
+            });
+            let product_ty = Type::parse(
+                self.context,
+                &format!("!frk_adt.product<[{}]>", field_types.join(", ")),
+            )
+            .ok_or("product type")?;
+            env = self.build(
+                fcx.block,
+                "frk_adt.product_snoc",
+                &[env, value],
+                &[product_ty],
+                &[],
+                l,
+            )?;
+        }
+        let body_closure = self.build(
+            fcx.block,
+            "frk_closure.make",
+            &[env],
+            &[self.fn_ty()],
+            &[("callee", FlatSymbolRefAttribute::new(self.context, &symbol).into())],
+            l,
+        )?;
+        // The clause is STATIC with an EMPTY env — one function
+        // serves every guard site (the D-076 marker discipline).
+        let clause_env = self.build(fcx.block, "frk_adt.product_new", &[], &[empty], &[], l)?;
+        let clause = self.build(
+            fcx.block,
+            "frk_closure.make",
+            &[clause_env],
+            &[self.pack_fn_ty()],
+            &[(
+                "callee",
+                FlatSymbolRefAttribute::new(self.context, "__scm_guard_clause").into(),
+            )],
+            l,
+        )?;
+        let outcome = self.build(
+            fcx.block,
+            "frk_ctl.handle",
+            &[clause, body_closure],
+            &[self.dyn_ty()],
+            &[("label", StringAttribute::new(self.context, "exn").into())],
+            l,
+        )?;
+        self.job_queue.push(Job {
+            symbol,
+            captures,
+            params: Vec::new(),
+            escape: None,
+            wind_thunk: false,
+            guard_sentinel: Some(sentinel_name),
+            body: body.to_vec(),
+            procs: fcx.procs.clone(),
+        });
+        // An escape CROSSING the guard entirely diverts before any
+        // inspection (D-061) — the outcome dummy is dead then.
+        self.emit_guard(fcx, l)?;
+
+        // Discriminate: both producers yield pairs — (sentinel . v)
+        // from the body wrapper, (flag . e) from the clause — so car
+        // is total, and eq? on the sentinel is pointer identity on
+        // both twins (pinned by pair_identity).
+        let head = self
+            .call(fcx.block, "__scm_car", &[outcome], &[self.dyn_ty()], l)?
+            .ok_or("car produced no value")?;
+        let eq_dyn = self
+            .call(fcx.block, "__scm_eq", &[head, sentinel], &[self.dyn_ty()], l)?
+            .ok_or("eq produced no value")?;
+        let is_normal = self.unwrap(fcx.block, TAG_BOOL, self.i1_ty(), eq_dyn, l)?;
+        let bnormal = fcx.region.append_block(Block::new(&[]));
+        let bcaught = fcx.region.append_block(Block::new(&[]));
+        let join = fcx.region.append_block(Block::new(&[(self.dyn_ty(), l)]));
+        self.cond_br(fcx.block, is_normal, bnormal, bcaught, l)?;
+
+        fcx.block = bnormal;
+        let value = self
+            .call(fcx.block, "__scm_cdr", &[outcome], &[self.dyn_ty()], l)?
+            .ok_or("cdr produced no value")?;
+        self.br(fcx.block, join, &[value], l)?;
+
+        // Caught: head IS the flag (bool dyn); e = cdr. Clauses run
+        // HERE — in guard's dynamic environment, after unwind (chibi
+        // P10) — with var bound to the condition.
+        fcx.block = bcaught;
+        let condition = self
+            .call(fcx.block, "__scm_cdr", &[outcome], &[self.dyn_ty()], l)?
+            .ok_or("cdr produced no value")?;
+        fcx.locals.insert(var.to_string(), Local::Val(condition));
+        let mut diverged = false;
+        for (test, clause_body) in clauses {
+            let tv = match self.emit_value(fcx, test)? {
+                Some(v) => v,
+                None => {
+                    diverged = true;
+                    break;
+                }
+            };
+            let truthy = self.truthy(fcx, tv, l)?;
+            let bclause = fcx.region.append_block(Block::new(&[]));
+            let bnext = fcx.region.append_block(Block::new(&[]));
+            self.cond_br(fcx.block, truthy, bclause, bnext, l)?;
+            fcx.block = bclause;
+            if let Some(v) = self.emit_seq_value(fcx, clause_body)? {
+                self.br(fcx.block, join, &[v], l)?;
+            }
+            fcx.block = bnext;
+        }
+        if !diverged {
+            if let Some(else_exprs) = else_body {
+                if let Some(v) = self.emit_seq_value(fcx, else_exprs)? {
+                    self.br(fcx.block, join, &[v], l)?;
+                }
+            } else {
+                // No clause matched, no else: re-raise. #t
+                // (continuable) is the LOUD Tier-2 fence trap — P13
+                // needs re-entrant κ, and a silent wrong value would
+                // be an L3 lie. #f re-performs the SAME flagged pair
+                // (flag preserved, no re-wrap) — an outer guard
+                // catches it (P12); an outer handler that returns
+                // hits the raise law's trap.
+                let flag = self.unwrap(fcx.block, TAG_BOOL, self.i1_ty(), head, l)?;
+                let btrap = fcx.region.append_block(Block::new(&[]));
+                let breraise = fcx.region.append_block(Block::new(&[]));
+                self.cond_br(fcx.block, flag, btrap, breraise, l)?;
+                fcx.block = btrap;
+                let code = self.const_i64(fcx.block, 2, l)?;
+                self.call(fcx.block, "frk_rt_scm_trap", &[code], &[], l)?;
+                let dead = self.dummy_dyn(fcx.block, l)?;
+                self.br(fcx.block, join, &[dead], l)?;
+                fcx.block = breraise;
+                self.build(
+                    fcx.block,
+                    "frk_ctl.perform",
+                    &[outcome],
+                    &[self.dyn_ty()],
+                    &[("label", StringAttribute::new(self.context, "exn").into())],
+                    l,
+                )?;
+                self.emit_guard(fcx, l)?;
+                let dead2 = self.dummy_dyn(fcx.block, l)?;
+                self.br(fcx.block, join, &[dead2], l)?;
+            }
+        }
+        fcx.block = join;
+        Ok(Some(block_arg(join, 0)?))
     }
 
     /// Tail position: terminates `fcx.block` with a return (or a
@@ -971,6 +1215,7 @@ impl<'c> Emitter<'c> {
                     params,
                     escape: None,
                     wind_thunk: false,
+                    guard_sentinel: None,
                     body,
                     procs: inner_procs.clone(),
                 });
@@ -1427,6 +1672,7 @@ impl<'c> Emitter<'c> {
             params: params.clone(),
             escape: None,
             wind_thunk: true,
+            guard_sentinel: None,
             body: body.clone(),
             procs: fcx.procs.clone(),
         });
@@ -1515,6 +1761,7 @@ impl<'c> Emitter<'c> {
             params: Vec::new(),
             escape: Some(escape.clone()),
             wind_thunk: false,
+            guard_sentinel: None,
             body: body.clone(),
             procs: fcx.procs.clone(),
         });
@@ -1870,6 +2117,19 @@ fn free_names(expr: &Expr, bound: &mut HashSet<String>, out: &mut BTreeSet<Strin
                 bound.insert(name.clone());
             }
             free_names_body(body, bound, out);
+            *bound = snapshot;
+        }
+        Expr::Guard { var, clauses, else_body, body, .. } => {
+            free_names_body(body, bound, out);
+            let snapshot = bound.clone();
+            bound.insert(var.clone());
+            for (test, clause_body) in clauses {
+                free_names(test, bound, out);
+                free_names_body(clause_body, bound, out);
+            }
+            if let Some(else_exprs) = else_body {
+                free_names_body(else_exprs, bound, out);
+            }
             *bound = snapshot;
         }
     }

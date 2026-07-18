@@ -387,6 +387,24 @@ func.func @__scm_param_fn(%cell: !frk_dyn.dyn, %pack: !frk_mem.arr<!frk_dyn.dyn>
   return %dead : !frk_mem.arr<!frk_dyn.dyn>
 }
 
+// ---- M33 (D-081.5): guard's ABORTIVE clause — the D-076 marker
+// shape carrying a VALUE: returns [pack[0]] (the flagged pair the
+// raise wrapped) WITHOUT consuming κ, so perform_end aborts to the
+// guard's handle and the flagged pair travels out as the abort
+// value. Clause dispatch runs INLINE at the handle site, AFTER
+// unwinding (wind afters have fired), discriminated from normal
+// body completion by SENTINEL identity — not tags (#f and '() are
+// legal scheme body values). STATIC with an empty env: one function
+// serves every guard site.
+func.func @__scm_guard_clause(%pack: !frk_mem.arr<!frk_dyn.dyn>) -> !frk_mem.arr<!frk_dyn.dyn> {
+  %c0 = arith.constant 0 : i64
+  %we = func.call @__scm_arg(%pack, %c0) : (!frk_mem.arr<!frk_dyn.dyn>, i64) -> !frk_dyn.dyn
+  %c1 = arith.constant 1 : i64
+  %rp = "frk_mem.array_new"(%c1) : (i64) -> !frk_mem.arr<!frk_dyn.dyn>
+  "frk_mem.array_set"(%rp, %c0, %we) : (!frk_mem.arr<!frk_dyn.dyn>, i64, !frk_dyn.dyn) -> ()
+  return %rp : !frk_mem.arr<!frk_dyn.dyn>
+}
+
 func.func @__scm_param_make(%init: !frk_dyn.dyn) -> !frk_dyn.dyn {
   %z = arith.constant 0 : i64
   %nil = "frk_dyn.wrap"(%z) {tag = 0 : i64} : (i64) -> !frk_dyn.dyn
