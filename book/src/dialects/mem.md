@@ -173,6 +173,29 @@ gets `recref_null`: a construction-only placeholder seeded into the
 product and back-patched with `rec_ref(box)` immediately after
 `box_new` — reading one is a frontend bug, never a program outcome.
 
+## Global cells: module-level state (TS-3 / r7rs v0.4)
+
+Module-level mutable state arrived as the smallest possible surface
+(D-078): `global_decl {sym, cell}` declares a named cell at module
+level, `global_get {sym}` yields it *as a box* — because an LLVM
+global slot already **is** the box abstraction. Natively `global_get`
+lowers to one `llvm.mlir.addressof` (no allocation, no init hook;
+cells start zero); the interpreter mirrors with a lazily-created
+named `Value::Box` per symbol. Everything downstream — `box_get`,
+`box_set`, retains — is ordinary box machinery, provenance-blind.
+
+The v0 fence is **single-slot cell types** (f64, integers, one-word
+pointer kinds). Multi-word state lives behind a pointer cell: TS-3's
+microtask queue keeps a heap `arr<dyn>` in one cell plus an f64
+lazy-init flag; r7rs v0.4's top-level value defines reuse the shape
+as one `scm_globals` array, nil-filled eagerly at `main` entry
+(D-081 priced the dyn-cell widening and deferred it — the honest
+trigger is the slot count going non-static: top-level `set!` or REPL
+incremental defines). Two cautions the pattern carries: the cell
+pointer has **no rc header**, so the cell value itself must never be
+stored into a managed container; and cell overwrites never release
+the old payload (the documented leak-biased frontier).
+
 ## Rulings
 
 | Entry | Ruling |
@@ -184,3 +207,5 @@ product and back-patched with `rec_ref(box)` immediately after
 | D-057 | Three-word rc header; layout descriptors on every allocation; release cascade + trial deletion; the transfer-vs-release exclusion. |
 | D-073 | Records: class instances as boxes of products; field_get/field_set; slot-kind-driven product layouts (managed fields trace). |
 | D-074 | Recursive records: type-erased recref + rec_ref/rec_cast close the μ-type knot; recref_null seeds the `this.next = this` bootstrap. |
+| D-078 | Global cells: global_decl/global_get — an LLVM global slot IS a box; single-slot v0 fence; multi-word state rides pointer cells. |
+| D-081 | (scheme) top-level value defines consume the rung as one scm_globals `arr<dyn>`; the dyn-cell widening priced and deferred to non-static N. |

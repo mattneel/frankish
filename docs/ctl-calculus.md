@@ -171,12 +171,26 @@ therefore already correct) and native codegen.
 
 - `call/ec` (escape continuations) = `prompt` + first-class token +
   `abort`. The specimen's ratified v0 carrier for frk.ctl.
-- `error` / simple `raise` = abort to the root prompt with a message
-  value; the shell prints and continues (M8 exit amendment applies:
-  the offending line is echoed).
+- `raise` / `raise-continuable` (M26/M33, D-071/D-081): BOTH ride
+  perform on the one `"exn"` label behind a flagged cons — the flag
+  travels WITH the value because wind after-thunks run between
+  perform and handle. Tail-resume for continuable; a handler
+  RETURNING from a plain raise is a deterministic trap.
+- `guard` (M33, D-081): the abortive clause class carrying a VALUE —
+  a static clause returns the flagged pair without consuming κ;
+  clause dispatch runs inline at the handle site AFTER unwinding,
+  discriminated from normal completion by sentinel allocation
+  identity. Else-less re-raise of a CONTINUABLE condition is fenced
+  to the Tier-2 rung (it must re-enter the original dynamic
+  environment — R7RS 4.2.7), trap-loud.
+- `parameterize` (M33, D-081): pure sugar over wind — parameters are
+  closures over mutable pairs; no ctl growth at all.
 - proper tail calls: already law (m14-done); scheme makes them
   load-bearing corpus-wide.
-- `dynamic-wind`: OPEN — D-entry due when the specimen forces it.
+- `dynamic-wind`: CLOSED escape-only at M25 (D-070, §2 above) —
+  before(); thunk(); after(); a crossing abort re-raises AFTER
+  after(); an abort raised IN before() skips thunk and after
+  (D-081.0 fixed the native path). Re-entrant winds = Tier-2.
 - full `call/cc`, multi-shot: FENCED (SPEC §14; keystone axiom).
 - hygienic macros: v1+; the expander idiom (sets-of-scopes) is a
   separate extraction — flexlang's hygienic comptime macros are the

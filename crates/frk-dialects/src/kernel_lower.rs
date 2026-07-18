@@ -1896,6 +1896,8 @@ fn declare_str_runtime(
             Planned::CtlWind { .. } => {
                 needed.push(("frk_rt_ctl_pack_head", false));
                 needed.push(("frk_rt_ctl_pending", false));
+                needed.push(("frk_rt_ctl_wind_save", false));
+                needed.push(("frk_rt_ctl_wind_merge", false));
             }
             Planned::ContractNarrow { .. } => {
                 needed.push(("frk_rt_contract_check", false))
@@ -3503,6 +3505,7 @@ fn apply<'c, 'a>(
             let ptr = llvm::r#type::pointer(context, 0);
             let mut thunk_pack: Option<Value> = None;
             let mut before_aborted: Option<(Value, Value)> = None; // (i1, skip word)
+            let mut saved_pending: Option<Value> = None; // 4-word suspend buffer
             for index in 0..3usize {
                 let closure = operand(op, index)?;
                 let fn_ptr = result_value(rewriter.insert(llvm::extract_value(
@@ -3652,6 +3655,49 @@ fn apply<'c, 'a>(
                 }
                 if index == 1 {
                     thunk_pack = Some(result_value(call)?);
+                    // Suspend the in-flight abort (if any) while
+                    // after() runs — after-thunk code executes in a
+                    // clean pending context exactly like the interp,
+                    // whose Wind holds the thunk's abort in a local
+                    // (M33 review: a live pending cell during after()
+                    // truncated multi-call after bodies, skipped
+                    // nested winds, lost parameterize restores, and
+                    // diverted in-after resumptions). Merged back
+                    // after the after() call: last-writer-wins.
+                    let four = result_value(rewriter.insert(
+                        melior::dialect::arith::constant(
+                            context,
+                            IntegerAttribute::new(i64_type, 4).into(),
+                            location,
+                        ),
+                    ))?;
+                    let save = result_value(rewriter.insert(
+                        OperationBuilder::new("llvm.alloca", location)
+                            .add_attributes(&[(
+                                melior::ir::Identifier::new(context, "elem_type"),
+                                TypeAttribute::new(i64_type).into(),
+                            )])
+                            .add_operands(&[four])
+                            .add_results(&[ptr])
+                            .build()
+                            .map_err(|e| e.to_string())?,
+                    ))?;
+                    rewriter.insert(direct_call_void(
+                        context,
+                        "frk_rt_ctl_wind_save",
+                        &[save],
+                        location,
+                    )?);
+                    saved_pending = Some(save);
+                }
+                if index == 2 {
+                    let save = saved_pending.ok_or("wind merge without a save")?;
+                    rewriter.insert(direct_call_void(
+                        context,
+                        "frk_rt_ctl_wind_merge",
+                        &[save],
+                        location,
+                    )?);
                 }
             }
             let thunk_pack = thunk_pack.ok_or("wind without a thunk result")?;

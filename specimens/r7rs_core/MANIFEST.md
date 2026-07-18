@@ -1,4 +1,55 @@
-# specimen: r7rs_core — v0.3 SHIPPED (D-077; m31-done)
+# specimen: r7rs_core — v0.4 SHIPPED (D-081; m33-done)
+
+Status: v0.4 shipped (M33): TOP-LEVEL VALUE DEFINES (one scm_globals
+arr<dyn> behind a D-078 pointer cell — nil-filled at main entry,
+late-bound reads, redefinition = same slot; the ts_queue pattern's
+second frontend, zero kernel deltas), MAKE-PARAMETER/PARAMETERIZE
+(parameters are closures over mutable state pairs — pack-length
+protocol, exactly two live arms; parameterize desugars at the parser
+onto dynamic-wind: eval ALL param exprs, ALL values, ALL olds,
+raw-set all, LIFO raw restore in the after-thunk; escapes restore),
+PLAIN RAISE (both raise kinds ride the one "exn" label behind a
+flagged cons — a handler RETURNING from a plain raise is the
+deterministic frk_rt_scm_trap on both twins), and GUARD (abortive
+static clause + sentinel-identity dispatch at the handle site;
+clauses run after unwinding in guard's dynamic environment; else-less
+re-raise of non-continuables propagates to outer guards with payload
+and flag preserved). ALSO: a PRE-EXISTING L3 divergence fell — an
+abort raised in a dynamic-wind BEFORE-thunk now skips thunk AND
+after natively, matching interp/chibi (goldens/scheme/
+wind_before_abort pins it). 33-case corpus vs chibi.
+
+CORPUS LAWS (D-081, chibi-witnessed): no w-e-h handler may RETURN
+normally from a plain raise, even under an enclosing guard (chibi
+turns handler-returned into a secondary CATCHABLE exception and
+exits 0 — "catch everything" is insufficient; we trap); no else-less
+re-raising guard across a user dynamic-wind with OBSERVABLE thunks
+(R7RS 4.2.7 re-raises in the ORIGINAL dynamic environment — chibi
+re-fires winds twice, in-out-in-out; unimplementable before Tier-2;
+parameterize interposed is byte-safe and allowed); parameterize
+binds genuine parameter objects only; (p v) setter spellings hit the
+arity trap; use-before-define of a top-level value reads
+deterministic nil on both twins where chibi errors (off-corpus, the
+harness's nonzero-exit exclusion covers it automatically).
+
+Fences v0.5+: the make-parameter CONVERTER (admission tests recorded
+in D-081 — all converts precede any set; a raising converter leaves
+earlier bindings unbound), guard (test => proc) and expression-less
+(test) clauses, continuable re-raise through an else-less guard
+(Tier-2 stack switching — a LOUD trap, never silent), error objects,
+string-ref/chars, string-set!, symbol?/string?/vector?, #(...)
+literals, list->vector, internal defines, define-syntax.
+
+## Admission justifications v0.4 (L5)
+
+| Feature | Idiom the kernel lacked |
+|---|---|
+| top-level value defines | module-level mutable state — D-078's rung consumed by a second frontend |
+| make-parameter/parameterize | dynamic binding — the first composition of wind + module state |
+| guard | post-unwind value-carrying clause dispatch — D-076's marker generalized to sentinel identity |
+| plain raise | the continuable/non-continuable class distinction; guard re-raise parity needs it |
+
+Previously — v0.3 (D-077; m31-done):
 
 Status: v0.3 shipped (M31): PAIR MUTATION (set-car!/set-cdr! as
 frk_mem.field_set on the boxed cons cell — the representation went

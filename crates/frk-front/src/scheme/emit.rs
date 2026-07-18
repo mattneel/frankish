@@ -1293,7 +1293,7 @@ impl<'c> Emitter<'c> {
         let empty = Type::parse(self.context, "!frk_adt.product<[]>").ok_or("empty product")?;
         let dyn_product =
             Type::parse(self.context, "!frk_adt.product<[!frk_dyn.dyn]>").ok_or("dyn product")?;
-        let mut make = |value: Value<'c, 'r>, callee: &str, ty: Type<'c>| -> R<Value<'c, 'r>> {
+        let make = |value: Value<'c, 'r>, callee: &str, ty: Type<'c>| -> R<Value<'c, 'r>> {
             let base = self.build(fcx.block, "frk_adt.product_new", &[], &[empty], &[], l)?;
             let env = self.build(
                 fcx.block,

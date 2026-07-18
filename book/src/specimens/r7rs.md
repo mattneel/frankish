@@ -123,7 +123,29 @@ appended string is a pointer compare), and vectors as the THIRD dyn
 tag widening (`TAG_VECTOR = 7` over `arr<dyn>` — machinery that had
 existed since femto_lua's tables, waiting for a consumer).
 
-r7rs_core is v0.3 SHIPPED. It forced `frk_ctl` into existence, made tail
+At v0.4 (M33) the specimen learned **dynamic binding** — and paid a
+pre-existing debt first: the design panel witnessed that an abort
+raised in a `dynamic-wind` *before*-thunk skipped thunk and after in
+the interpreter (and chibi) but ran both natively; the wind lowering
+now reads the pending cell once after `before()` and selects the two
+remaining callees against a synthesized no-op, branch-free.
+Top-level value defines ride ONE `arr<dyn>` behind a D-078 pointer
+cell (the ts_queue pattern's second frontend — parameterize itself
+needed **no** cells: parameters are closures over mutable state
+pairs). `parameterize` desugars at the parser onto `dynamic-wind`
+with a LIFO raw restore, so escapes restore old values for free.
+Plain `raise` joins `raise-continuable` behind a flagged cons on the
+one `"exn"` label — a handler *returning* from a plain raise is a
+deterministic trap, chibi's secondary-exception path refused loud.
+And `guard` generalizes TS-3a's marker-clause pattern to carry a
+VALUE out of the abort: clauses run inline at the handle site, after
+unwinding, with normal completion discriminated from a caught
+condition by **sentinel allocation identity** — tags can't do it,
+because `#f` and `'()` are legal body values. What R7RS's else-less
+re-raise really wants — re-entering the original dynamic environment
+— is re-entrant κ, named and fenced to the Tier-2 rung.
+
+r7rs_core is v0.4 SHIPPED. It forced `frk_ctl` into existence, made tail
 calls load-bearing corpus-wide, and demonstrated the calling-convention
 fork — the fourth language on the kernel, and the one that proved the
 control lane.

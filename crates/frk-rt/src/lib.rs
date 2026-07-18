@@ -606,6 +606,47 @@ pub extern "C" fn frk_rt_scm_trap(code: i64) {
 /// Monotonic prompt-token source — never reused within a run, so a
 /// stale escape can never alias a fresh prompt (no ABA).
 static CTL_NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
+
+/// Suspends the in-flight abort while a wind's after() runs (M33
+/// review, D-081): copies the four pending-cell words into `out` and
+/// CLEARS them, so after-thunk code runs in a clean context — exactly
+/// the interp, which holds the thunk's abort in a local while
+/// evaluating after(). Without this, guards inside after() divert on
+/// the OUTER abort (truncated after bodies, skipped nested winds,
+/// lost parameterize restores, diverted resumptions — four panel
+/// findings, one cause). Paired with frk_rt_ctl_wind_merge.
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_ctl_wind_save(out: *mut i64) {
+    unsafe {
+        *out = CTL_PENDING.load(Ordering::Relaxed) as i64;
+        *out.add(1) = CTL_TARGET.load(Ordering::Relaxed) as i64;
+        *out.add(2) = CTL_VALUE_TAG.load(Ordering::Relaxed) as i64;
+        *out.add(3) = CTL_VALUE_PAYLOAD.load(Ordering::Relaxed) as i64;
+    }
+    CTL_PENDING.store(0, Ordering::Relaxed);
+    CTL_TARGET.store(0, Ordering::Relaxed);
+    CTL_VALUE_TAG.store(0, Ordering::Relaxed);
+    CTL_VALUE_PAYLOAD.store(0, Ordering::Relaxed);
+}
+
+/// Re-delivers a suspended abort UNLESS after() raised its own —
+/// last-writer-wins, matching the interp's `after()?; outcome?`
+/// evaluation order (an abort in after supersedes the thunk's).
+#[unsafe(no_mangle)]
+pub extern "C" fn frk_rt_ctl_wind_merge(saved: *mut i64) {
+    if CTL_PENDING.load(Ordering::Relaxed) != 0 {
+        return;
+    }
+    unsafe {
+        if *saved == 0 {
+            return;
+        }
+        CTL_TARGET.store(*saved.add(1) as u64, Ordering::Relaxed);
+        CTL_VALUE_TAG.store(*saved.add(2) as u64, Ordering::Relaxed);
+        CTL_VALUE_PAYLOAD.store(*saved.add(3) as u64, Ordering::Relaxed);
+        CTL_PENDING.store(*saved as u64, Ordering::Relaxed);
+    }
+}
 /// The single in-flight abort: flag, target token, and the 2-word dyn
 /// value {tag, payload}. Only one abort unwinds at a time.
 static CTL_PENDING: AtomicU64 = AtomicU64::new(0);

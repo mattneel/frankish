@@ -189,6 +189,8 @@ pub const RT_ABI: &[RtFn] = &[
     RtFn { name: "frk_rt_ctl_prompt_enter", args: &[], ret: Some(I64), lane: Lane::Ctl, jit: Real, interp: DialectEval },
     RtFn { name: "frk_rt_ctl_prompt_exit", args: &[I64], ret: None, lane: Lane::Ctl, jit: Real, interp: DialectEval },
     RtFn { name: "frk_rt_ctl_resolve", args: &[I64, PtrMutI64], ret: Some(I64), lane: Lane::Ctl, jit: Real, interp: DialectEval },
+    RtFn { name: "frk_rt_ctl_wind_save", args: &[PtrMutI64], ret: None, lane: Lane::Ctl, jit: Real, interp: DialectEval },
+    RtFn { name: "frk_rt_ctl_wind_merge", args: &[PtrMutI64], ret: None, lane: Lane::Ctl, jit: Real, interp: DialectEval },
 
     RtFn { name: "frk_rt_contract_check", args: &[I64, I64, PtrConstU8, I64], ret: None, lane: Lane::Contract, jit: Real, interp: DialectEval },
     // ---- Ts: the TS-0 print protocol (D-047) ----

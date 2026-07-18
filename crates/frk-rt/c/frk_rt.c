@@ -425,6 +425,29 @@ void frk_rt_ctl_abort(int64_t token, int64_t tag, int64_t payload) {
 
 int64_t frk_rt_ctl_pending(void) { return frk_ctl_pending; }
 
+/* Suspend/merge the in-flight abort around a wind's after() (M33
+ * review, D-081): after-thunk code runs in a clean pending context,
+ * like the interp holding the abort in a local; merge re-delivers
+ * unless after() raised its own (last-writer-wins). */
+void frk_rt_ctl_wind_save(int64_t *out) {
+    out[0] = frk_ctl_pending;
+    out[1] = frk_ctl_target;
+    out[2] = frk_ctl_value_tag;
+    out[3] = frk_ctl_value_payload;
+    frk_ctl_pending = 0;
+    frk_ctl_target = 0;
+    frk_ctl_value_tag = 0;
+    frk_ctl_value_payload = 0;
+}
+
+void frk_rt_ctl_wind_merge(int64_t *saved) {
+    if (frk_ctl_pending || !saved[0]) return;
+    frk_ctl_target = saved[1];
+    frk_ctl_value_tag = saved[2];
+    frk_ctl_value_payload = saved[3];
+    frk_ctl_pending = saved[0];
+}
+
 /* ---- effects-v1 (M24, D-069): the evidence stack, mirroring the
  * Rust twin. Labels are interned bstr pointers passed as words;
  * markers are one-shot (second resume_mark traps). ---- */

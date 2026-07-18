@@ -117,8 +117,14 @@ byte-identical — against `chibi-scheme` as the outside witness.
 
 Scheme is the forcing specimen: `call/cc` used escape-wise becomes
 `prompt` + a first-class token + `abort`; deep loops are tail recursion
-under the M14 law; `dynamic-wind` is an explicitly OPEN ruling (κ_frk has
-no unwind-time finalizers in v0, and the ledger will take the decision
-when the specimen forces it); full multi-shot `call/cc` stays fenced by
-the keystone. The [specimen chapter](../specimens/r7rs.md) shows the
-surface side of the same story.
+under the M14 law; `dynamic-wind` closed escape-only at M25 (D-070 —
+"wind is THE finalizer form", and D-081.0 later fixed the native path
+so an abort raised in the *before*-thunk skips thunk and after, as the
+reference always did); the exception surface grew in three steps —
+tail-resumptive `raise-continuable` (M26), then plain `raise` and
+`guard` (M33) as the flagged-payload and value-carrying-abortive
+idioms over the same one label; full multi-shot `call/cc` stays fenced
+by the keystone, and everything that needs re-entry (guard's true
+re-raise environment, coroutines, generators) is the named Tier-2
+stack-switching rung. The [specimen chapter](../specimens/r7rs.md)
+shows the surface side of the same story.
