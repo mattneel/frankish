@@ -1,0 +1,11 @@
+local co = coroutine.create(function(a, b)
+  print("start", a, b)
+  local x = coroutine.yield(a + b)
+  print("resumed with", x)
+  return "done", x * 2
+end)
+print("status0", coroutine.status(co))
+print("r1", coroutine.resume(co, 1, 2))
+print("status1", coroutine.status(co))
+print("r2", coroutine.resume(co, 10))
+print("status2", coroutine.status(co))

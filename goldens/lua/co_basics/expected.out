@@ -1,0 +1,7 @@
+status0	suspended
+start	1	2
+r1	true	3
+status1	suspended
+resumed with	10
+r2	true	done	20
+status2	dead

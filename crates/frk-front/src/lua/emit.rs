@@ -68,6 +68,11 @@ pub fn emit<'c>(
         line_starts,
         lift_queue: Vec::new(),
         next_fn: 0,
+        // D-084.4 module license: only chunks mentioning `coroutine`
+        // transform (per-call licensing is unsound — mutable _G, no
+        // static call graph). Unlicensed modules emit byte-identical
+        // IR to pre-M35.
+        licensed: source.contains("coroutine"),
     };
 
     emitter.emit_main(&module, chunk)?;
@@ -98,6 +103,28 @@ struct Emitter<'c> {
     line_starts: Vec<usize>,
     lift_queue: Vec<LiftJob>,
     next_fn: usize,
+    /// D-084.4: the resumable-frame transform's module license.
+    licensed: bool,
+}
+
+/// Per-function suspension context (D-084; licensed lifted fns only):
+/// each guarded call site becomes a resume STATE — the frame closure
+/// re-enters this function with env[0] = the state id and the
+/// continuation block's live-ins reloaded from the frame env.
+struct SuspendCtx<'c, 'r> {
+    symbol: String,
+    stubs: Vec<StateStub<'c, 'r>>,
+}
+
+/// One resume state: the continuation block (whose args carry the
+/// call result + every live-in) and the frame-field spec.
+struct StateStub<'c, 'r> {
+    state: i64,
+    target: BlockRef<'c, 'r>,
+    /// Live-in local names, in B_k arg order (sorted for determinism).
+    names: Vec<String>,
+    temps: usize,
+    has_varargs: bool,
 }
 
 struct Fcx<'c, 'r> {
@@ -109,11 +136,30 @@ struct Fcx<'c, 'r> {
     globals: Value<'c, 'r>,
     terminated: bool,
     /// Enclosing loop exits, innermost last (`break`, D-058).
-    break_targets: Vec<BlockRef<'c, 'r>>,
+    break_targets: Vec<(BlockRef<'c, 'r>, Option<(Vec<String>, bool)>)>,
     /// The vararg tail (D-068): a PRIVATE arr copied from
     /// pack[nparams..] at the prologue, before the D-067 dispose.
     /// None in non-vararg functions and in main.
     varargs: Option<Value<'c, 'r>>,
+    /// D-084: Some inside a licensed lifted function — the guard
+    /// machinery lives here. None in main and unlicensed modules.
+    suspend: Option<SuspendCtx<'c, 'r>>,
+    /// SSA temporaries live across a potentially-suspending call
+    /// (explist prefixes, binary-left values): pushed by the holder,
+    /// REBOUND by the guard, read back by the holder (D-084.4's
+    /// sibling-temps residue).
+    live_temps: Vec<Value<'c, 'r>>,
+    /// The incoming pack block-arg of the lifted fn (the resume pack
+    /// on re-entry) — the stubs' walk argument.
+    entry_pack: Option<Value<'c, 'r>>,
+    /// Lexical scoping via SHADOW FRAMES (M35): boxes are stable heap
+    /// pointers, so a name's VALUE may be legitimately rebound by a
+    /// guard (same box, new SSA name) — wholesale env restore would
+    /// resurrect pre-guard SSA (a dominance violation on resume
+    /// paths). Only `local` bindings genuinely change a name's box;
+    /// they record their shadowed predecessor here and scope exit
+    /// undoes exactly those.
+    scope_shadows: Vec<Vec<(String, Option<Value<'c, 'r>>)>>,
 }
 
 impl<'c> Emitter<'c> {
@@ -158,6 +204,369 @@ impl<'c> Emitter<'c> {
             ],
             location,
         )
+    }
+
+    /// The LICENSED env spelling (D-084.1): [state i64, chain-next
+    /// dyn, _G dyn, live boxes…, varargs?, temps…]. Fresh closures are
+    /// state 0 with live boxes = the captures; frame closures are
+    /// state k with live boxes = every local in scope at the site.
+    fn licensed_env_spelling(
+        &self,
+        boxes: usize,
+        has_varargs: bool,
+        temps: usize,
+    ) -> String {
+        let mut fields =
+            vec!["i64".to_string(), "!frk_dyn.dyn".to_string(), "!frk_dyn.dyn".to_string()];
+        fields.extend(std::iter::repeat_n(
+            "!frk_mem.box<!frk_dyn.dyn>".to_string(),
+            boxes,
+        ));
+        if has_varargs {
+            fields.push("!frk_mem.arr<!frk_dyn.dyn>".to_string());
+        }
+        fields.extend(std::iter::repeat_n("!frk_dyn.dyn".to_string(), temps));
+        format!("!frk_adt.product<[{}]>", fields.join(", "))
+    }
+
+    fn licensed_env_ty(&self, boxes: usize, has_varargs: bool, temps: usize) -> Type<'c> {
+        Type::parse(self.context, &self.licensed_env_spelling(boxes, has_varargs, temps))
+            .expect("licensed env type")
+    }
+
+    /// cf.cond_br where BOTH successors take (identical) arguments —
+    /// the live-threaded loop-head shape (D-084).
+    #[allow(clippy::too_many_arguments)]
+    fn cond_br_two_args<'r>(
+        &self,
+        block: BlockRef<'c, 'r>,
+        condition: Value<'c, 'r>,
+        on_true: BlockRef<'c, 'r>,
+        true_args: &[Value<'c, 'r>],
+        on_false: BlockRef<'c, 'r>,
+        false_args: &[Value<'c, 'r>],
+        location: Location<'c>,
+    ) -> Result<()> {
+        let mut operands = vec![condition];
+        operands.extend_from_slice(true_args);
+        operands.extend_from_slice(false_args);
+        block.append_operation(
+            OperationBuilder::new("cf.cond_br", location)
+                .add_attributes(&[(
+                    Identifier::new(self.context, "operandSegmentSizes"),
+                    DenseI32ArrayAttribute::new(
+                        self.context,
+                        &[1, true_args.len() as i32, false_args.len() as i32],
+                    )
+                    .into(),
+                )])
+                .add_operands(&operands)
+                .add_successors(&[&on_true, &on_false])
+                .build()
+                .map_err(|e| e.to_string())?,
+        );
+        Ok(())
+    }
+
+    /// cf.cond_br whose FALSE successor takes arguments (the guard's
+    /// continuation-block shape).
+    fn cond_br_false_args<'r>(
+        &self,
+        block: BlockRef<'c, 'r>,
+        condition: Value<'c, 'r>,
+        on_true: BlockRef<'c, 'r>,
+        on_false: BlockRef<'c, 'r>,
+        false_args: &[Value<'c, 'r>],
+        location: Location<'c>,
+    ) -> Result<()> {
+        let mut operands = vec![condition];
+        operands.extend_from_slice(false_args);
+        block.append_operation(
+            OperationBuilder::new("cf.cond_br", location)
+                .add_attributes(&[(
+                    Identifier::new(self.context, "operandSegmentSizes"),
+                    DenseI32ArrayAttribute::new(
+                        self.context,
+                        &[1, 0, false_args.len() as i32],
+                    )
+                    .into(),
+                )])
+                .add_operands(&operands)
+                .add_successors(&[&on_true, &on_false])
+                .build()
+                .map_err(|e| e.to_string())?,
+        );
+        Ok(())
+    }
+
+    /// The guard COLD path (D-084.4): park this frame — env
+    /// [state, chain-next (the cell's current head), _G, boxes…,
+    /// varargs?, temps…] over the SAME symbol, every snoc carrying
+    /// frk.capture (planner-invisible, always-retained); the cell's
+    /// head becomes this frame; return the suspended dummy.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_frame_capture<'r>(
+        &self,
+        block: BlockRef<'c, 'r>,
+        symbol: &str,
+        state: i64,
+        boxes: &[Value<'c, 'r>],
+        globals: Value<'c, 'r>,
+        varargs: Option<Value<'c, 'r>>,
+        temps: &[Value<'c, 'r>],
+        location: Location<'c>,
+    ) -> Result<()> {
+        let cells = self
+            .call(block, "__lua_coro_cells", &[], &[self.pack_ty()], location)?
+            .expect("cells");
+        let zero = self.const_i64(block, 0, location)?;
+        let chain = self.build(
+            block,
+            "frk_mem.array_get",
+            &[cells, zero],
+            &[self.dyn_ty()],
+            &[],
+            location,
+        )?;
+        let state_value = self.const_i64(block, state, location)?;
+
+        let mut parts: Vec<String> = Vec::new();
+        let empty = Type::parse(self.context, "!frk_adt.product<[]>").ok_or("empty")?;
+        let mut acc = self.build(block, "frk_adt.product_new", &[], &[empty], &[], location)?;
+        let capture_attr: Attribute = Attribute::unit(self.context);
+        let mut snoc = |emitter: &Self,
+                        acc: Value<'c, 'r>,
+                        value: Value<'c, 'r>,
+                        spelled: &str,
+                        parts: &mut Vec<String>|
+         -> Result<Value<'c, 'r>> {
+            parts.push(spelled.to_string());
+            let ty = Type::parse(
+                emitter.context,
+                &format!("!frk_adt.product<[{}]>", parts.join(", ")),
+            )
+            .ok_or("frame product type")?;
+            emitter.build(
+                block,
+                "frk_adt.product_snoc",
+                &[acc, value],
+                &[ty],
+                &[("frk.capture", capture_attr)],
+                location,
+            )
+        };
+        acc = snoc(self, acc, state_value, "i64", &mut parts)?;
+        acc = snoc(self, acc, chain, "!frk_dyn.dyn", &mut parts)?;
+        acc = snoc(self, acc, globals, "!frk_dyn.dyn", &mut parts)?;
+        for value in boxes {
+            acc = snoc(self, acc, *value, "!frk_mem.box<!frk_dyn.dyn>", &mut parts)?;
+        }
+        if let Some(va) = varargs {
+            acc = snoc(self, acc, va, "!frk_mem.arr<!frk_dyn.dyn>", &mut parts)?;
+        }
+        for value in temps {
+            acc = snoc(self, acc, *value, "!frk_dyn.dyn", &mut parts)?;
+        }
+
+        let closure = self.build(
+            block,
+            "frk_closure.make",
+            &[acc],
+            &[self.lua_fn_ty()],
+            &[("callee", FlatSymbolRefAttribute::new(self.context, symbol).into())],
+            location,
+        )?;
+        let frame = self.wrap(block, TAG_FUN, closure, location)?;
+        self.build0(block, "frk_mem.array_set", &[cells, zero, frame], &[], location)?;
+        let none = self.const_i64(block, 0, location)?;
+        let dummy = self.build(
+            block,
+            "frk_mem.array_new",
+            &[none],
+            &[self.pack_ty()],
+            &[],
+            location,
+        )?;
+        ret(block, &[dummy], location)?;
+        Ok(())
+    }
+
+    /// Reads the suspend flag as an i1.
+    fn read_susp_flag<'r>(
+        &self,
+        block: BlockRef<'c, 'r>,
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        let cell_ty = Type::parse(self.context, "!frk_mem.box<f64>").ok_or("flag cell")?;
+        let cell = self.build(
+            block,
+            "frk_mem.global_get",
+            &[],
+            &[cell_ty],
+            &[("sym", StringAttribute::new(self.context, "lua_susp").into())],
+            location,
+        )?;
+        let flag = self.build(block, "frk_mem.box_get", &[cell], &[self.f64_ty()], &[], location)?;
+        let zero = self.const_f64(block, 0.0, location)?;
+        self.cmpf(block, 6, flag, zero, location) // one (ordered !=)
+    }
+
+    /// The D-084 guard after a potentially-suspending call: hot path
+    /// falls through to the continuation block (result + every
+    /// live-in as block args); cold path parks the frame. Returns the
+    /// rebound result; REBINDS fcx.env/globals/varargs/live_temps.
+    fn guarded_result<'r>(
+        &mut self,
+        fcx: &mut Fcx<'c, 'r>,
+        result: Value<'c, 'r>,
+        location: Location<'c>,
+    ) -> Result<Value<'c, 'r>> {
+        let Some(suspend) = fcx.suspend.as_ref() else {
+            return Ok(result);
+        };
+        let symbol = suspend.symbol.clone();
+        let state = suspend.stubs.len() as i64 + 1;
+
+        let mut names: Vec<String> = fcx.env.keys().cloned().collect();
+        names.sort();
+        let has_varargs = fcx.varargs.is_some();
+        let temps = fcx.live_temps.len();
+
+        let mut arg_specs: Vec<(Type<'c>, Location<'c>)> = vec![(self.pack_ty(), location)];
+        arg_specs.extend(
+            std::iter::repeat_n((self.box_ty(), location), names.len()),
+        );
+        arg_specs.push((self.dyn_ty(), location));
+        if has_varargs {
+            arg_specs.push((self.pack_ty(), location));
+        }
+        arg_specs.extend(std::iter::repeat_n((self.dyn_ty(), location), temps));
+
+        let continuation = fcx.region.append_block(Block::new(&arg_specs));
+        let cold = fcx.region.append_block(Block::new(&[]));
+
+        let mut branch_args = vec![result];
+        for name in &names {
+            branch_args.push(fcx.env[name]);
+        }
+        branch_args.push(fcx.globals);
+        if let Some(va) = fcx.varargs {
+            branch_args.push(va);
+        }
+        branch_args.extend(fcx.live_temps.iter().copied());
+
+        let flag = self.read_susp_flag(fcx.block, location)?;
+        self.cond_br_false_args(fcx.block, flag, cold, continuation, &branch_args, location)?;
+
+        let boxes: Vec<Value> = names.iter().map(|n| fcx.env[n]).collect();
+        self.emit_frame_capture(
+            cold,
+            &symbol,
+            state,
+            &boxes,
+            fcx.globals,
+            fcx.varargs,
+            &fcx.live_temps.clone(),
+            location,
+        )?;
+
+        fcx.block = continuation;
+        let rebound = block_arg(continuation, 0)?;
+        let mut index = 1;
+        for name in &names {
+            fcx.env.insert(name.clone(), block_arg(continuation, index)?);
+            index += 1;
+        }
+        fcx.globals = block_arg(continuation, index)?;
+        index += 1;
+        if has_varargs {
+            fcx.varargs = Some(block_arg(continuation, index)?);
+            index += 1;
+        }
+        for t in 0..temps {
+            fcx.live_temps[t] = block_arg(continuation, index)?;
+            index += 1;
+        }
+
+        fcx.suspend.as_mut().expect("suspend").stubs.push(StateStub {
+            state,
+            target: continuation,
+            names,
+            temps,
+            has_varargs,
+        });
+        Ok(rebound)
+    }
+
+    /// D-084's dominance law: in licensed lifted fns, every join/head
+    /// block carries the live-ins (env boxes, _G, varargs) as block
+    /// args — resume paths (entry → stub → continuation) never
+    /// executed the prologue, so nothing prologue-defined dominates a
+    /// resume-reachable join. Returns None when not in a licensed
+    /// lifted fn (blocks stay arg-free, IR byte-identical to
+    /// pre-M35).
+    fn live_spec(&self, fcx: &Fcx<'c, '_>) -> Option<(Vec<String>, bool)> {
+        fcx.suspend.as_ref()?;
+        let mut names: Vec<String> = fcx.env.keys().cloned().collect();
+        names.sort();
+        Some((names, fcx.varargs.is_some()))
+    }
+
+    fn live_arg_types(
+        &self,
+        spec: &Option<(Vec<String>, bool)>,
+        location: Location<'c>,
+    ) -> Vec<(Type<'c>, Location<'c>)> {
+        let Some((names, has_varargs)) = spec else { return Vec::new() };
+        let mut types = Vec::new();
+        types.extend(std::iter::repeat_n((self.box_ty(), location), names.len()));
+        types.push((self.dyn_ty(), location));
+        if *has_varargs {
+            types.push((self.pack_ty(), location));
+        }
+        types
+    }
+
+    fn live_arg_values<'r>(
+        &self,
+        fcx: &Fcx<'c, 'r>,
+        spec: &Option<(Vec<String>, bool)>,
+    ) -> Result<Vec<Value<'c, 'r>>> {
+        let Some((names, has_varargs)) = spec else { return Ok(Vec::new()) };
+        let mut values = Vec::new();
+        for name in names {
+            values.push(*fcx.env.get(name).ok_or_else(|| {
+                format!("live-in `{name}` out of scope at branch (D-084)")
+            })?);
+        }
+        values.push(fcx.globals);
+        if *has_varargs {
+            values.push(fcx.varargs.ok_or("varargs live-in missing")?);
+        }
+        Ok(values)
+    }
+
+    /// Rebinds fcx from a live-arg'd block's args, starting at `skip`
+    /// (the block's extra leading args).
+    fn live_rebind<'r>(
+        &self,
+        fcx: &mut Fcx<'c, 'r>,
+        block: BlockRef<'c, 'r>,
+        skip: usize,
+        spec: &Option<(Vec<String>, bool)>,
+    ) -> Result<()> {
+        let Some((names, has_varargs)) = spec else { return Ok(()) };
+        let mut index = skip;
+        for name in names {
+            fcx.env.insert(name.clone(), block_arg(block, index)?);
+            index += 1;
+        }
+        fcx.globals = block_arg(block, index)?;
+        index += 1;
+        if *has_varargs {
+            fcx.varargs = Some(block_arg(block, index)?);
+        }
+        Ok(())
     }
 
     fn dyn_ty(&self) -> Type<'c> {
@@ -597,16 +1006,22 @@ impl<'c> Emitter<'c> {
         let Some((last, init)) = exprs.split_last() else {
             return self.make_pack(fcx.block, &[], location);
         };
-        let mut prefix = Vec::new();
+        // Prefix values ride live_temps (D-084.4): any later element
+        // — or the final call — may suspend, and the guard rebinds
+        // everything it carried across.
+        let base = fcx.live_temps.len();
         for expression in init {
-            prefix.push(self.emit_expr(fcx, expression)?);
+            let value = self.emit_expr(fcx, expression)?;
+            fcx.live_temps.push(value);
         }
-        match last {
+        let result = match last {
             Expr::Call(callee, arguments, _) => {
                 let tail = self.emit_call_pack(fcx, callee, arguments, location)?;
+                let prefix: Vec<Value> = fcx.live_temps[base..].to_vec();
                 if prefix.is_empty() {
                     // Whole-pack forwarding: the no-copy fast path the
                     // D-063 tail-call law rides.
+                    fcx.live_temps.truncate(base);
                     return Ok(tail);
                 }
                 self.pack_with_tail(fcx, &prefix, tail, location)
@@ -615,13 +1030,18 @@ impl<'c> Emitter<'c> {
                 let tail = fcx.varargs.ok_or_else(|| {
                     "internal: `...` survived parsing outside a vararg function".to_string()
                 })?;
+                let prefix: Vec<Value> = fcx.live_temps[base..].to_vec();
                 self.pack_with_tail(fcx, &prefix, tail, location)
             }
             other => {
-                prefix.push(self.emit_expr(fcx, other)?);
+                let value = self.emit_expr(fcx, other)?;
+                fcx.live_temps.push(value);
+                let prefix: Vec<Value> = fcx.live_temps[base..].to_vec();
                 self.make_pack(fcx.block, &prefix, location)
             }
-        }
+        };
+        fcx.live_temps.truncate(base);
+        result
     }
 
     /// prefix values + every element of `tail`, as a fresh pack of
@@ -713,6 +1133,9 @@ impl<'c> Emitter<'c> {
             ("next", "__lua_next_v"),
             ("pairs", "__lua_pairs_v"),
             ("ipairs", "__lua_ipairs_v"),
+            // M35 (D-084.5): type() joins the seeded stdlib —
+            // type(co) == "thread" is corpus-load-bearing.
+            ("type", "__lua_type_v"),
         ] {
             let wrapped = self.helper_fun(entry, helper, location)?;
             let key_lit = self.str_lit(entry, name, location)?;
@@ -749,6 +1172,35 @@ impl<'c> Emitter<'c> {
             )?;
         }
 
+        // M35 (D-084): the coroutine table + the suspend-channel cells,
+        // licensed modules only.
+        if self.licensed {
+            self.call(entry, "__lua_coro_init", &[], &[], location)?;
+            let coro_table =
+                self.build(entry, "frk_dyn.table_new", &[], &[self.dyn_ty()], &[], location)?;
+            for (field, helper) in [
+                ("create", "__lua_coro_create_v"),
+                ("resume", "__lua_coro_resume_v"),
+                ("yield", "__lua_coro_yield_v"),
+                ("status", "__lua_coro_status_v"),
+                ("wrap", "__lua_coro_wrap_v"),
+            ] {
+                let fun = self.helper_fun(entry, helper, location)?;
+                let key_lit = self.str_lit(entry, field, location)?;
+                let key = self.wrap(entry, TAG_STR, key_lit, location)?;
+                self.build0(entry, "frk_dyn.raw_set", &[coro_table, key, fun], &[], location)?;
+            }
+            let key_lit = self.str_lit(entry, "coroutine", location)?;
+            let key = self.wrap(entry, TAG_STR, key_lit, location)?;
+            self.build0(
+                entry,
+                "frk_dyn.raw_set",
+                &[globals, key, coro_table],
+                &[],
+                location,
+            )?;
+        }
+
         let mut fcx = Fcx {
             region: &region,
             block: entry,
@@ -757,6 +1209,10 @@ impl<'c> Emitter<'c> {
             terminated: false,
             break_targets: Vec::new(),
             varargs: None,
+            suspend: None,
+            live_temps: Vec::new(),
+            entry_pack: None,
+            scope_shadows: Vec::new(),
         };
         self.emit_block(&mut fcx, chunk)?;
         if !fcx.terminated {
@@ -771,6 +1227,9 @@ impl<'c> Emitter<'c> {
     }
 
     fn emit_lifted(&mut self, module: &Module<'c>, job: LiftJob) -> Result<()> {
+        if self.licensed {
+            return self.emit_lifted_resumable(module, job);
+        }
         let location = Location::unknown(self.context);
         // D-063 uniform convention over the D-058 packs: EVERY lua
         // function is (envref, args-pack) -> values-pack. The env
@@ -846,6 +1305,10 @@ impl<'c> Emitter<'c> {
             terminated: false,
             break_targets: Vec::new(),
             varargs,
+            suspend: None,
+            live_temps: Vec::new(),
+            entry_pack: None,
+            scope_shadows: Vec::new(),
         };
         self.emit_block(&mut fcx, &job.body)?;
         if !fcx.terminated {
@@ -853,6 +1316,191 @@ impl<'c> Emitter<'c> {
             let empty = self.make_pack(fcx.block, &[], location)?;
             ret(fcx.block, &[empty], location)?;
         }
+        self.func(module, &job.symbol, &inputs, &[self.pack_ty()], region, false);
+        Ok(())
+    }
+
+    /// The LICENSED lift (D-084): same signature, but the entry
+    /// dispatches on env[0] (the resume state) — state 0 is the
+    /// normal prologue; state k re-enters at the continuation block
+    /// of guarded call site k, live-ins reloaded from the frame env
+    /// and the suspended call's result delivered by the chain walk.
+    fn emit_lifted_resumable(&mut self, module: &Module<'c>, job: LiftJob) -> Result<()> {
+        let location = Location::unknown(self.context);
+        let inputs = vec![self.envref_ty(), self.pack_ty()];
+        let region = Region::new();
+        let entry = region.append_block(Block::new(
+            &inputs.iter().map(|ty| (*ty, location)).collect::<Vec<_>>(),
+        ));
+        let envref = block_arg(entry, 0)?;
+        let pack = block_arg(entry, 1)?;
+
+        // State-0: the normal prologue, in its own block.
+        let start = region.append_block(Block::new(&[]));
+        let state0_ty = self.licensed_env_ty(job.captures.len(), false, 0);
+        let globals = self.env_load(start, envref, 2, state0_ty, self.dyn_ty(), location)?;
+        let mut env = HashMap::new();
+        for (index, name) in job.captures.iter().enumerate() {
+            let capture = self.env_load(
+                start,
+                envref,
+                3 + index as i64,
+                state0_ty,
+                self.box_ty(),
+                location,
+            )?;
+            env.insert(name.clone(), capture);
+        }
+        for (index, name) in job.params.iter().enumerate() {
+            let value = self.pack_get(start, pack, index as i64, location)?;
+            let boxed = self.build(
+                start,
+                "frk_mem.box_new",
+                &[value],
+                &[self.box_ty()],
+                &[],
+                location,
+            )?;
+            env.insert(name.clone(), boxed);
+        }
+        let varargs = if job.is_vararg {
+            let from = self.const_i64(start, job.params.len() as i64, location)?;
+            Some(
+                self.call(start, "__lua_pack_tail", &[pack, from], &[self.pack_ty()], location)?
+                    .expect("result"),
+            )
+        } else {
+            None
+        };
+        self.build0(start, "frk_mem.dispose", &[pack], &[], location)?;
+
+        let mut fcx = Fcx {
+            region: &region,
+            block: start,
+            env,
+            globals,
+            terminated: false,
+            break_targets: Vec::new(),
+            varargs,
+            suspend: Some(SuspendCtx { symbol: job.symbol.clone(), stubs: Vec::new() }),
+            live_temps: Vec::new(),
+            entry_pack: Some(pack),
+            scope_shadows: Vec::new(),
+        };
+        self.emit_block(&mut fcx, &job.body)?;
+        if !fcx.terminated {
+            let empty = self.make_pack(fcx.block, &[], location)?;
+            ret(fcx.block, &[empty], location)?;
+        }
+
+        // The resume stubs: state k reloads the frame fields, walks
+        // the chain with the resume pack (nil chain = deliver), and
+        // — because the walk can itself re-suspend — re-guards.
+        let ctx = fcx.suspend.take().expect("suspend ctx");
+        let mut stub_blocks: Vec<(i64, BlockRef)> = Vec::new();
+        for stub in &ctx.stubs {
+            let sk = region.append_block(Block::new(&[]));
+            let env_ty =
+                self.licensed_env_ty(stub.names.len(), stub.has_varargs, stub.temps);
+            let chain = self.env_load(sk, envref, 1, env_ty, self.dyn_ty(), location)?;
+            let sg = self.env_load(sk, envref, 2, env_ty, self.dyn_ty(), location)?;
+            let mut boxes = Vec::new();
+            for index in 0..stub.names.len() {
+                boxes.push(self.env_load(
+                    sk,
+                    envref,
+                    3 + index as i64,
+                    env_ty,
+                    self.box_ty(),
+                    location,
+                )?);
+            }
+            let mut field = 3 + stub.names.len() as i64;
+            let sva = if stub.has_varargs {
+                let va = self.env_load(sk, envref, field, env_ty, self.pack_ty(), location)?;
+                field += 1;
+                Some(va)
+            } else {
+                None
+            };
+            let mut temps = Vec::new();
+            for _ in 0..stub.temps {
+                temps.push(self.env_load(sk, envref, field, env_ty, self.dyn_ty(), location)?);
+                field += 1;
+            }
+            let walked = self
+                .call(
+                    sk,
+                    "__lua_coro_walk",
+                    &[chain, pack],
+                    &[self.pack_ty()],
+                    location,
+                )?
+                .expect("walk result");
+            let flag = self.read_susp_flag(sk, location)?;
+            let cold = region.append_block(Block::new(&[]));
+            let mut branch_args = vec![walked];
+            branch_args.extend(boxes.iter().copied());
+            branch_args.push(sg);
+            if let Some(va) = sva {
+                branch_args.push(va);
+            }
+            branch_args.extend(temps.iter().copied());
+            self.cond_br_false_args(sk, flag, cold, stub.target, &branch_args, location)?;
+            self.emit_frame_capture(
+                cold,
+                &ctx.symbol,
+                stub.state,
+                &boxes,
+                sg,
+                sva,
+                &temps,
+                location,
+            )?;
+            stub_blocks.push((stub.state, sk));
+        }
+
+        // The entry dispatch — built LAST, once every state exists.
+        let state = self.env_load(entry, envref, 0, state0_ty, self.i64_ty(), location)?;
+        if stub_blocks.is_empty() {
+            self.br(entry, start, &[], location)?;
+        } else {
+            let values: Vec<String> =
+                stub_blocks.iter().map(|(k, _)| k.to_string()).collect();
+            let dense = format!(
+                "dense<[{}]> : tensor<{}xi64>",
+                values.join(", "),
+                stub_blocks.len()
+            );
+            let segments = vec![0i32; stub_blocks.len()];
+            let mut successors: Vec<&Block> = vec![&start];
+            for (_, block) in &stub_blocks {
+                successors.push(block);
+            }
+            entry.append_operation(
+                OperationBuilder::new("cf.switch", location)
+                    .add_attributes(&[
+                        (
+                            Identifier::new(self.context, "case_values"),
+                            Attribute::parse(self.context, &dense)
+                                .ok_or_else(|| format!("unparsable {dense}"))?,
+                        ),
+                        (
+                            Identifier::new(self.context, "case_operand_segments"),
+                            DenseI32ArrayAttribute::new(self.context, &segments).into(),
+                        ),
+                        (
+                            Identifier::new(self.context, "operandSegmentSizes"),
+                            DenseI32ArrayAttribute::new(self.context, &[1, 0, 0]).into(),
+                        ),
+                    ])
+                    .add_operands(&[state])
+                    .add_successors(&successors)
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+
         self.func(module, &job.symbol, &inputs, &[self.pack_ty()], region, false);
         Ok(())
     }
@@ -884,13 +1532,22 @@ impl<'c> Emitter<'c> {
             body: body.clone(),
         });
 
-        // Env pack: [_G, capture boxes...].
-        let mut spelling_parts = vec!["!frk_dyn.dyn".to_string()];
+        // Env pack: [_G, capture boxes...] — or, LICENSED (D-084.1),
+        // [state 0, nil chain, _G, capture boxes...].
+        let mut spelling_parts = Vec::new();
+        let mut values: Vec<Value> = Vec::new();
+        if self.licensed {
+            spelling_parts.push("i64".to_string());
+            spelling_parts.push("!frk_dyn.dyn".to_string());
+            values.push(self.const_i64(fcx.block, 0, location)?);
+            values.push(self.nil_dyn(fcx.block, location)?);
+        }
+        spelling_parts.push("!frk_dyn.dyn".to_string());
         spelling_parts
             .extend(std::iter::repeat_n("!frk_mem.box<!frk_dyn.dyn>".to_string(), captures.len()));
         let empty = Type::parse(self.context, "!frk_adt.product<[]>").ok_or("empty")?;
         let mut acc = self.build(fcx.block, "frk_adt.product_new", &[], &[empty], &[], location)?;
-        let mut values: Vec<Value> = vec![fcx.globals];
+        values.push(fcx.globals);
         for name in &captures {
             values.push(fcx.env[name]);
         }
@@ -918,16 +1575,44 @@ impl<'c> Emitter<'c> {
     // ---- statements ----
 
     fn emit_block<'r>(&mut self, fcx: &mut Fcx<'c, 'r>, block: &LBlock) -> Result<()> {
-        // Lua blocks scope locals; restore the env afterwards.
-        let saved = fcx.env.clone();
+        // Lua blocks scope locals: `local` bindings introduced inside
+        // are undone at exit — but names REBOUND by a guard (same box,
+        // fresh SSA) keep their current values (M35; see
+        // scope_shadows).
+        fcx.scope_shadows.push(Vec::new());
         for statement in block {
             if fcx.terminated {
                 break;
             }
             self.emit_stat(fcx, statement)?;
         }
-        fcx.env = saved;
+        let frame = fcx.scope_shadows.pop().expect("scope frame");
+        for (name, previous) in frame.into_iter().rev() {
+            match previous {
+                Some(value) => {
+                    fcx.env.insert(name, value);
+                }
+                None => {
+                    fcx.env.remove(&name);
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Binds a `local` name, recording the shadowed predecessor in the
+    /// innermost scope frame (function-lifetime bindings — params —
+    /// have no frame and record nothing).
+    fn bind_local<'r>(
+        &self,
+        fcx: &mut Fcx<'c, 'r>,
+        name: &str,
+        value: Value<'c, 'r>,
+    ) {
+        let previous = fcx.env.insert(name.to_string(), value);
+        if let Some(frame) = fcx.scope_shadows.last_mut() {
+            frame.push((name.to_string(), previous));
+        }
     }
 
     fn emit_stat<'r>(&mut self, fcx: &mut Fcx<'c, 'r>, statement: &Stat) -> Result<()> {
@@ -943,7 +1628,7 @@ impl<'c> Emitter<'c> {
                     &[],
                     location,
                 )?;
-                fcx.env.insert(name.clone(), boxed);
+                self.bind_local(fcx, name, boxed);
                 Ok(())
             }
             Stat::LocalFunction(name, params, is_vararg, body, span) => {
@@ -958,7 +1643,7 @@ impl<'c> Emitter<'c> {
                     &[],
                     location,
                 )?;
-                fcx.env.insert(name.clone(), boxed);
+                self.bind_local(fcx, name, boxed);
                 let closure = self.emit_closure(fcx, params, *is_vararg, body, location)?;
                 self.build0(fcx.block, "frk_mem.box_set", &[boxed, closure], &[], location)?;
                 Ok(())
@@ -1019,11 +1704,13 @@ impl<'c> Emitter<'c> {
             Stat::Do(body, _) => self.emit_block(fcx, body),
             Stat::Break(span) => {
                 let location = self.loc_at(*span);
-                let target = *fcx
+                let (target, spec) = fcx
                     .break_targets
                     .last()
+                    .cloned()
                     .ok_or_else(|| "break outside a loop".to_string())?;
-                self.br(fcx.block, target, &[], location)?;
+                let args = self.live_arg_values(fcx, &spec)?;
+                self.br(fcx.block, target, &args, location)?;
                 fcx.terminated = true;
                 Ok(())
             }
@@ -1037,7 +1724,7 @@ impl<'c> Emitter<'c> {
                 // Lua scoping: `until` sees the body's locals — the
                 // env restores AFTER the condition.
                 let saved = fcx.env.clone();
-                fcx.break_targets.push(done);
+                fcx.break_targets.push((done, None));
                 for statement in body {
                     if fcx.terminated {
                         break;
@@ -1070,7 +1757,7 @@ impl<'c> Emitter<'c> {
                         &[],
                         location,
                     )?;
-                    fcx.env.insert(name.clone(), boxed);
+                    self.bind_local(fcx, name, boxed);
                 }
                 Ok(())
             }
@@ -1144,9 +1831,9 @@ impl<'c> Emitter<'c> {
                         &[],
                         location,
                     )?;
-                    fcx.env.insert(name.clone(), boxed);
+                    self.bind_local(fcx, name, boxed);
                 }
-                fcx.break_targets.push(done);
+                fcx.break_targets.push((done, None));
                 self.emit_block(fcx, body)?;
                 fcx.break_targets.pop();
                 fcx.env = saved;
@@ -1199,25 +1886,38 @@ impl<'c> Emitter<'c> {
             }
             Stat::While(condition, body, span) => {
                 let location = self.loc_at(*span);
-                let head = fcx.region.append_block(Block::new(&[]));
-                let bbody = fcx.region.append_block(Block::new(&[]));
-                let done = fcx.region.append_block(Block::new(&[]));
-                self.br(fcx.block, head, &[], location)?;
+                // Licensed fns thread the live-ins through head/body/
+                // done (D-084's dominance law); unlicensed emission is
+                // byte-identical to pre-M35 (empty spec = no args).
+                let spec = self.live_spec(fcx);
+                let arg_types = self.live_arg_types(&spec, location);
+                let head = fcx.region.append_block(Block::new(&arg_types));
+                let bbody = fcx.region.append_block(Block::new(&arg_types));
+                let done = fcx.region.append_block(Block::new(&arg_types));
+                let entry_args = self.live_arg_values(fcx, &spec)?;
+                self.br(fcx.block, head, &entry_args, location)?;
                 fcx.block = head;
+                self.live_rebind(fcx, head, 0, &spec)?;
                 let condition_value = self.emit_expr(fcx, condition)?;
                 let truthy = self
                     .call(fcx.block, "__lua_truthy", &[condition_value], &[self.i1_ty()], location)?
                     .expect("result");
-                self.cond_br(fcx.block, truthy, bbody, done, location)?;
+                let branch_args = self.live_arg_values(fcx, &spec)?;
+                self.cond_br_two_args(
+                    fcx.block, truthy, bbody, &branch_args, done, &branch_args, location,
+                )?;
                 fcx.block = bbody;
+                self.live_rebind(fcx, bbody, 0, &spec)?;
                 fcx.terminated = false;
-                fcx.break_targets.push(done);
+                fcx.break_targets.push((done, spec.clone()));
                 self.emit_block(fcx, body)?;
                 fcx.break_targets.pop();
                 if !fcx.terminated {
-                    self.br(fcx.block, head, &[], location)?;
+                    let back_args = self.live_arg_values(fcx, &spec)?;
+                    self.br(fcx.block, head, &back_args, location)?;
                 }
                 fcx.block = done;
+                self.live_rebind(fcx, done, 0, &spec)?;
                 fcx.terminated = false;
                 Ok(())
             }
@@ -1273,7 +1973,7 @@ impl<'c> Emitter<'c> {
                 )?;
                 let saved = fcx.env.clone();
                 fcx.env.insert(variable.clone(), boxed);
-                fcx.break_targets.push(done);
+                fcx.break_targets.push((done, None));
                 self.emit_block(fcx, body)?;
                 fcx.break_targets.pop();
                 fcx.env = saved;
@@ -1295,7 +1995,10 @@ impl<'c> Emitter<'c> {
         }
     }
 
-    /// Emits a call and returns its RAW values pack (D-058).
+    /// Emits a call and returns its RAW values pack (D-058). In
+    /// licensed lifted fns the result is GUARDED (D-084): the callee
+    /// dyn rides live_temps across argument evaluation (arguments may
+    /// themselves suspend), and the call site becomes a resume state.
     fn emit_call_pack<'r>(
         &mut self,
         fcx: &mut Fcx<'c, 'r>,
@@ -1303,9 +2006,14 @@ impl<'c> Emitter<'c> {
         arguments: &[Expr],
         location: Location<'c>,
     ) -> Result<Value<'c, 'r>> {
-        let callee = self.emit_expr(fcx, callee)?;
+        let callee_value = self.emit_expr(fcx, callee)?;
+        let base = fcx.live_temps.len();
+        fcx.live_temps.push(callee_value);
         let pack = self.emit_explist_pack(fcx, arguments, location)?;
-        self.call_lua_pack(fcx.block, callee, pack, location)
+        let callee_value = fcx.live_temps[base];
+        fcx.live_temps.truncate(base);
+        let raw = self.call_lua_pack(fcx.block, callee_value, pack, location)?;
+        self.guarded_result(fcx, raw, location)
     }
 
     // ---- expressions (every result is a dyn) ----
