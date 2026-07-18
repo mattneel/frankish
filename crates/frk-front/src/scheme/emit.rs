@@ -110,6 +110,7 @@ pub fn emit<'c>(
         line_starts,
         job_queue: Vec::new(),
         next_fn: 0,
+        globals: HashMap::new(),
     };
 
     // Top-level procedures see each other (mutual recursion). Bind all
@@ -125,12 +126,47 @@ pub fn emit<'c>(
                     params: params.clone(),
                 },
             );
-        } else if let Top::Define(name, _, span) = form {
-            return Err(format!(
-                "top-level (define {name} <value>) is fenced in r7rs_core v0 at {}",
-                emitter.loc_str(*span)
-            ));
         }
+    }
+    // Top-level VALUE defines (D-081.1): slots in the scm_globals
+    // array, indexed in first-occurrence order. Reads are late-bound
+    // at use (chibi-probed); redefinition writes the same slot. The
+    // map is program-constant, so it lives on the Emitter, not Jobs.
+    for form in program {
+        if let Top::Define(name, expr, span) = form {
+            if matches!(expr, Expr::Lambda(..)) {
+                continue;
+            }
+            if top.contains_key(name) {
+                return Err(format!(
+                    "`{name}` is defined as both a procedure and a value (fenced) at {}",
+                    emitter.loc_str(*span)
+                ));
+            }
+            let next = emitter.globals.len();
+            emitter.globals.entry(name.clone()).or_insert(next);
+        }
+    }
+    if !emitter.globals.is_empty() {
+        // ONE pointer cell holding the heap globals array — the
+        // D-078 single-slot rung as-is (the ts_queue pattern's
+        // second frontend); declared at module level, initialized
+        // eagerly at main entry.
+        let l = Location::unknown(context);
+        let decl = OperationBuilder::new("frk_mem.global_decl", l)
+            .add_attributes(&[
+                (
+                    Identifier::new(context, "sym"),
+                    StringAttribute::new(context, "scm_globals").into(),
+                ),
+                (
+                    Identifier::new(context, "cell"),
+                    TypeAttribute::new(emitter.pack_ty()).into(),
+                ),
+            ])
+            .build()
+            .map_err(|e| e.to_string())?;
+        module.body().append_operation(decl);
     }
     for form in program {
         if let Top::Define(name, Expr::Lambda(params, body, _), _) = form {
@@ -167,6 +203,9 @@ struct Emitter<'c> {
     line_starts: Vec<usize>,
     job_queue: Vec<Job>,
     next_fn: usize,
+    /// Top-level value defines (D-081.1): name → slot in the
+    /// scm_globals array. Program-constant; reads late-bind at use.
+    globals: HashMap<String, usize>,
 }
 
 /// Per-function cursor. `locals` maps names to dyn/token values;
@@ -565,15 +604,117 @@ impl<'c> Emitter<'c> {
             procs: top.clone(),
             ret_shape: RetShape::Void,
         };
+        // Globals init preamble (D-081.1): allocate the array, NIL-FILL
+        // it (D-077's "fill REQUIRED" precedent — interp array_new
+        // zeroes to Float(0.0), not nil; an unfilled slot would be a
+        // cross-twin failure-mode split), store it in the cell. main
+        // runs before everything, so no lazy-init flag is needed.
+        if !self.globals.is_empty() {
+            let count = self.const_i64(fcx.block, self.globals.len() as i64, l)?;
+            let arr = self.build(
+                fcx.block,
+                "frk_mem.array_new",
+                &[count],
+                &[self.pack_ty()],
+                &[],
+                l,
+            )?;
+            let zero = self.const_i64(fcx.block, 0, l)?;
+            let nil = self.nil_dyn(fcx.block, l)?;
+            self.call(
+                fcx.block,
+                "__scm_vec_fill",
+                &[arr, zero, count, nil],
+                &[self.dyn_ty()],
+                l,
+            )?;
+            let cell = self.globals_cell(fcx.block, l)?;
+            fcx.block.append_operation(
+                OperationBuilder::new("frk_mem.box_set", l)
+                    .add_operands(&[cell, arr])
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            );
+        }
         for form in program {
-            if let Top::Expr(expr) = form {
-                if self.emit_value(&mut fcx, expr)?.is_none() {
-                    break;
+            match form {
+                Top::Expr(expr) => {
+                    if self.emit_value(&mut fcx, expr)?.is_none() {
+                        break;
+                    }
+                }
+                Top::Define(_, Expr::Lambda(..), _) => {}
+                Top::Define(name, expr, _) => {
+                    // A value define EVALUATES at its program position
+                    // (chibi order), then writes its slot.
+                    let index = self.globals[name];
+                    let value = match self.emit_value(&mut fcx, expr)? {
+                        Some(v) => v,
+                        None => break,
+                    };
+                    self.global_write(&mut fcx, index, value, l)?;
                 }
             }
         }
         self.ret(fcx.block, &[], l)?;
         self.func(module, "main", &[], &[], region, true);
+        Ok(())
+    }
+
+    // ---- top-level value defines (D-081.1) ----
+
+    fn globals_cell<'r>(
+        &self,
+        b: BlockRef<'c, 'r>,
+        l: Location<'c>,
+    ) -> R<Value<'c, 'r>> {
+        let cell_ty = Type::parse(
+            self.context,
+            "!frk_mem.box<!frk_mem.arr<!frk_dyn.dyn>>",
+        )
+        .ok_or("globals cell type")?;
+        self.build(
+            b,
+            "frk_mem.global_get",
+            &[],
+            &[cell_ty],
+            &[("sym", StringAttribute::new(self.context, "scm_globals").into())],
+            l,
+        )
+    }
+
+    /// Reads global slot `index` — late-bound: every read goes through
+    /// the cell, so lifted bodies see the CURRENT value (chibi-probed).
+    fn global_read<'r>(
+        &mut self,
+        fcx: &mut Fcx<'c, 'r>,
+        index: usize,
+        l: Location<'c>,
+    ) -> R<Value<'c, 'r>> {
+        let cell = self.globals_cell(fcx.block, l)?;
+        let arr =
+            self.build(fcx.block, "frk_mem.box_get", &[cell], &[self.pack_ty()], &[], l)?;
+        let i = self.const_i64(fcx.block, index as i64, l)?;
+        self.build(fcx.block, "frk_mem.array_get", &[arr, i], &[self.dyn_ty()], &[], l)
+    }
+
+    fn global_write<'r>(
+        &mut self,
+        fcx: &mut Fcx<'c, 'r>,
+        index: usize,
+        value: Value<'c, 'r>,
+        l: Location<'c>,
+    ) -> R<()> {
+        let cell = self.globals_cell(fcx.block, l)?;
+        let arr =
+            self.build(fcx.block, "frk_mem.box_get", &[cell], &[self.pack_ty()], &[], l)?;
+        let i = self.const_i64(fcx.block, index as i64, l)?;
+        fcx.block.append_operation(
+            OperationBuilder::new("frk_mem.array_set", l)
+                .add_operands(&[arr, i, value])
+                .build()
+                .map_err(|e| e.to_string())?,
+        );
         Ok(())
     }
 
@@ -595,7 +736,16 @@ impl<'c> Emitter<'c> {
                 Some(Local::Tok(_)) => {
                     Err(format!("escape continuation `{name}` used as a value (fenced, v0)"))
                 }
-                None => Err(format!("unbound variable `{name}` (procedures-as-values are fenced in v0)")),
+                None => {
+                    // Locals shadow globals; top-level value defines
+                    // late-bind at every read (D-081.1).
+                    if let Some(index) = self.globals.get(name).copied() {
+                        return Ok(Some(self.global_read(fcx, index, l)?));
+                    }
+                    Err(format!(
+                        "unbound variable `{name}` (procedures-as-values are fenced in v0)"
+                    ))
+                }
             },
             Expr::If(c, t, e, _) => self.emit_if_value(fcx, c, t, e, l),
             Expr::Begin(exprs, _) => self.emit_seq_value(fcx, exprs),
@@ -874,6 +1024,12 @@ impl<'c> Emitter<'c> {
                 Some(v) => v,
                 None => return Ok(None),
             };
+            return self.emit_apply_dyn(fcx, callee, args, l);
+        }
+        // Global-valued operator (D-081.1): read the slot, apply as a
+        // fun dyn — (define p (make-parameter …)) then (p) rides this.
+        if let Some(index) = self.globals.get(op).copied() {
+            let callee = self.global_read(fcx, index, l)?;
             return self.emit_apply_dyn(fcx, callee, args, l);
         }
         Err(format!("unbound operator `{op}`"))
