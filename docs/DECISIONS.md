@@ -193,6 +193,37 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-080 [m32/review] The M32 async diff was ADVERSARIALLY REVIEWED
+  (four dimension reviewers, each finding verified by a refutation
+  agent) and five confirmed defects the green suite could not see
+  were fixed in the same milestone — recorded so the fences read as
+  intent, not patch: (1) interface-typed async parameters refused
+  (an itab is a borrow of the calling frame; a continuation runs
+  after it returns — D-075's borrows-only fence, extended across
+  suspension); (2) throw×async fenced at the WHOLE-PROGRAM level (a
+  throw reaching an async body has JS rejection semantics the
+  runtime does not model; the two TS-3 stages do not compose — the
+  honest scope statement); (3) the microtask queue is a RING BUFFER
+  bounding PENDING (256), and overflow of it OR a subscriber list
+  aborts via frk_rt_async_trap on BOTH twins — the D-049
+  native-unchecked default is unacceptable for INTERNAL arrays the
+  program cannot see, so these carry an explicit deterministic
+  guard (a narrow, named exception to D-049); (4) nested return in
+  an async body fenced; (5) let-await-bindings fenced to const.
+  Also: __ts_drain is a CFG loop (constant stack), arith.remsi
+  gains its interp evaluator. DEFERRED (pre-existing, not M32):
+  the reviewers confirmed a block-scoped `let` inside an `if`
+  overwrites an outer binding for the rest of the function (the
+  emitter's flat env HashMap has no scope save/restore) — a real
+  latent shadowing bug that predates async and needs its own fix;
+  logged as a landmine, corpus stays clear of shadowing until it
+  lands. EXTRACTION: the panel found what ~38k differential
+  programs and 5 architectures could not — every one of the five
+  lives in a shape no golden exercised (interfaces + async, throw +
+  async, >256 lifetime microtasks, nested returns, mutable await
+  binds). Adversarial review of the DIFF is a distinct verifier
+  class from differential testing of the OUTPUT; both are load-
+  bearing.
 - D-078 [m32/mem] GLOBAL CELLS — the named rung lands (module-level
   mutable state; the blocker both scheme's parameterize and TS
   async's microtask queue shared). Surface: `frk_mem.global_decl

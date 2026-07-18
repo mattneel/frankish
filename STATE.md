@@ -1,24 +1,26 @@
 # STATE — frankish live handoff
 
 Updated: 2026-07-03 (M0..M14 sessions)
-Phase: M31 complete (tag m31-done). r7rs v0.3 (D-077): pair
-mutation (boxed cons cells — the honest representation; cyclic
-rings collect), strings (interned bstrs), vectors (TAG_VECTOR = 7,
-the third widening). The M28 field rung consumed by scheme; the
-D-073 multi-slot field fence fell to its second consumer.
-Tree: green — `make test` 54 blocks; diff 113 cases 0 divergent (8
-runners); grid 108/108 × BOTH strategies × 4 triples + s390x.
+Phase: M32 complete (tag m32-done). TS-3 SHIPPED AND FROZEN — async/
+await (D-079) on the global-cells rung (D-078); the tick model was
+adversarially panel-certified against node BEFORE implementation,
+and the async DIFF was adversarially reviewed AFTER (D-080) — five
+real defects the green suite could not see were found and fixed in
+the milestone. Global cells also unblock scheme's parameterize.
+Tree: green — `make test` 55 blocks; diff 118 cases 0 divergent (8
+runners); grid 113/113 × BOTH strategies × 4 triples + s390x.
 
 ## Next action
-M31 closed. The queue:
-1. ts-3b: async/await — the downlevel state-machine transform +
-   microtask drain; node ordering as oracle; TS-3 freezes.
-2. parameterize: r7rs v0.4 — make-parameter/parameterize (global
-   cells rung), guard sugar, plain raise.
-3. tier-2: the stack-switching rung (re-entrant κ / winds) —
-   coroutines; ts-3b generators would also consume it.
-4. ts-4: generics (monomorphized), sealed-world switch, any/
-   gradual boundary as contract ops — frk_contract's second act.
+M32 closed; TS-3 frozen. The queue:
+1. parameterize: r7rs v0.4 — make-parameter/parameterize NOW that
+   the global-cells rung (D-078) exists; guard sugar; plain raise.
+2. tier-2: the stack-switching rung (re-entrant κ / winds) —
+   coroutines; generators (deferred from TS async) consume it.
+3. ts-4: generics (monomorphized), sealed-world switch, any/
+   gradual boundary as contract ops — frk_contract's second act;
+   the D-079 static-await-dispatch soundness note comes due here.
+4. let-scope fix: the pre-existing block-`let`-through-`if`
+   shadowing bug (D-080 deferred) — env scope save/restore.
 
 ## In flight
 Nothing.
@@ -44,6 +46,42 @@ Nothing.
   now and expensive later.
 
 ## Milestone log
+m32-done — Shipped: async/await; TS-3 FREEZES (D-078/D-079/
+D-080). TWO RUNGS. GLOBAL CELLS (D-078): global_decl/global_get —
+an LLVM global slot IS a box (global_get = one addressof, no
+alloc); interp mirrors with lazily-zeroed named cells; the rung
+scheme's parameterize was queued on. ASYNC/AWAIT (D-079): direct
+emission, not the __awaiter port — async bodies split at top-level
+awaits into continuation pack closures (the M29/M30 capture rule
+carries state across awaits in boxes), promises are records, the
+microtask queue is a global-cells FIFO drained after main. THE
+TICK MODEL WAS ADVERSARIALLY PANEL-CERTIFIED against node BEFORE
+implementation (3 skeptics, ~38k randomized differential programs,
+mutation-tested harnesses, zero in-fence divergences) — its five
+hardenings became fences. THE DIFF WAS ADVERSARIALLY REVIEWED
+AFTER (D-080): four dimension reviewers + refutation verifiers
+found five defects invisible to the suite (iface async params;
+throw×async; queue lifetime-overflow writing past the array;
+nested return; let await binds) — ALL FIXED in-milestone: iface
+params + throw×async fenced, the queue is a RING BUFFER with a
+deterministic overflow trap on both twins (frk_rt_async_trap), the
+drain is a CFG loop. Corpus: async_basic/chain/two/state + a
+300-await ring-buffer proof. Suite 55; diff 118/0; grid 113/113.
+
+M32 EXTRACTION: (1) THE TWO-VERIFIER LESSON — a panel certified
+the tick MODEL before code and a panel reviewed the DIFF after,
+and BOTH caught things the 38k-program differential and 5-arch
+grid could not. Differential testing proves the output right on
+the shapes you wrote; adversarial review of the design and the
+diff finds the shapes you didn't. For a milestone with a
+provable-ordering claim and internal invariants, run both. (2)
+INTERNAL arrays are not user arrays — D-049's native-unchecked
+default is right for arrays the programmer indexes, wrong for a
+runtime queue the program can't see; those earn an explicit
+guard. (3) global cells cost almost nothing because an LLVM
+global already IS the box abstraction — the mem dialect's
+box surface absorbed module-level state with two thin ops.
+
 m31-done — Shipped: r7rs v0.3 (D-077) — pair mutation, strings,
 vectors. THE REPRESENTATION FINDING: cons cells were wrap(product)
 BY VALUE — sound while immutable, a LIE the moment set-car!
@@ -929,6 +967,35 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-07-18 (thirty-fourth entry)
+    Milestone/step: M32 complete, tagged m32-done; TS-3 frozen
+    Green? yes — 55 blocks; 118/0 (8 runners); grid 113/113 × 5 × 2
+    Did:
+    - D-078 global cells (decl/get, IRDL/verify/eval/lowering);
+      D-079 async (ts_intrinsics.mlir seed surface, await-split
+      emission, promise records, microtask ring buffer); tick
+      model panel-certified pre-impl; D-080 diff review post-impl,
+      five fixes + regressions; frk_rt_async_trap (both twins);
+      arith.remsi eval; manifest TS-3 FROZEN; book ts3 chapter
+    Next: queue to the user (parameterize / tier-2 / ts-4 / let-scope)
+    Landmines:
+    - the microtask queue is a RING bounding PENDING (256), not
+      lifetime; head/tail are monotonic f64, physical slot =
+      (index mod 256)*2 — do not "simplify" to direct indexing
+    - the emitter recurses one frame per await; the frnksh binary
+      (8MB main stack) handles corpus depths, but the cargo corpus
+      TESTS run on a 64MB thread (with_big_stack) because the test
+      harness default is 2MB — deep async needs the headroom
+    - throw and async DO NOT COMPOSE (whole-program fence); do not
+      relax it without modelling promise rejection
+    - PRE-EXISTING BUG (D-080 deferred): a block `let` inside an
+      `if` overwrites an outer binding for the rest of the
+      function (flat env HashMap, no scope save/restore) — real,
+      predates async, corpus avoids shadowing until fixed
+    - frk_rt_async_trap is a NAMED exception to D-049 (native
+      unchecked): internal arrays the program can't index get a
+      deterministic guard on both twins
 
     Session end: 2026-07-17 (thirty-third entry)
     Milestone/step: M31 complete, tagged m31-done
