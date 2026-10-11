@@ -39,7 +39,35 @@ canon fence at implementation (Lua spells %.14g — the TS-0 §6
 precedent applies).
 
 ## Status
-v0.3 SHIPPED (M23/D-068): the explist ADJUSTMENT engine — one
+v0.4 SHIPPED (M35/D-084): COROUTINES as the resumable-frame pattern
+— create/resume/yield/status/wrap + type() — with ZERO frk_ctl ops
+anywhere in the lua tree (the manifest's "arrive with frk.ctl" is
+GLOSSED at this version: they arrive with the ctl GUARD DISCIPLINE
+and runtime rows; the kernel re-entrant rung remains fenced,
+D-084.8). Stackful by frame chaining: yield suspends the whole call
+chain — plain helpers, 800 frames of non-tail recursion with
+pending arithmetic, nested coroutines with per-thread resume points
+— via per-function state dispatch + guard-site frame capture over
+the uniform convention; zero stacks switch (stackful side stacks
+and llvm.coro were PRICED AND REJECTED, D-084 preamble). Licensed
+per module (source mentions `coroutine`); the 18 pre-M35 cases stay
+byte-identical, witnessed by the forced-transform gate (whose
+100k-frame leg caught a guarded tail site on day one). TAG_THREAD =
+8 (the fourth D-051 widening; type(co) == "thread"). 16-case
+coroutine corpus vs lua5.1 incl. 100k yield/resume cycles.
+CORPUS LAWS (D-084): body errors keep the deterministic abort
+(resume-as-pcall false+message is fenced until the first
+pcall/error() milestone); yields across intrinsic/metamethod/
+iterator-head boundaries and from the main chunk are deterministic
+traps (lua5.1 refuses the same shapes, catchably — form differs,
+unit-only); no uncaught aborts in corpus; tostring(co) never
+goldened. Named residuals (loud, not silent): yields in and/or
+RHS and repeat/until bodies fail MLIR verification until threaded.
+Still fenced (v0.5+): select(), `...` at top level, string.format,
+rawset/rawget, method declarations/colon calls, goto, weak tables,
+pcall/error.
+
+Previously — v0.3 SHIPPED (M23/D-068): the explist ADJUSTMENT engine — one
 mechanism for varargs (`...` pack-native, prologue copy before the
 D-067 dispose), mid-explist truncation/final expansion, multi-
 expression RHS destructuring, explicit generic-for iterator triples,

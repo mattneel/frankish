@@ -97,8 +97,28 @@ kernel ownership findings (a created-pack borrow-locality gap and an
 unsound sole-use retain elision), both caught as jit-rc segfaults by
 the differential law before any commit.
 
-femto_lua shipped v0.3. Its legacy: the `frk_dyn` fat-value core, `frk_bstr`,
+At v0.4 (M35, D-084) the specimen got **coroutines** — stackful in
+behavior, with zero stacks switched. Real stack switching is
+impossible on this grid (musl-static has no `makecontext`; core wasm
+cannot switch execution stacks), and `llvm.coro`'s opaque frames
+would blind the collector — so yield suspends the whole call chain
+by **frame chaining**: every function in a licensed module carries an
+entry state-dispatch and a guard after each non-tail call whose cold
+path parks the frame as an ordinary closure over `[state, chain-next,
+_G, live boxes…]` — the conventions femto_lua already had (all-boxed
+locals, one uniform signature, callee-owned packs disposed at the
+prologue) turned out to be most of a coroutine frame already. Resume
+rebuilds the chain outermost-in through ordinary calls; one-shot
+consumption means zero frame copying; tail calls never guard, so
+their frames are *correctly absent* — matching Lua's own TCO'd stack.
+The oracle even blessed the boundary: lua5.1 itself refuses yields
+across metamethod/C frames, exactly where our intrinsics sit. The
+kernel's re-entrant rung remains fenced — this is a frontend
+pattern, and the ledger says so out loud.
+
+femto_lua shipped v0.4. Its legacy: the `frk_dyn` fat-value core, `frk_bstr`,
 the table runtime, the real garbage collector (its debugging is [its own
-chapter](../memory/war-stories.md)), and the pack convention — which the
+chapter](../memory/war-stories.md)), the pack convention — which the
 tail-call law would later name as the seed of the uniform-signature
-convention that generalizes native `musttail`.
+convention that generalizes native `musttail` — and now the
+resumable-frame pattern, the shape TS generators will replicate.
