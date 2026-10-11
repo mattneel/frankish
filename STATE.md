@@ -1555,11 +1555,12 @@ rework flag, not a knob.
     differential), `test` blocks + assert.equal (__calque_test_N +
     __calque_test_entry_N wrappers, byte-equal differential, the
     harness's run_test_blocks, the test_blocks corpus case).
-    `[N]T` FIXED ARRAYS, seed slice landed: the type (an integer
+    `[N]T` FIXED ARRAYS, LANDED BOTH SIDES: the type (an integer
     lookahead in the brackets), `!frk_mem.arr<storage(T)>` IR, exactly
     N-element literals at `[N]T` positions (never a persistent vector),
-    and `v[i]` reads (frk_mem.array_get). Probe "15|6"; suite 60; SET
-    byte-neutral. NEXT: calq0's `[N]T` mirror + a corpus case.
+    `v[i]` reads (frk_mem.array_get), calq0 mirrored (ArrT arms +
+    Expr.IndexE + the probes), the `arrays` corpus case + a byte-equal
+    differential. Suite 61; corpus 25 cases 0 red; grid GREEN.
     REMAINING in F33 after that: `@intCast`, `usize` (the full
     integer-type set), `..spread`. Grid GREEN; corpus 24 cases 0 red.
     NOTE for `calque test`: the language side exists; the CLI subcommand
