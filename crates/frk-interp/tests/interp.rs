@@ -417,3 +417,32 @@ fn andi_is_bitwise_and() {
     .unwrap();
     assert_eq!(picked, 2);
 }
+
+#[test]
+fn ori_is_bitwise_or() {
+    // M37: arith.ori joins the registry (the Calque seed's guard
+    // conjunctions). Both widths: i64 for general bit ops and i1, the
+    // seed's actual guard shape.
+    let wide = interpret_i64(
+        r#"func.func @main() -> i64 {
+            %a = arith.constant 6 : i64
+            %b = arith.constant 3 : i64
+            %m = arith.ori %a, %b : i64
+            return %m : i64
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(wide, 7);
+
+    let narrow = interpret_i64(
+        r#"func.func @main() -> i64 {
+            %f = arith.constant false
+            %t = arith.constant true
+            %o = arith.ori %f, %t : i1
+            %z = arith.extui %o : i1 to i64
+            return %z : i64
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(narrow, 1);
+}

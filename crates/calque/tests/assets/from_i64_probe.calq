@@ -1,0 +1,19 @@
+// b0 probe: exact decimal rendering (SPEC 6.8) - the stdlib's
+// fromI64 over the corner vectors. Expected bytes are hand-derived
+// from the SPEC's integer semantics (never blessed from output):
+//   "0 7 1234 -42 9223372036854775807 -9223372036854775808\n"
+pub fn main() i64 {
+    io.print(str.fromI64(0));
+    io.print(" ");
+    io.print(str.fromI64(7));
+    io.print(" ");
+    io.print(str.fromI64(1234));
+    io.print(" ");
+    io.print(str.fromI64(0 - 42));
+    io.print(" ");
+    io.print(str.fromI64(9223372036854775807));
+    io.print(" ");
+    io.print(str.fromI64((0 - 9223372036854775807) - 1));
+    io.print("\n");
+    0
+}

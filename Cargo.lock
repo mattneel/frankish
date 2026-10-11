@@ -52,6 +52,7 @@ version = "0.0.1"
 dependencies = [
  "frk-core",
  "frk-dialects",
+ "frk-front",
  "frk-harness",
  "frk-interp",
  "melior",
