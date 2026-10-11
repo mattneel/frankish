@@ -86,7 +86,13 @@ with the live evidence matrix in `docs/calque/ACCEPTANCE.md`. D-085
 authorizes its scope additions — suspending SPEC §14's LSP/self-hosting/
 local-package/performance/comptime fences FOR CALQUE ONLY — and relaxes
 L5's admission rule for Calque; L1–L3 are unchanged and MORE load-bearing
-(Calque has no upstream oracle). The Calque carve-outs in SPEC §14 are
+(Calque has no upstream oracle). The user's demo playbook
+(`docs/calque-demo-playbook.md`, D-090) and STEERING amendment
+(`docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md`, D-095..D-097: structs
+`%Type{...}`, `calque test`, CON/CTF over one codec foundation) are
+permanent extensions; both, and the goal, are sha-pinned by
+`scripts/calque-check.sh` and edited only deliberately. The Calque
+carve-outs in SPEC §14 are
 the standing authorization, so L9 does not fire on goal-authorized Calque
 work. Milestones: M36 C0 charter → M42 C6 release; C0–C6 remain the
 goal's vocabulary.
