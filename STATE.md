@@ -1451,6 +1451,31 @@ rework flag, not a knob.
     D-092; the gating feature of active_score.calq), then errors
     (try/catch + Option/Result), generics (monomorphized,
     identity_pair.calq), modules + stdlib.
+    CLOSURE DESIGN (settled, ready to implement; verified against the
+    dialect this session): the frk_closure ops are make(env:
+    product) {callee} -> fn, apply(fn, args: product) -> value, and
+    env_load(env: envref) -> value - captures read through env_load
+    plus frk_adt.get per slot. Plan: (1) `fn (x: T, ...) R { ... }`
+    parses to a lambda node + `fn (T, ...) R` as a TYPE (the seed's
+    type tables gain {fnp={...}, fnr=ty}); value_ir =
+    !frk_closure.fn<[params], [ret]>. (2) Emission lifts each lambda
+    to a top-level `__calque_lam_N` (envref-first, same convention):
+    the site builds the capture env (product of the free bindings -
+    consts by VALUE, vars by their BOX, D-092) and `make`s the
+    closure; calls through values are apply(args-product). (3) Free
+    variables: an emission-driven capture barrier - lookup() crossing
+    the barrier records the name (first-encounter order) and returns
+    a proxy binding that reads env_load + adt.get(ordinal); the
+    lifted body emits into a deferred buffer (save/restore the
+    emitter state: out redirect + blocks/cur/terminated/scopes/
+    vtypes/ret/binds; E.pending flushed after each top-level fn).
+    (4) Fences: no recursion through a bound name inside its own
+    literal (a lambda can't reference the const it initializes);
+    fn-typed RECORD storage keeps the direct value_ir (frk_adt
+    products hold any value; the reclf erasure was for NAMED types).
+    Trampoline/TCO through closures stays deferred to the M40
+    performance item (F10's same-signature direct/mutual legs are
+    live; the tco golden covers the direct leg).
     Slice 3c COMPLETE (same session): the self-compilation fixed point
     (calq0 - built by the seed - compiles its own sources
     byte-identically; the self-produced compiler compiles fib equal
