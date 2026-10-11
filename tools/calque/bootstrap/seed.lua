@@ -2935,6 +2935,16 @@ function infer_expr_ty(expr, line, col)
     if b ~= nil then
       return b.ty
     end
+    -- a bare top-level fn name used as a value: its signature
+    local f2 = E.fns[expr.ref.name]
+    if f2 ~= nil and not is_generic_fn(f2) then
+      local ps = {}
+      for i = 1, #f2.params do
+        ps[#ps + 1] = subst_ast(f2.params[i].ty, E.tvars or {})
+      end
+      local rt = subst_ast(f2.ret, E.tvars or {})
+      return { fnp = ps, fnr = rt }
+    end
     return nil
   end
   if expr.ref ~= nil and expr.ref.mod ~= nil then
@@ -3539,6 +3549,22 @@ emit_expr = function(node)
     end
     local b = lookup(node.ref.name)
     if b == nil then
+      local f2 = E.fns[node.ref.name]
+      if f2 ~= nil then
+        if is_generic_fn(f2) then
+          fail(line, col, "a generic fn value needs explicit instantiation (D-113)")
+        end
+        local e0 = fresh()
+        emit(e0 .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
+        local fty = { fnp = {}, fnr = f2.ret }
+        for i = 1, #f2.params do
+          fty.fnp[#fty.fnp + 1] = f2.params[i].ty
+        end
+        local cl = fresh()
+        emit(cl .. " = \"frk_closure.make\"(" .. e0 .. ") {callee = @" .. f2.sym .. "} : (!frk_adt.product<[]>) -> " .. value_ir(fty, line, col))
+        E.vtypes[cl] = fty
+        return cl
+      end
       fail(line, col, "unknown name `" .. node.ref.name .. "`")
     end
     if b.kind == "ssa" then

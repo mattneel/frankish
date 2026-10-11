@@ -1,0 +1,64 @@
+// Option/Result helpers (AC-13.1): opt.unwrapOr/map/isSome/isNone and
+// res.isOk/map/mapError, composed with `try` (mapError adapts the
+// error type so the F9 same-E rule is satisfied).
+// Expected output (hand-derived): "11 99 1 0 3 7 13\n"
+const Er = union(enum) { Small };
+const Big = union(enum) { Code: i64 };
+
+pub fn scale(x: i64) Er!i64 {
+    if x > 0 {
+        return .Ok(x * 2);
+    }
+    return .Err(.Small);
+}
+
+pub fn widen(e: Er) Big {
+    return match e {
+        .Small => Big.Code(0 - 1),
+    };
+}
+
+pub fn scaled(x: i64) Big!i64 {
+    const r: Er!i64 = scale(x);
+    const w: Big!i64 = res.mapError(r, widen);
+    const v = try w;
+    return .Ok(v + 1);
+}
+
+pub fn main() i64 {
+    const a: Big!i64 = scaled(5);
+    const b: Big!i64 = scaled(0);
+    const s1 = match a {
+        .Ok(v) => v,
+        .Err(e) => 0,
+    };
+    const s2 = match b {
+        .Ok(v) => v,
+        .Err(e) => match e {
+            Big.Code(c) => 100 + c,
+        },
+    };
+    const okA = res.isOk(a);
+    const okB = res.isOk(b);
+    const o1: ?i64 = .Some(3);
+    const o2: ?i64 = .None;
+    const u1 = opt.unwrapOr(o1, 7);
+    const u2 = opt.unwrapOr(o2, 7);
+    const om = opt.map(o1, fn (x) { x + 10 });
+    const u3 = opt.unwrapOr(om, 0);
+    io.print(str.fromI64(s1));
+    io.print(" ");
+    io.print(str.fromI64(s2));
+    io.print(" ");
+    if okA { io.print("1"); } else { io.print("0"); }
+    io.print(" ");
+    if okB { io.print("1"); } else { io.print("0"); }
+    io.print(" ");
+    io.print(str.fromI64(u1));
+    io.print(" ");
+    io.print(str.fromI64(u2));
+    io.print(" ");
+    io.print(str.fromI64(u3));
+    io.print("\n");
+    0
+}

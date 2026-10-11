@@ -1,0 +1,46 @@
+// res - Result helpers (AC-13.1), composable with pipelines and with
+// `try`. `E!T` values are structural unions.
+
+pub fn isOk(comptime T: type, comptime E: type, r: E!T) bool {
+    return match r {
+        .Ok(x) => true,
+        .Err(e) => false,
+    };
+}
+
+pub fn unwrapOr(comptime T: type, comptime E: type, r: E!T, d: T) T {
+    return match r {
+        .Ok(x) => x,
+        .Err(e) => d,
+    };
+}
+
+pub fn map(comptime T: type, comptime U: type, comptime E: type, r: E!T, f: fn (T) U) E!U {
+    return match r {
+        .Ok(x) => {
+            const y: U = f(x);
+            const out: E!U = .Ok(y);
+            out
+        },
+        .Err(e) => {
+            const out2: E!U = .Err(e);
+            out2
+        },
+    };
+}
+
+// The adaptation `try`'s same-E rule points at: change the error type
+// by mapping it, keeping the success value.
+pub fn mapError(comptime T: type, comptime E: type, comptime F: type, r: E!T, g: fn (E) F) F!T {
+    return match r {
+        .Ok(x) => {
+            const out: F!T = .Ok(x);
+            out
+        },
+        .Err(e) => {
+            const e2: F = g(e);
+            const out2: F!T = .Err(e2);
+            out2
+        },
+    };
+}

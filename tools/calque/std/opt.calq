@@ -1,0 +1,39 @@
+// opt - Option helpers (AC-13.1), composable with pipelines.
+// `?T` values are structural unions; these adapters take and return
+// them without any declaration.
+
+pub fn isSome(comptime T: type, v: ?T) bool {
+    return match v {
+        .Some(x) => true,
+        .None => false,
+    };
+}
+
+pub fn isNone(comptime T: type, v: ?T) bool {
+    const s: bool = match v {
+        .Some(x) => true,
+        .None => false,
+    };
+    return s == false;
+}
+
+pub fn unwrapOr(comptime T: type, v: ?T, d: T) T {
+    return match v {
+        .Some(x) => x,
+        .None => d,
+    };
+}
+
+pub fn map(comptime T: type, comptime U: type, v: ?T, f: fn (T) U) ?U {
+    return match v {
+        .Some(x) => {
+            const y: U = f(x);
+            const r: ?U = .Some(y);
+            r
+        },
+        .None => {
+            const r2: ?U = .None;
+            r2
+        },
+    };
+}

@@ -2200,6 +2200,26 @@ pub fn infer_bin_ty(mut e: Emitter, b0: Bin, line: i64, col: i64) Ty {
     return lt;
 }
 
+// A bare top-level fn name used as a VALUE: its signature as a fn type.
+pub fn infer_fn_value_ty(mut e: Emitter, nm: Str, line: i64, col: i64) Ty {
+    const f2: Fn = find_fn(e_ast(e), nm);
+    if f2.name == "" {
+        return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
+    }
+    if is_generic_fn(f2) {
+        return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
+    }
+    var ps: Vector(Ty) = vector.new();
+    const n: i64 = vector.len(f2.params);
+    var i: i64 = 0;
+    while i < n {
+        const prm: Param = vector.get(f2.params, i);
+        vector.push(ps, tv_res(e, prm.ty));
+        i = i + 1;
+    }
+    return Ty.FnT(%FnSig{params: ps, ret: tv_res(e, f2.ret)});
+}
+
 pub fn infer_expr_ty(mut e: Emitter, ex: Expr, line: i64, col: i64) Ty {
     return match ex {
         Expr.Int(t0) => Ty.I64,
@@ -2209,7 +2229,7 @@ pub fn infer_expr_ty(mut e: Emitter, ex: Expr, line: i64, col: i64) Ty {
             if str.len(r0.mod) == 0 {
                 const b0: Binding = lookup(e, r0.name);
                 if b0.name == "" {
-                    Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col})
+                    infer_fn_value_ty(e, r0.name, line, col)
                 } else {
                     b0.ty
                 }
@@ -2601,9 +2621,47 @@ pub fn emit_ref(mut e: Emitter, r: Ref, line: i64, col: i64) Str {
     }
     const b: Binding = lookup(e, r.name);
     if b.name == "" {
+        // a bare top-level fn name as a VALUE: a closure over an empty
+        // environment (first-class fn values, SPEC 6.4).
+        const f2: Fn = find_fn(e_ast(e), r.name);
+        if f2.name != "" {
+            if is_generic_fn(f2) {
+                return e_fail_at(e, line, col, "a generic fn value needs explicit instantiation (D-113)");
+            }
+            return emit_fn_value(e, f2);
+        }
         return e_fail_at(e, line, col, str.concat("unknown name `", str.concat(r.name, "`")));
     }
     return read_binding(e, b);
+}
+
+pub fn fn_sig_of(f: Fn) FnSig {
+    var ps: Vector(Ty) = vector.new();
+    const n: i64 = vector.len(f.params);
+    var i: i64 = 0;
+    while i < n {
+        const prm: Param = vector.get(f.params, i);
+        vector.push(ps, prm.ty);
+        i = i + 1;
+    }
+    return %FnSig{params: ps, ret: f.ret};
+}
+
+pub fn emit_fn_value(mut e: Emitter, f: Fn) Str {
+    const a: Ast = e_ast(e);
+    const sig: FnSig = fn_sig_of(f);
+    const e0: Str = fresh(e);
+    emit_line(e, str.concat(e0, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
+    const cl: Str = fresh(e);
+    var l: Str = " = \"frk_closure.make\"(";
+    l = str.concat(l, e0);
+    l = str.concat(l, ") {callee = @");
+    l = str.concat(l, sym_of(f));
+    l = str.concat(l, "} : (!frk_adt.product<[]>) -> ");
+    l = str.concat(l, fn_ir_t(a, sig));
+    emit_line(e, str.concat(cl, l));
+    vset(e, cl, Ty.FnT(sig));
+    return cl;
 }
 
 pub fn emit_bin(mut e: Emitter, b: Bin) Str {
