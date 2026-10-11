@@ -1475,6 +1475,36 @@ pub fn p_make(mut p: P) Expr {
         var no_fields: Vector(MakeField) = vector.new();
         return Expr.Make(%MakeE{ty: name.text, fields: no_fields, has_base: false, base: poison(), line: pct.line, col: pct.col});
     }
+    var has_base: bool = false;
+    var base: Expr = poison();
+    // `%T{..base, f: v}` - the dot-dot SPREAD (F33/the playbook).
+    const d0: Tok = p_peek(p);
+    var is_spread: bool = false;
+    if is_punct_tok(d0) {
+        if d0.text == "." {
+            const d1: Tok = p_tok_at(p, 1);
+            if is_punct_tok(d1) {
+                if d1.text == "." {
+                    is_spread = true;
+                }
+            }
+        }
+    }
+    if is_spread {
+        const _d0: Tok = p_next(p);
+        const _d1: Tok = p_next(p);
+        const bn: Tok = p_peek(p);
+        if is_name_tok(bn) == false {
+            p_fail(p, bn.line, bn.col, "expected a base name after `..`");
+            return bad_here(p);
+        }
+        const _bn: Tok = p_next(p);
+        base = Expr.Ref(%Ref{name: bn.text, mod: ""});
+        has_base = true;
+        if at_punct(p, ",") {
+            const _c2: Tok = p_next(p);
+        }
+    } else {
     // Field list iff NAME followed by `:`/`,`/`}`; otherwise an update
     // base expression followed by `|` (the seed's disambiguation).
     const a: Tok = p_peek(p);
@@ -1493,14 +1523,13 @@ pub fn p_make(mut p: P) Expr {
             }
         }
     }
-    var has_base: bool = false;
-    var base: Expr = poison();
     if is_field_list == false {
         base = parse_expr(p, 1);
         has_base = true;
         if expect_punct(p, "|") == false {
             return bad_here(p);
         }
+    }
     }
     var fields: Vector(MakeField) = vector.new();
     while p_ok(p) {

@@ -2499,6 +2499,35 @@ fn calq0_matches_the_seed_on_fixed_arrays() {
 }
 
 #[test]
+fn seed_struct_spread() {
+    // The `..base` spread in `%T{..base, f: v}` construction: fields
+    // copy semantically, explicit fields override, the base is
+    // untouched.
+    let files = vec![stdlib_str(), unit("sp.calq", None, SP_SRC)];
+    let artifact = seed_translate(&files).expect("the seed emits the spread probe");
+    let outcome = run_artifact(&artifact).expect("the spread probe runs");
+    assert_eq!(outcome.output, "Matt 42 41\n");
+}
+
+const SP_SRC: &str = "const User = struct {\n    name: Str,\n    score: i64,\n    active: bool,\n};\n\npub fn main() i64 {\n    const before = %User{name: \"Matt\", score: 41, active: true};\n    const after = %User{..before, score: 42};\n    io.print(after.name);\n    io.print(\" \");\n    io.print(str.fromI64(after.score));\n    io.print(\" \");\n    io.print(str.fromI64(before.score));\n    io.print(\"\\n\");\n    0\n}\n";
+
+#[test]
+fn calq0_matches_the_seed_on_struct_spread() {
+    let files = vec![stdlib_str(), unit("sp.calq", None, SP_SRC)];
+    let artifact = compile_artifact();
+    let expected = seed_translate(&files).expect("the seed emits the spread probe");
+    let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the spread probe");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (spread): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted spread probe runs");
+    assert_eq!(emitted.output, "Matt 42 41\n");
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the

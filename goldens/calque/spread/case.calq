@@ -1,0 +1,20 @@
+// The `..base` spread in %T{..base, f: v}: fields copy semantically,
+// explicit fields override, the base keeps its values.
+// Expected output (hand-derived): "Matt 42 41\n"
+const User = struct {
+    name: Str,
+    score: i64,
+    active: bool,
+};
+
+pub fn main() i64 {
+    const before = %User{name: "Matt", score: 41, active: true};
+    const after = %User{..before, score: 42};
+    io.print(after.name);
+    io.print(" ");
+    io.print(str.fromI64(after.score));
+    io.print(" ");
+    io.print(str.fromI64(before.score));
+    io.print("\n");
+    0
+}

@@ -860,6 +860,18 @@ function parse_struct_literal_or_map()
   end
   local base = nil
   local fields = {}
+  -- `%T{..base, f: v}` - the dot-dot SPREAD (F33/the playbook): the
+  -- base's fields copy semantically, explicit fields override.
+  local d0 = peek()
+  if d0.k == "punct" and d0.v == "." and P.toks[P.pos + 1] ~= nil and P.toks[P.pos + 1].k == "punct" and P.toks[P.pos + 1].v == "." then
+    next_tok()
+    next_tok()
+    local bn = expect_name()
+    base = { ref = { name = bn.v, mod = nil }, line = bn.line, col = bn.col }
+    if at_punct(",") then
+      next_tok()
+    end
+  else
   -- field list iff NAME followed by `:` / `,` / `}`; otherwise an update base.
   local a = peek()
   local b = P.toks[P.pos + 1]
@@ -870,6 +882,7 @@ function parse_struct_literal_or_map()
   if not is_field_list then
     base = parse_expr(1)
     expect_punct("|")
+  end
   end
   while not at_punct("}") do
     local f = expect_name()
