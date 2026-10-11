@@ -1312,6 +1312,16 @@ end
 function poison(ty, line, col)
   line = line or 1
   col = col or 1
+  if is_vec(ty) then
+    -- Vector-typed terminators (calq0's emitter is the first b0 code
+    -- with checked arithmetic inside Vector-returning functions): an
+    -- empty vector via the mirrored intrinsic - the trap path never
+    -- returns, this only keeps the IR well-formed.
+    local slot, prefix = vec_slot(ty.vec, line, col)
+    local v = fresh()
+    emit(v .. " = func.call @" .. prefix .. "_new() : () -> " .. vec_box_ir(ty.vec, line, col))
+    return v
+  end
   if not is_named(ty) then
     if ty == "i64" then
       local v = fresh()
