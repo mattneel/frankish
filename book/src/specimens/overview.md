@@ -38,7 +38,10 @@ loanword frontend interchange and introduced the first floating-point
 idiom. femto_lua brought the dynamic runtime — fat values, tables,
 garbage collection. r7rs_core brought control effects. A fifth entry,
 `c_oracle`, exists as an *oracle rig* rather than a frontend (D-009): a
-way to check C-level runtime behavior, not a language riding the kernel.
+way to check C-level runtime behavior, not a language riding the kernel. A
+sixth, **calque** (M36+), is the first *original* specimen: no upstream, no
+borrowed oracle — a product language whose canonical compiler is written in
+itself (D-085; its chapter follows).
 
 ## The oracle table
 
@@ -52,10 +55,14 @@ this named binary at this version."
 | TS-0 | monomorphic TypeScript | `node` / V8 | node ≥ 20, TS 6.0.3 | f64 numbers, UTF-16 strings, arrays, the loanword interchange |
 | femto_lua | Lua 5.1 subset | `lua5.1` (PUC-Rio) | 5.1.5 | `frk_dyn`, `frk_bstr`, tables, GC, the pack convention |
 | r7rs_core | R7RS-small core | `chibi-scheme -q` | 0.9.1 | `frk_ctl`, proper tail calls, escape continuations |
+| calque | original (b0 frozen at M36) | none — spec-derived expectations + cross-path/cross-compiler agreement (MANIFEST "Conformance") | — | self-hosting compiler, comptime, generics, DX tooling |
 
 Four languages, four families (statically-typed functional,
 gradually-typed OO, dynamically-typed imperative, and a Lisp), one kernel
-underneath — held at zero divergence across the whole matrix.
+underneath — held at zero divergence across the whole matrix. calque
+joins as the first ORIGINAL specimen (M36+): no upstream to agree with,
+so its verification stack is its own (spec-derived expectations,
+cross-path and cross-compiler agreement; see its MANIFEST).
 
 ## Manifests are the scope
 

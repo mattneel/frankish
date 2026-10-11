@@ -51,6 +51,7 @@
 - [TS-3 — Exceptions and Async on the Effects Lane](specimens/ts3.md)
 - [femto_lua and the Pack Convention](specimens/femto-lua.md)
 - [r7rs_core — Scheme Forces frk.ctl](specimens/r7rs.md)
+- [calque — the Self-Hosted Product Language](specimens/calque.md)
 
 # Provenance
 

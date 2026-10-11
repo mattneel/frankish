@@ -19,7 +19,7 @@ export TABLEGEN_220_PREFIX ?= $(MLIR_PREFIX)
 CARGO ?= cargo
 CARGOFLAGS ?=
 
-.PHONY: setup build test bless diff dashboard grid grid-native canary ci clean book book-serve abi
+.PHONY: setup build test bless diff dashboard grid grid-native canary ci clean book book-serve abi calque-test
 
 # Verify the pinned toolchain is present; names anything missing. Never
 # mutates the system.
@@ -74,6 +74,12 @@ abi:
 # deploys it to GitHub Pages on every master push).
 book:
 	mdbook build book
+
+# Calque workstream charter + acceptance checks (M36/C0; docs/calque/*).
+# From M37 (C1) this target also runs the Calque corpus across runners
+# (goal §19 `make calque-test`), per docs/calque/ACCEPTANCE.md.
+calque-test:
+	sh scripts/calque-check.sh
 
 book-serve:
 	mdbook serve book --open

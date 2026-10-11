@@ -15,6 +15,11 @@ make setup
 make build CARGOFLAGS=--locked
 make test CARGOFLAGS=--locked
 
+# The Calque workstream's gates (M36/C0): charter + acceptance-matrix
+# checks now; the Calque corpus gate joins at M37 (C1) per
+# docs/calque/ACCEPTANCE.md.
+make calque-test
+
 # The AOT native slice (D-042): continuous L3 coverage of the compiled
 # path without the full cross grid (that is `make grid`, and the
 # s390x canary is `make canary`, scheduled nightly).
