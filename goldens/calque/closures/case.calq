@@ -1,0 +1,23 @@
+// SPEC 6.4: fn-typed parameters, closure literals with a const capture
+// (by value), a captureless closure, and a var capture (the box is
+// shared - the closure's mutation is caller-visible).
+// Expected output (hand-derived): "15\n42\n20\n"
+pub fn apply1(f: fn (i64) i64, x: i64) i64 {
+    f(x)
+}
+pub fn main() i64 {
+    const base: i64 = 10;
+    const addBase: fn (i64) i64 = fn (x: i64) i64 { x + base };
+    io.print(str.fromI64(apply1(addBase, 5)));
+    io.print("\n");
+    const noCap: fn (i64) i64 = fn (x: i64) i64 { x * 2 };
+    io.print(str.fromI64(noCap(21)));
+    io.print("\n");
+    var n: i64 = 5;
+    const bump: fn () i64 = fn () i64 { n = n + 1; n };
+    const a: i64 = bump();
+    const b: i64 = bump();
+    io.print(str.fromI64(a + b + n));
+    io.print("\n");
+    0
+}

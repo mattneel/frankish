@@ -35,6 +35,12 @@ pub const Emitter = struct {
     return_types: [Ty] = [Ty.UnitV],
     files: [Str] = ["?"],
     asts: [Ast] = [%Ast{fns: [], types: []}],
+    lifted: [Str] = [],
+    lams: i64 = 0,
+    capbar: i64 = 0,
+    caps: [Binding] = [],
+    cap_origs: [Binding] = [],
+    capenv_ty: Str = "",
 };
 
 pub fn e_init() Emitter {
@@ -223,6 +229,7 @@ pub fn ty_ir(t: Ty) Str {
         Ty.UnitV => "unit",
         Ty.Named(n) => n,
         Ty.Vec(inner) => "vec",
+        Ty.FnT(sig) => "fn",
         Ty.TyBad(b) => "bad",
     };
 }
@@ -247,6 +254,11 @@ pub fn e_fn(mut e: Emitter, f: Fn) {
     e_ret_set(e, f.ret);
     e_file_set(e, f.file);
     e.terminated = false;
+    new_block(e, "");
+    e_fn_core(e, f);
+}
+
+pub fn e_fn_core(mut e: Emitter, f: Fn) {
     scope_push(e);
     var head: Str = str.concat("func.func @", sym_of(f));
     var args: Str = "%env: !frk_closure.envref";
@@ -358,6 +370,181 @@ pub fn e_render(mut e: Emitter) [Str] {
 
 // Emitters a whole module: every function, then the entry wrapper when a
 // `main` exists (the seed's shape).
+// ------------------------------------------------ closures (SPEC 6.4)
+
+pub const LiftS = struct {
+    out: [Str],
+    nv: i64,
+    nb: i64,
+    term: bool,
+    vt: [VTy],
+    rets: [Ty],
+    depth: i64,
+    capbar: i64,
+    caps: [Binding],
+    origs: [Binding],
+};
+
+pub fn lift_snapshot(mut e: Emitter) LiftS {
+    return %LiftS{out: e.output, nv: e.next_value, nb: e.next_block, term: e.terminated, vt: e.value_types, rets: e.return_types, depth: vector.len(e.scopes), capbar: e.capbar, caps: e.caps, origs: e.cap_origs};
+}
+
+pub fn scope_truncate(mut e: Emitter, depth: i64) {
+    if vector.len(e.scopes) > depth {
+        var kept: Vector(Scope) = vector.new();
+        var i: i64 = 0;
+        while i < depth {
+            vector.push(kept, vector.get(e.scopes, i));
+            i = i + 1;
+        }
+        e.scopes = kept;
+    }
+}
+
+pub fn lift_restore(mut e: Emitter, s: LiftS) {
+    e.output = s.out;
+    e.next_value = s.nv;
+    e.next_block = s.nb;
+    e.terminated = s.term;
+    e.value_types = s.vt;
+    e.return_types = s.rets;
+    e.capbar = s.capbar;
+    e.caps = s.caps;
+    e.cap_origs = s.origs;
+    scope_truncate(e, s.depth);
+}
+
+pub fn lift_prepare(mut e: Emitter, depth: i64) {
+    var fresh_out: Vector(Str) = vector.new();
+    e.output = fresh_out;
+    e.next_value = 0;
+    e.next_block = 0;
+    e.terminated = false;
+    var fresh_vt: Vector(VTy) = vector.new();
+    e.value_types = fresh_vt;
+    e.capbar = depth;
+    var fresh_caps: Vector(Binding) = vector.new();
+    e.caps = fresh_caps;
+    var fresh_origs: Vector(Binding) = vector.new();
+    e.cap_origs = fresh_origs;
+}
+
+pub fn lam_sig(l: LamE) FnSig {
+    var ts: Vector(Ty) = vector.new();
+    const n: i64 = vector.len(l.params);
+    var i: i64 = 0;
+    while i < n {
+        const prm: Param = vector.get(l.params, i);
+        vector.push(ts, prm.ty);
+        i = i + 1;
+    }
+    return %FnSig{params: ts, ret: l.ret};
+}
+
+pub fn capenv_ir_e(mut e: Emitter, caps: [Binding]) Str {
+    const a: Ast = e_ast(e);
+    var parts: Str = "";
+    const n: i64 = vector.len(caps);
+    var i: i64 = 0;
+    while i < n {
+        if i > 0 {
+            parts = str.concat(parts, ", ");
+        }
+        const cb: Binding = vector.get(caps, i);
+        if cb.cap_kind == "box" {
+            parts = str.concat(parts, cb.cap_box);
+        } else {
+            parts = str.concat(parts, value_ir_t(a, cb.ty));
+        }
+        i = i + 1;
+    }
+    var l: Str = "!frk_adt.product<[";
+    l = str.concat(l, parts);
+    l = str.concat(l, "]>");
+    return l;
+}
+
+pub fn emit_lifted_lines(mut e: Emitter, lines: [Str]) {
+    const n: i64 = vector.len(lines);
+    var i: i64 = 0;
+    while i < n {
+        vector.push(e.lifted, vector.get(lines, i));
+        i = i + 1;
+    }
+}
+
+pub fn emit_lambda_expr(mut e: Emitter, l: LamE) Str {
+    const n: i64 = e.lams;
+    e.lams = n + 1;
+    const sym: Str = str.concat("__calque_lam_", str.fromI64(n));
+    const fake: Fn = %Fn{name: sym, params: l.params, ret: l.ret, body: l.body, file: e_file(e), ns: ""};
+    const s1: LiftS = lift_snapshot(e);
+    lift_prepare(e, s1.depth);
+    e.capenv_ty = "!frk_adt.product<[]>";
+    e_fn_core(e, fake);
+    const caps1: [Binding] = e.caps;
+    const origs1: [Binding] = e.cap_origs;
+    lift_restore(e, s1);
+    const env_ty: Str = capenv_ir_e(e, caps1);
+    const s2: LiftS = lift_snapshot(e);
+    lift_prepare(e, s2.depth);
+    e.capenv_ty = env_ty;
+    e_fn_core(e, fake);
+    const lifted: [Str] = e.output;
+    lift_restore(e, s2);
+    emit_lifted_lines(e, lifted);
+    const a: Ast = e_ast(e);
+    const e0: Str = fresh(e);
+    emit_line(e, str.concat(e0, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
+    var acc: Str = e0;
+    var acc_ty: Str = "!frk_adt.product<[]>";
+    var fields: Str = "";
+    const nc: i64 = vector.len(caps1);
+    var i: i64 = 0;
+    while i < nc {
+        const cb: Binding = vector.get(caps1, i);
+        const ob: Binding = vector.get(origs1, i);
+        const slot: Str = binding_slot(e, ob);
+        var st: Str = value_ir_t(a, cb.ty);
+        if cb.cap_kind == "box" {
+            st = cb.cap_box;
+        }
+        if i > 0 {
+            fields = str.concat(fields, ", ");
+        }
+        fields = str.concat(fields, st);
+        const nxt: Str = fresh(e);
+        var l2: Str = " = \"frk_adt.product_snoc\"(";
+        l2 = str.concat(l2, acc);
+        l2 = str.concat(l2, ", ");
+        l2 = str.concat(l2, slot);
+        l2 = str.concat(l2, ") : (");
+        l2 = str.concat(l2, acc_ty);
+        l2 = str.concat(l2, ", ");
+        l2 = str.concat(l2, st);
+        l2 = str.concat(l2, ") -> !frk_adt.product<[");
+        l2 = str.concat(l2, fields);
+        l2 = str.concat(l2, "]>");
+        emit_line(e, str.concat(nxt, l2));
+        acc = nxt;
+        acc_ty = str.concat("!frk_adt.product<[", str.concat(fields, "]>"));
+        i = i + 1;
+    }
+    const cl: Str = fresh(e);
+    const sig: FnSig = lam_sig(l);
+    var l3: Str = " = \"frk_closure.make\"(";
+    l3 = str.concat(l3, acc);
+    l3 = str.concat(l3, ") {callee = @");
+    l3 = str.concat(l3, sym);
+    l3 = str.concat(l3, "} : (");
+    l3 = str.concat(l3, acc_ty);
+    l3 = str.concat(l3, ") -> ");
+    l3 = str.concat(l3, fn_ir_t(a, sig));
+    emit_line(e, str.concat(cl, l3));
+    vset(e, cl, Ty.FnT(sig));
+    return cl;
+}
+
 pub fn emit_module(mut e: Emitter, a: Ast) {
     e_ast_set(e, a);
     var has_main: bool = false;
@@ -384,6 +571,15 @@ pub fn emit_module(mut e: Emitter, a: Ast) {
             e_entry(e, "__calque_main");
         }
     }
+    // the lifted closures follow the entry (order is free in MLIR).
+    const nlift: i64 = vector.len(e.lifted);
+    var li: i64 = 0;
+    while li < nlift {
+        vector.push(e.output, vector.get(e.lifted, li));
+        li = li + 1;
+    }
+    var fresh_lift: Vector(Str) = vector.new();
+    e.lifted = fresh_lift;
 }
 
 // ---------------------------------------------------------------- 3b core
@@ -397,6 +593,10 @@ pub const Binding = struct {
     ty: Ty,
     id: Str,
     box: Str,
+    is_cap: bool = false,
+    cap_idx: i64 = 0,
+    cap_kind: Str = "",
+    cap_box: Str = "",
 };
 
 pub const Scope = struct {
@@ -417,6 +617,9 @@ pub fn lookup(mut e: Emitter, name: Str) Binding {
         while j > 0 {
             const b: Binding = vector.get(s.entries, j - 1);
             if b.name == name {
+                if i - 1 < e.capbar {
+                    return record_capture(e, name, b);
+                }
                 return b;
             }
             j = j - 1;
@@ -424,6 +627,28 @@ pub fn lookup(mut e: Emitter, name: Str) Binding {
         i = i - 1;
     }
     return %Binding{name: "", is_box: false, ty: Ty.UnitV, id: "", box: ""};
+}
+
+pub fn record_capture(mut e: Emitter, name: Str, b: Binding) Binding {
+    const caps: Vector(Binding) = e.caps;
+    const n: i64 = vector.len(caps);
+    var i: i64 = 0;
+    while i < n {
+        const cb: Binding = vector.get(caps, i);
+        if cb.name == name {
+            return cb;
+        }
+        i = i + 1;
+    }
+    var ck: Str = "ssa";
+    if b.is_box {
+        ck = "box";
+    }
+    const bx: Str = box_ir_t(e_ast(e), b.ty);
+    const proxy: Binding = %Binding{name: name, is_box: true, ty: b.ty, id: "", box: bx, is_cap: true, cap_idx: n, cap_kind: ck, cap_box: bx};
+    vector.push(caps, proxy);
+    vector.push(e.cap_origs, b);
+    return proxy;
 }
 
 pub fn declare(mut e: Emitter, b: Binding) {
@@ -477,6 +702,7 @@ pub fn ir_ty(t: Ty) Str {
         Ty.UnitV => "",
         Ty.Named(n) => n,
         Ty.Vec(inner) => "vec",
+        Ty.FnT(sig) => "fn",
         Ty.TyBad(b) => "bad",
     };
 }
@@ -487,6 +713,7 @@ pub fn storage_ir_t(a: Ast, t: Ty) Str {
     return match t {
         Ty.Named(n) => "!frk_mem.recref",
         Ty.Vec(inner) => value_ir_t(a, t),
+        Ty.FnT(sig) => fn_ir_t(a, sig),
         _ => ir_ty(t),
     };
 }
@@ -495,8 +722,28 @@ pub fn value_ir_t(a: Ast, t: Ty) Str {
     return match t {
         Ty.Named(n) => named_value_ir(a, n),
         Ty.Vec(inner) => vec_box(a, inner),
+        Ty.FnT(sig) => fn_ir_t(a, sig),
         _ => ir_ty(t),
     };
+}
+
+pub fn fn_ir_t(a: Ast, sig: FnSig) Str {
+    var ps: Str = "";
+    const n: i64 = vector.len(sig.params);
+    var i: i64 = 0;
+    while i < n {
+        if i > 0 {
+            ps = str.concat(ps, ", ");
+        }
+        ps = str.concat(ps, value_ir_t(a, vector.get(sig.params, i)));
+        i = i + 1;
+    }
+    var l: Str = "!frk_closure.fn<[";
+    l = str.concat(l, ps);
+    l = str.concat(l, "], [");
+    l = str.concat(l, value_ir_t(a, sig.ret));
+    l = str.concat(l, "]>");
+    return l;
 }
 
 pub fn named_value_ir(a: Ast, n: Str) Str {
@@ -1001,7 +1248,48 @@ pub fn emit_cmp(mut e: Emitter, op: Str, a: Str, b: Str, line: i64, col: i64) St
 }
 
 // ---------------------------------------------------------------- reads
+pub fn cap_slot(mut e: Emitter, b: Binding) Str {
+    const slot: Str = fresh(e);
+    var st: Str = value_ir_t(e_ast(e), b.ty);
+    if b.cap_kind == "box" {
+        st = b.cap_box;
+    }
+    var l: Str = " = \"frk_closure.env_load\"(%env) {index = ";
+    l = str.concat(l, str.fromI64(b.cap_idx));
+    l = str.concat(l, " : i64, env = ");
+    l = str.concat(l, e.capenv_ty);
+    l = str.concat(l, "} : (!frk_closure.envref) -> ");
+    l = str.concat(l, st);
+    emit_line(e, str.concat(slot, l));
+    return slot;
+}
+
+pub fn binding_slot(mut e: Emitter, b: Binding) Str {
+    if b.is_cap {
+        return cap_slot(e, b);
+    }
+    return b.id;
+}
+
 pub fn read_binding(mut e: Emitter, b: Binding) Str {
+    if b.is_cap {
+        const slot: Str = cap_slot(e, b);
+        if b.cap_kind == "box" {
+            const v0: Str = fresh(e);
+            const a0: Ast = e_ast(e);
+            var l0: Str = " = \"frk_mem.box_get\"(";
+            l0 = str.concat(l0, slot);
+            l0 = str.concat(l0, ") : (");
+            l0 = str.concat(l0, b.cap_box);
+            l0 = str.concat(l0, ") -> ");
+            l0 = str.concat(l0, value_ir_t(a0, b.ty));
+            emit_line(e, str.concat(v0, l0));
+            vset(e, v0, b.ty);
+            return v0;
+        }
+        vset(e, slot, b.ty);
+        return slot;
+    }
     if b.is_box == false {
         vset(e, b.id, b.ty);
         return b.id;
@@ -1045,8 +1333,94 @@ pub fn find_fn(a: Ast, sym: Str) Fn {
     return poison_fn();
 }
 
+pub fn emit_apply(mut e: Emitter, cb: Binding, args: Vector(Expr), line: i64, col: i64) Str {
+    var sig: FnSig = %FnSig{params: empty_ty_vec(), ret: Ty.UnitV};
+    var found: bool = false;
+    const bty2: Ty = cb.ty;
+    match bty2 {
+        Ty.FnT(s2) => { sig = s2; found = true; },
+        _ => {},
+    };
+    if found == false {
+        return e_fail_at(e, line, col, "internal: apply on a non-fn binding");
+    }
+    const fv: Str = read_binding(e, cb);
+    const na: i64 = vector.len(args);
+    if na != vector.len(sig.params) {
+        return e_fail_at(e, line, col, "closure arity mismatch");
+    }
+    const a: Ast = e_ast(e);
+    const e0: Str = fresh(e);
+    emit_line(e, str.concat(e0, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
+    var acc: Str = e0;
+    var acc_ty: Str = "!frk_adt.product<[]>";
+    var fields: Str = "";
+    var i: i64 = 0;
+    while i < na {
+        const av: Str = emit_expr(e, vector.get(args, i));
+        const aty: Ty = vget(e, av);
+        if same_ty(aty, vector.get(sig.params, i)) == false {
+            return e_fail_at(e, line, col, "closure argument type mismatch");
+        }
+        const st: Str = value_ir_t(a, aty);
+        if i > 0 {
+            fields = str.concat(fields, ", ");
+        }
+        fields = str.concat(fields, st);
+        const nxt: Str = fresh(e);
+        var l2: Str = " = \"frk_adt.product_snoc\"(";
+        l2 = str.concat(l2, acc);
+        l2 = str.concat(l2, ", ");
+        l2 = str.concat(l2, av);
+        l2 = str.concat(l2, ") : (");
+        l2 = str.concat(l2, acc_ty);
+        l2 = str.concat(l2, ", ");
+        l2 = str.concat(l2, st);
+        l2 = str.concat(l2, ") -> !frk_adt.product<[");
+        l2 = str.concat(l2, fields);
+        l2 = str.concat(l2, "]>");
+        emit_line(e, str.concat(nxt, l2));
+        acc = nxt;
+        acc_ty = str.concat("!frk_adt.product<[", str.concat(fields, "]>"));
+        i = i + 1;
+    }
+    const res: Str = fresh(e);
+    var l3: Str = " = \"frk_closure.apply\"(";
+    l3 = str.concat(l3, fv);
+    l3 = str.concat(l3, ", ");
+    l3 = str.concat(l3, acc);
+    l3 = str.concat(l3, ") : (");
+    l3 = str.concat(l3, fn_ir_t(a, sig));
+    l3 = str.concat(l3, ", ");
+    l3 = str.concat(l3, acc_ty);
+    l3 = str.concat(l3, ") -> ");
+    l3 = str.concat(l3, value_ir_t(a, sig.ret));
+    emit_line(e, str.concat(res, l3));
+    vset(e, res, sig.ret);
+    return res;
+}
+
+pub fn empty_ty_vec() Vector(Ty) {
+    var v: Vector(Ty) = vector.new();
+    return v;
+}
+
 pub fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
     const r: Ref = c.callee;
+    if str.len(r.mod) == 0 {
+        const cb: Binding = lookup(e, r.name);
+        if cb.name != "" {
+            var is_fn_ty: bool = false;
+            const dty: Ty = cb.ty;
+            match dty {
+                Ty.FnT(sig) => { is_fn_ty = true; },
+                _ => {},
+            };
+            if is_fn_ty {
+                return emit_apply(e, cb, c.args, line, col);
+            }
+        }
+    }
     if str.len(r.mod) == 0 {
         if r.name == "__calque_input_count" {
             if vector.len(c.args) != 0 {
@@ -1248,6 +1622,7 @@ pub fn emit_expr(mut e: Emitter, ex: Expr) Str {
         Expr.If(f) => emit_ifx(e, f),
         Expr.Blk(b) => emit_block_expr(e, b),
         Expr.List(l) => e_fail_at(e, 0, 0, "a collection literal needs a [T]/Vector annotation (bind it: `const v: [i64] = [...]`)"),
+        Expr.Lam(l) => emit_lambda_expr(e, l),
         Expr.Bad(b) => e_fail(e, b),
         Expr.Match(m) => emit_match(e, m),
         Expr.Make(m) => emit_make(e, m, m.line, m.col),
@@ -1507,13 +1882,25 @@ pub fn emit_assign(mut e: Emitter, x: AssignS) {
         const _e: Str = e_fail_at(e, 0, 0, str.concat("unknown name `", str.concat(x.name, "` in assignment")));
         return;
     }
-    if b.is_box == false {
+    var assignable: bool = b.is_box;
+    if b.is_cap {
+        if b.cap_kind == "box" {
+            assignable = true;
+        }
+    }
+    if assignable == false {
         const _e2: Str = e_fail_at(e, 0, 0, str.concat("cannot assign to immutable `", str.concat(x.name, "`")));
         return;
     }
+    var bty: Str = b.box;
+    if b.is_cap {
+        bty = b.cap_box;
+    }
+    const bid: Str = binding_slot(e, b);
     const v: Str = emit_expr(e, x.expr);
     const a: Ast = e_ast(e);
-    emit_line(e, str.concat("\"frk_mem.box_set\"(", str.concat(b.id, str.concat(", ", str.concat(v, str.concat(") : (", str.concat(b.box, str.concat(", ", str.concat(value_ir_t(a, b.ty), ") -> ()")))))))));
+
+    emit_line(e, str.concat("\"frk_mem.box_set\"(", str.concat(bid, str.concat(", ", str.concat(v, str.concat(") : (", str.concat(bty, str.concat(", ", str.concat(value_ir_t(a, b.ty), ") -> ()")))))))));
 }
 
 pub fn emit_ret(mut e: Emitter, r: RetS) {
@@ -1650,8 +2037,35 @@ pub fn same_ty(a: Ty, b: Ty) bool {
         Ty.UnitV => ty_is_unit(b),
         Ty.Named(n) => same_named(n, b),
         Ty.Vec(inner) => same_vec(inner, b),
+        Ty.FnT(sig) => same_fnsig(sig, b),
         Ty.TyBad(x) => ty_is_unit(b),
     };
+}
+
+pub fn same_fnsig(sig: FnSig, b: Ty) bool {
+    return match b {
+        Ty.FnT(s2) => same_fnsig2(sig, s2),
+        _ => false,
+    };
+}
+
+pub fn same_fnsig2(a: FnSig, b: FnSig) bool {
+    if vector.len(a.params) != vector.len(b.params) {
+        return false;
+    }
+    if same_ty(a.ret, b.ret) == false {
+        return false;
+    }
+    var ok: bool = true;
+    const n: i64 = vector.len(a.params);
+    var i: i64 = 0;
+    while i < n {
+        if same_ty(vector.get(a.params, i), vector.get(b.params, i)) == false {
+            ok = false;
+        }
+        i = i + 1;
+    }
+    return ok;
 }
 
 pub fn same_named(n: Str, b: Ty) bool {
@@ -2519,7 +2933,13 @@ pub fn emit_fassign(mut e: Emitter, f: FAssS) {
         e_fail_at(e, 0, 0, str.concat("unknown name `", str.concat(f.name, "` in field assignment")));
         return;
     }
-    if b.is_box == false {
+    var fassignable: bool = b.is_box;
+    if b.is_cap {
+        if b.cap_kind == "box" {
+            fassignable = true;
+        }
+    }
+    if fassignable == false {
         e_fail_at(e, 0, 0, str.concat("cannot set a field through immutable `", str.concat(f.name, "` (use a var binding or a mut parameter)")));
         return;
     }
@@ -2544,7 +2964,7 @@ pub fn emit_fassign(mut e: Emitter, f: FAssS) {
     const rec: Str = fresh(e);
     const self_ty: Ty = b.ty;
     var l0: Str = " = \"frk_mem.box_get\"(";
-    l0 = str.concat(l0, b.id);
+    l0 = str.concat(l0, binding_slot(e, b));
     l0 = str.concat(l0, ") : (");
     l0 = str.concat(l0, box_ir_t(a, self_ty));
     l0 = str.concat(l0, ") -> ");

@@ -35,6 +35,9 @@ pub const Expr = union(enum) {
     // A collection literal (D-112): typed ONLY by its target
     // annotation; the bare emitter rejects it.
     List: Vector(Expr),
+    // A closure literal (SPEC 6.4): lifted to a top-level function by
+    // the emitter; the expression evaluates to the closure value.
+    Lam: LamE,
     // Explicit recovery node (D-109): the emitter MUST reject it before
     // execution can treat it as a valid expression. Also carries the
     // "<absent>" marker for optional fields that are read only when
@@ -343,6 +346,51 @@ pub fn pipe_into(mut p: P, piped: Expr, stage: Expr, op_t: Tok) Expr {
     }
 }
 
+// `fn (x: T, ...) R { body }` - a closure literal (SPEC 6.4).
+pub fn p_lambda(mut p: P) Expr {
+    const kw: Tok = p_next(p);
+    if expect_punct(p, "(") == false {
+        return bad(p, kw.line, kw.col, "fn literal needs a parameter list");
+    }
+    var lps: Vector(Param) = vector.new();
+    var lgo: bool = true;
+    while lgo {
+        if p_ok(p) == false {
+            lgo = false;
+        } else {
+            if at_punct(p, ")") {
+                lgo = false;
+            } else {
+                const pn: Tok = p_peek(p);
+                if is_name_tok(pn) == false {
+                    p_fail(p, pn.line, pn.col, "expected a parameter name");
+                    return bad(p, pn.line, pn.col, "lambda");
+                }
+                const _pn: Tok = p_next(p);
+                if expect_punct(p, ":") == false {
+                    return bad(p, pn.line, pn.col, "lambda");
+                }
+                const pty: Ty = p_type(p);
+                vector.push(lps, %Param{name: pn.text, ty: pty, mut: false});
+                if at_punct(p, ",") {
+                    const _c: Tok = p_next(p);
+                } else {
+                    lgo = false;
+                }
+            }
+        }
+    }
+    if expect_punct(p, ")") == false {
+        return bad(p, kw.line, kw.col, "lambda");
+    }
+    var lret: Ty = Ty.UnitV;
+    if at_punct(p, "{") == false {
+        lret = p_type(p);
+    }
+    const lbody: Block = p_block(p);
+    return Expr.Lam(%LamE{params: lps, ret: lret, body: lbody});
+}
+
 pub fn parse_postfix(mut p: P) Expr {
     var e: Expr = parse_primary(p);
     var go: bool = true;
@@ -445,6 +493,9 @@ pub fn parse_primary(mut p: P) Expr {
         if t.text == "match" {
             return p_match(p);
         }
+        if t.text == "fn" {
+            return p_lambda(p);
+        }
         return bad(p, t.line, t.col, str.concat("unexpected keyword `", str.concat(t.text, "`")));
     }
     if is_name_tok(t) {
@@ -533,8 +584,28 @@ pub fn dump(e: Expr) Str {
         Expr.Make(m) => d_make(m),
         Expr.Blk(b) => d_block(b),
         Expr.List(l) => d_list(l),
+        Expr.Lam(l) => d_lam(l),
         Expr.Bad(b) => d_bad(b),
     };
+}
+
+pub fn d_lam(l: LamE) Str {
+    var acc: Str = "(lam [";
+    const n: i64 = vector.len(l.params);
+    var i: i64 = 0;
+    while i < n {
+        if i > 0 {
+            acc = str.concat(acc, " ");
+        }
+        const prm: Param = vector.get(l.params, i);
+        acc = str.concat(acc, str.concat("(", str.concat(prm.name, str.concat(" ", str.concat(d_ty(prm.ty), ")")))));
+        i = i + 1;
+    }
+    acc = str.concat(acc, "] ");
+    acc = str.concat(acc, d_ty(l.ret));
+    acc = str.concat(acc, " ");
+    acc = str.concat(acc, d_block(l.body));
+    return str.concat(acc, ")");
 }
 
 pub fn d_list(items: Vector(Expr)) Str {
@@ -565,6 +636,11 @@ pub fn d_bad(b: BadNode) Str {
 // "absent" parts of optional shapes are flags plus a poison value
 // (b0 has no Option), read only when the flag says present.
 
+pub const FnSig = struct {
+    params: Vector(Ty),
+    ret: Ty,
+};
+
 pub const Ty = union(enum) {
     I64,
     BoolV,
@@ -572,6 +648,9 @@ pub const Ty = union(enum) {
     UnitV,
     Named: Str,
     Vec: Ty,
+    // A first-class function type (SPEC 6.4): value_ir is
+    // !frk_closure.fn<[params], [ret]>.
+    FnT: FnSig,
     // Explicit recovery (D-109): never a valid type; the State holds
     // the real message ("<absent>" marks flag-guarded placeholders).
     TyBad: BadNode,
@@ -670,6 +749,12 @@ pub const Stmt = union(enum) {
     Destr: DestrS,
     Expr: ExprS,
     FAssign: FAssS,
+};
+
+pub const LamE = struct {
+    params: Vector(Param),
+    ret: Ty,
+    body: Block,
 };
 
 pub const FAssS = struct {
@@ -800,6 +885,36 @@ pub fn p_type(mut p: P) Ty {
         if t.text == "bool" {
             const _t: Tok = p_next(p);
             return Ty.BoolV;
+        }
+        if t.text == "fn" {
+            const _kw: Tok = p_next(p);
+            if expect_punct(p, "(") == false {
+                return bad_ty(p, t.line, t.col, "invalid type");
+            }
+            var ps: Vector(Ty) = vector.new();
+            var pgo: bool = true;
+            while pgo {
+                if p_ok(p) == false {
+                    pgo = false;
+                } else {
+                    if at_punct(p, ")") {
+                        pgo = false;
+                    } else {
+                        const pt: Ty = p_type(p);
+                        vector.push(ps, pt);
+                        if at_punct(p, ",") {
+                            const _c: Tok = p_next(p);
+                        } else {
+                            pgo = false;
+                        }
+                    }
+                }
+            }
+            if expect_punct(p, ")") == false {
+                return bad_ty(p, t.line, t.col, "invalid type");
+            }
+            const rty: Ty = p_type(p);
+            return Ty.FnT(%FnSig{params: ps, ret: rty});
         }
         p_fail(p, t.line, t.col, str.concat("unsupported type keyword `", str.concat(t.text, "`")));
         return bad_ty(p, t.line, t.col, "invalid type");
@@ -1600,8 +1715,25 @@ pub fn d_ty(t: Ty) Str {
         Ty.UnitV => "(ty unit)",
         Ty.Named(n) => str.concat("(ty ", str.concat(n, ")")),
         Ty.Vec(inner) => str.concat("(ty vec ", str.concat(d_ty(inner), ")")),
+        Ty.FnT(sig) => d_fnsig(sig),
         Ty.TyBad(b) => d_bad(b),
     };
+}
+
+pub fn d_fnsig(sig: FnSig) Str {
+    var acc: Str = "(ty fn [";
+    const n: i64 = vector.len(sig.params);
+    var i: i64 = 0;
+    while i < n {
+        if i > 0 {
+            acc = str.concat(acc, " ");
+        }
+        acc = str.concat(acc, d_ty(vector.get(sig.params, i)));
+        i = i + 1;
+    }
+    acc = str.concat(acc, "] ");
+    acc = str.concat(acc, d_ty(sig.ret));
+    return str.concat(acc, ")");
 }
 
 pub fn d_lit(l: PLit) Str {

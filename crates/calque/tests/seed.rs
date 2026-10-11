@@ -1395,6 +1395,39 @@ pub fn main() i64 {
 }
 
 #[test]
+fn calq0_matches_the_seed_on_closures() {
+    // SPEC 6.4 through the canonical compiler: fn types, the lambda
+    // lift with capture envs (const by value, var by box), and apply -
+    // byte-equal to the seed, then executed.
+    let artifact = compile_artifact();
+    let cl = "pub fn apply1(f: fn (i64) i64, x: i64) i64 {
+    f(x)
+}
+pub fn main() i64 {
+    const base: i64 = 10;
+    const addBase: fn (i64) i64 = fn (x: i64) i64 { x + base };
+    io.print(str.fromI64(apply1(addBase, 5)));
+    io.print(\"\\n\");
+    const noCap: fn (i64) i64 = fn (x: i64) i64 { x * 2 };
+    io.print(str.fromI64(noCap(21)));
+    io.print(\"\\n\");
+    0
+}
+";
+    let files = vec![stdlib_str(), unit("cl.calq", None, cl)];
+    let expected = seed_translate(&files).expect("the seed emits the closure probe");
+    let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the closure probe");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (closures): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted probe runs");
+    assert_eq!(emitted.output, "15\n42\n");
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the
