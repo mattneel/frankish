@@ -1447,10 +1447,23 @@ rework flag, not a knob.
     lowering unconverted and mlir-opt rejects it), the latched-error
     guard, a 12th golden (pipeline/), and two new differentials.
     Suite: 37 passed; make calque-test green.
-    NEXT C2 ITEMS: closures (fn expressions, capture-by-binding per
-    D-092; the gating feature of active_score.calq), then errors
-    (try/catch + Option/Result), generics (monomorphized,
-    identity_pair.calq), modules + stdlib.
+    NEXT C2 ITEMS: errors (try/catch + Option/Result), generics
+    (monomorphized, identity_pair.calq), seq + modules + stdlib,
+    then active_score.calq (its pipeline+closure core now exists;
+    it waits on seq.map/filter/fold).
+    C2 increment 2 LANDED (de61ea8/11c76c8): CLOSURES (SPEC 6.4) in
+    both compilers - fn types, `fn (x: T) R {...}` literals lifted to
+    __calque_lam_N (envref-first), capture envs as products (consts by
+    value, vars by box - D-092 shared mutation), env_load {index, env}
+    reads, make/apply through fn-typed bindings, the two-pass
+    discovery/real lift. Verified: both closure differentials
+    byte-equal + running; the 13th golden (const capture, captureless,
+    var-box mutation 6+7+7=20) green interp/jit/jit-rc/AOT; suite 38.
+    Iteration speed now: the lua5.1 seed harness (/tmp/seedrun_full.lua;
+    the seed + a unit table) surfaces seed errors in 0.1s with the
+    message visible - rebuild it with the python snippet from the C2
+    session; `break` joins and/or on the seed CANNOT-EMIT list (the
+    sources use go-flag loops).
     CLOSURE DESIGN (settled, ready to implement; verified against the
     dialect this session): the frk_closure ops are make(env:
     product) {callee} -> fn, apply(fn, args: product) -> value, and
