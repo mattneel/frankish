@@ -1538,11 +1538,21 @@ rework flag, not a knob.
     mutated-in-place cell; the missing restores emitted env_loads
     against empty envs and mis-typed traps). Suite 53; calque-check
     ok (34/248); corpus 20 cases 0 red; grid GREEN.
-    REMAINING in AC-8.3: zip (needs tuples, F33's own C2 row).
-    NEXT: the F33 C2 batch (multiline strings, `_` separators,
-    `@intCast`, `usize`, `[N]T`, tuples, `[...]` literals, `..spread`,
-    `test` blocks) or the compiler-side module/stdlib work per the
-    goal; keep the corpus growing with each surface.
+    TUPLES LANDED BOTH SIDES + seq.zip (commits on top): D-114's
+    surface (F25's M38 freeze) - `(T1, T2)` types, `(a, b)` literals,
+    `t.0`/`t.1`, `const/var (x, y) = t` destructuring; structural
+    products; calq0 mirrored incl. the probe-side pipe typing and the
+    BUILTIN-namespace result types (str/io/vector have no AST fns).
+    Fixes the zip forced: tv_res/subst_ty_list's Tup arms (unsubstituted
+    instance tuples emitted recref slots), emit_tuple_e's product_new
+    ordering (a byte divergence), the seed's host-builtin avoidance
+    (no tonumber/string.byte/table.concat under the verified lua VM), and
+    the corpus case's single-shot re-consumption. Corpus: 22 cases incl.
+    tuples + seq_zip (byte-diff 0) - AC-8.3's list is COMPLETE.
+    Suite 55 passed; grid GREEN 22/22 x BOTH strategies.
+    NEXT: the rest of F33's C2 batch (multiline strings, `_` separators,
+    `@intCast`, `usize`, `[N]T`, `[...]` literals, `..spread`, `test`
+    blocks) or the compiler-side module work; keep the corpus growing.
     CLOSURE DESIGN (settled, ready to implement; verified against the
     dialect this session): the frk_closure ops are make(env:
     product) {callee} -> fn, apply(fn, args: product) -> value, and
