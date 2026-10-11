@@ -37,24 +37,40 @@ pub const Tok = struct {
     col: i64,
 };
 
+// The shared success/failure contract (D-109): one explicit state for
+// the lexer and the parser; `Fail` carries structured fields, and
+// RENDERING lives at the presentation boundary (report.calq, the
+// drivers) - nothing formats "error line:col msg" at a failure site.
+pub const Fail = struct {
+    msg: Str,
+    line: i64,
+    col: i64,
+};
+
+pub const State = union(enum) {
+    Ok,
+    Failed: Fail,
+};
+
+pub fn state_ok(s: State) bool {
+    return match s {
+        State.Ok => true,
+        State.Failed(f) => false,
+    };
+}
+
 // The mutable-by-rebuild lexer state; `ok=false` + msg/err carry a
 // lexical error. i == n stops the driver loop.
 pub const Scan = struct {
     i: i64,
     line: i64,
     col: i64,
-    ok: bool,
-    msg: Str,
-    err_line: i64,
-    err_col: i64,
+    state: State,
 };
 
 pub const Lexed = struct {
     toks: Vector(Tok),
-    ok: bool,
-    msg: Str,
-    err_line: i64,
-    err_col: i64,
+    state: State,
 };
 
 pub fn in_set(set: Str, c: Str) bool {
@@ -180,13 +196,13 @@ pub fn mk_tok(kind: Kind, text: Str, line: i64, col: i64) Tok {
 
 // Moves the scan to (i, line, col), preserving error state.
 pub fn move(st: Scan, i: i64, line: i64, col: i64) Scan {
-    return %Scan{i, line, col, ok: st.ok, msg: st.msg, err_line: st.err_line, err_col: st.err_col};
+    return %Scan{i, line, col, state: st.state};
 }
 
 // Ends the scan at position n with an error (the driver loop stops
 // because i == n).
 pub fn err_at(st: Scan, n: i64, msg: Str, line: i64, col: i64) Scan {
-    return %Scan{i: n, line: st.line, col: st.col, ok: false, msg: msg, err_line: line, err_col: col};
+    return %Scan{i: n, line: st.line, col: st.col, state: State.Failed(%Fail{msg: msg, line: line, col: col})};
 }
 
 pub fn lex_str(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
@@ -444,15 +460,15 @@ pub fn step(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
 pub fn lex(src: Str) Lexed {
     var toks: Vector(Tok) = vector.new();
     const n: i64 = str.len(src);
-    var st: Scan = %Scan{i: 0, line: 1, col: 1, ok: true, msg: "", err_line: 0, err_col: 0};
+    var st: Scan = %Scan{i: 0, line: 1, col: 1, state: State.Ok};
     while st.i < n {
         st = step(src, n, toks, st);
     }
-    if st.ok == false {
-        return %Lexed{toks: toks, ok: false, msg: st.msg, err_line: st.err_line, err_col: st.err_col};
+    if state_ok(st.state) == false {
+        return %Lexed{toks: toks, state: st.state};
     }
     vector.push(toks, mk_tok(Kind.Eof, "", st.line, st.col));
-    return %Lexed{toks: toks, ok: true, msg: "", err_line: 0, err_col: 0};
+    return %Lexed{toks: toks, state: State.Ok};
 }
 
 pub fn kind_name(k: Kind) Str {

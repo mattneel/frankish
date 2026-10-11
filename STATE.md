@@ -1333,7 +1333,58 @@ rework flag, not a knob.
       with doubling growth (4) + `ult` bounds traps; `vector.new()`
       instantiated by the binding ANNOTATION (syntax-directed);
       named slots marshalled via wrap_store/unwrap_load (recref)
-    Next: calq0 slice 3 — the EMITTER (AST -> kernel IR) in
+    - calq0 slice 3a (WRITTEN, verification pending the warmed suite):
+      tools/calque/compiler/emit.calq (the emission core: artifact
+      header, blocks/labels, the D-092 wrapper, literals, the closed
+      MLIR escape set, and rejection of Recovery nodes - e_bad records
+      State and yields "", so nothing Bad ever prints) +
+      compile.calq (the lex+parse+emit driver). The first test pins
+      calq0's emission BYTE-EQUAL to the SEED's for `pub fn main() i64
+      { 0 }` / `{ 42 }` (the differential from day one) and then RUNS
+      the emitted artifact.
+    - FIFTH seed finding (calq0-forced): poison() had no vector-typed
+      branch, so ANY checked `+` inside a Vector-returning function
+      failed translation ("no poison for <vec>") - emit.calq's
+      e_render was the first such code; fixed with the mirrored
+      __calque_vector_*_new trap terminator.
+    - EMIITER LANDMINES (recorded): the seed's b0 lacks CHAINED field
+      access (`a.b.c` = "chained module paths" - bind an intermediate
+      instead; nested field access is C2's field-access work) and
+      `Vector(bool)` is not an admitted slot (use an i64 cell);
+      single-argument str.concat is invalid (exactly two).
+    - CORPUS DESIGN NOTE (slice e): the harness has Calque's rt rows
+      but no calque CASE KIND yet; the corpus runner must NOT live in
+      frk-harness (frk-harness cannot depend on calque - cycle). The
+      plan: a `calq` case kind + runner in the CALQUE crate, registered
+      by the DRIVER SHELL (frnksh deps both; it already owns the
+      runner list assembly). Corpus shape per BOOTSTRAP 3.7/4: each
+      case is a `.calq` unit; the runner compiles it with the SEED
+      (reference behavior) and with calq0, then compares canonical
+      ARTIFACTS and canonical DIAGNOSTICS; the emitted artifact also
+      runs under the reference interpreter.
+    - DEV LOOP FIXED (the session's biggest lever): the seed now
+      translates through the JIT path (`frk_harness::runner::jit_run_text`,
+      extracted from the JitRunner; the Lua frontend's main carries
+      emit_c_interface) - ~11 s per set vs 15+ MINUTES under the
+      reference interpreter; cold warms total ~12 s for all four sets,
+      cached hits are microseconds. The suite: 24 passed in 10.3 s.
+      `seed_translate` (interp) stays for seed-FAILURE tests (the JIT
+      binds the trap REAL = abort) and for the ignored L3 differential
+      `verify_seed_translation_runners` (interp == jit byte-exact).
+      Bench evidence: translation is LINEAR in input bytes (~3.5 ms/B
+      under the interp; no quadratic table idioms - the `#`-counter
+      refactor hypothesis died on the data).
+    - calq0 slice 3a VERIFIED: calq0's emission for `pub fn main()
+      i64 { 0 }` is BYTE-IDENTICAL to the seed's (the differential
+      from day one: `calq0_emits_the_seed_shape`), the emitted
+      artifact then RUNS under the reference interpreter, and the 42
+      case flows through. Emitter structure: `Emit.out` carries final
+      lines (emit_line indents, emit_top does not), `sym_of` mangles
+      main -> __calque_main, e_render returns `out`.
+    Next: calq0 slice 3b — statement/call/operator/if/match/record
+    emission (one differential test per construct against the seed),
+    then slice 3c: calq0 compiling ITSELF through the chain. The full
+    EMITTER (AST -> kernel IR) in
     tools/calque/compiler/emit.calq, mirroring the seed's emission
     rules (checked arithmetic with CQ traps, the D-092 closure
     convention, recref erasure, tag-dispatch matches); then the

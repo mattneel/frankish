@@ -1,0 +1,37 @@
+// calq0 slice-2a driver (expression mode; slice 2b's AST driver is
+// parsedump.calq): lex + parse input unit 0 as one EXPRESSION
+// and dump the AST (statements/declarations land in slice 2b, at which
+// point this driver grows into the real compiler main).
+pub fn main() i64 {
+    const count: i64 = __calque_input_count();
+    if count < 1 {
+        io.print("error 1:1 no input unit\n");
+        return 1;
+    }
+    const src: Str = __calque_input(0);
+    const lx: Lexed = lex(src);
+    if state_ok(lx.state) == false {
+        io.print(fail_text(state_fail(lx.state)));
+        io.print("\n");
+        return 1;
+    }
+    const p: P = p_new(lx.toks);
+    const e: Expr = parse_expr(p, 4);
+    if p_ok(p) == false {
+        io.print(fail_text(state_fail(p_state(p))));
+        io.print("\n");
+        return 1;
+    }
+    const t: Tok = p_peek(p);
+    if is_eof_tok(t) == false {
+        io.print("error ");
+        io.print(str.fromI64(t.line));
+        io.print(":");
+        io.print(str.fromI64(t.col));
+        io.print(" trailing tokens after the expression\n");
+        return 1;
+    }
+    io.print(dump(e));
+    io.print("\n");
+    return 0;
+}

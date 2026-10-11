@@ -1,0 +1,286 @@
+// calq0 slice 3a - the EMITTER core: AST -> kernel-IR artifact text,
+// mirroring the seed's emission rules (D-092 closure convention, the
+// artifact header, the entry wrapper). State is vector cells (the
+// recorded D-109 exception: b0 has no reference parameters). The
+// emitter REJECTS recovery nodes (Expr.Bad, D-109): e_bad records the
+// failure in State and yields "" - the driver bails before printing,
+// so nothing shaped like a valid expression ever reaches execution.
+//
+// Slice 3a covers: the module header + main wrapper, integer/bool/Str
+// literals, and function bodies whose only content is the return
+// expression (extended by the following slices: statements, calls,
+// checked arithmetic, matches, records - one proving test each,
+// differential against the SEED's emission for the same program).
+
+pub const Blk = struct {
+    label: Str,
+    lines: Vector(Str),
+};
+
+pub const Emit = struct {
+    out: Vector(Str),
+    tmp: Vector(i64),
+    blk: Vector(i64),
+    blocks: Vector(Blk),
+    cur: Vector(i64),
+    terminated: Vector(i64), // the cell exception: 0/1 flag (no Vector(bool) slot)
+    state: Vector(State),
+};
+
+pub fn e_init() Emit {
+    var tmp: Vector(i64) = vector.new();
+    vector.push(tmp, 0);
+    var blk: Vector(i64) = vector.new();
+    vector.push(blk, 0);
+    var blocks: Vector(Blk) = vector.new();
+    var lines: Vector(Str) = vector.new();
+    vector.push(blocks, %Blk{label: "", lines: lines});
+    var cur: Vector(i64) = vector.new();
+    vector.push(cur, 0);
+    var term: Vector(i64) = vector.new();
+    vector.push(term, 0);
+    var st: Vector(State) = vector.new();
+    vector.push(st, State.Ok);
+    var out: Vector(Str) = vector.new();
+    vector.push(out, "// calque-artifact v0");
+    return %Emit{out: out, tmp: tmp, blk: blk, blocks: blocks, cur: cur, terminated: term, state: st};
+}
+
+pub fn e_ok(e: Emit) bool {
+    return state_ok(vector.get(e.state, 0));
+}
+
+pub fn e_state(e: Emit) State {
+    return vector.get(e.state, 0);
+}
+
+pub fn e_fail(e: Emit, b: BadNode) Str {
+    vector.set(e.state, 0, State.Failed(%Fail{msg: b.msg, line: b.line, col: b.col}));
+    return "";
+}
+
+pub fn e_fail_at(e: Emit, line: i64, col: i64, msg: Str) Str {
+    vector.set(e.state, 0, State.Failed(%Fail{msg: msg, line: line, col: col}));
+    return "";
+}
+
+pub fn fresh(e: Emit) Str {
+    const n: i64 = vector.get(e.tmp, 0) + 1;
+    vector.set(e.tmp, 0, n);
+    return str.concat("%t", str.fromI64(n));
+}
+
+pub fn fresh_label(e: Emit) Str {
+    const n: i64 = vector.get(e.blk, 0) + 1;
+    vector.set(e.blk, 0, n);
+    return str.concat("b", str.fromI64(n));
+}
+
+pub fn cur_block(e: Emit) Vector(Str) {
+    const i: i64 = vector.get(e.cur, 0);
+    const b: Blk = vector.get(e.blocks, i);
+    return b.lines;
+}
+
+// Indented line (inside a function body / block).
+pub fn emit_line(e: Emit, s: Str) {
+    vector.push(e.out, str.concat("  ", s));
+}
+
+// Top-level line (function headers, closing braces, wrapper lines).
+pub fn emit_top(e: Emit, s: Str) {
+    vector.push(e.out, s);
+}
+
+pub fn new_block(e: Emit, label: Str) {
+    var lines: Vector(Str) = vector.new();
+    vector.push(e.blocks, %Blk{label: label, lines: lines});
+    vector.set(e.cur, 0, vector.len(e.blocks) - 1);
+    vector.set(e.terminated, 0, 0);
+}
+
+pub fn terminate(e: Emit, s: Str) {
+    emit_line(e, s);
+    vector.set(e.terminated, 0, 1);
+}
+
+// The seed's closed MLIR string-escape set: \" \\ then \0A \09 \0D \00.
+pub fn e_esc(s: Str) Str {
+    var out: Str = "";
+    var i: i64 = 0;
+    const n: i64 = str.len(s);
+    while i < n {
+        const c: Str = str.sub(s, i, 1);
+        if c == "\"" {
+            out = str.concat(out, "\\\"");
+        } else {
+            if c == "\\" {
+                out = str.concat(out, "\\\\");
+            } else {
+                if c == "\n" {
+                    out = str.concat(out, "\\0A");
+                } else {
+                    if c == "\t" {
+                        out = str.concat(out, "\\09");
+                    } else {
+                        if c == "\r" {
+                            out = str.concat(out, "\\0D");
+                        } else {
+                            if c == "\0" {
+                                out = str.concat(out, "\\00");
+                            } else {
+                                out = str.concat(out, c);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+pub fn e_int(e: Emit, text: Str) Str {
+    const v: Str = fresh(e);
+    emit_line(e, str.concat(v, str.concat(" = arith.constant ", str.concat(text, " : i64"))));
+    return v;
+}
+
+pub fn e_bool(e: Emit, text: Str) Str {
+    const v: Str = fresh(e);
+    emit_line(e, str.concat(v, str.concat(" = arith.constant ", text)));
+    return v;
+}
+
+pub fn e_str(e: Emit, text: Str) Str {
+    const v: Str = fresh(e);
+    var acc: Str = " = \"frk_bstr.lit\"() {text = \"";
+    acc = str.concat(acc, e_esc(text));
+    acc = str.concat(acc, "\"} : () -> !frk_bstr.str");
+    emit_line(e, str.concat(v, acc));
+    return v;
+}
+
+pub fn emit_expr(e: Emit, ex: Expr) Str {
+    return match ex {
+        Expr.Int(t) => e_int(e, t),
+        Expr.Bool(t) => e_bool(e, t),
+        Expr.Str(t) => e_str(e, t),
+        Expr.Bad(b) => e_fail(e, b),
+        Expr.Ref(r) => e_fail_at(e, 0, 0, "refs land in slice 3b"),
+        Expr.Call(c) => e_fail_at(e, 0, 0, "calls land in slice 3b"),
+        Expr.Bin(b) => e_fail_at(e, 0, 0, "operators land in slice 3b"),
+        Expr.If(f) => e_fail_at(e, 0, 0, "if-expressions land in slice 3b"),
+        Expr.Match(m) => e_fail_at(e, 0, 0, "match lands in slice 3b"),
+        Expr.Make(m) => e_fail_at(e, 0, 0, "records land in slice 3b"),
+        Expr.Blk(b) => e_fail_at(e, 0, 0, "block expressions land in slice 3b"),
+    };
+}
+
+pub fn ty_is_unit(t: Ty) bool {
+    return match t {
+        Ty.UnitV => true,
+        _ => false,
+    };
+}
+
+pub fn ty_is_i64(t: Ty) bool {
+    return match t {
+        Ty.I64 => true,
+        _ => false,
+    };
+}
+
+pub fn ty_ir(t: Ty) Str {
+    return match t {
+        Ty.I64 => "i64",
+        Ty.BoolV => "i1",
+        Ty.StrV => "!frk_bstr.str",
+        Ty.UnitV => "unit",
+        Ty.Named(n) => n,
+        Ty.Vec(inner) => "vec",
+        Ty.TyBad(b) => "bad",
+    };
+}
+
+pub fn sym_of(f: Fn) Str {
+    if f.name == "main" {
+        return "__calque_main";
+    }
+    return f.name;
+}
+
+pub fn e_fn(e: Emit, f: Fn) {
+    var head: Str = str.concat("func.func @", sym_of(f));
+    var args: Str = "%env: !frk_closure.envref";
+    const np: i64 = vector.len(f.params);
+    var i: i64 = 0;
+    while i < np {
+        const p: Param = vector.get(f.params, i);
+        args = str.concat(args, str.concat(", %", str.concat(p.name, str.concat(": ", ty_ir(p.ty)))));
+        i = i + 1;
+    }
+    head = str.concat(head, str.concat("(", str.concat(args, ")")));
+    if ty_is_unit(f.ret) == false {
+        head = str.concat(head, str.concat(" -> ", ty_ir(f.ret)));
+    }
+    head = str.concat(head, " {");
+    emit_top(e, head);
+    const b: Block = f.body;
+    if b.has_tail == false {
+        emit_line(e, "func.return");
+    } else {
+        const v: Str = emit_expr(e, b.tail);
+        if e_ok(e) {
+            terminate(e, str.concat("func.return ", str.concat(v, str.concat(" : ", ty_ir(f.ret)))));
+        }
+    }
+    emit_top(e, "}");
+}
+
+pub fn e_entry(e: Emit, sym: Str) {
+    emit_top(e, "func.func @main() -> i64 attributes {llvm.emit_c_interface} {");
+    emit_top(e, "  %env = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>");
+    emit_top(e, str.concat("  %cl = \"frk_closure.make\"(%env) {callee = @", str.concat(sym, "} : (!frk_adt.product<[]>) -> !frk_closure.fn<[], [i64]>")));
+    emit_top(e, "  %args = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>");
+    emit_top(e, "  %r = \"frk_closure.apply\"(%cl, %args) : (!frk_closure.fn<[], [i64]>, !frk_adt.product<[]>) -> i64");
+    emit_top(e, "  return %r : i64");
+    emit_top(e, "}");
+}
+
+// Serializes the artifact: header, every block (label line when
+// non-empty, lines indented two spaces), newline per line - the
+// driver prints each with io.print.
+pub fn e_render(e: Emit) Vector(Str) {
+    return e.out;
+}
+
+// Emits a whole module: every function, then the entry wrapper when a
+// `main` exists (the seed's shape).
+pub fn emit_module(e: Emit, a: Ast) {
+    var has_main: bool = false;
+    var main_ok: bool = true;
+    const nf: i64 = vector.len(a.fns);
+    var i: i64 = 0;
+    while i < nf {
+        const f: Fn = vector.get(a.fns, i);
+        e_fn(e, f);
+        if f.name == "main" {
+            has_main = true;
+            if ty_is_i64(f.ret) == false {
+                main_ok = false;
+            }
+        }
+        i = i + 1;
+    }
+    if has_main == false {
+        const _x: Str = e_fail_at(e, 1, 1, "the unit has no `pub fn main() i64` entry");
+    } else {
+        if main_ok == false {
+            const _y: Str = e_fail_at(e, 1, 1, "seed v0 requires `fn main()` returning i64");
+        } else {
+            e_entry(e, "__calque_main");
+        }
+    }
+}

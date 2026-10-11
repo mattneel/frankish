@@ -14,13 +14,8 @@ pub fn main() i64 {
     }
     const src: Str = __calque_input(0);
     const out: Lexed = lex(src);
-    if out.ok == false {
-        io.print("error ");
-        io.print(str.fromI64(out.err_line));
-        io.print(":");
-        io.print(str.fromI64(out.err_col));
-        io.print(" ");
-        io.print(out.msg);
+    if state_ok(out.state) == false {
+        io.print(fail_text(state_fail(out.state)));
         io.print("\n");
         return 1;
     }

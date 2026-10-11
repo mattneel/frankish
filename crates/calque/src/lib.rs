@@ -156,7 +156,7 @@ fn lua_literal(text: &str) -> Result<String, String> {
 /// text (BOOTSTRAP §1). Seed failures are PROCESS failures: the seed
 /// prints a `__calque_seed_error:` marker line before trapping, and
 /// that marker — read from the captured output — is the diagnostic.
-pub fn seed_translate(files: &[UnitFile]) -> Result<String, String> {
+fn seed_source(files: &[UnitFile]) -> Result<String, String> {
     let mut source = String::from(include_str!("../../../tools/calque/bootstrap/seed.lua"));
     source.push_str("\nlocal __files = {\n");
     for file in files {
@@ -172,6 +172,35 @@ pub fn seed_translate(files: &[UnitFile]) -> Result<String, String> {
         source.push_str(" },\n");
     }
     source.push_str("}\nrun(__files)\n");
+    Ok(source)
+}
+
+/// The seed translated through the JIT runners - the development
+/// loop's fast path (the reference interpreter is ~1000x slower on the
+/// seed's 50 KB parser input). The artifact is byte-identical to
+/// `seed_translate`'s by the differential law (L3); the ignored
+/// verify test asserts the two agree. Seed FAILURES must use
+/// `seed_translate`: the seed's protocol ends in a runtime trap, which
+/// the JIT binds REAL (stderr + abort), so a broken unit would kill
+/// the process instead of yielding the marker diagnostic.
+pub fn seed_translate_jit(files: &[UnitFile]) -> Result<String, String> {
+    let source = seed_source(files)?;
+    let context = frk_core::context();
+    frk_dialects::register(&context).map_err(|error| format!("register: {error}"))?;
+    let module = frk_front::lua::compile_lua(&context, "calque_seed.lua", &source)
+        .map_err(|error| format!("seed compile: {error}"))?;
+    let text = module.as_operation().to_string();
+    let (output, _code) = frk_harness::runner::jit_run_text(
+        &context,
+        &text,
+        "main",
+        frk_dialects::Strategy::Rc,
+    )?;
+    Ok(output)
+}
+
+pub fn seed_translate(files: &[UnitFile]) -> Result<String, String> {
+    let source = seed_source(files)?;
 
     let context = frk_core::context();
     frk_dialects::register(&context).map_err(|error| format!("register: {error}"))?;

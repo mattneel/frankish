@@ -378,6 +378,55 @@ pub struct JitRunner {
     pub strategy: frk_dialects::Strategy,
 }
 
+/// Binds every JIT-linked frk-abi row onto an engine (D-062): the
+/// frk-abi table is the AUTHORITY on which symbols the JIT must bind
+/// and how; `jit_symbol` supplies the pointers. A row whose pointer is
+/// missing panics loudly (the coverage unit test catches it before any
+/// golden runs).
+fn bind_rt_symbols(engine: &ExecutionEngine) {
+    unsafe {
+        for entry in frk_abi::RT_ABI {
+            if entry.jit == frk_abi::JitBinding::NotLinked {
+                continue;
+            }
+            let pointer = jit_symbol(entry.name).unwrap_or_else(|| {
+                panic!(
+                    "{} is {:?} in frk-abi but jit_symbol has no pointer for it",
+                    entry.name, entry.jit
+                )
+            });
+            engine.register_symbol(entry.name, pointer);
+        }
+    }
+}
+
+/// Runs a module text under the JIT with the packet-style print
+/// capture: returns (captured print stream, the entry's i64 result).
+/// The entry must carry `llvm.emit_c_interface` (the lua frontend's
+/// `main` does). This is the Calque workstream's fast translation path
+/// (the seed is a Lua program; the interpreter is ~1000x slower on its
+/// 50 KB input - see the calque tests' translation cache).
+pub fn jit_run_text(
+    context: &melior::Context,
+    text: &str,
+    entry: &str,
+    strategy: frk_dialects::Strategy,
+) -> Result<(String, i64), String> {
+    let mut module = Module::parse(context, text).ok_or_else(|| "parse failed".to_string())?;
+    frk_dialects::verify(context, &module).map_err(|e| format!("verify: {e:?}"))?;
+    pipeline::lower_to_llvm(context, &mut module, strategy).map_err(|e| format!("lower: {e}"))?;
+    let engine = ExecutionEngine::new(&module, 2, &[], false, false);
+    bind_rt_symbols(&engine);
+    CAPTURE.with(|buffer| buffer.borrow_mut().clear());
+    let mut result: i64 = 0;
+    unsafe {
+        engine
+            .invoke_packed(entry, &mut [&mut result as *mut i64 as *mut ()])
+            .map_err(|e| format!("{entry}: {e}"))?;
+    }
+    Ok((CAPTURE.with(|buffer| buffer.borrow_mut().split_off(0)), result))
+}
+
 impl Runner for JitRunner {
     fn name(&self) -> &'static str {
         match self.strategy {
@@ -406,20 +455,7 @@ impl Runner for JitRunner {
         // supplies the pointers (data cannot name functions). A row
         // whose pointer is missing panics loudly here and fails the
         // coverage unit test before any golden runs.
-        unsafe {
-            for entry in frk_abi::RT_ABI {
-                if entry.jit == frk_abi::JitBinding::NotLinked {
-                    continue;
-                }
-                let pointer = jit_symbol(entry.name).unwrap_or_else(|| {
-                    panic!(
-                        "{} is {:?} in frk-abi but jit_symbol has no pointer for it",
-                        entry.name, entry.jit
-                    )
-                });
-                engine.register_symbol(entry.name, pointer);
-            }
-        }
+        bind_rt_symbols(&engine);
         if matches!(case.kind, SourceKind::Ts | SourceKind::Lua | SourceKind::Scheme) {
             CAPTURE.with(|buffer| buffer.borrow_mut().clear());
             unsafe {

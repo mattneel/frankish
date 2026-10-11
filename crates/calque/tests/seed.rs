@@ -4,7 +4,7 @@
 //! (L2's no-blessing rule; there is no upstream oracle, MANIFEST
 //! "Conformance").
 
-use calque::{run_artifact, run_artifact_with_input, seed_translate, UnitFile};
+use calque::{run_artifact, run_artifact_with_input, seed_translate, seed_translate_jit, UnitFile};
 
 fn unit(name: &str, ns: Option<&str>, text: &str) -> UnitFile {
     UnitFile {
@@ -251,27 +251,289 @@ fn seed_checked_multiplication_traps_on_overflow() {
     assert!(error.contains("CQ0003"), "trap must name CQ0003: {error}");
 }
 
+// Translation cache (D-089's discipline applied to the dev loop): the
+// seed is a PURE function of (its own source, the unit texts), and
+// translating the 1.5k-line parser under the reference interpreter
+// costs minutes - so each set's artifact is cached under
+// target/calque-artifacts/, keyed by a hash OF ALL INPUTS. A cache hit
+// is re-validated by the key (any input or seed change = new key), and
+// the cache only ever holds artifacts the REAL pipeline produced.
+// Cold misses translate through the JIT path (native, seconds); the
+// ignored verify_seed_translation_runners test asserts the JIT and
+// reference-interpreter artifacts are byte-identical (L3).
+fn translate_cached(tag: &str, files: &[UnitFile]) -> String {
+    use std::hash::{Hash, Hasher};
+    let seed_src = include_str!("../../../tools/calque/bootstrap/seed.lua");
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    seed_src.hash(&mut hasher);
+    for f in files {
+        f.name.hash(&mut hasher);
+        f.ns.hash(&mut hasher);
+        f.text.hash(&mut hasher);
+    }
+    let key = format!("calque-artifacts/{tag}-{:016x}.mlir", hasher.finish());
+    let path = std::path::Path::new("../../target").join(&key);
+    if let Ok(cached) = std::fs::read_to_string(&path) {
+        return cached;
+    }
+    // The seed runs on frk_interp, whose frames ride the HOST stack
+    // (the repo's documented ceiling: libtest's 2 MiB default is too
+    // skinny for the 1.5k-line parser) - translate on the standard
+    // STACK_SIZE thread, like the harness runner does.
+    let files: Vec<UnitFile> = files.to_vec();
+    let artifact = std::thread::Builder::new()
+        .stack_size(frk_interp::STACK_SIZE)
+        .spawn(move || {
+            calque::seed_translate_jit(&files).expect("the seed translates the set (jit)")
+        })
+        .expect("spawn")
+        .join()
+        .expect("join");
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    let _ = std::fs::write(&path, &artifact);
+    artifact
+}
+
+fn compile_artifact() -> &'static str {
+    static A: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    A.get_or_init(|| {
+        let files = vec![
+            stdlib_str(),
+            unit(
+                "tools/calque/compiler/lex.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/lex.calq"),
+            ),
+            unit(
+                "tools/calque/compiler/report.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/report.calq"),
+            ),
+            unit(
+                "tools/calque/compiler/parse.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/parse.calq"),
+            ),
+            unit(
+                "tools/calque/compiler/emit.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/emit.calq"),
+            ),
+            unit(
+                "tools/calque/compiler/compile.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/compile.calq"),
+            ),
+        ];
+        translate_cached("compile", &files)
+    })
+}
+
+// Visible cache warming: translates every calq0 set ONCE (content-
+// keyed; a run after this is seconds). Run with:
+//   cargo test -p calque --test seed -- --ignored --nocapture warm
+// Prints progress per set; safe to re-run (fresh sets only).
+/// The L3 differential for the seed pipeline itself (ignored: the
+/// reference interpreter takes minutes per set): translate every calq0
+/// set BOTH ways and assert byte-equality. Run at milestones:
+///   cargo test -p calque --test seed -- --ignored --nocapture verify
+#[test]
+#[ignore]
+fn verify_seed_translation_runners() {
+    let sets: Vec<(&str, Vec<UnitFile>)> = vec![
+        ("lexdump", vec![
+            stdlib_str(),
+            unit("tools/calque/compiler/lex.calq", None, include_str!("../../../tools/calque/compiler/lex.calq")),
+            unit("tools/calque/compiler/lexdump.calq", None, include_str!("../../../tools/calque/compiler/lexdump.calq")),
+        ]),
+        ("compile", vec![
+            stdlib_str(),
+            unit("tools/calque/compiler/lex.calq", None, include_str!("../../../tools/calque/compiler/lex.calq")),
+            unit("tools/calque/compiler/report.calq", None, include_str!("../../../tools/calque/compiler/report.calq")),
+            unit("tools/calque/compiler/parse.calq", None, include_str!("../../../tools/calque/compiler/parse.calq")),
+            unit("tools/calque/compiler/emit.calq", None, include_str!("../../../tools/calque/compiler/emit.calq")),
+            unit("tools/calque/compiler/compile.calq", None, include_str!("../../../tools/calque/compiler/compile.calq")),
+        ]),
+    ];
+    for (tag, files) in sets {
+        let f2 = files.clone();
+        let jit = std::thread::Builder::new()
+            .stack_size(frk_interp::STACK_SIZE)
+            .spawn(move || seed_translate_jit(&f2).expect("jit translates"))
+            .expect("spawn")
+            .join()
+            .expect("join");
+        let interp = std::thread::Builder::new()
+            .stack_size(frk_interp::STACK_SIZE)
+            .spawn(move || seed_translate(&files).expect("interp translates"))
+            .expect("spawn")
+            .join()
+            .expect("join");
+        assert_eq!(interp, jit, "[{tag}] interp and jit artifacts differ (L3)");
+        println!("[{tag}] interp == jit: {} bytes", jit.len());
+    }
+}
+
+// Scaling probe (ignored): translate synthetic programs of 1x/2x/4x size
+// under the reference interpreter and print the times - linear vs
+// superlinear decides whether the seed's table-length idioms or the
+// interpreter need the next optimization pass.
+#[test]
+#[ignore]
+fn bench_translation_scaling() {
+    use std::time::Instant;
+    for reps in [1usize, 2, 4] {
+        let mut prog = String::from("pub const P = struct { a: i64, b: i64 };\n\npub fn main() i64 {\n    const p = %P{a: 1, b: 2};\n    var acc: i64 = 0;\n");
+        for i in 0..reps * 8 {
+            prog.push_str(&format!("    acc = acc + {i}; // filler line\n"));
+        }
+        prog.push_str("    acc\n}\n");
+        let t0 = Instant::now();
+        let files = vec![stdlib_str(), unit("bench.calq", None, &prog)];
+        let _ = seed_translate(&files).expect("translates");
+        println!("[bench] {} statements ({} bytes) in {:?}", reps * 8 + 5, prog.len(), t0.elapsed());
+    }
+}
+
+// Four INDEPENDENT ignored tests: libtest runs them in parallel, so
+// the cold cost is ~max(set), not the sum.
+#[test]
+#[ignore]
+fn warm_lexdump() {
+    use std::time::Instant;
+    let t0 = Instant::now();
+    println!("[warm] lexdump set...");
+    let _ = lexer_dump_artifact();
+    println!("[warm] lexdump cached in {:?}", t0.elapsed());
+}
+
+#[test]
+#[ignore]
+fn warm_exprdump() {
+    use std::time::Instant;
+    let t0 = Instant::now();
+    println!("[warm] exprdump set...");
+    let _ = expr_dump_artifact();
+    println!("[warm] exprdump cached in {:?}", t0.elapsed());
+}
+
+#[test]
+#[ignore]
+fn warm_parsedump() {
+    use std::time::Instant;
+    let t0 = Instant::now();
+    println!("[warm] parsedump set...");
+    let _ = prog_dump_artifact();
+    println!("[warm] parsedump cached in {:?}", t0.elapsed());
+}
+
+#[test]
+#[ignore]
+fn warm_compile() {
+    use std::time::Instant;
+    let t0 = Instant::now();
+    println!("[warm] compile set...");
+    let _ = compile_artifact();
+    println!("[warm] compile cached in {:?}", t0.elapsed());
+}
+
+// The calq0 driver sets are expensive to translate (the 1.5k-line
+// parser under the reference interpreter), and libtest runs tests in
+// parallel - so each DRIVER SET is translated ONCE and shared
+// (std::sync::OnceLock): tests only run the artifact.
+fn lexer_dump_artifact() -> &'static str {
+    static A: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    A.get_or_init(|| {
+        let files = vec![
+            stdlib_str(),
+            unit(
+                "tools/calque/compiler/lex.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/lex.calq"),
+            ),
+            unit(
+                "tools/calque/compiler/report.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/report.calq"),
+            ),
+            unit(
+                "tools/calque/compiler/lexdump.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/lexdump.calq"),
+            ),
+        ];
+        translate_cached("lexdump", &files)
+    })
+}
+
+fn expr_dump_artifact() -> &'static str {
+    static A: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    A.get_or_init(|| {
+        let files = vec![
+            stdlib_str(),
+            unit(
+                "tools/calque/compiler/lex.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/lex.calq"),
+            ),
+            unit(
+                "tools/calque/compiler/report.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/report.calq"),
+            ),
+            unit(
+                "tools/calque/compiler/parse.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/parse.calq"),
+            ),
+            unit(
+                "tools/calque/compiler/exprdump.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/exprdump.calq"),
+            ),
+        ];
+        translate_cached("exprdump", &files)
+    })
+}
+
+fn prog_dump_artifact() -> &'static str {
+    static A: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    A.get_or_init(|| {
+        let files = vec![
+            stdlib_str(),
+            unit(
+                "tools/calque/compiler/lex.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/lex.calq"),
+            ),
+            unit(
+                "tools/calque/compiler/report.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/report.calq"),
+            ),
+            unit(
+                "tools/calque/compiler/parse.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/parse.calq"),
+            ),
+            unit(
+                "tools/calque/compiler/parsedump.calq",
+                None,
+                include_str!("../../../tools/calque/compiler/parsedump.calq"),
+            ),
+        ];
+        translate_cached("parsedump", &files)
+    })
+}
+
 #[test]
 fn calq0_lexes_b0_source() {
     // calq0 slice 1: the lexer translates and runs; the dump is
     // hand-derived from the seed's lexical rules (positions counted
     // by hand, comments consume no columns on the line).
-    let files = vec![
-        stdlib_str(),
-        unit(
-            "tools/calque/compiler/lex.calq",
-            None,
-            include_str!("../../../tools/calque/compiler/lex.calq"),
-        ),
-        unit(
-            "tools/calque/compiler/lexdump.calq",
-            None,
-            include_str!("../../../tools/calque/compiler/lexdump.calq"),
-        ),
-    ];
-    let artifact = seed_translate(&files).expect("the seed translates calq0's lexer");
+    let artifact = lexer_dump_artifact();
     let source = "const x: i64 = 42 + 7; // note\nfn main() i64 { return x; }";
-    let outcome = run_artifact_with_input(&artifact, &[unit("probe.calq", None, source)])
+    let outcome = run_artifact_with_input(artifact, &[unit("probe.calq", None, source)])
         .expect("the artifact runs");
     let expected = "\
 kw const 1:1\n\
@@ -301,22 +563,9 @@ count 20\n";
 
 #[test]
 fn calq0_lexes_strings_and_comments() {
-    let files = vec![
-        stdlib_str(),
-        unit(
-            "tools/calque/compiler/lex.calq",
-            None,
-            include_str!("../../../tools/calque/compiler/lex.calq"),
-        ),
-        unit(
-            "tools/calque/compiler/lexdump.calq",
-            None,
-            include_str!("../../../tools/calque/compiler/lexdump.calq"),
-        ),
-    ];
-    let artifact = seed_translate(&files).expect("the seed translates calq0's lexer");
+    let artifact = lexer_dump_artifact();
     let source = "/* c1 */ const s: Str = \"a\\tb\";";
-    let outcome = run_artifact_with_input(&artifact, &[unit("probe.calq", None, source)])
+    let outcome = run_artifact_with_input(artifact, &[unit("probe.calq", None, source)])
         .expect("the artifact runs");
     let expected = "\
 kw const 1:10\n\
@@ -333,22 +582,9 @@ count 8\n";
 
 #[test]
 fn calq0_reports_lexical_errors() {
-    let files = vec![
-        stdlib_str(),
-        unit(
-            "tools/calque/compiler/lex.calq",
-            None,
-            include_str!("../../../tools/calque/compiler/lex.calq"),
-        ),
-        unit(
-            "tools/calque/compiler/lexdump.calq",
-            None,
-            include_str!("../../../tools/calque/compiler/lexdump.calq"),
-        ),
-    ];
-    let artifact = seed_translate(&files).expect("the seed translates calq0's lexer");
+    let artifact = lexer_dump_artifact();
     let source = "pub fn main() i64 { 0 } @";
-    let outcome = run_artifact_with_input(&artifact, &[unit("probe.calq", None, source)])
+    let outcome = run_artifact_with_input(artifact, &[unit("probe.calq", None, source)])
         .expect("the artifact runs");
     assert!(
         outcome.output.starts_with("error 1:25 unexpected character @"),
@@ -362,27 +598,9 @@ fn calq0_reports_lexical_errors() {
 fn calq0_parses_expressions() {
     // Slice 2a: expressions. Precedence: 10 + (3 * 2); the qualified
     // callee keeps its module in the Ref. Hand-derived dump.
-    let files = vec![
-        stdlib_str(),
-        unit(
-            "tools/calque/compiler/lex.calq",
-            None,
-            include_str!("../../../tools/calque/compiler/lex.calq"),
-        ),
-        unit(
-            "tools/calque/compiler/parse.calq",
-            None,
-            include_str!("../../../tools/calque/compiler/parse.calq"),
-        ),
-        unit(
-            "tools/calque/compiler/parsedump.calq",
-            None,
-            include_str!("../../../tools/calque/compiler/parsedump.calq"),
-        ),
-    ];
-    let artifact = seed_translate(&files).expect("the seed translates calq0's parser");
+    let artifact = expr_dump_artifact();
     let source = "fib(10) + str.fromI64(3) * 2";
-    let outcome = run_artifact_with_input(&artifact, &[unit("probe.calq", None, source)])
+    let outcome = run_artifact_with_input(artifact, &[unit("probe.calq", None, source)])
         .expect("the artifact runs");
     assert_eq!(
         outcome.output,
@@ -393,44 +611,31 @@ fn calq0_parses_expressions() {
 
 #[test]
 fn calq0_reports_parse_errors() {
-    let files = vec![
-        stdlib_str(),
-        unit(
-            "tools/calque/compiler/lex.calq",
-            None,
-            include_str!("../../../tools/calque/compiler/lex.calq"),
-        ),
-        unit(
-            "tools/calque/compiler/parse.calq",
-            None,
-            include_str!("../../../tools/calque/compiler/parse.calq"),
-        ),
-        unit(
-            "tools/calque/compiler/parsedump.calq",
-            None,
-            include_str!("../../../tools/calque/compiler/parsedump.calq"),
-        ),
-    ];
-    let artifact = seed_translate(&files).expect("the seed translates calq0's parser");
+    let artifact = expr_dump_artifact();
 
     // truncated expression: the EOF token carries the position
-    let outcome = run_artifact_with_input(&artifact, &[unit("probe.calq", None, "1 + ")])
+    let outcome = run_artifact_with_input(artifact, &[unit("probe.calq", None, "1 + ")])
         .expect("the artifact runs");
     assert_eq!(outcome.output, "error 1:5 unexpected end of input\n");
     assert_eq!(outcome.values[0].as_signed().expect("i64 result"), 1);
 
-    // the 2a fences are loud
+    // slice 2b landed: if-EXPRESSIONS now parse (this probe was the 2a
+    // fence; it now proves the fence lifted)
     let outcome =
-        run_artifact_with_input(&artifact, &[unit("probe.calq", None, "if x { y }")])
+        run_artifact_with_input(artifact, &[unit("probe.calq", None, "if x { y }")])
             .expect("the artifact runs");
-    assert_eq!(
-        outcome.output,
-        "error 1:1 if-expressions land in slice 2b (statements first)\n"
-    );
+    assert_eq!(outcome.output, "(if (ref x) (block (ref y)))\n");
+    assert_eq!(outcome.values[0].as_signed().expect("i64 result"), 0);
+
+    // trailing tokens after a complete expression still report
+    let outcome =
+        run_artifact_with_input(artifact, &[unit("probe.calq", None, "1 + 2 3")])
+            .expect("the artifact runs");
+    assert_eq!(outcome.output, "error 1:7 trailing tokens after the expression\n");
     assert_eq!(outcome.values[0].as_signed().expect("i64 result"), 1);
 
     // comparisons do not chain
-    let outcome = run_artifact_with_input(&artifact, &[unit("probe.calq", None, "1 < 2 < 3")])
+    let outcome = run_artifact_with_input(artifact, &[unit("probe.calq", None, "1 < 2 < 3")])
         .expect("the artifact runs");
     assert_eq!(outcome.output, "error 1:7 comparisons do not chain (SPEC 5.1)\n");
     assert_eq!(outcome.values[0].as_signed().expect("i64 result"), 1);
@@ -451,6 +656,84 @@ fn seed_compiles_destructuring_shorthand() {
     let artifact = seed_translate(&files).expect("the seed translates the destructuring probe");
     let outcome = run_artifact(&artifact).expect("the artifact runs");
     assert_eq!(outcome.output, "7\n12\n13\n");
+}
+
+#[test]
+fn calq0_parses_programs() {
+    // Slice 2b: full b0 programs. One translation, three probes; every
+    // dump is hand-derived from the d_* rules (strings carry length +
+    // bytes; absent optionals vanish).
+    let artifact = prog_dump_artifact();
+
+    let p1 = "pub const P2 = struct { a: i64, b: i64 = 1 };\npub fn f(x: i64) i64 { const y = x; y }\n";
+    let o1 = run_artifact_with_input(artifact, &[unit("p1.calq", None, p1)]).expect("runs");
+    assert_eq!(
+        o1.output,
+        "(ast (struct P2 (a (ty i64)) (b (ty i64) = (int 1))) (fn f ((x (ty i64))) (ty i64) (block (const y (ref x)) (ref y))))\n"
+    );
+
+    let p2 = "pub const Pair = struct { a: i64, b: i64 };\npub const Op = union(enum) { Add: Pair, Neg };\n\npub fn g(o: Op) i64 {\n    const r = match o {\n        Op.Add(q) => q.a,\n        Op.Neg => 0,\n    };\n    r\n}\n";
+    let o2 = run_artifact_with_input(artifact, &[unit("p2.calq", None, p2)]).expect("runs");
+    assert_eq!(
+        o2.output,
+        "(ast (struct Pair (a (ty i64)) (b (ty i64))) (union Op (Add (ty Pair)) (Neg)) (fn g ((o (ty Op))) (ty i64) (block (const r (match (ref o) (arm (pat variant Op.Add (pat bind q)) (ref q.a)) (arm (pat variant Op.Neg) (int 0)))) (ref r))))\n"
+    );
+
+    let p3 = "pub const P2 = struct { a: i64, b: i64 };\n\npub fn h(p: P2, n: i64) P2 {\n    const {a, b: q} = p;\n    var i: i64 = 0;\n    while i < n { i = i + 1; }\n    if n < a { p } else { %P2{a: n, b: q} }\n}\n";
+    let o3 = run_artifact_with_input(artifact, &[unit("p3.calq", None, p3)]).expect("runs");
+    assert_eq!(
+        o3.output,
+        "(ast (struct P2 (a (ty i64)) (b (ty i64))) (fn h ((p (ty P2)) (n (ty i64))) (ty P2) (block (destr const (a b: q) (ref p)) (var i (ty i64) (int 0)) (while (bin < (ref i) (ref n)) (block (assign i (bin + (ref i) (int 1))))) (if (bin < (ref n) (ref a)) (block (ref p)) (block (make P2 (a = (ref n)) (b = (ref q))))))))\n"
+    );
+}
+
+#[test]
+fn calq0_reports_program_errors() {
+    let artifact = prog_dump_artifact();
+
+    // missing `;` before `}` (the `}` token carries the position)
+    let e1 = run_artifact_with_input(
+        &artifact,
+        &[unit("e1.calq", None, "pub fn f() i64 { const x: i64 = 1 }")],
+    )
+    .expect("runs");
+    assert_eq!(e1.output, "error 1:35 expected `;`\n");
+    assert_eq!(e1.values[0].as_signed().expect("i64"), 1);
+
+    // top-level junk names the offender
+    let e2 = run_artifact_with_input(artifact, &[unit("e2.calq", None, "x")]).expect("runs");
+    assert_eq!(
+        e2.output,
+        "error 1:1 top-level items are fn declarations and struct/union type declarations (got `x`)\n"
+    );
+    assert_eq!(e2.values[0].as_signed().expect("i64"), 1);
+}
+
+#[test]
+fn calq0_emits_the_seed_shape() {
+    // Slice 3a: calq0 compiles a trivial module and its artifact text
+    // is BYTE-IDENTICAL to the seed's emission for the same program
+    // (the differential, from day one) - and the emitted artifact then
+    // actually RUNS.
+    let artifact = compile_artifact();
+
+    let seed_zero = "// calque-artifact v0\nfunc.func @__calque_main(%env: !frk_closure.envref) -> i64 {\n  %t1 = arith.constant 0 : i64\n  func.return %t1 : i64\n}\nfunc.func @main() -> i64 attributes {llvm.emit_c_interface} {\n  %env = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>\n  %cl = \"frk_closure.make\"(%env) {callee = @__calque_main} : (!frk_adt.product<[]>) -> !frk_closure.fn<[], [i64]>\n  %args = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>\n  %r = \"frk_closure.apply\"(%cl, %args) : (!frk_closure.fn<[], [i64]>, !frk_adt.product<[]>) -> i64\n  return %r : i64\n}\n";
+    let o = run_artifact_with_input(artifact, &[unit("p.calq", None, "pub fn main() i64 { 0 }")])
+        .expect("the compiler runs");
+    assert_eq!(o.output, seed_zero, "calq0's emission must equal the seed's");
+    // And the emitted artifact executes under the reference interpreter.
+    let emitted = run_artifact(&o.output).expect("the emitted artifact runs");
+    assert_eq!(emitted.values[0].as_signed().expect("i64"), 0);
+
+    let o2 = run_artifact_with_input(artifact, &[unit("p.calq", None, "pub fn main() i64 { 42 }")])
+        .expect("the compiler runs");
+    assert!(
+        o2.output.contains("%t1 = arith.constant 42 : i64"),
+        "42 must flow into the constant: {}",
+        o2.output
+    );
+    let emitted2 = run_artifact(&o2.output).expect("the emitted artifact runs");
+    assert_eq!(emitted2.values[0].as_signed().expect("i64"), 42);
 }
 
 #[test]
