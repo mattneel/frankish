@@ -20,6 +20,10 @@ its stage mapping is in §13.
 The fourth steering amendment (diagnostics, lint, agent help) lives at
 docs/calque/STEERING-DIAGNOSTICS-LINT-AGENT-HELP.md and governs §11's
 record model (D-104); its stage mapping is in §13.
+The fifth steering amendment (structured concurrency, modern CPUs)
+lives at docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md and freezes
+the ownership/transfer/cancellation/memory-model/target-layout
+contracts ahead of the C2 surface (D-105); its stage mapping is in §13.
 
 ---
 
@@ -496,7 +500,8 @@ entry (D-090 revised F5/F7/F9 after the user's demo playbook).
 ## §13 Version plan
 
 v0.1 = b0 (this file). v0.2 = C2 language (inference, generics,
-floats, tuples, modules, immutable collections, defer, seq). v0.3 =
+floats, tuples, modules, immutable collections, defer, seq, async
+tasks/scopes with the frozen concurrency contracts). v0.3 =
 C3 (comptime, types-as-values, reflection). v1.0 = C6 release
 (complete §23 evidence). The canonical compiler source always
 targets the newest frozen version; bootstrap snapshots keep older
@@ -548,3 +553,18 @@ the reviewed quick-fix plans over D-101's edit service; integrations
 with the runtime/tests/codecs and the LSP land as those subsystems
 exist. Forbidden defaults, trust boundaries, and the §12 verification
 matrix are ledger law.
+
+The fifth steering amendment (concurrency/modern CPUs — D-105) freezes
+task ownership/lifetime, transfer-vs-share, cancellation, the memory
+model, and target-layout rules NOW (they precede surface hardening)
+and places the C2 surface vocabulary (async fn / await / scopes /
+spawn / parallel collections) with an executable specification before
+signature freeze; the minimal interpreter scope/await + deterministic
+virtual-clock scheduler + two-worker proof land with the early core
+(C2->C4), runtime isolation/channels/I/O at C4, scalar-defined SIMD +
+alignment + target-feature configuration at C4, parallel
+collections/pipelines/dispatch/locality at C4-C5, tool adoption +
+replay + sanitizers + performance evidence at C5, and the complete
+target capability matrix at C6. GOAL 21's "new scheduler" exclusion is
+SUPERSEDED IN SCOPE (D-105: the structured local scheduler is core);
+the distributed-actor exclusion stands.

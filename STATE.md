@@ -23,7 +23,12 @@ the FOURTH (diagnostics/lint/agent help — D-104, sha-pinned at
 docs/calque/STEERING-DIAGNOSTICS-LINT-AGENT-HELP.md; AC-S42..S52) maps
 the record schema to C2 and its renderers/catalog/lint/ci/fix to C5 —
 calq0's provisional one-line diagnostic projection is explicitly
-upgradeable, and no second text shape may ship meanwhile.
+upgradeable, and no second text shape may ship meanwhile; the FIFTH
+(structured concurrency + modern CPUs — D-105, sha-pinned at
+docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md; AC-S53..S60) FREEZES
+the ownership/transfer/cancellation/memory-model/target-layout
+contracts NOW and supersedes GOAL §21's "new scheduler" clause IN SCOPE
+(a structured local scheduler is core; actor runtimes stay out).
 Tree: green — `cargo test -p calque` 13/13 seed + reference; `make
 test` green on this session's commits; diff 162 cases 0 divergent (8
 runners); grid 157/157 × BOTH strategies × 4 triples + s390x canary
@@ -1239,15 +1244,27 @@ rework flag, not a knob.
       `calque-diagnostics`/`calque-lint` gates, MANIFEST C2/C5 notes,
       checker pin; the record schema + source origins own C2 — the
       diagnostics printer freeze applies to calq0 from now on
+    - steering 5 (D-105): the concurrency/modern-CPU amendment stored
+      at docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md (sha-pinned),
+      SPEC header + §13 (incl. the explicit GOAL §21 supersession),
+      AC-S53..S60 + the planned calque-concurrency/calque-cpu gates,
+      MANIFEST C2/C4 notes, checker pin. C1 IMPACT: the frozen
+      contracts precede surface hardening — calq0's frame/ABI
+      conventions (D-092's envref + femto_lua's resumable-frame
+      transform as prior art) must not preclude the async
+      representation, and the minimal scope/await + deterministic
+      scheduler land WITH the early core (C2->C4)
     - vectors 43c4ade (F34/D-091): Vector(T) parses/slots
       i64/Str/declared; the 15 per-slot-kind intrinsics (new/len/get/
       set/push) as kernel IR in crates/calque/src/intrinsics.mlir
       with doubling growth (4) + `ult` bounds traps; `vector.new()`
       instantiated by the binding ANNOTATION (syntax-directed);
       named slots marshalled via wrap_store/unwrap_load (recref)
-    Next: calq0 slice 1 — the LEXER in
-    tools/calque/compiler/lex.calq (b0), driven through the input
-    channel; expect a `*`-arithmetic seed slab first (see landmines)
+    Next: calq0 slice 2 — the PARSER in tools/calque/compiler/parse.calq
+    (b0): the token vector from lex.calq into the b0 AST (declarations,
+    functions, statements, expressions), mirroring the seed's grammar;
+    then slice 3 the emitter. The lexer's slice-1 dump main is replaced
+    by the compiler's real main when the corpus gate lands.
     Landmines (new this session):
     - `*` LANDED mid-session (checked mul, CQ0003; min*-1 routes
       through select so divsi(min,-1) never executes) — the

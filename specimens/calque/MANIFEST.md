@@ -111,6 +111,29 @@ policy. Stage: the record schema + origins at C2 (before calq0's
 diagnostics multiply printers); renderers/catalog/help/lint/ci/fix/LSP
 at C5; runtime/test/codec integrations as those land.
 
+Fifth steering amendment (D-105;
+`docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md`): structured
+concurrency and modern-CPU execution are core requirements, with
+contracts frozen BEFORE surface hardening — scopes owning children,
+handles that cannot escape, transfer-vs-share properties derived from
+representation + capabilities, cooperative cancellation with exactly
+one terminal outcome, SC atomics as the default with honest per-target
+widths, and target-layout rules (baseline default, explicit native,
+target-resolved features, validated multiversion dispatch, checked
+alignment). The interpreter stays the semantic reference (explicit
+suspended tasks/scopes/wake events; scalar per-lane SIMD semantics);
+the native scheduler supplies REAL bounded thread pools; a
+deterministic virtual-clock scheduler runs the tests; SIMD is a
+distinct scalar-defined type family; and make calque-concurrency /
+calque-cpu carry the §19/§20 evidence. GOAL §21's "new scheduler"
+exclusion is superseded in scope (D-105); actor runtimes stay outside.
+Stage: contracts + C2 surface vocabulary at C2 (executable
+specification before signature freeze), minimal scope/await + the
+two-worker proof with the early core, runtime isolation/channels/I-O +
+SIMD/alignment/target config at C4, parallel collections/pipelines/
+dispatch/locality at C4–C5, adoption + replay + sanitizers at C5,
+target matrix at C6.
+
 ## Stages
 Each stage freezes at its milestone exit (goal §18; numbers from the
 current ledger, D-085):
@@ -123,7 +146,9 @@ current ledger, D-085):
   recursive data, modules + stdlib; compiler grows through the
   recorded chain; documentation attributes + parser preservation and
   doctest registration (D-099/D-100); the shared diagnostic record
-  schema + source origins (D-104).
+  schema + source origins (D-104); the frozen concurrency/memory-model/
+  target-layout contracts + the async/scope/spawn surface vocabulary
+  with an executable specification (D-105).
 - **C3 (M39) — shared compile-time execution.** `comptime`, type
   construction/reflection/reification, capabilities, budgets,
   caching, nested compiler-library + cross-specimen evaluation.

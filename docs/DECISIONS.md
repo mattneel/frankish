@@ -3036,3 +3036,149 @@ veto-ledger pattern and most deserve their review.
   runtime/test/codec integration as those subsystems land (C3–C5);
   `make calque-diagnostics` / `make calque-lint` land with their
   stages; the amendment's §13 demos are its exit evidence.
+
+- D-105 [calque/concurrency] STRUCTURED CONCURRENCY AND MODERN-CPU
+  EXECUTION ARE CORE REQUIREMENTS, CONTRACTS FROZEN BEFORE THE
+  FRONTEND HARDENS (steering: the concurrency/modern-CPU amendment
+  §1–§20; sha-pinned at docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md).
+  SUPERSESSION (explicit, per the amendment's mandate): GOAL §21's
+  "do not require ... a new scheduler" is superseded IN SCOPE — a
+  STRUCTURED LOCAL SCHEDULER (bounded OS-thread worker pools, task
+  scopes, cooperative async tasks, a deterministic single-thread/
+  virtual-clock executor for tests) is now CORE language semantics,
+  because scopes/ownership/executors are Calque's public contract,
+  not a runtime-selection ceremony; the same §21 line's "distributed
+  actor runtime" exclusion STANDS (the amendment keeps actor
+  runtimes/BEAM clones outside) and multi-shot continuations stay
+  fenced (D-084.8). CONTRACTS FROZEN NOW (they precede surface
+  hardening; §2–§8 + §15 spill into SPEC as the C2 surface is
+  specified): TASK LIFETIME/OWNERSHIP — scopes own children to
+  completion incl. required cleanup; dropping a handle never
+  detaches; no unowned background tasks in ordinary safe code
+  (long-lived services live under an explicit application root with
+  an explicit shutdown protocol); handles and scope-dependent values
+  cannot escape their scope; single execution + single result
+  consumption unless an explicit shared-result abstraction says
+  otherwise; ordinary lifetime obligations inferred without
+  mandatory annotations. TRANSFER/SHARE — compiler-known,
+  representation+capability-derived properties distinct from nominal
+  names: exclusive ownership transfer admitted only with no residual
+  owner access; ordinary mutable-box capture across concurrent tasks
+  REJECTED without explicit synchronization; concurrent mutation on
+  ONE OS thread is still a conflict; local-only tasks require an
+  explicit non-migrating executor contract; unverified foreign
+  transfer needs an explicit unsafe boundary; diagnostics name the
+  captured value, rejected operation, and actual conflict, and NEVER
+  propose unsafe annotations as the default quick fix. CANCELLATION —
+  cooperative request propagated through the owned tree; exactly one
+  terminal outcome; cancellation distinct from domain-error recovery
+  (broad `catch` must not silently swallow it); required cleanup runs
+  on cancellation and error paths; cleanup that must suspend gets
+  explicit bounded shielding; cleanup failures are reported WITHOUT
+  losing the initiating failure; foreign non-cooperative work keeps
+  the scope alive until it returns, or the application uses process
+  isolation for hard deadlines; I/O buffers/handles are retained
+  until the OS/adapter establishes completion or safe abandonment;
+  no arbitrary native-thread killing; monotonic time for runtime
+  deadlines, VIRTUAL time in deterministic tests; cancellation-request
+  latency reported separately from full-scope-shutdown latency.
+  MEMORY MODEL — sequentially consistent atomics as the simple
+  default; explicit weaker orders only with invalid combinations
+  rejected; language memory orders map to verified LLVM operations;
+  volatile is NEVER synchronization; atomic widths per target with
+  honest lock-free reporting or rejection; no
+  atomic-retain/release-as-complete-collector claims; cycle
+  collection, intern tables, allocation metadata, runtime globals,
+  and JIT adapters all audited before cross-thread use; task-local
+  state lives in task execution context (not thread-locals alone)
+  and is restored across migration. TARGET/LAYOUT — portable baseline
+  is the default distribution target; `native` is explicit; target
+  features resolve from the SELECTED target (never the build host);
+  multiversioned kernels validate features/OS register-state before
+  dispatch and ship a baseline fallback; startup/dispatch code
+  itself conforms to the baseline; explicit ISA restrictions supported
+  for deployment/benchmarks; startup and dispatch never rely on
+  Clang-frontend attributes the Calque pipeline does not process;
+  function-variant caches key on all feature/ABI inputs; unsupported
+  thread/socket capabilities are DIAGNOSED, never faked (single-thread
+  apps preserved; the WASI path preserved); CON/CTF exclude live
+  tasks/locks/channels/handles and physical layout/pointers/padding;
+  checked alignment for types/allocs/arrays/buffers preserved through
+  containers/closures/frames/FFI; cache-isolation wrappers are
+  target-aware, never a universal 64-byte law; prefetch is an
+  address-safe HINT (distinct from loads/sync/ownership/cancellation;
+  optional when counterproductive; never a correctness mechanism).
+  EXECUTION SHAPE — the EXISTING interpreter is the semantic reference
+  (explicit suspended tasks/scopes/wake events/ownership state; every
+  new op gets reference semantics + a verifier before native
+  execution; NO second evaluator); the native scheduler supplies real
+  parallelism; a deterministic logical schedule is EVIDENCE, not
+  proof about hardware interleavings; llvm.coro is evaluated against
+  actual invariants, never forced; async tail-call behavior specified
+  separately from the synchronous guarantee; GC-visible frames,
+  exactly-once destruction, and origin tracking preserved. COMPILE
+  TIME — admitted pure structured computations run under the
+  interpreter with the deterministic scheduler; default comptime
+  DENIES OS threads/live sockets/wall clocks/thread identity; host
+  parallel evaluation is an internal optimization only under result/
+  failure equivalence; schedule-dependent work never cached under a
+  pure-function contract (target features/policy/limits in cache
+  validity); reification rejects live handles/sync objects; children
+  drained before a frozen result. SIMD — a distinct type family from
+  persistent Vector(T): fixed lanes, masks, selections, shuffles,
+  loads/stores/reductions; lane order/numeric behavior specified
+  independently of physical width; masked tails never OOB/poison;
+  unaligned valid ops + explicitly checked aligned ops; gather/scatter
+  bounds + duplicate-destination rules before admission; scalarization
+  on targets lacking the ISA; SCALAR PER-LANE SEMANTICS in the
+  interpreter/comptime; scalable vectors behind an explicit
+  target-aware capability (never faked widths); baseline apps need no
+  optional ISA; strict numerics by default (checked integer failures,
+  signed zero, NaNs, specified FP) — no global fast-math, explicit
+  numeric policies for reassociation/contraction/approximations
+  verified independently; missed optimizations reported honestly.
+  CPU PIPELINE/SURFACE — measured dev/release pipelines with pass
+  verification and remarks tied to source; opt-in LTO/PGO with
+  reproducible profile identity; artifact keys include pipeline/
+  target/features/profiles/ABI; stable native partitions for local
+  edits; bounded parallel map/chunk + ordered output by default
+  (execution order documented separately; no silent parallelization);
+  ordered vs tree-shaped reductions separated (checked-overflow
+  semantics preserved or an explicit policy, recorded in computation
+  keys); structures/slices/builders/SoA for hot paths with proofs-
+  only metadata (no invented noalias/inbounds/nsw/nonnull). GATES
+  AND EVIDENCE — make calque-concurrency / calque-cpu; §19 correctness
+  suite (scope exit through success/failure/early-return/cancellation/
+  cleanup-failure; simultaneous completion/cancellation; pre-registration
+  cancellation; exactly-once delivery/destruction/release; nested
+  pools/saturation/shutdown-with-I/O; affinity + migratable context;
+  RC/cycle/publication stress; disjoint vs overlapping partitions;
+  litmus/weak-memory; TSan-class races with PROVEN instrumentation
+  canaries in generated code; fuzzed schedule sequences with minimized
+  replay; SIMD-vs-scalar boundary suites; aligned-layout promises;
+  canonical CTF bytes across layouts; existing goldens preserved) and
+  §20 evidence (bounded two-worker overlap proof, 1-vs-N worker
+  benchmark, cost decomposition, memory/tail/cancellation/drain
+  latencies, many suspended I/O tasks without per-socket threads,
+  fail-fast cancellation with zero escaped tasks, ordered map + SIMD
+  kernel with lowered IR/instructions/equivalence, packed vs
+  cache-isolated comparison, a real prefetch experiment, baseline +
+  feature-specific kernels on supported hardware, hardware/topology
+  records, repeated trials, compile-latency/binary-size visibility).
+  STAGE MAPPING (the amendment's delivery order, honestly placed):
+  contract freeze + the C2 surface vocabulary (async fn/await/scope/
+  spawn/parallel + the singleton-executor set) at C2, WITH an
+  executable specification before signature freeze; the minimal
+  interpreter scope/await + deterministic virtual-clock scheduler +
+  two-worker interpreter/native proof land WITH THE EARLY CORE
+  (C2→C4, not deferred to tooling); runtime-state isolation, channels,
+  cleanup, and supported I/O adapters at C4; scalar-defined SIMD +
+  alignment + target-feature configuration at C4; bounded parallel
+  collections + optimized pipelines + dispatch + locality work at
+  C4–C5; tool adoption (LSP/tests/fuzz supervision) + replay +
+  sanitizers + performance evidence at C5; the complete target
+  capability matrix + bootstrap/self-host re-verification at C6.
+  Concurrency diagnostics ride D-104's record schema (unsafe captures,
+  escaped scopes, lock-across-await, unsupported CPU features, blocking
+  calls on cooperative workers, abandoned cold operations); lint NEVER
+  suggests detach/unchecked sharing/weaker atomics/global fast-math.

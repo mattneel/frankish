@@ -31,6 +31,9 @@ CALQUE_STEERING3_SHA=5fdaa2c124c0b66be18f57561c97e8ac976bf29533eb709ff6decfc57dc
 # The fourth steering amendment (D-104: diagnostics, lint, agent help)
 # - same pin discipline.
 CALQUE_STEERING4_SHA=952d8860fc8e8c8abd7382f5eb887d2a335549f64da8ceb1ebb8ee01792843bf
+# The fifth steering amendment (D-105: concurrency, modern CPUs) -
+# same pin discipline.
+CALQUE_STEERING5_SHA=7ffc46a95565ef563c70b63c010da9efc8d0acda666ad91ec1e8bcfec75a63ee
 
 fail=0
 err() { echo "calque-check: $1" >&2; fail=1; }
@@ -42,6 +45,7 @@ for f in docs/calque/GOAL.md docs/calque/SPEC.md docs/calque/BOOTSTRAP.md \
          docs/calque/STEERING-DOCS-PACKAGES-FUZZING.md \
          docs/calque/STEERING-LSP.md \
          docs/calque/STEERING-DIAGNOSTICS-LINT-AGENT-HELP.md \
+         docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md \
          specimens/calque/MANIFEST.md \
          specimens/calque/examples/README.md book/src/specimens/calque.md; do
   [ -f "$f" ] || err "missing artifact: $f"
@@ -79,6 +83,12 @@ if [ -f docs/calque/STEERING-DIAGNOSTICS-LINT-AGENT-HELP.md ]; then
   got=$(sha256sum docs/calque/STEERING-DIAGNOSTICS-LINT-AGENT-HELP.md | cut -d' ' -f1)
   [ "$got" = "$CALQUE_STEERING4_SHA" ] \
     || err "STEERING-DIAGNOSTICS-LINT-AGENT-HELP.md sha256 drifted: $got (pin $CALQUE_STEERING4_SHA)"
+fi
+# 2f. Fifth steering amendment pin (D-105).
+if [ -f docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md ]; then
+  got=$(sha256sum docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md | cut -d' ' -f1)
+  [ "$got" = "$CALQUE_STEERING5_SHA" ] \
+    || err "STEERING-CONCURRENCY-MODERN-CPUS.md sha256 drifted: $got (pin $CALQUE_STEERING5_SHA)"
 fi
 
 # 3. Matrix structure.
