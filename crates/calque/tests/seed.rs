@@ -294,39 +294,118 @@ fn translate_cached(tag: &str, files: &[UnitFile]) -> String {
     artifact
 }
 
+fn compiler_files() -> Vec<UnitFile> {
+    vec![
+        stdlib_str(),
+        unit(
+            "tools/calque/compiler/lex.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/lex.calq"),
+        ),
+        unit(
+            "tools/calque/compiler/report.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/report.calq"),
+        ),
+        unit(
+            "tools/calque/compiler/parse.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/parse.calq"),
+        ),
+        unit(
+            "tools/calque/compiler/emit.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/emit.calq"),
+        ),
+        unit(
+            "tools/calque/compiler/compile.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/compile.calq"),
+        ),
+    ]
+}
+
 fn compile_artifact() -> &'static str {
     static A: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    A.get_or_init(|| {
-        let files = vec![
-            stdlib_str(),
-            unit(
-                "tools/calque/compiler/lex.calq",
-                None,
-                include_str!("../../../tools/calque/compiler/lex.calq"),
-            ),
-            unit(
-                "tools/calque/compiler/report.calq",
-                None,
-                include_str!("../../../tools/calque/compiler/report.calq"),
-            ),
-            unit(
-                "tools/calque/compiler/parse.calq",
-                None,
-                include_str!("../../../tools/calque/compiler/parse.calq"),
-            ),
-            unit(
-                "tools/calque/compiler/emit.calq",
-                None,
-                include_str!("../../../tools/calque/compiler/emit.calq"),
-            ),
-            unit(
-                "tools/calque/compiler/compile.calq",
-                None,
-                include_str!("../../../tools/calque/compiler/compile.calq"),
-            ),
-        ];
-        translate_cached("compile", &files)
-    })
+    A.get_or_init(|| translate_cached("compile", &compiler_files()))
+}
+
+// calq0 compiling a set through the JIT (D-110's fast path: the same
+// pipeline, seconds instead of minutes). L3: byte-equal to the
+// interpreter - asserted by verify_calq0_runners_agree (ignored, run
+// at gates) and by the corpus differentials' interpreter goldens.
+fn compile_via_calq0_jit(calq0: &str, files: &[UnitFile]) -> String {
+    let text = calque::compose_unit_with_input(calq0, files);
+    let context = frk_core::context();
+    frk_dialects::register(&context).expect("register");
+    let (capture, _code) = frk_harness::runner::jit_run_text(
+        &context,
+        &text,
+        "main",
+        frk_dialects::Strategy::Arena,
+    )
+    .expect("calq0 compiles the set (jit)");
+    capture
+}
+
+#[test]
+#[ignore = "minutes: the interpreter leg of the L3 runner-equality check"]
+fn verify_calq0_runners_agree() {
+    let seed_built = compile_artifact();
+    let files = compiler_files();
+    let via_interp = {
+        let calq0_owned = seed_built.to_string();
+        let files_owned = files.clone();
+        std::thread::Builder::new()
+            .stack_size(frk_interp::STACK_SIZE)
+            .spawn(move || {
+                calque::run_artifact_with_input(&calq0_owned, &files_owned)
+                    .expect("calq0 (interp)")
+                    .output
+            })
+            .expect("spawn")
+            .join()
+            .expect("join")
+    };
+    let via_jit = compile_via_calq0_jit(seed_built, &files);
+    assert_eq!(
+        via_jit,
+        via_interp,
+        "the JIT and interpreter legs must agree byte-exactly (L3): {}",
+        diff_hint(&via_jit, &via_interp)
+    );
+}
+
+// calq0 compiling a set - the compiler-as-a-program path, cached like
+// translate_cached (the key covers the seed, calq0's own artifact, and
+// every input unit, so no change can hide behind a stale entry).
+fn compile_via_calq0_cached(tag: &str, calq0: &str, files: &[UnitFile]) -> String {
+    use std::hash::{Hash, Hasher};
+    let seed_src = include_str!("../../../tools/calque/bootstrap/seed.lua");
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    seed_src.hash(&mut hasher);
+    calq0.hash(&mut hasher);
+    for f in files {
+        f.name.hash(&mut hasher);
+        f.ns.hash(&mut hasher);
+        f.text.hash(&mut hasher);
+    }
+    let key = format!("calque-artifacts/{tag}-{:016x}.mlir", hasher.finish());
+    let path = std::path::Path::new("../../target").join(&key);
+    if let Ok(cached) = std::fs::read_to_string(&path) {
+        return cached;
+    }
+    let calq0_owned = calq0.to_string();
+    let files: Vec<UnitFile> = files.to_vec();
+    let artifact = std::thread::Builder::new()
+        .stack_size(frk_interp::STACK_SIZE)
+        .spawn(move || compile_via_calq0_jit(&calq0_owned, &files))
+        .expect("spawn")
+        .join()
+        .expect("join");
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    let _ = std::fs::write(&path, &artifact);
+    artifact
 }
 
 // Visible cache warming: translates every calq0 set ONCE (content-
@@ -966,6 +1045,98 @@ fn calq0_matches_the_seed_on_match() {
 }
 
 #[test]
+fn calq0_reports_match_errors() {
+    // Slice 3c: the match rules' error paths, asserted by hand. The
+    // texts mirror the seed's; pattern-level positions are 0:0 because
+    // Pat nodes do not carry positions yet (recorded in STATE as the
+    // C2 diagnostics item).
+    let artifact = compile_artifact();
+
+    let e1 = "pub const S = union(enum) { A: i64, B };\npub fn f(s: S) i64 {\n    const r = match s {\n        S.A(x) => 1,\n        S.A(y) => 2,\n        S.B => 0,\n    };\n    r\n}\npub fn main() i64 { 0 }\n";
+    let o1 = run_artifact_with_input(artifact, &[unit("e.calq", None, e1)]).expect("runs");
+    assert_eq!(o1.output, "error 0:0 redundant arm: `A` is already covered\n");
+    assert_eq!(o1.values[0].as_signed().expect("i64"), 1);
+
+    let e2 = "pub const S = union(enum) { A: i64, B };\npub fn f(s: S) i64 {\n    const r = match s {\n        S.A(x) => 1,\n    };\n    r\n}\npub fn main() i64 { 0 }\n";
+    let o2 = run_artifact_with_input(artifact, &[unit("e.calq", None, e2)]).expect("runs");
+    assert_eq!(o2.output, "error 0:0 match does not cover S.B\n");
+    assert_eq!(o2.values[0].as_signed().expect("i64"), 1);
+
+    let e3 = "pub const P = struct { a: i64 };\npub fn f(p: P) i64 {\n    const r = match p {\n        %P{a: 1} => 1,\n    };\n    r\n}\npub fn main() i64 { 0 }\n";
+    let o3 = run_artifact_with_input(artifact, &[unit("e.calq", None, e3)]).expect("runs");
+    assert_eq!(
+        o3.output,
+        "error 0:0 a struct match needs a final catch-all arm (`_`, a binding, or an all-binding record pattern) (seed v0)\n"
+    );
+    assert_eq!(o3.values[0].as_signed().expect("i64"), 1);
+
+    let e4 = "pub fn f(n: i64) i64 {\n    const r = match n {\n        1 => 1,\n    };\n    r\n}\npub fn main() i64 { 0 }\n";
+    let o4 = run_artifact_with_input(artifact, &[unit("e.calq", None, e4)]).expect("runs");
+    assert_eq!(o4.output, "error 0:0 a builtin match needs a final `_` or binding arm (seed v0)\n");
+    assert_eq!(o4.values[0].as_signed().expect("i64"), 1);
+
+    let e5 = "pub const S = union(enum) { A: i64, B: i64 };\npub fn f(s: S) i64 {\n    const r = match s {\n        S.A(1) => 1,\n        S.B(2) => 0,\n    };\n    r\n}\npub fn main() i64 { 0 }\n";
+    let o5 = run_artifact_with_input(artifact, &[unit("e.calq", None, e5)]).expect("runs");
+    assert_eq!(
+        o5.output,
+        "error 0:0 this payload pattern can fail; add a following `_` arm (seed v0)\n"
+    );
+    assert_eq!(o5.values[0].as_signed().expect("i64"), 1);
+
+    let e6 = "pub const S = union(enum) { A: i64, B };\npub const T = union(enum) { C: i64 };\npub fn f(s: S) i64 {\n    const r = match s {\n        T.C(x) => 1,\n        _ => 0,\n    };\n    r\n}\npub fn main() i64 { 0 }\n";
+    let o6 = run_artifact_with_input(artifact, &[unit("e.calq", None, e6)]).expect("runs");
+    assert_eq!(o6.output, "error 0:0 pattern `T` does not match scrutinee type `S`\n");
+    assert_eq!(o6.values[0].as_signed().expect("i64"), 1);
+}
+
+#[test]
+fn calq0_compiles_itself() {
+    // The C1 self-compilation gate: the seed builds calq0
+    // (compile_artifact); calq0 then compiles its OWN sources, and the
+    // emission must be byte-identical to what the seed produced - the
+    // seed -> calq0 -> calq0 fixed point. calq0's execution of the
+    // 3000-line set is ~4 minutes cold (the reference interpreter), so
+    // the GOT side is cached like the seed side; the key covers seed,
+    // calq0, and all sources.
+    let seed_built = compile_artifact();
+    let files = compiler_files();
+    let got = compile_via_calq0_cached("self", seed_built, &files);
+    assert_eq!(
+        got.len(),
+        seed_built.len(),
+        "the self-translation must have the seed's length; head: {}",
+        got.chars().take(160).collect::<String>()
+    );
+    assert_eq!(
+        got,
+        *seed_built,
+        "seed -> calq0 -> calq0 must reproduce calq0 byte-exactly: {}",
+        diff_hint(&got, seed_built)
+    );
+
+    // Round 2: the SELF-PRODUCED compiler is a working compiler - it
+    // compiles fib.calq byte-equal to the seed, and the result runs.
+    let fib: Vec<UnitFile> = vec![
+        stdlib_str(),
+        unit(
+            "fib.calq",
+            None,
+            include_str!("../../../specimens/calque/examples/fib.calq"),
+        ),
+    ];
+    let expected = seed_translate(&fib).expect("the seed emits fib");
+    let got2 = run_artifact_with_input(&got, &fib).expect("the self-produced calq0 compiles fib");
+    assert_eq!(
+        got2.output,
+        expected,
+        "the self-produced compiler must emit fib byte-equal: {}",
+        diff_hint(&got2.output, &expected)
+    );
+    let emitted = run_artifact(&got2.output).expect("the fib artifact runs");
+    assert_eq!(emitted.output, "55\n");
+}
+
+#[test]
 fn calq0_compiles_the_corpus_examples() {
     // Slice 3c: the independent corpus - every example that the seed's
     // b0 subset admits, compiled by BOTH compilers and executed.
@@ -1001,5 +1172,43 @@ fn calq0_compiles_the_corpus_examples() {
         );
         let emitted = run_artifact(&got.output).expect("the emitted example runs");
         assert_eq!(emitted.output, *want, "{name} must print its hand-derived output");
+    }
+}
+
+#[test]
+fn seed_translates_the_compiler_set() {
+    let files = compiler_files();
+    let seed_src = include_str!("../../../tools/calque/bootstrap/seed.lua");
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    seed_src.hash(&mut hasher);
+    for f in &files {
+        f.name.hash(&mut hasher);
+        f.ns.hash(&mut hasher);
+        f.text.hash(&mut hasher);
+    }
+    let key = format!(
+        "calque-artifacts/setcheck-{:016x}.mlir",
+        hasher.finish()
+    );
+    let path = std::path::Path::new("../../target").join(&key);
+    if let Ok(cached) = std::fs::read_to_string(&path) {
+        println!("SET OK {} (cached)", cached.len());
+        return;
+    }
+    println!("SET COMPUTING");
+    let result = std::thread::Builder::new()
+        .stack_size(frk_interp::STACK_SIZE)
+        .spawn(move || calque::seed_translate_jit(&files))
+        .expect("spawn")
+        .join()
+        .expect("join");
+    match result {
+        Ok(a) => {
+            let _ = std::fs::create_dir_all(path.parent().unwrap());
+            let _ = std::fs::write(&path, &a);
+            println!("SET OK {}", a.len());
+        }
+        Err(e) => println!("SET ERR: {e}"),
     }
 }

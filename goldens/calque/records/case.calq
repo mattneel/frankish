@@ -1,0 +1,12 @@
+// b0 records: literal defaults and the immutable update.
+// Expected output (hand-derived): "7\n9\n"
+pub const P2 = struct { a: i64, b: i64 = 7 };
+pub fn main() i64 {
+    const p = %P2{a: 3};
+    const q = %P2{p | b: 9};
+    io.print(str.fromI64(p.b));
+    io.print("\n");
+    io.print(str.fromI64(q.b));
+    io.print("\n");
+    0
+}

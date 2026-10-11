@@ -1,0 +1,10 @@
+// b0 strings: concat, len, escapes.
+// Expected output (hand-derived): "hello, world\n3\n"
+pub fn main() i64 {
+    const name: Str = "world";
+    io.print(str.concat("hello, ", name));
+    io.print("\n");
+    io.print(str.fromI64(str.len("abc")));
+    io.print("\n");
+    0
+}

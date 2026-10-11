@@ -1388,16 +1388,33 @@ rework flag, not a knob.
       case flows through. Emitter structure: `Emit.out` carries final
       lines (emit_line indents, emit_top does not), `sym_of` mangles
       main -> __calque_main, e_render returns `out`.
-    Next: calq0 slice 3c: the compiler core is COMPLETE (3b-beta-2
-    shipped the match emission - all five M-probes byte-equal to the
-    seed and executing). Slice 3c = the corpus (seed/calq0 agreement
-    on a wider program set, error messages, the compiler's own
-    sources) and the self-compilation gate: calq0 translating its own
-    emit.calq/parse.calq through the seed-vs-calq0 chain.
-    (3b-beta-2 also FIXED A SEED BUG: a non-last union chain arm with
-    a failing payload pattern left the tag test's false target
-    dangling - found by the new M1 probe, fixed in emit_arm, both
-    goldens and the corpus unaffected before the fix.) (3b-alpha VERIFIED: calq0's
+    Next: THE USER-DIRECTED DX-EMITTER MILESTONE (priority correction,
+    2026-10-11): retire the emitter's bootstrap-shaped state. After
+    this slice's green point the plan is: (1) seed v0.2 gains [T]
+    types + annotation-typed collection literals + var inference +
+    `mut` parameters and field assignment (the scoped exclusive
+    state interface; frk_mem.field_set already exists) + the
+    exclusivity rules; (2) calq0 mirrors them; (3) emit.calq's cells
+    become real Emitter fields initialized by %Emitter defaults;
+    (4) tests: caller-visible state updates, independent emitter
+    instances, retained collection values; (5) unchanged artifacts +
+    failure behavior + the interpreter/native/bootstrap/self gates.
+    Design call to be ledgered (D-112). C2 feature expansion PAUSES
+    behind this (user directive).
+    Slice 3c COMPLETE (same session): the self-compilation fixed point
+    (calq0 - built by the seed - compiles its own sources
+    byte-identically; the self-produced compiler compiles fib equal
+    and runs; make calque-selfhost), the standard corpus
+    goldens/calque (11 cases: hand-derived expected.out; all green
+    under interp/jit/jit-rc, skipped-or-green AOT native 11/11 both
+    strategies, diff 0 divergent), the harness move
+    (frk_harness::calque, D-111), and the sources fixes the gate
+    found: the four __calque_input* intrinsics, the recursive
+    storage-poison mirror, emit_cmp's != (eq+xori) unification.
+    KNOWN SEED GAP recorded: the scope grammar lists `and or` but the
+    seed's expression levels stop at 4..6 - and/or are parse-legal
+    keywords with NO emission; the compiler sources must avoid them
+    until the seed grows them (C2). (3b-alpha VERIFIED: calq0's
     emission for the var/while/checked-arith program AND for fib.calq
     is BYTE-IDENTICAL to the seed's, and both emitted artifacts run -
     `calq0_matches_the_seed_on_statements_and_arithmetic`, the

@@ -1,0 +1,22 @@
+// b0 unions + match: a chain arm with a failing payload pattern (the
+// split path), another variant, and a wildcard fall arm.
+// Expected output (hand-derived): "10\n40\n30\n"
+pub const P2 = struct { a: i64, b: i64 };
+pub const Op2 = union(enum) { Add: P2, Neg };
+pub fn classify(o: Op2) i64 {
+    const r = match o {
+        Op2.Add(%P2{a: 1, b: 2}) => 10,
+        Op2.Neg => 30,
+        _ => 40,
+    };
+    r
+}
+pub fn main() i64 {
+    io.print(str.fromI64(classify(Op2.Add(%P2{a: 1, b: 2}))));
+    io.print("\n");
+    io.print(str.fromI64(classify(Op2.Add(%P2{a: 9, b: 9}))));
+    io.print("\n");
+    io.print(str.fromI64(classify(Op2.Neg)));
+    io.print("\n");
+    0
+}

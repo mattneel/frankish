@@ -3,6 +3,7 @@
 //! canonicalization (law L2); the contract is docs/canon.md and its only
 //! implementation is [`canon`].
 
+pub mod calque;
 pub mod canon;
 pub mod case;
 pub mod dashboard;

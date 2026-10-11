@@ -3413,3 +3413,38 @@ veto-ledger pattern and most deserve their review.
   admissible wherever the contract requires equivalence, not a
   specific engine. The pinned GOAL text is untouched; this entry
   records the execution-path ruling + its evidence obligations.
+
+- D-111 [calque/harness] THE SEED-INVOCATION SERVICES LIVE IN
+  frk-harness, AND CALQUE JOINS THE STANDARD GOLDEN MACHINERY (M37
+  session; forced by the dependency graph, not taste). THE RULING:
+  (1) the glue that assembles units, runs the SEED, injects the input
+  channel, composes artifacts, and runs them (`UnitFile`,
+  `seed_translate[_jit]`, `compose_unit*`, `run_artifact*`, the
+  intrinsics module) moved from `crates/calque` to
+  `frk_harness::calque`; `crates/calque` RE-EXPORTS it. Reason: the
+  golden/grid machinery must reach it, and the harness cannot depend
+  on the calque crate because that crate depends on the harness
+  (moving the glue into frk-front would close the same cycle on the
+  other side: frk-front cannot depend on frk-harness, which depends
+  on it). Goal §4 holds: this is driver glue, not Calque frontend
+  logic - the lexer, parser, and emitter remain Calque source.
+  (2) the harness gains `SourceKind::Calque` (`case.calq`): the
+  front-end is the CANONICAL compiler (seed -> calq0), whose build is
+  cached in-process and on disk (target/calque-artifacts, keyed by
+  the seed source and every unit); the run protocol is the CAPTURED
+  PRINT STREAM (like lua/scheme/ts), and the emitted `main` returns
+  i64, so the JIT invoke passes a result slot that is ignored
+  (invoking void segfaults - found live); the AOT shim is the
+  void-entry form (the runtime prints to stdout, D-042's rename rule
+  unchanged). No upstream oracle exists (original specimen): the
+  interpreter is the reference and the runner grid supplies the
+  cross-path evidence.
+  (3) the corpus lives at `goldens/calque/` in the STANDARD case
+  layout (case.calq + expected.out, hand-derived expectations), so
+  `frnksh test/diff/dashboard/grid` and `make test` consume it with
+  no special casing; `make calque-test` runs it after the charter
+  checks.
+  REVISIT CONDITION: if crates/calque ever needs to own a stable
+  public API for the glue (e.g. an external driver), relocate the
+  module and INVERT the dependency (harness -> calque) after breaking
+  the calque -> harness edge - never duplicate the glue.

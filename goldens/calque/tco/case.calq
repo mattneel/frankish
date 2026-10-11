@@ -1,0 +1,17 @@
+// b0 tail recursion (SPEC F10): 500k self tail calls run in constant
+// stack on the native paths. The reference interpreter traps past its
+// 1024-frame ceiling (D-029) - a REPORTED skip, via the runners
+// directive, not a silent one.
+// frk-case: runners=jit,jit-rc,aot-
+// Expected output (hand-derived): "500000\n"
+pub fn count(n: i64, acc: i64) i64 {
+    if n == 0 {
+        return acc;
+    }
+    count(n - 1, acc + 1)
+}
+pub fn main() i64 {
+    io.print(str.fromI64(count(500000, 0)));
+    io.print("\n");
+    0
+}

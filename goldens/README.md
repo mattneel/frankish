@@ -11,7 +11,8 @@ Format ruled in D-027; comparison contract in docs/canon.md.
       expected.out    blessed canonical output (committed)
       output.actual   written on mismatch for diffing (gitignored)
 
-A directory is a case iff it contains `case.mlir` or `case.ml`.
+A directory is a case iff it contains `case.mlir`, `case.ml`,
+or `case.calq`.
 Suites are just directories; `upstream/` holds MLIR programs over
 func/arith/scf/cf; `adt/` and `closure/` exercise the kernel dialects;
 `mem/` exercises the
@@ -22,7 +23,12 @@ files spell `(* frk-case: ... *)`. `ts0/` holds TypeScript TS-0
 programs (`case.ts`): compiled through the loanword producer
 (node + tsc), entry is void, the OUTPUT is the console.log stream,
 and node itself is the oracle; number printing obeys canon §6's
-fence. `repl/` holds scripted shell transcripts (`transcript.in`). Keep integer results under 2^62
+fence. `repl/` holds scripted shell transcripts (`transcript.in`). `calque/`
+holds Calque b0 programs (`case.calq`): compiled by the canonical
+Calque compiler (the seed -> calq0 chain; `frk_harness::calque`), the
+OUTPUT is the captured print stream, and (calque being an ORIGINAL
+specimen) there is no upstream oracle — the interpreter is the
+reference and the runner grid supplies the cross-path evidence. Keep integer results under 2^62
 (OCaml's 63-bit ints; the divergence rule lives in the ml_core
 MANIFEST).
 
@@ -39,10 +45,11 @@ Optional `// frk-case: key=value` comment lines anywhere in case.mlir:
 
     // frk-case: entry=main      entry function symbol   (default: main)
     // frk-case: result=i64      return rendering        (default: i64; v0's only type)
-    // frk-case: runners=a,b     applicable runners      (default: all — SPEC §7.2)
+    // frk-case: runners=a,b     applicable runners      (default: all — SPEC §7.2;
+    //                            an entry ending in '-' is a prefix, e.g. `aot-`)
 
 Directive comment forms per language (each stays a valid comment so the
-oracle runs the same file): `//` (.mlir/.ts), `(* … *)` (.ml), `--`
+oracle runs the same file): `//` (.mlir/.ts/.calq), `(* … *)` (.ml), `--`
 (.lua), `;;` or `;` (.scm).
 
 Unknown keys and unsupported values are errors — a typo'd directive must

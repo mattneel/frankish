@@ -26,6 +26,10 @@ pub enum SourceKind {
     /// A TypeScript TS-0 program (M9, D-047): compiled through the
     /// loanword producer; output is captured stdout, entry is void.
     Ts,
+    /// A Calque program (M37, D-087): compiled by the canonical Calque
+    /// compiler (`frk_harness::calque`); output is the captured print
+    /// stream, entry is the emitted `main`.
+    Calque,
     /// A femto_lua program (M11, D-052/D-054): native reader; output
     /// is the print stream, entry is void; lua5.1 is the oracle.
     Lua,
@@ -46,19 +50,25 @@ pub struct Case {
     pub entry: String,
     /// Entry result rendering (directive `result=`, default `i64`).
     pub result: ResultKind,
-    /// Runner names this case applies to (directive `runners=a,b`);
-    /// None = every runner (SPEC §7.2 "all applicable runners"). Used
-    /// while an op set is ahead of some execution path (e.g. adt before
-    /// its K3 lowering); a skip is reported, never silent.
+    /// Runner names this case applies to (directive `runners=a,b`; an
+    /// entry ending in '-' is a prefix, e.g. `aot-` for every AOT
+    /// triple); None = every runner (SPEC §7.2 "all applicable
+    /// runners"). Used while an op set is ahead of some execution path
+    /// (e.g. adt before its K3 lowering); a skip is reported, never
+    /// silent.
     pub runners: Option<Vec<String>>,
     pub kind: SourceKind,
 }
 
 impl Case {
     pub fn applies_to(&self, runner: &str) -> bool {
-        self.runners
-            .as_ref()
-            .is_none_or(|list| list.iter().any(|name| name == runner))
+        // A list entry matches exactly, or as a PREFIX when it ends in
+        // '-' - the AOT runners are named per triple ("aot-x86_64-linux-
+        // musl"), so a family must be addressable (README: runners=).
+        self.runners.as_ref().is_none_or(|list| {
+            list.iter()
+                .any(|name| name == runner || (name.ends_with('-') && runner.starts_with(name)))
+        })
     }
 }
 
@@ -103,6 +113,7 @@ const TRANSCRIPT_SOURCE: &str = "transcript.in";
 const TS_SOURCE: &str = "case.ts";
 const LUA_SOURCE: &str = "case.lua";
 const SCHEME_SOURCE: &str = "case.scm";
+const CALQUE_SOURCE: &str = "case.calq";
 const EXPECTED_FILE: &str = "expected.out";
 
 /// Walks `root` and returns every directory containing a `case.mlir`,
@@ -147,6 +158,11 @@ fn walk(root: &Path, dir: &Path, cases: &mut Vec<Case>) -> Result<(), CaseError>
     let scheme_path = dir.join(SCHEME_SOURCE);
     if scheme_path.is_file() {
         cases.push(load(root, dir, scheme_path, SourceKind::Scheme)?);
+        return Ok(());
+    }
+    let calque_path = dir.join(CALQUE_SOURCE);
+    if calque_path.is_file() {
+        cases.push(load(root, dir, calque_path, SourceKind::Calque)?);
         return Ok(());
     }
     let entries = fs::read_dir(dir).map_err(|e| CaseError::Io(dir.to_path_buf(), e))?;

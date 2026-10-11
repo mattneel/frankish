@@ -1,0 +1,18 @@
+// b0 control: while + if/else inside, checked arithmetic throughout.
+// Expected output (hand-derived): even 2+4+6+8+10=30, odd five times
+// +1 each = 35.
+pub fn main() i64 {
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < 10 {
+        i = i + 1;
+        if i % 2 == 0 {
+            total = total + i;
+        } else {
+            total = total + 1;
+        }
+    }
+    io.print(str.fromI64(total));
+    io.print("\n");
+    0
+}

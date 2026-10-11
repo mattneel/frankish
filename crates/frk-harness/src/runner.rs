@@ -126,6 +126,19 @@ fn parse_and_verify<'c>(
             frk_front::scheme::compile_scheme(context, &file, source)
                 .map_err(|e| RunError::Parse(format!("{}: {e}", case.source_path.display())))?
         }
+        SourceKind::Calque => {
+            let file = case
+                .source_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "case.calq".to_string());
+            let artifact = crate::calque::compile_source(&file, source)
+                .map_err(|e| RunError::Parse(format!("{}: {e}", case.source_path.display())))?;
+            let composed = crate::calque::compose_unit(&artifact);
+            Module::parse(context, &composed).ok_or_else(|| {
+                RunError::Parse(format!("{}: composed module", case.source_path.display()))
+            })?
+        }
         SourceKind::Transcript => {
             return Err(RunError::Parse(format!(
                 "{}: transcripts run only under the repl runner",
@@ -329,7 +342,10 @@ fn interpret_case(case: &Case) -> Result<String, RunError> {
         frk_interp::Interp::new(&module).map_err(|e| RunError::Invoke(e.to_string()))?;
     frk_dialects::register_eval(&mut interp);
 
-    if matches!(case.kind, SourceKind::Ts | SourceKind::Lua | SourceKind::Scheme) {
+    if matches!(
+        case.kind,
+        SourceKind::Ts | SourceKind::Lua | SourceKind::Scheme | SourceKind::Calque
+    ) {
         // TS-0/Lua/Scheme print protocols: void entry; output = the
         // captured print stream. Registration is REGISTRY-DRIVEN
         // (D-062, finished at M21): frk-abi's Builtin rows are the
@@ -456,12 +472,28 @@ impl Runner for JitRunner {
         // whose pointer is missing panics loudly here and fails the
         // coverage unit test before any golden runs.
         bind_rt_symbols(&engine);
-        if matches!(case.kind, SourceKind::Ts | SourceKind::Lua | SourceKind::Scheme) {
+        if matches!(
+        case.kind,
+        SourceKind::Ts | SourceKind::Lua | SourceKind::Scheme | SourceKind::Calque
+    ) {
             CAPTURE.with(|buffer| buffer.borrow_mut().clear());
-            unsafe {
-                engine
-                    .invoke_packed(&case.entry, &mut [])
-                    .map_err(|e| RunError::Invoke(format!("{}: {e}", case.entry)))?;
+            if case.kind == SourceKind::Calque {
+                // Calque's emitted `main` returns i64 (the exit code)
+                // and prints through the runtime: the invoke needs a
+                // result slot; the value is ignored (the OUTPUT is the
+                // captured stream).
+                let mut result: i64 = 0;
+                unsafe {
+                    engine
+                        .invoke_packed(&case.entry, &mut [&mut result as *mut i64 as *mut ()])
+                        .map_err(|e| RunError::Invoke(format!("{}: {e}", case.entry)))?;
+                }
+            } else {
+                unsafe {
+                    engine
+                        .invoke_packed(&case.entry, &mut [])
+                        .map_err(|e| RunError::Invoke(format!("{}: {e}", case.entry)))?;
+                }
             }
             return Ok(CAPTURE.with(|buffer| buffer.borrow_mut().split_off(0)));
         }
@@ -1014,7 +1046,10 @@ impl Runner for AotRunner {
             }
 
             let shim_path = work.join("shim.c");
-            let shim: &str = if matches!(case.kind, SourceKind::Ts | SourceKind::Lua | SourceKind::Scheme) {
+            let shim: &str = if matches!(
+        case.kind,
+        SourceKind::Ts | SourceKind::Lua | SourceKind::Scheme | SourceKind::Calque
+    ) {
                 // TS entry protocol (D-047): void main; output happens
                 // through the linked C runtime's print functions.
                 "extern void frk_entry(void);\nint main(void) { frk_entry(); return 0; }\n"

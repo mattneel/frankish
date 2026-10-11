@@ -1,0 +1,14 @@
+// b0 destructuring: {a, b} and renamed bindings, then an update.
+// Expected output (hand-derived): "10\n6\n"
+pub const P2 = struct { a: i64, b: i64 };
+pub fn main() i64 {
+    const p = %P2{a: 4, b: 6};
+    const {a, b} = p;
+    const s = %P2{p | a: a + b};
+    const {a: na, b: nb} = s;
+    io.print(str.fromI64(na));
+    io.print("\n");
+    io.print(str.fromI64(nb));
+    io.print("\n");
+    0
+}

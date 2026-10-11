@@ -1,0 +1,22 @@
+// b0 mutual recursion (SPEC F10): even/odd as two functions calling
+// each other in tail position. N stays below the reference
+// interpreter's 1024-frame ceiling (D-029); the 500k-class leg is the
+// tco case, which excludes the interpreter runner.
+// Expected output (hand-derived): "1\n0\n"
+pub fn isEven(n: i64) bool {
+    if n == 0 {
+        return true;
+    }
+    isOdd(n - 1)
+}
+pub fn isOdd(n: i64) bool {
+    if n == 0 {
+        return false;
+    }
+    isEven(n - 1)
+}
+pub fn main() i64 {
+    if isEven(500) { io.print("1\n"); } else { io.print("0\n"); }
+    if isOdd(500) { io.print("1\n"); } else { io.print("0\n"); }
+    0
+}

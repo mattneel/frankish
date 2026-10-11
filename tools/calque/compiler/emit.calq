@@ -697,44 +697,101 @@ pub fn named_poison_vec(e: Emit, inner: Ty) Str {
 }
 
 pub fn named_poison_box(e: Emit, n: Str) Str {
-    // The seed's struct poison: a box of a product of STORAGE poisons
-    // (named fields = recref_null). Union poison lands with match in
-    // 3b-beta; a union here still produces a well-formed empty box.
+    // The seed's poison(), mirrored: a struct poison is a box of a
+    // product of STORAGE poisons (named fields = recref_null, others
+    // recurse through e_poison); a union poison is variant 0's
+    // product, storage-poisoned.
     const a: Ast = e_ast(e);
     const td: TypeDecl = find_td(a, n);
-    var acc: Str = "";
-    var acc_ty: Str = "!frk_adt.product<[]>";
-    const nf: i64 = vector.len(td.fields);
-    var i: i64 = 0;
-    var e0: Str = "";
+    const sty: Ty = Ty.Named(td.name);
     if td.is_union == false {
-        e0 = fresh(e);
+        const e0: Str = fresh(e);
         emit_line(e, str.concat(e0, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
-        acc = e0;
+        var acc: Str = e0;
+        var acc_fields: Str = "";
+        var acc_ty: Str = "!frk_adt.product<[]>";
+        const nf: i64 = vector.len(td.fields);
         var j: i64 = 0;
         while j < nf {
             const f: FieldDecl = vector.get(td.fields, j);
-            const st: Str = storage_ir_t(a, f.ty);
             var val: Str = "";
-            if ty_is_i64(f.ty) {
-                val = const_i64(e, "0");
+            var st: Str = "";
+            if is_named_t(f.ty) {
+                val = fresh(e);
+                emit_line(e, str.concat(val, " = \"frk_mem.recref_null\"() : () -> !frk_mem.recref"));
+                st = "!frk_mem.recref";
             } else {
-                val = e_str(e, "");
+                val = e_poison(e, f.ty);
+                st = storage_ir_t(a, f.ty);
             }
+            var new_fields: Str = st;
+            if j > 0 {
+                new_fields = str.concat(acc_fields, str.concat(", ", st));
+            }
+            const new_ty: Str = str.concat("!frk_adt.product<[", str.concat(new_fields, "]>"));
             const nxt: Str = fresh(e);
-            emit_line(e, str.concat(nxt, str.concat(" = \"frk_adt.product_snoc\"(", str.concat(acc, str.concat(", ", str.concat(val, str.concat(") : (", str.concat(acc_ty, str.concat(", ", str.concat(st, str.concat(") -> !frk_adt.product<[", str.concat(st, "]>"))))))))))));
+            var l1: Str = " = \"frk_adt.product_snoc\"(";
+            l1 = str.concat(l1, acc);
+            l1 = str.concat(l1, ", ");
+            l1 = str.concat(l1, val);
+            l1 = str.concat(l1, ") : (");
+            l1 = str.concat(l1, acc_ty);
+            l1 = str.concat(l1, ", ");
+            l1 = str.concat(l1, st);
+            l1 = str.concat(l1, ") -> ");
+            l1 = str.concat(l1, new_ty);
+            emit_line(e, str.concat(nxt, l1));
             acc = nxt;
-            acc_ty = str.concat("!frk_adt.product<[", str.concat(st, "]>"));
+            acc_fields = new_fields;
+            acc_ty = new_ty;
             j = j + 1;
         }
-    } else {
-        e0 = fresh(e);
-        emit_line(e, str.concat(e0, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
-        acc = e0;
+        const b: Str = fresh(e);
+        emit_line(e, str.concat(b, str.concat(" = \"frk_mem.box_new\"(", str.concat(acc, str.concat(") : (", str.concat(acc_ty, str.concat(") -> !frk_mem.box<", str.concat(acc_ty, ">"))))))));
+        return b;
     }
-    const b: Str = fresh(e);
-    emit_line(e, str.concat(b, str.concat(" = \"frk_mem.box_new\"(", str.concat(acc, str.concat(") : (", str.concat(acc_ty, str.concat(") -> !frk_mem.box<", str.concat(acc_ty, ">"))))))));
-    return b;
+    const v0: VariantDecl = vector.get(td.variants, 0);
+    var prod_v: Str = "";
+    var prod_t: Str = "!frk_adt.product<[]>";
+    if v0.has_payload == false {
+        prod_v = fresh(e);
+        emit_line(e, str.concat(prod_v, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
+    } else {
+        var val: Str = "";
+        var st: Str = "";
+        if is_named_t(v0.ty) {
+            val = fresh(e);
+            emit_line(e, str.concat(val, " = \"frk_mem.recref_null\"() : () -> !frk_mem.recref"));
+            st = "!frk_mem.recref";
+        } else {
+            val = e_poison(e, v0.ty);
+            st = storage_ir_t(a, v0.ty);
+        }
+        const e1: Str = fresh(e);
+        emit_line(e, str.concat(e1, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
+        const sn: Str = fresh(e);
+        var l1: Str = " = \"frk_adt.product_snoc\"(";
+        l1 = str.concat(l1, e1);
+        l1 = str.concat(l1, ", ");
+        l1 = str.concat(l1, val);
+        l1 = str.concat(l1, ") : (!frk_adt.product<[]>, ");
+        l1 = str.concat(l1, st);
+        l1 = str.concat(l1, ") -> !frk_adt.product<[");
+        l1 = str.concat(l1, st);
+        l1 = str.concat(l1, "]>");
+        emit_line(e, str.concat(sn, l1));
+        prod_v = sn;
+        prod_t = str.concat("!frk_adt.product<[", str.concat(st, "]>"));
+    }
+    const s: Str = fresh(e);
+    var l2: Str = " = \"frk_adt.make_sum\"(";
+    l2 = str.concat(l2, prod_v);
+    l2 = str.concat(l2, ") {variant = 0 : i64} : (");
+    l2 = str.concat(l2, prod_t);
+    l2 = str.concat(l2, ") -> ");
+    l2 = str.concat(l2, value_ir_t(a, sty));
+    emit_line(e, str.concat(s, l2));
+    return s;
 }
 
 // The seed's guard: cond_br cond ^trap ^ok; ^trap: message + rt trap +
@@ -905,49 +962,46 @@ pub fn emit_cmp(e: Emit, op: Str, a: Str, b: Str, line: i64, col: i64) Str {
     if ty_is_unit(t) {
         t = tb;
     }
+    var comparable: bool = false;
     if ty_is_i64(t) {
-        const r: Str = fresh(e);
-        emit_line(e, str.concat(r, str.concat(" = arith.cmpi ", str.concat(cmp_pred(op), str.concat(", ", str.concat(a, str.concat(", ", str.concat(b, " : i64"))))))));
-        vset(e, r, Ty.BoolV);
-        return r;
+        comparable = true;
     }
     if ty_is_bool(t) {
-        if op == "==" {
-            const r2: Str = fresh(e);
-            emit_line(e, str.concat(r2, str.concat(" = arith.cmpi eq, ", str.concat(a, str.concat(", ", str.concat(b, " : i1"))))));
-            vset(e, r2, Ty.BoolV);
-            return r2;
-        }
-        if op == "!=" {
-            const r3: Str = fresh(e);
-            emit_line(e, str.concat(r3, str.concat(" = arith.cmpi eq, ", str.concat(a, str.concat(", ", str.concat(b, " : i1"))))));
-            const tt: Str = e_bool(e, "true");
-            const r4: Str = fresh(e);
-            emit_line(e, str.concat(r4, str.concat(" = arith.xori ", str.concat(r3, str.concat(", ", str.concat(tt, " : i1"))))));
-            vset(e, r4, Ty.BoolV);
-            return r4;
-        }
-        return e_fail_at(e, line, col, "boolean ordering is not in the seed (use == / !=)");
+        comparable = true;
     }
     if ty_is_str(t) {
+        comparable = true;
+    }
+    if comparable {
+        var is_eqop: bool = false;
         if op == "==" {
-            const r5: Str = fresh(e);
-            emit_line(e, str.concat(r5, str.concat(" = \"frk_bstr.eq\"(", str.concat(a, str.concat(", ", str.concat(b, ") : (!frk_bstr.str, !frk_bstr.str) -> i1"))))));
-            vset(e, r5, Ty.BoolV);
-            return r5;
+            is_eqop = true;
         }
         if op == "!=" {
-            const r6: Str = fresh(e);
-            emit_line(e, str.concat(r6, str.concat(" = \"frk_bstr.eq\"(", str.concat(a, str.concat(", ", str.concat(b, ") : (!frk_bstr.str, !frk_bstr.str) -> i1"))))));
-            const tt2: Str = e_bool(e, "true");
-            const r7: Str = fresh(e);
-            emit_line(e, str.concat(r7, str.concat(" = arith.xori ", str.concat(r6, str.concat(", ", str.concat(tt2, " : i1"))))));
-            vset(e, r7, Ty.BoolV);
-            return r7;
+            is_eqop = true;
         }
-        return e_fail_at(e, line, col, "string ordering is outside the verified subset (use == / !=)");
+        if is_eqop {
+            const eqr: Str = emit_equality(e, a, b, t, line, col);
+            if op == "==" {
+                return eqr;
+            }
+            const tt: Str = e_bool(e, "true");
+            const n: Str = fresh(e);
+            emit_line(e, str.concat(n, str.concat(" = arith.xori ", str.concat(eqr, str.concat(", ", str.concat(tt, " : i1"))))));
+            vset(e, n, Ty.BoolV);
+            return n;
+        }
+        if ty_is_bool(t) {
+            return e_fail_at(e, line, col, "boolean ordering is not in the seed (use == / !=)");
+        }
+        if ty_is_str(t) {
+            return e_fail_at(e, line, col, "string ordering is outside the verified subset (use == / !=)");
+        }
     }
-    return e_fail_at(e, line, col, "comparisons are i64/bool/Str in seed v0");
+    const r: Str = fresh(e);
+    emit_line(e, str.concat(r, str.concat(" = arith.cmpi ", str.concat(cmp_pred(op), str.concat(", ", str.concat(a, str.concat(", ", str.concat(b, " : i64"))))))));
+    vset(e, r, Ty.BoolV);
+    return r;
 }
 
 // ---------------------------------------------------------------- reads
@@ -997,6 +1051,47 @@ pub fn find_fn(a: Ast, sym: Str) Fn {
 
 pub fn emit_call(e: Emit, c: Call, line: i64, col: i64) Str {
     const r: Ref = c.callee;
+    if str.len(r.mod) == 0 {
+        if r.name == "__calque_input_count" {
+            if vector.len(c.args) != 0 {
+                return e_fail_at(e, line, col, "__calque_input_count takes no arguments");
+            }
+            const res0: Str = fresh(e);
+            emit_line(e, str.concat(res0, " = func.call @__calque_input_count() : () -> i64"));
+            vset(e, res0, Ty.I64);
+            return res0;
+        }
+        if r.name == "__calque_input" {
+            if vector.len(c.args) != 1 {
+                return e_fail_at(e, line, col, "__calque_input takes exactly one i64");
+            }
+            const a1: Str = emit_expr(e, vector.get(c.args, 0));
+            const res1: Str = fresh(e);
+            emit_line(e, str.concat(res1, str.concat(" = func.call @__calque_input(", str.concat(a1, ") : (i64) -> !frk_bstr.str"))));
+            vset(e, res1, Ty.StrV);
+            return res1;
+        }
+        if r.name == "__calque_input_name" {
+            if vector.len(c.args) != 1 {
+                return e_fail_at(e, line, col, "__calque_input_name takes exactly one i64");
+            }
+            const a2: Str = emit_expr(e, vector.get(c.args, 0));
+            const res2: Str = fresh(e);
+            emit_line(e, str.concat(res2, str.concat(" = func.call @__calque_input_name(", str.concat(a2, ") : (i64) -> !frk_bstr.str"))));
+            vset(e, res2, Ty.StrV);
+            return res2;
+        }
+        if r.name == "__calque_input_ns" {
+            if vector.len(c.args) != 1 {
+                return e_fail_at(e, line, col, "__calque_input_ns takes exactly one i64");
+            }
+            const a3: Str = emit_expr(e, vector.get(c.args, 0));
+            const res3: Str = fresh(e);
+            emit_line(e, str.concat(res3, str.concat(" = func.call @__calque_input_ns(", str.concat(a3, ") : (i64) -> !frk_bstr.str"))));
+            vset(e, res3, Ty.StrV);
+            return res3;
+        }
+    }
     if str.len(r.mod) > 0 {
         const td: TypeDecl = find_td(e_ast(e), r.mod);
         if td.name != "" {

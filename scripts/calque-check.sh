@@ -175,6 +175,7 @@ done
 
 # 6. Wiring.
 grep -q '^calque-test:' Makefile || err "Makefile is missing the calque-test target"
+grep -q '^calque-selfhost:' Makefile || err "Makefile is missing the calque-selfhost target"
 grep -q 'specimens/calque.md' book/src/SUMMARY.md || err "book SUMMARY.md is missing the calque chapter"
 
 ntotal=$(printf '%s\n' $ids | grep -c '.' || true)
