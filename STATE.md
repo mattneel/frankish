@@ -1464,6 +1464,21 @@ rework flag, not a knob.
     message visible - rebuild it with the python snippet from the C2
     session; `break` joins and/or on the seed CANNOT-EMIT list (the
     sources use go-flag loops).
+    C2 errors increment, three slices LANDED (6d9bcd1 on top): (1)
+    `.Variant` dot constructors (typed contexts synthesize the
+    qualified callee; 2109 probe); (2) `try` (SPEC 6.5, the F9
+    same-E rule with a structural payload check; Err returns from the
+    enclosing fn via the return-union's variant 1; Ok flows through a
+    block-arg join); (3) `.Variant` PATTERNS for the recovery matches
+    (the scrutinee supplies the union). All byte-mirrored in calq0
+    with differentials; suite 44 passed.
+    NEXT (errors, continued): `?T`/`E!T` shorthands - plan: REAL Ty
+    variants (Ty.Option(inner) / Ty.Result(err, ok)) with SYNTHETIC
+    union decls built on the fly, so value_ir/storage_ir, the match
+    machinery (scrutinee-kind dispatch accepts them), the dot
+    constructors/patterns, and `try`'s metadata all reuse one path;
+    then `catch` (precedence level 0, the |err| binding + replacement
+    block, the playbook's `catch { return .Err(...) }` shape).
     CLOSURE DESIGN (settled, ready to implement; verified against the
     dialect this session): the frk_closure ops are make(env:
     product) {callee} -> fn, apply(fn, args: product) -> value, and
