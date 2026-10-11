@@ -61,6 +61,78 @@ fn seed_compiles_the_exact_from_i64_vectors() {
 }
 
 #[test]
+fn seed_compiles_records_unions_and_match() {
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "crates/calque/tests/assets/adt_probe.calq",
+            None,
+            include_str!("assets/adt_probe.calq"),
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed translates the ADT probe");
+    let outcome = run_artifact(&artifact).expect("the artifact runs");
+    assert_eq!(outcome.output, "p 3 p 10 circle 7 rect 1,2 nothing hit\n");
+}
+
+fn adt_negative(body: &str) -> String {
+    let program = format!(
+        "pub const Point = struct {{\n    x: i64,\n    y: i64,\n    label: Str = \"p\",\n}};\n\
+         pub const Shape = union(enum) {{\n    Circle: i64,\n    Rect: Point,\n    Nothing,\n}};\n\
+         pub fn main() i64 {{\n{body}\n    0\n}}\n"
+    );
+    let files = vec![stdlib_str(), unit("bad.calq", None, &program)];
+    seed_translate(&files).expect_err("the seed must refuse this program")
+}
+
+#[test]
+fn seed_refuses_bad_record_construction() {
+    let msg = adt_negative("    const p = %Point{x: 1};");
+    assert!(msg.contains("missing required field `y`"), "{msg}");
+    let msg = adt_negative("    const p = %Point{x: 1, y: 2, z: 3};");
+    assert!(msg.contains("unknown field `z`"), "{msg}");
+    let msg = adt_negative("    const p = %Point{x: 1, y: 2, x: 3};");
+    assert!(msg.contains("duplicate field `x`"), "{msg}");
+}
+
+#[test]
+fn seed_refuses_bad_matches() {
+    let msg = adt_negative(
+        "    const s = Shape.Circle(1);\n    const r = match s {\n        Shape.Circle(n) => \"c\",\n        Shape.Rect(p) => \"r\",\n    };",
+    );
+    assert!(msg.contains("does not cover Shape.Nothing"), "{msg}");
+    let msg = adt_negative(
+        "    const s = Shape.Circle(1);\n    const r = match s {\n        Shape.Circle(n) => \"c\",\n        Shape.Circle(m) => \"d\",\n        _ => \"x\",\n    };",
+    );
+    assert!(msg.contains("redundant arm"), "{msg}");
+    let msg = adt_negative("    const s = Shape.Blob;");
+    assert!(msg.contains("unknown variant `Blob`"), "{msg}");
+}
+
+#[test]
+fn seed_refuses_refining_final_arms() {
+    let msg = adt_negative(
+        "    const s = Shape.Circle(1);\n    const r = match s {\n        Shape.Rect(p) => \"r\",\n        Shape.Nothing => \"n\",\n        Shape.Circle(7) => \"seven\",\n    };",
+    );
+    assert!(msg.contains("add a following `_` arm"), "{msg}");
+}
+
+#[test]
+fn seed_compiles_the_steering_struct_example() {
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "specimens/calque/examples/user_badge.calq",
+            None,
+            include_str!("../../../specimens/calque/examples/user_badge.calq"),
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed translates the example");
+    let outcome = run_artifact(&artifact).expect("the artifact runs");
+    assert_eq!(outcome.output, "Hello, Matt\nPerfect, Matt\n");
+}
+
+#[test]
 fn seed_refuses_non_ascii_input_loudly() {
     let files = vec![unit("bad.calq", None, "pub fn main() i64 { 0 } // héllo")];
     let error = seed_translate(&files).expect_err("bytes >= 0x80 are refused (SPEC F18)");

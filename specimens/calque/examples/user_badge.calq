@@ -1,0 +1,27 @@
+// b0 example - the steering amendment's struct surface (D-095):
+// defaults, immutable update, record patterns with literal fields.
+// Expected output (hand-derived):
+//   "Hello, Matt\nPerfect, Matt\n"
+pub const User = struct {
+    name: Str,
+    score: i64 = 0,
+    active: bool = true,
+};
+
+pub fn badge(user: User) Str {
+    match user {
+        %User{active: false} => "Account disabled",
+        %User{name: name, score: 42} => str.concat("Perfect, ", name),
+        %User{name: name} => str.concat("Hello, ", name),
+    }
+}
+
+pub fn main() i64 {
+    const original = %User{name: "Matt"};
+    const edited = %User{original | score: 42};
+    io.print(badge(original));
+    io.print("\n");
+    io.print(badge(edited));
+    io.print("\n");
+    0
+}

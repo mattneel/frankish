@@ -78,13 +78,20 @@ current ledger, D-085):
 - **C6 (M42) — release and demonstration package.** Demos A–E
   (asciinema + MP4), documentation audit, acceptance sweep.
 
-## Scope grammar (b0 — frozen at M36; SPEC §12 is the precise text)
+## Scope grammar (b0 — frozen at M36; extended at M37 by the seed growth;
+SPEC §12 is the precise text)
 ASCII-source subset: `i64`, `bool`, `Str`, `Vector(T)`, `Option(T)`,
-`Result(T, E)`; `const`/`var` locals and assignment; `fn` with
-explicit types everywhere; closures; recursion (direct/mutual) with
-the tail-call guarantee; records (nominal, `struct { ... }`);
-tagged unions (nominal, single payload per variant); `match` with
-variant/wildcard/binding patterns, exhaustiveness checked; `if`
+`Result(T, E)`; `const`/`var` locals and assignment (unannotated
+`const` takes its initializer's type); `fn` with explicit types
+everywhere; closures; recursion (direct/mutual) with the tail-call
+guarantee; records (`const T = struct {...}` with literal per-field
+defaults; `%T{field: value}` construction, `%T{base | field: value}`
+immutable update); tagged unions (`union(enum)`, single payload per
+variant; `T.Variant` / `T.Variant(payload)` construction); `match`
+(variant patterns with nested sub-patterns, record patterns
+`%T{field: pat}` / `%T{}`, literal and `^pin` sub-patterns, wildcard,
+bindings; exhaustiveness checked with concrete missing-case names;
+redundant arms are errors); `if`
 (statement + expression), `while`, `break`, `continue`, blocks as
 expressions; `+ - * / % == != < <= > >= and or !`; `|>` pipeline
 sugar; `try`/`catch` error propagation on error unions (`?T`/`E!T`);
@@ -93,18 +100,18 @@ ASCII escapes; `//` and `/* */` comments.
 Multi-file compilation = host-ordered concatenation of one flat
 module (the module system is C2). Recursive type groups are
 permitted; representation erases in-group references through
-`frk_mem.recref` (the D-074 recipe, generalized by D-088).
+`frk_mem.recref` (the D-074 recipe, generalized by D-088; the seed
+applies it UNIFORMLY to named-type storage positions).
 
 ## Fences (b0 — law, L5)
 No f64/float; no generics by the user (builtin Option/Result/Vector
 only); no comptime; no modules/imports; no `defer`; no tuple types;
-no literal/nested/or patterns or guards; no `while`-`else`; no
-bit operations/shifts; no casts; no bytes buffer type; no operator
-overloading; no method syntax; no floats in literals; no non-ASCII
-bytes anywhere in b0 sources OR the seed input channel (the
-femto_lua literal fence, D-056 — refused loudly by the driver, not
-silently mis-lexed); no exception-like constructs beyond the
-trapping safety behaviors in SPEC §6.
+no or-patterns or guards; no bit operations/shifts; no casts; no
+bytes buffer type; no operator overloading; no method syntax; no
+floats in literals; no non-ASCII bytes anywhere in b0 sources OR the
+seed input channel (the femto_lua literal fence, D-056 — refused
+loudly by the driver, not silently mis-lexed); no exception-like
+constructs beyond the trapping safety behaviors in SPEC §6.
 Fence lists are not TODO lists; each fence lifts by the stage that
 prices it, recorded in SPEC §12 when it lifts.
 

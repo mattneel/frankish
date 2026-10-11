@@ -136,7 +136,11 @@ Locals (inside blocks):
     x = expr;            // assignment (var only; type must match)
 
 - [b0] annotations are required on every binding and every
-  parameter/return; [roadmap C2] context inference fills them.
+  parameter/return, with ONE syntax-directed exception (D-095's
+  surface): a `const` may OMIT its annotation, taking the type of its
+  initializer expression verbatim (no unification; `var` still
+  requires its annotation in b0); [roadmap C2] context inference
+  fills the rest.
 - Scoping: lexical, block-scoped. A new binding may shadow an
   outer local or a top-level value/function. It may NOT shadow a
   reserved module name, a reserved prelude type name, or a
@@ -168,8 +172,13 @@ capture by binding (§6.4); pipeline `x |> f(a)` (sugar, §6.3); prefix
 unary `!e`, `-e`; binary operators per §5.1.
 The RETIRED dot-initializer record spellings (`Type { .f = e }`,
 `.{ .f = e }`, and their pattern mirrors) are superseded by D-095 and
-MUST NOT reappear; b0 itself has no record surface (the seed's subset),
-so the amendment lands before the bootstrap grammar hardens.
+MUST NOT reappear. b0 INCLUDES the record/union/match surface as of the
+M37 seed growth: `%Type{field: value}` construction (literal
+per-field defaults; missing required fields are errors), the immutable
+update `%Type{base | field: value}`, `%Type{field: pat}` / `%Type{}` /
+`^name` patterns, variant patterns with nested sub-patterns, and
+`match` (union tag dispatch, record field tests, builtin literal
+chains). The type-elided constructor forms remain C2.
 
 ### §5.1 Operators and precedence
 Loosest to tightest; all binaries left-associative:
@@ -193,7 +202,7 @@ Calque.
 `_` wildcard; `name` binding; `Type.Variant` / `Type.Variant(pat)`
 (variant patterns, type-qualified in b0; sub-patterns in b0: `_` or
 `name` only). The dot shorthand `.Variant` arrives with C2 (same
-expected-type split as §5). [C2, D-095/steering §2] `%Type{field:
+expected-type split as §5). [b0 as of the M37 seed growth, D-095/steering §2] `%Type{field:
 pattern}` struct patterns in matches, destructuring, and test
 assertions — omitted pattern fields are UNCONSTRAINED (never
 defaulted), `%Type{}` matches the nominal type regardless of field

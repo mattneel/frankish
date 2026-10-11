@@ -13,11 +13,20 @@
 -- is a seed bug, not a diagnostic.
 --
 -- Scope (seed v0, frozen at the M37 self-host gate): functions with
--- explicit types (i64/bool/Str/unit), const/var/assignment, if
--- (statement and expression), while, return, calls (unqualified and
+-- explicit types (i64/bool/Str/unit/declared), const/var/assignment,
+-- if (statement and expression), while, return, calls (unqualified and
 -- the str/io preludes), the checked-arithmetic subset + - / %,
--- comparisons, string/int/bool literals, `pub`, comments. Everything
--- else fails LOUDLY (the seed never guesses).
+-- comparisons, string/int/bool literals, `pub`, comments, AND the
+-- records/unions growth (D-095): `const T = struct {...}` /
+-- `union(enum) {...}`, `%T{field: value}` construction with literal
+-- defaults, `%T{base | field: value}` immutable update, record
+-- patterns `%T{f: pat}` / `%T{}`, variant patterns, `^pin`, literal
+-- sub-patterns, and `match` (tag dispatch for unions; field-test
+-- chains for records; literal chains for builtins). REPRESENTATION:
+-- struct = managed box of its product; union = frk_adt sum; every
+-- NAMED type in storage position erases to !frk_mem.recref over a box
+-- (D-074/D-088.2 applied uniformly — no cycle analysis in the seed).
+-- Everything else fails LOUDLY (the seed never guesses).
 
 -- ---------------------------------------------------------------- util
 
@@ -218,7 +227,7 @@ local function lex(source, file)
       push("str", bytes, line, start_col)
     else
       local two = string.sub(source, i, i + 1)
-      if two == "==" or two == "!=" or two == "<=" or two == ">=" or two == "|>" then
+      if two == "==" or two == "!=" or two == "<=" or two == ">=" or two == "|>" or two == "=>" then
         push("punct", two, line, col)
         i = i + 2
         col = col + 2
@@ -227,7 +236,7 @@ local function lex(source, file)
         if one == "(" or one == ")" or one == "{" or one == "}" or one == ","
           or one == ";" or one == ":" or one == "." or one == "=" or one == "<"
           or one == ">" or one == "+" or one == "-" or one == "*" or one == "/"
-          or one == "%" or one == "!" then
+          or one == "%" or one == "!" or one == "^" or one == "|" then
           push("punct", one, line, col)
           i = i + 1
           col = col + 1
@@ -315,7 +324,11 @@ local function parse_type()
     next_tok()
     return "unit"
   end
-  fail(t.line, t.col, "unsupported type (seed v0: i64, bool, Str, unit)")
+  if t.k == "name" then
+    next_tok()
+    return { named = t.v }
+  end
+  fail(t.line, t.col, "unsupported type (seed v0: i64, bool, Str, unit, declared types)")
 end
 
 function parse_expr(level)
@@ -415,6 +428,12 @@ function parse_primary()
   if t.k == "kw" and t.v == "if" then
     return parse_if()
   end
+  if t.k == "kw" and t.v == "match" then
+    return parse_match()
+  end
+  if t.k == "punct" and t.v == "%" then
+    return parse_struct_literal_or_map()
+  end
   if t.k == "name" then
     next_tok()
     return { ref = { name = t.v }, line = t.line, col = t.col }
@@ -451,6 +470,151 @@ function parse_if()
   return { iff = { cond = cond, yes = then_blk, els = else_blk }, line = kw.line, col = kw.col }
 end
 
+function parse_struct_literal_or_map()
+  local pct = next_tok() -- %
+  if at_punct("{") then
+    fail(pct.line, pct.col, "maps are C2 (D-095): seed v0 has `%Type{...}` structs only")
+  end
+  local name = expect_name()
+  expect_punct("{")
+  if at_punct("}") then
+    next_tok()
+    return { make = { ty = name.v, fields = {}, base = nil }, line = pct.line, col = pct.col }
+  end
+  local base = nil
+  local fields = {}
+  -- field list iff NAME followed by `:` / `,` / `}`; otherwise an update base.
+  local a = peek()
+  local b = P.toks[P.pos + 1]
+  local is_field_list = false
+  if a.k == "name" and b ~= nil and b.k == "punct" and (b.v == ":" or b.v == "," or b.v == "}") then
+    is_field_list = true
+  end
+  if not is_field_list then
+    base = parse_expr(4)
+    expect_punct("|")
+  end
+  while not at_punct("}") do
+    local f = expect_name()
+    if at_punct(":") then
+      next_tok()
+      local e = parse_expr(4)
+      fields[#fields + 1] = { name = f.v, expr = e, line = f.line, col = f.col }
+    else
+      -- Elixir shorthand: `%T{x}` binds field x from the local x.
+      fields[#fields + 1] = {
+        name = f.v,
+        expr = { ref = { name = f.v }, line = f.line, col = f.col },
+        line = f.line,
+        col = f.col,
+      }
+    end
+    if at_punct(",") then
+      next_tok()
+    else
+      break
+    end
+  end
+  expect_punct("}")
+  return { make = { ty = name.v, fields = fields, base = base }, line = pct.line, col = pct.col }
+end
+
+function parse_match()
+  local kw = next_tok() -- match
+  local scrut = parse_expr(4)
+  expect_punct("{")
+  local arms = {}
+  if at_punct("}") then
+    fail(kw.line, kw.col, "a match needs at least one arm")
+  end
+  while true do
+    if at_punct("}") then
+      break
+    end
+    local pat = parse_pattern()
+    expect_punct("=>")
+    local body = parse_expr(4)
+    arms[#arms + 1] = { pat = pat, body = body, line = pat.line, col = pat.col }
+    if at_punct(",") then
+      next_tok()
+    else
+      break
+    end
+  end
+  expect_punct("}")
+  return { match = { scrut = scrut, arms = arms }, line = kw.line, col = kw.col }
+end
+
+function parse_pattern()
+  local t = peek()
+  if t.k == "name" and t.v == "_" then
+    next_tok()
+    return { pat = "wild", line = t.line, col = t.col }
+  end
+  if t.k == "punct" and t.v == "^" then
+    next_tok()
+    local n = expect_name()
+    return { pat = "pin", name = n.v, line = t.line, col = t.col }
+  end
+  if t.k == "int" then
+    next_tok()
+    return { pat = "lit", litty = "i64", text = t.v, line = t.line, col = t.col }
+  end
+  if t.k == "str" then
+    next_tok()
+    return { pat = "lit", litty = "Str", text = t.v, line = t.line, col = t.col }
+  end
+  if t.k == "kw" and (t.v == "true" or t.v == "false") then
+    next_tok()
+    return { pat = "lit", litty = "bool", text = t.v, line = t.line, col = t.col }
+  end
+  if t.k == "punct" and t.v == "%" then
+    next_tok()
+    local name = expect_name()
+    expect_punct("{")
+    local fields = {}
+    while not at_punct("}") do
+      local f = expect_name()
+      if at_punct(":") then
+        next_tok()
+        local sub = parse_pattern()
+        fields[#fields + 1] = { name = f.v, sub = sub, line = f.line, col = f.col }
+      else
+        fields[#fields + 1] = {
+          name = f.v,
+          sub = { pat = "bind", name = f.v, line = f.line, col = f.col },
+          line = f.line,
+          col = f.col,
+        }
+      end
+      if at_punct(",") then
+        next_tok()
+      else
+        break
+      end
+    end
+    expect_punct("}")
+    return { pat = "rec", ty = name.v, fields = fields, line = t.line, col = t.col }
+  end
+  if t.k == "name" then
+    next_tok()
+    local nxt = peek()
+    if nxt.k == "punct" and nxt.v == "." then
+      next_tok()
+      local v = expect_name()
+      local sub = nil
+      if at_punct("(") then
+        next_tok()
+        sub = parse_pattern()
+        expect_punct(")")
+      end
+      return { pat = "variant", ty = t.v, variant = v.v, sub = sub, line = t.line, col = t.col }
+    end
+    return { pat = "bind", name = t.v, line = t.line, col = t.col }
+  end
+  fail(t.line, t.col, "unsupported pattern (seed v0)")
+end
+
 function parse_block()
   expect_punct("{")
   local stmts = {}
@@ -464,8 +628,11 @@ function parse_block()
     if t.k == "kw" and t.v == "const" then
       next_tok()
       local name = expect_name()
-      expect_punct(":")
-      local ty = parse_type()
+      local ty = nil
+      if at_punct(":") then
+        next_tok()
+        ty = parse_type()
+      end
       expect_punct("=")
       local e = parse_expr(4)
       expect_punct(";")
@@ -503,6 +670,16 @@ function parse_block()
       local e = parse_expr(4)
       expect_punct(";")
       stmts[#stmts + 1] = { assign = { name = name.v, expr = e, line = name.line, col = name.col } }
+    elseif t.k == "kw" and t.v == "match" then
+      local e = parse_expr(4)
+      if at_punct(";") then
+        next_tok()
+        stmts[#stmts + 1] = { expr = e }
+      else
+        tail = e
+        expect_punct("}")
+        break
+      end
     elseif t.k == "kw" then
       fail(t.line, t.col, "`" .. t.v .. "` is not in seed v0")
     else
@@ -518,6 +695,81 @@ function parse_block()
     end
   end
   return { stmts = stmts, tail = tail }
+end
+
+local function parse_type_decl()
+  if at_kw("pub") then
+    next_tok()
+  end
+  expect_kw("const")
+  local name = expect_name()
+  expect_punct("=")
+  local t = peek()
+  if at_kw("struct") then
+    next_tok()
+    expect_punct("{")
+    local fields = {}
+    while not at_punct("}") do
+      local f = expect_name()
+      expect_punct(":")
+      local ty = parse_type()
+      local default = nil
+      if at_punct("=") then
+        next_tok()
+        local d = peek()
+        if d.k == "int" then
+          default = { lit = "int", text = d.v, line = d.line, col = d.col }
+          next_tok()
+        elseif d.k == "str" then
+          default = { lit = "str", text = d.v, line = d.line, col = d.col }
+          next_tok()
+        elseif d.k == "kw" and (d.v == "true" or d.v == "false") then
+          default = { lit = "bool", text = d.v, line = d.line, col = d.col }
+          next_tok()
+        else
+          fail(d.line, d.col, "seed v0 supports literal field defaults only (D-095)")
+        end
+      end
+      fields[#fields + 1] = { name = f.v, ty = ty, default = default, line = f.line, col = f.col }
+      if at_punct(",") then
+        next_tok()
+      else
+        break
+      end
+    end
+    expect_punct("}")
+    expect_punct(";")
+    return { name = name.v, kind = "struct", fields = fields, line = name.line, col = name.col }
+  end
+  if at_kw("union") then
+    next_tok()
+    expect_punct("(")
+    local e = expect_name()
+    if e.v ~= "enum" then
+      fail(e.line, e.col, "expected `union(enum)` (SPEC 3)")
+    end
+    expect_punct(")")
+    expect_punct("{")
+    local variants = {}
+    while not at_punct("}") do
+      local v = expect_name()
+      local payload = nil
+      if at_punct(":") then
+        next_tok()
+        payload = parse_type()
+      end
+      variants[#variants + 1] = { name = v.v, ty = payload, line = v.line, col = v.col }
+      if at_punct(",") then
+        next_tok()
+      else
+        break
+      end
+    end
+    expect_punct("}")
+    expect_punct(";")
+    return { name = name.v, kind = "union", variants = variants, line = name.line, col = name.col }
+  end
+  fail(t.line, t.col, "seed v0 type declarations are `struct {...}` or `union(enum) {...}`")
 end
 
 local function parse_fn()
@@ -553,15 +805,20 @@ end
 local function parse_file(source, file)
   P = { toks = lex(source, file), pos = 1, file = file }
   local fns = {}
+  local types = {}
   while peek().k ~= "eof" do
     local t = peek()
-    if t.k == "kw" and (t.v == "pub" or t.v == "fn") then
+    if t.k == "kw" and t.v == "const" then
+      types[#types + 1] = parse_type_decl()
+    elseif t.k == "kw" and t.v == "pub" and P.toks[P.pos + 1].k == "kw" and P.toks[P.pos + 1].v == "const" then
+      types[#types + 1] = parse_type_decl()
+    elseif t.k == "kw" and (t.v == "pub" or t.v == "fn") then
       fns[#fns + 1] = parse_fn()
     else
-      fail(t.line, t.col, "seed v0 accepts only top-level fn declarations (got `" .. t.v .. "`)")
+      fail(t.line, t.col, "seed v0 accepts top-level fn declarations and struct/union type declarations (got `" .. t.v .. "`)")
     end
   end
-  return fns
+  return { fns = fns, types = types }
 end
 
 -- ---------------------------------------------------------------- emitter
@@ -641,25 +898,6 @@ local function ir_ty(ty, line, col)
   return mapped
 end
 
-local function poison(ty)
-  if ty == "i64" then
-    local v = fresh()
-    emit(v .. " = arith.constant 0 : i64")
-    return v
-  end
-  if ty == "bool" then
-    local v = fresh()
-    emit(v .. " = arith.constant false")
-    return v
-  end
-  if ty == "Str" then
-    local v = fresh()
-    emit(v .. " = \"frk_bstr.lit\"() {text = \"\"} : () -> !frk_bstr.str")
-    return v
-  end
-  fail(1, 1, "internal: no poison for " .. ty)
-end
-
 local function guard(cond, message, line, col)
   -- cond: i1 SSA. Emits: cond_br cond, ^trap, ^ok; trap composes the
   -- message and aborts; ^ok continues.
@@ -673,7 +911,7 @@ local function guard(cond, message, line, col)
   if E.ret == "unit" then
     terminate("func.return")
   else
-    terminate("func.return " .. poison(E.ret) .. " : " .. ir_ty(E.ret, line, col))
+    terminate("func.return " .. poison(E.ret, line, col) .. " : " .. value_ir(E.ret, line, col))
   end
   new_block(ok_label)
 end
@@ -758,11 +996,704 @@ end
 
 local emit_expr = nil -- forward (initializer-required locals)
 
+-- --------------------- declared types, records, unions (D-095/D-088)
+--
+-- REPRESENTATION (seed v0, uniform and conservative): a struct is a
+-- managed box of its field product; a union is a frk_adt sum. Any
+-- NAMED type in STORAGE position (struct field, union payload) is
+-- erased to !frk_mem.recref over a box — the D-074/D-088.2 recipe
+-- applied UNIFORMLY (no cycle analysis in the seed; C2 may refine to
+-- inline non-recursive nesting). Every named local/param/return is a
+-- VALUE: struct = its box, union = its sum; storage helpers wrap
+-- (rec_ref, boxing unions first) and unwrap (rec_cast + box_get).
+
+function find_type(name, line, col)
+  local d = E.types[name]
+  if d == nil then
+    fail(line, col, "unknown type `" .. name .. "`")
+  end
+  return d
+end
+
+function is_named(ty)
+  return ty ~= nil and type(ty) == "table"
+end
+
+function join_parts(parts)
+  local out = ""
+  for i = 1, #parts do
+    if i > 1 then
+      out = out .. ", "
+    end
+    out = out .. parts[i]
+  end
+  return out
+end
+
+function storage_ir(ty, line, col)
+  if is_named(ty) then
+    find_type(ty.named, line, col)
+    return "!frk_mem.recref"
+  end
+  if ty == "unit" then
+    fail(line, col, "unit-typed storage is not in seed v0")
+  end
+  return ir_ty(ty, line, col)
+end
+
+function product_ir(decl)
+  local parts = {}
+  for i = 1, #decl.fields do
+    parts[#parts + 1] = storage_ir(decl.fields[i].ty, decl.fields[i].line, decl.fields[i].col)
+  end
+  return "!frk_adt.product<[" .. join_parts(parts) .. "]>"
+end
+
+function value_ir(ty, line, col)
+  if not is_named(ty) then
+    return ir_ty(ty, line, col)
+  end
+  local d = find_type(ty.named, line, col)
+  if d.kind == "struct" then
+    return "!frk_mem.box<" .. product_ir(d) .. ">"
+  end
+  local parts = {}
+  for i = 1, #d.variants do
+    local v = d.variants[i]
+    if v.ty == nil then
+      parts[#parts + 1] = "[]"
+    else
+      parts[#parts + 1] = "[" .. storage_ir(v.ty, v.line, v.col) .. "]"
+    end
+  end
+  return "!frk_adt.sum<[" .. join_parts(parts) .. "]>"
+end
+
+function box_ir(ty, line, col)
+  return "!frk_mem.box<" .. value_ir(ty, line, col) .. ">"
+end
+
+-- Terminating poison for the unreachable arms of emitted traps: builtins
+-- become constants, structs a box of storage-poisoned fields, unions a
+-- sum of variant 0's storage poison (named storage positions are
+-- recref_null — no recursion).
+function poison(ty, line, col)
+  line = line or 1
+  col = col or 1
+  if not is_named(ty) then
+    if ty == "i64" then
+      local v = fresh()
+      emit(v .. " = arith.constant 0 : i64")
+      return v
+    end
+    if ty == "bool" then
+      local v = fresh()
+      emit(v .. " = arith.constant false")
+      return v
+    end
+    if ty == "Str" then
+      local v = fresh()
+      emit(v .. " = \"frk_bstr.lit\"() {text = \"\"} : () -> !frk_bstr.str")
+      return v
+    end
+    fail(line, col, "internal: no poison for `" .. tostring(ty) .. "`")
+  end
+  local d = find_type(ty.named, line, col)
+  if d.kind == "struct" then
+    local prod = emit_product(d.fields, function(field)
+      if is_named(field.ty) then
+        local r = fresh()
+        emit(r .. " = \"frk_mem.recref_null\"() : () -> !frk_mem.recref")
+        return r, "!frk_mem.recref"
+      end
+      local v = poison(field.ty, line, col)
+      return v, storage_ir(field.ty, line, col)
+    end)
+    local b = fresh()
+    emit(b .. " = \"frk_mem.box_new\"(" .. prod.value .. ") : (" .. prod.ty .. ") -> " .. value_ir(ty, line, col))
+    return b
+  end
+  -- union: variant 0's product, storage-poisoned
+  local v0 = d.variants[1]
+  local prod = nil
+  if v0.ty == nil then
+    local e = fresh()
+    emit(e .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
+    prod = { value = e, ty = "!frk_adt.product<[]>" }
+  else
+    local value = nil
+    if is_named(v0.ty) then
+      value = fresh()
+      emit(value .. " = \"frk_mem.recref_null\"() : () -> !frk_mem.recref")
+    else
+      value = poison(v0.ty, line, col)
+    end
+    prod = emit_product_single(value, storage_ir(v0.ty, v0.line, v0.col))
+  end
+  local s = fresh()
+  emit(s .. " = \"frk_adt.make_sum\"(" .. prod.value .. ") {variant = 0 : i64} : (" .. prod.ty .. ") -> " .. value_ir(ty, line, col))
+  return s
+end
+
+-- Builds a product from a list of field declarations + a value producer
+-- callback (returns value ssa, storage type). Returns {value, ty}.
+function emit_product(fields, produce)
+  local acc = fresh()
+  emit(acc .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
+  local acc_ty = "!frk_adt.product<[]>"
+  local parts = {}
+  for i = 1, #fields do
+    local v, st = produce(fields[i], i)
+    parts[#parts + 1] = st
+    local next = fresh()
+    emit(next .. " = \"frk_adt.product_snoc\"(" .. acc .. ", " .. v .. ") : (" .. acc_ty .. ", " .. st .. ") -> !frk_adt.product<[" .. join_parts(parts) .. "]>")
+    acc = next
+    acc_ty = "!frk_adt.product<[" .. join_parts(parts) .. "]>"
+  end
+  return { value = acc, ty = acc_ty }
+end
+
+function emit_product_single(value, storage)
+  local e = fresh()
+  emit(e .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
+  local p = fresh()
+  emit(p .. " = \"frk_adt.product_snoc\"(" .. e .. ", " .. value .. ") : (!frk_adt.product<[]>, " .. storage .. ") -> !frk_adt.product<[" .. storage .. "]>")
+  return { value = p, ty = "!frk_adt.product<[" .. storage .. "]>" }
+end
+
+function wrap_store(value, ty, line, col)
+  if not is_named(ty) then
+    return value, storage_ir(ty, line, col)
+  end
+  local d = find_type(ty.named, line, col)
+  local vty = value_ir(ty, line, col)
+  local box = value
+  local ref_operand_ty = vty
+  if d.kind == "union" then
+    -- a union value is the raw sum; box it before erasing
+    box = fresh()
+    emit(box .. " = \"frk_mem.box_new\"(" .. value .. ") : (" .. vty .. ") -> !frk_mem.box<" .. vty .. ">")
+    ref_operand_ty = "!frk_mem.box<" .. vty .. ">"
+  end
+  local r = fresh()
+  emit(r .. " = \"frk_mem.rec_ref\"(" .. box .. ") : (" .. ref_operand_ty .. ") -> !frk_mem.recref")
+  return r, "!frk_mem.recref"
+end
+
+function unwrap_load(stored, ty, line, col)
+  if not is_named(ty) then
+    return stored
+  end
+  local d = find_type(ty.named, line, col)
+  local vty = value_ir(ty, line, col)
+  local cast_ty = vty
+  if d.kind == "union" then
+    cast_ty = "!frk_mem.box<" .. vty .. ">"
+  end
+  local box = fresh()
+  emit(box .. " = \"frk_mem.rec_cast\"(" .. stored .. ") : (!frk_mem.recref) -> " .. cast_ty)
+  if d.kind == "union" then
+    local s = fresh()
+    emit(s .. " = \"frk_mem.box_get\"(" .. box .. ") : (" .. cast_ty .. ") -> " .. vty)
+    return s
+  end
+  return box
+end
+
+-- Reads a binding to its VALUE ssa + logical type.
+function read_binding(b, line, col)
+  if b.kind == "ssa" then
+    return b.id, b.ty
+  end
+  local v = fresh()
+  emit(v .. " = \"frk_mem.box_get\"(" .. b.id .. ") : (" .. box_ir(b.ty, line, col) .. ") -> " .. value_ir(b.ty, line, col))
+  return v, b.ty
+end
+
+function find_field(decl, name, line, col)
+  for i = 1, #decl.fields do
+    if decl.fields[i].name == name then
+      return i
+    end
+  end
+  fail(line, col, "unknown field `" .. name .. "` in type `" .. decl.name .. "`")
+end
+
+function find_variant(decl, name, line, col)
+  for i = 1, #decl.variants do
+    if decl.variants[i].name == name then
+      return i
+    end
+  end
+  fail(line, col, "unknown variant `" .. name .. "` in type `" .. decl.name .. "`")
+end
+
+function emit_equality(a, b, ty, line, col)
+  if ty == "i64" then
+    local r = fresh()
+    emit(r .. " = arith.cmpi eq, " .. a .. ", " .. b .. " : i64")
+    return r
+  end
+  if ty == "bool" then
+    local r = fresh()
+    emit(r .. " = arith.cmpi eq, " .. a .. ", " .. b .. " : i1")
+    return r
+  end
+  if ty == "Str" then
+    local r = fresh()
+    emit(r .. " = \"frk_bstr.eq\"(" .. a .. ", " .. b .. ") : (!frk_bstr.str, !frk_bstr.str) -> i1")
+    return r
+  end
+  fail(line, col, "seed v0 compares only i64/bool/Str in patterns")
+end
+
+local function emit_make(node)
+  local m = node.make
+  local line = node.line
+  local col = node.col
+  local d = find_type(m.ty, line, col)
+  if d.kind ~= "struct" then
+    fail(line, col, "`" .. m.ty .. "` is a union; construct variants as `" .. m.ty .. ".Variant`")
+  end
+  local provided = {}
+  for i = 1, #m.fields do
+    local f = m.fields[i]
+    if provided[f.name] ~= nil then
+      fail(f.line, f.col, "duplicate field `" .. f.name .. "` in %" .. m.ty .. "{...}")
+    end
+    provided[f.name] = f
+    find_field(d, f.name, f.line, f.col)
+  end
+  local base_value = nil
+  if m.base ~= nil then
+    local bv, bty = emit_expr(m.base), nil
+    base_value = bv
+    bty = E.vtypes[bv]
+    if not is_named(bty) or bty.named ~= m.ty then
+      fail(line, col, "the update base must be a `" .. m.ty .. "` value (get `" .. tostring(is_named(bty) and bty.named or bty) .. "`)")
+    end
+  end
+  local prod = emit_product(d.fields, function(field, index)
+    local value = nil
+    if provided[field.name] ~= nil then
+      value = emit_expr(provided[field.name].expr)
+    elseif base_value ~= nil then
+      local stored = fresh()
+      emit(stored .. " = \"frk_mem.field_get\"(" .. base_value .. ") {field = " .. tostring(index - 1) .. " : i64} : (" .. value_ir({ named = m.ty }, line, col) .. ") -> " .. storage_ir(field.ty, field.line, field.col))
+      value = unwrap_load(stored, field.ty, field.line, field.col)
+    elseif field.default ~= nil then
+      value = emit_expr(field.default)
+    else
+      fail(line, col, "missing required field `" .. field.name .. "` in %" .. m.ty .. "{...} (no default declared)")
+    end
+    local stored, sty = wrap_store(value, field.ty, field.line, field.col)
+    return stored, sty
+  end)
+  local box = fresh()
+  emit(box .. " = \"frk_mem.box_new\"(" .. prod.value .. ") : (" .. prod.ty .. ") -> " .. value_ir({ named = m.ty }, line, col))
+  E.vtypes[box] = { named = m.ty }
+  return box
+end
+
+function pattern_is_catch_all(sub)
+  if sub.pat == "wild" or sub.pat == "bind" then
+    return true
+  end
+  if sub.pat == "rec" then
+    for i = 1, #sub.fields do
+      if not pattern_is_catch_all(sub.fields[i].sub) then
+        return false
+      end
+    end
+    return true
+  end
+  return false
+end
+
+-- Pattern conditions: returns an i1 ssa (or nil) AND collects bindings
+-- (declared later, only in the matching arm's body scope).
+local function pattern_conditions(sub, value, lty, out_bindings)
+  if sub.pat == "wild" then
+    return nil
+  end
+  if sub.pat == "bind" then
+    out_bindings[#out_bindings + 1] = { name = sub.name, ty = lty, id = value, line = sub.line, col = sub.col }
+    return nil
+  end
+  if sub.pat == "pin" then
+    local b = lookup(sub.name)
+    if b == nil then
+      fail(sub.line, sub.col, "unknown pinned name `" .. sub.name .. "`")
+    end
+    local other = read_binding(b, sub.line, sub.col)
+    return emit_equality(value, other, lty, sub.line, sub.col)
+  end
+  if sub.pat == "lit" then
+    local other = nil
+    if sub.litty == "i64" then
+      if lty ~= "i64" then
+        fail(sub.line, sub.col, "integer patterns match only i64 subjects")
+      end
+      other = const_i64(sub.text)
+    elseif sub.litty == "bool" then
+      if lty ~= "bool" then
+        fail(sub.line, sub.col, "boolean patterns match only bool subjects")
+      end
+      other = fresh()
+      emit(other .. " = arith.constant " .. sub.text)
+    else
+      if lty ~= "Str" then
+        fail(sub.line, sub.col, "string patterns match only Str subjects")
+      end
+      other = fresh()
+      emit(other .. " = \"frk_bstr.lit\"() {text = \"" .. esc(sub.text) .. "\"} : () -> !frk_bstr.str")
+    end
+    return emit_equality(value, other, lty, sub.line, sub.col)
+  end
+  if sub.pat == "rec" then
+    if not is_named(lty) or lty.named ~= sub.ty then
+      fail(sub.line, sub.col, "pattern `%" .. sub.ty .. "{...}` does not match the subject type")
+    end
+    local d = find_type(sub.ty, sub.line, sub.col)
+    if d.kind ~= "struct" then
+      fail(sub.line, sub.col, "`%" .. sub.ty .. "{...}` is a struct pattern")
+    end
+    local cond = nil
+    for i = 1, #sub.fields do
+      local fp = sub.fields[i]
+      local idx = find_field(d, fp.name, fp.line, fp.col)
+      local fld = d.fields[idx]
+      local stored = fresh()
+      emit(stored .. " = \"frk_mem.field_get\"(" .. value .. ") {field = " .. tostring(idx - 1) .. " : i64} : (" .. value_ir({ named = d.name }, fp.line, fp.col) .. ") -> " .. storage_ir(fld.ty, fld.line, fld.col))
+      local fv = unwrap_load(stored, fld.ty, fld.line, fld.col)
+      local c2 = pattern_conditions(fp.sub, fv, fld.ty, out_bindings)
+      if c2 ~= nil then
+        if cond == nil then
+          cond = c2
+        else
+          local both = fresh()
+          emit(both .. " = arith.andi " .. cond .. ", " .. c2 .. " : i1")
+          cond = both
+        end
+      end
+    end
+    return cond
+  end
+  if sub.pat == "variant" then
+    if not is_named(lty) then
+      fail(sub.line, sub.col, "variant patterns need a union subject")
+    end
+    local d = find_type(lty.named, sub.line, sub.col)
+    if d.kind ~= "union" or d.name ~= sub.ty then
+      fail(sub.line, sub.col, "pattern `" .. sub.ty .. "." .. sub.variant .. "` does not match the subject type")
+    end
+    local idx = find_variant(d, sub.variant, sub.line, sub.col)
+    local tag = fresh()
+    emit(tag .. " = \"frk_adt.tag_of\"(" .. value .. ") : (" .. value_ir(lty, sub.line, sub.col) .. ") -> i64")
+    local eq = fresh()
+    emit(eq .. " = arith.cmpi eq, " .. tag .. ", " .. const_i64(tostring(idx - 1)) .. " : i64")
+    return eq
+  end
+  fail(sub.line, sub.col, "internal: unhandled pattern")
+end
+
+local function collect_bindings(bindings)
+  for i = 1, #bindings do
+    declare(bindings[i].name, { kind = "ssa", ty = bindings[i].ty, id = bindings[i].id }, bindings[i].line, bindings[i].col)
+    E.vtypes[bindings[i].id] = bindings[i].ty
+  end
+end
+
+local function emit_match(node)
+  local m = node.match
+  local line = node.line
+  local col = node.col
+  local sref = m.scrut
+  if sref.ref == nil or sref.ref.mod ~= nil then
+    fail(line, col, "a match scrutinee must be a named value (seed v0)")
+  end
+  local b = lookup(sref.ref.name)
+  if b == nil then
+    fail(line, col, "unknown name `" .. sref.ref.name .. "`")
+  end
+  local value, sty = read_binding(b, line, col)
+  local join_label = fresh_label()
+  local join_arg = "%j" .. tostring(E.label)
+  local join_ty = nil
+
+  -- Emits one arm into the CURRENT block. With conditions: a
+  -- cond_br splits body vs continuation (the caller proceeds in the
+  -- created next block). Without: the body runs IN PLACE — the arm
+  -- was already selected by a test, or it is the fall arm.
+  local function emit_arm(conditions, bindings, body, pat)
+    local function run_body()
+      scope_push()
+      collect_bindings(bindings)
+      local v = emit_expr(body)
+      local vty = v ~= nil and E.vtypes[v] or "unit"
+      if not E.terminated then
+        if vty == "unit" then
+          terminate("cf.br ^" .. join_label)
+        else
+          if join_ty == nil then
+            join_ty = vty
+          elseif join_ty ~= vty then
+            fail(pat.line, pat.col, "match arms produce different types (`" .. tostring(join_ty) .. "` vs `" .. tostring(vty) .. "`)")
+          end
+          terminate("cf.br ^" .. join_label .. "(" .. v .. " : " .. value_ir(vty, pat.line, pat.col) .. ")")
+        end
+      end
+      scope_pop()
+    end
+    if conditions ~= nil then
+      local body_label = fresh_label()
+      local next_label = fresh_label()
+      emit("cf.cond_br " .. conditions .. ", ^" .. body_label .. ", ^" .. next_label)
+      new_block(body_label)
+      run_body()
+      new_block(next_label)
+      return "split"
+    end
+    run_body()
+    return "inplace"
+  end
+
+  -- classify arms per scrutinee kind
+  if is_named(sty) then
+    local d = find_type(sty.named, line, col)
+    if d.kind == "union" then
+      local variant_arms = {}
+      local default_arm = nil
+      local covered = {}
+      for i = 1, #m.arms do
+        local a = m.arms[i]
+        if a.pat.pat == "variant" then
+          if a.pat.ty ~= d.name then
+            fail(a.pat.line, a.pat.col, "pattern `" .. a.pat.ty .. "` does not match scrutinee type `" .. d.name .. "`")
+          end
+          local idx = find_variant(d, a.pat.variant, a.pat.line, a.pat.col)
+          if covered[idx] then
+            fail(a.pat.line, a.pat.col, "redundant arm: `" .. a.pat.variant .. "` is already covered")
+          end
+          covered[idx] = true
+          variant_arms[#variant_arms + 1] = { idx = idx, arm = a }
+        elseif a.pat.pat == "wild" or a.pat.pat == "bind" then
+          if default_arm ~= nil then
+            fail(a.pat.line, a.pat.col, "unreachable arm: a previous arm already covers everything")
+          end
+          default_arm = a
+        else
+          fail(a.pat.line, a.pat.col, "in a union match, arms are variant patterns or `_`/bindings (seed v0)")
+        end
+      end
+      local missing = {}
+      for i = 1, #d.variants do
+        if not covered[i] then
+          missing[#missing + 1] = d.name .. "." .. d.variants[i].name
+        end
+      end
+      if default_arm == nil and #missing > 0 then
+        fail(line, col, "match does not cover " .. join_parts(missing))
+      end
+      local chain = variant_arms
+      local fall = default_arm
+      if fall == nil then
+        fall = variant_arms[#variant_arms].arm
+        -- The final arm double-serves as the fallthrough: its payload
+        -- sub-pattern must not be able to fail (a following arm would
+        -- be unreachable otherwise).
+        local sp = fall.pat.sub
+        if sp ~= nil and (sp.pat == "lit" or sp.pat == "pin" or sp.pat == "rec" or sp.pat == "variant") then
+          fail(sp.line, sp.col, "this payload pattern can fail; add a following `_` arm (seed v0)")
+        end
+        chain = {}
+        for i = 1, #variant_arms - 1 do
+          chain[i] = variant_arms[i]
+        end
+      end
+      for i = 1, #chain do
+        local a = chain[i].arm
+        local idx = chain[i].idx
+        local arm_label = fresh_label()
+        local next_label = fresh_label()
+        local tag = fresh()
+        emit(tag .. " = \"frk_adt.tag_of\"(" .. value .. ") : (" .. value_ir(sty, line, col) .. ") -> i64")
+        local eq = fresh()
+        emit(eq .. " = arith.cmpi eq, " .. tag .. ", " .. const_i64(tostring(idx - 1)) .. " : i64")
+        emit("cf.cond_br " .. eq .. ", ^" .. arm_label .. ", ^" .. next_label)
+        new_block(arm_label)
+        local conditions = nil
+        local bindings = {}
+        if a.pat.sub ~= nil then
+          local vty = d.variants[idx].ty
+          if vty == nil then
+            fail(a.pat.line, a.pat.col, "variant `" .. a.pat.variant .. "` has no payload")
+          end
+          local stored = fresh()
+          emit(stored .. " = \"frk_adt.extract\"(" .. value .. ") {variant = " .. tostring(idx - 1) .. " : i64, field = 0 : i64} : (" .. value_ir(sty, line, col) .. ") -> " .. storage_ir(vty, a.pat.line, a.pat.col))
+          local pv = unwrap_load(stored, vty, a.pat.line, a.pat.col)
+          conditions = pattern_conditions(a.pat.sub, pv, vty, bindings)
+        end
+        local step = emit_arm(conditions, bindings, a.body, a.pat)
+        if step == "inplace" then
+          new_block(next_label)
+        end
+      end
+      -- The fall arm emits in the current block; its sub-pattern
+      -- cannot fail (checked above).
+      local a = fall
+      local conditions = nil
+      local bindings = {}
+      if a.pat.pat == "variant" then
+        local idx = find_variant(d, a.pat.variant, a.pat.line, a.pat.col)
+        local vty = d.variants[idx].ty
+        if a.pat.sub ~= nil then
+          if vty == nil then
+            fail(a.pat.line, a.pat.col, "variant `" .. a.pat.variant .. "` has no payload")
+          end
+          local stored = fresh()
+          emit(stored .. " = \"frk_adt.extract\"(" .. value .. ") {variant = " .. tostring(idx - 1) .. " : i64, field = 0 : i64} : (" .. value_ir(sty, line, col) .. ") -> " .. storage_ir(vty, a.pat.line, a.pat.col))
+          local pv = unwrap_load(stored, vty, a.pat.line, a.pat.col)
+          conditions = pattern_conditions(a.pat.sub, pv, vty, bindings)
+          if conditions ~= nil then
+            fail(a.pat.line, a.pat.col, "internal: the fall arm's conditions can fail")
+          end
+        end
+      elseif a.pat.pat == "bind" then
+        bindings[#bindings + 1] = { name = a.pat.name, ty = sty, id = value, line = a.pat.line, col = a.pat.col }
+      end
+      local _ = emit_arm(conditions, bindings, a.body, a.pat)
+      new_block(join_label)
+      if join_ty ~= nil then
+        E.blocks[#E.blocks].label = join_label .. "(" .. join_arg .. ": " .. value_ir(join_ty, line, col) .. ")"
+        E.vtypes[join_arg] = join_ty
+        return join_arg
+      end
+      return nil
+    end
+    -- struct scrutinee: record patterns, pins, literals; a catch-all
+    -- (wildcard, binding, or an all-binding record pattern) is
+    -- required, and it must be the final arm.
+    local cond_arms = m.arms
+    local d2 = d
+    local default_seen = nil
+    for i = 1, #cond_arms do
+      local a = cond_arms[i]
+      if default_seen ~= nil then
+        fail(a.pat.line, a.pat.col, "unreachable arm: a previous arm already covers everything")
+      end
+      if pattern_is_catch_all(a.pat) then
+        default_seen = i
+      end
+    end
+    if default_seen == nil then
+      fail(line, col, "a struct match needs a final catch-all arm (`_`, a binding, or an all-binding record pattern) (seed v0)")
+    end
+    for i = 1, #cond_arms do
+      local a = cond_arms[i]
+      local bindings = {}
+      if i == default_seen then
+        local conditions = pattern_conditions(a.pat, value, sty, bindings)
+        if conditions ~= nil then
+          fail(a.pat.line, a.pat.col, "internal: a catch-all arm carries conditions")
+        end
+        local _ = emit_arm(nil, bindings, a.body, a.pat)
+      else
+        local conditions = pattern_conditions(a.pat, value, sty, bindings)
+        if conditions == nil then
+          fail(a.pat.line, a.pat.col, "this pattern matches unconditionally; use `_` as the catch-all arm (seed v0)")
+        end
+        local _ = emit_arm(conditions, bindings, a.body, a.pat)
+      end
+    end
+    new_block(join_label)
+    if join_ty ~= nil then
+      E.blocks[#E.blocks].label = join_label .. "(" .. join_arg .. ": " .. value_ir(join_ty, line, col) .. ")"
+      E.vtypes[join_arg] = join_ty
+      return join_arg
+    end
+    return nil
+  end
+  -- builtin scrutinee: literal/pin arms; a catch-all is required
+  local default_seen = nil
+  for i = 1, #m.arms do
+    local a = m.arms[i]
+    if a.pat.pat == "wild" or a.pat.pat == "bind" then
+      if default_seen ~= nil then
+        fail(a.pat.line, a.pat.col, "unreachable arm: a previous arm already covers everything")
+      end
+      default_seen = i
+    end
+  end
+  if default_seen == nil then
+    fail(line, col, "a builtin match needs a final `_` or binding arm (seed v0)")
+  end
+  for i = 1, #m.arms do
+    local a = m.arms[i]
+    local bindings = {}
+    if i == default_seen then
+      if a.pat.pat == "bind" then
+        bindings[#bindings + 1] = { name = a.pat.name, ty = sty, id = value, line = a.pat.line, col = a.pat.col }
+      end
+      local _ = emit_arm(nil, bindings, a.body, a.pat)
+    else
+      local conditions = pattern_conditions(a.pat, value, sty, bindings)
+      if conditions == nil then
+        fail(a.pat.line, a.pat.col, "this pattern matches unconditionally; use `_` as the catch-all arm (seed v0)")
+      end
+      local _ = emit_arm(conditions, bindings, a.body, a.pat)
+    end
+  end
+  new_block(join_label)
+  if join_ty ~= nil then
+    E.blocks[#E.blocks].label = join_label .. "(" .. join_arg .. ": " .. value_ir(join_ty, line, col) .. ")"
+    E.vtypes[join_arg] = join_ty
+    return join_arg
+  end
+  return nil
+end
+
 local function emit_call(node)
   local callee = node.call
   local line = node.line
   local col = node.col
   local args = node.args
+  local td = callee.mod ~= nil and E.types[callee.mod] or nil
+  if td ~= nil then
+    -- `Type.Variant` construction (D-095): the sum value, wrapped at
+    -- storage sites only.
+    if td.kind ~= "union" then
+      fail(line, col, "`" .. callee.mod .. "` is a struct type; construct it with `%" .. callee.mod .. "{...}`")
+    end
+    local idx = find_variant(td, callee.name, line, col)
+    local v = td.variants[idx]
+    local uty = { named = td.name }
+    local uir = value_ir(uty, line, col)
+    if #args == 0 then
+      if v.ty ~= nil then
+        fail(line, col, "variant `" .. callee.name .. "` carries a payload (one argument)")
+      end
+      local e = fresh()
+      emit(e .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
+      local s = fresh()
+      emit(s .. " = \"frk_adt.make_sum\"(" .. e .. ") {variant = " .. tostring(idx - 1) .. " : i64} : (!frk_adt.product<[]>) -> " .. uir)
+      E.vtypes[s] = uty
+      return s, uty
+    end
+    if #args ~= 1 then
+      fail(line, col, "a variant payload is ONE value (seed v0)")
+    end
+    if v.ty == nil then
+      fail(line, col, "variant `" .. callee.name .. "` has no payload")
+    end
+    local payload = emit_expr(args[1])
+    local stored, sty = wrap_store(payload, v.ty, line, col)
+    local prod = emit_product_single(stored, sty)
+    local s = fresh()
+    emit(s .. " = \"frk_adt.make_sum\"(" .. prod.value .. ") {variant = " .. tostring(idx - 1) .. " : i64} : (" .. prod.ty .. ") -> " .. uir)
+    E.vtypes[s] = uty
+    return s, uty
+  end
   if callee.mod == "io" and callee.name == "print" then
     if #args ~= 1 then
       fail(line, col, "io.print takes exactly one Str (seed v0)")
@@ -842,14 +1773,14 @@ local function emit_call(node)
   for i = 1, #args do
     local v = emit_expr(args[i])
     parts = parts .. ", " .. v
-    types = types .. ", " .. ir_ty(fn.params[i].ty, line, col)
+    types = types .. ", " .. value_ir(fn.params[i].ty, line, col)
   end
   if fn.ret == "unit" then
     emit("func.call @" .. sym .. "(" .. parts .. ") : (" .. types .. ") -> ()")
     return nil
   end
   local res = fresh()
-  emit(res .. " = func.call @" .. sym .. "(" .. parts .. ") : (" .. types .. ") -> " .. ir_ty(fn.ret, line, col))
+  emit(res .. " = func.call @" .. sym .. "(" .. parts .. ") : (" .. types .. ") -> " .. value_ir(fn.ret, line, col))
   return res, fn.ret
 end
 
@@ -908,19 +1839,19 @@ local function emit_if_expr(node)
   if ty ~= nil then
     join_arg = "%j" .. tostring(E.label)
     -- patch the join header once the arg is known
-    E.blocks[#E.blocks].label = join_label .. "(" .. join_arg .. ": " .. ir_ty(ty, line, col) .. ")"
+    E.blocks[#E.blocks].label = join_label .. "(" .. join_arg .. ": " .. value_ir(ty, line, col) .. ")"
   end
   E.cur = then_end
   E.terminated = then_term
   if not E.terminated and tv ~= nil then
-    terminate("cf.br ^" .. join_label .. "(" .. tv .. " : " .. ir_ty(ty, line, col) .. ")")
+    terminate("cf.br ^" .. join_label .. "(" .. tv .. " : " .. value_ir(ty, line, col) .. ")")
   elseif not E.terminated then
     terminate("cf.br ^" .. join_label)
   end
   E.cur = else_end
   E.terminated = else_term
   if not E.terminated and ev ~= nil then
-    terminate("cf.br ^" .. join_label .. "(" .. ev .. " : " .. ir_ty(ty, line, col) .. ")")
+    terminate("cf.br ^" .. join_label .. "(" .. ev .. " : " .. value_ir(ty, line, col) .. ")")
   elseif not E.terminated then
     terminate("cf.br ^" .. join_label)
   end
@@ -954,6 +1885,48 @@ emit_expr = function(node)
     return v
   end
   if node.ref ~= nil then
+    if node.ref.mod ~= nil then
+      local td = E.types[node.ref.mod]
+      if td ~= nil then
+        -- unit-variant value: `Token.Plus` (D-095)
+        if td.kind ~= "union" then
+          fail(line, col, "`" .. node.ref.mod .. "` is a struct type; construct it with `%" .. node.ref.mod .. "{...}`")
+        end
+        local idx = find_variant(td, node.ref.name, line, col)
+        if td.variants[idx].ty ~= nil then
+          fail(line, col, "variant `" .. node.ref.name .. "` carries a payload (call its constructor)")
+        end
+        local uty = { named = td.name }
+        local e = fresh()
+        emit(e .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
+        local s = fresh()
+        emit(s .. " = \"frk_adt.make_sum\"(" .. e .. ") {variant = " .. tostring(idx - 1) .. " : i64} : (!frk_adt.product<[]>) -> " .. value_ir(uty, line, col))
+        E.vtypes[s] = uty
+        return s
+      end
+      local owner = lookup(node.ref.mod)
+      if owner == nil then
+        if node.ref.mod == "str" or node.ref.mod == "io" or node.ref.mod == "vector" then
+          fail(line, col, "module member `" .. node.ref.mod .. "." .. node.ref.name .. "` used as a value (seed v0)")
+        end
+        fail(line, col, "unknown name `" .. node.ref.mod .. "`")
+      end
+      if not is_named(owner.ty) then
+        fail(line, col, "`" .. node.ref.mod .. "` has no fields")
+      end
+      local d = find_type(owner.ty.named, line, col)
+      if d.kind ~= "struct" then
+        fail(line, col, "`" .. node.ref.mod .. "` is a union; use `match`")
+      end
+      local value = read_binding(owner, line, col)
+      local idx = find_field(d, node.ref.name, line, col)
+      local fld = d.fields[idx]
+      local stored = fresh()
+      emit(stored .. " = \"frk_mem.field_get\"(" .. value .. ") {field = " .. tostring(idx - 1) .. " : i64} : (" .. value_ir(owner.ty, line, col) .. ") -> " .. storage_ir(fld.ty, fld.line, fld.col))
+      local out = unwrap_load(stored, fld.ty, fld.line, fld.col)
+      E.vtypes[out] = fld.ty
+      return out
+    end
     local b = lookup(node.ref.name)
     if b == nil then
       fail(line, col, "unknown name `" .. node.ref.name .. "`")
@@ -963,7 +1936,7 @@ emit_expr = function(node)
       return b.id
     end
     local v = fresh()
-    emit(v .. " = \"frk_mem.box_get\"(" .. b.id .. ") : (" .. b.box .. ") -> " .. ir_ty(b.ty, line, col))
+    emit(v .. " = \"frk_mem.box_get\"(" .. b.id .. ") : (" .. b.box .. ") -> " .. value_ir(b.ty, line, col))
     E.vtypes[v] = b.ty
     return v
   end
@@ -979,6 +1952,12 @@ emit_expr = function(node)
   end
   if node.iff ~= nil then
     return emit_if_expr(node.iff)
+  end
+  if node.make ~= nil then
+    return emit_make(node)
+  end
+  if node.match ~= nil then
+    return emit_match(node)
   end
   if node.bin ~= nil then
     local op = node.bin
@@ -1008,15 +1987,22 @@ local function emit_stmt(node)
     if v == nil then
       fail(c.line, c.col, "const initializer must be a value")
     end
-    declare(c.name, { kind = "ssa", ty = c.ty, id = v }, c.line, c.col)
+    local ty = c.ty
+    if ty == nil then
+      ty = E.vtypes[v]
+      if ty == nil then
+        fail(c.line, c.col, "internal: untyped const initializer")
+      end
+    end
+    declare(c.name, { kind = "ssa", ty = ty, id = v }, c.line, c.col)
     return
   end
   if node.var ~= nil then
     local d = node.var
     local v = emit_expr(d.expr)
     local b = fresh()
-    emit(b .. " = \"frk_mem.box_new\"(" .. v .. ") : (" .. ir_ty(d.ty, d.line, d.col) .. ") -> " .. TY_BOX[d.ty])
-    declare(d.name, { kind = "box", ty = d.ty, id = b, box = TY_BOX[d.ty] }, d.line, d.col)
+    emit(b .. " = \"frk_mem.box_new\"(" .. v .. ") : (" .. value_ir(d.ty, d.line, d.col) .. ") -> " .. box_ir(d.ty, d.line, d.col))
+    declare(d.name, { kind = "box", ty = d.ty, id = b, box = box_ir(d.ty, d.line, d.col) }, d.line, d.col)
     return
   end
   if node.assign ~= nil then
@@ -1029,13 +2015,13 @@ local function emit_stmt(node)
       fail(a.line, a.col, "cannot assign to immutable `" .. a.name .. "`")
     end
     local v = emit_expr(a.expr)
-    emit("\"frk_mem.box_set\"(" .. b.id .. ", " .. v .. ") : (" .. b.box .. ", " .. ir_ty(b.ty, a.line, a.col) .. ") -> ()")
+    emit("\"frk_mem.box_set\"(" .. b.id .. ", " .. v .. ") : (" .. b.box .. ", " .. value_ir(b.ty, a.line, a.col) .. ") -> ()")
     return
   end
   if node.ret ~= nil then
     if node.ret.expr ~= nil then
       local v = emit_expr(node.ret.expr)
-      terminate("func.return " .. v .. " : " .. ir_ty(E.ret, node.ret.line, node.ret.col))
+      terminate("func.return " .. v .. " : " .. value_ir(E.ret, node.ret.line, node.ret.col))
     else
       terminate("func.return")
     end
@@ -1138,12 +2124,12 @@ local function emit_fn(fn)
     if p.name == "env" then
       fail(p.line, p.col, "`env` is reserved in the seed's parameter namespace")
     end
-    params = params .. ", %" .. p.name .. ": " .. ir_ty(p.ty, p.line, p.col)
+    params = params .. ", %" .. p.name .. ": " .. value_ir(p.ty, p.line, p.col)
     declare(p.name, { kind = "ssa", ty = p.ty, id = "%" .. p.name }, p.line, p.col)
   end
   local ret_ir = ""
   if fn.ret ~= "unit" then
-    ret_ir = " -> " .. ir_ty(fn.ret, fn.line, fn.col)
+    ret_ir = " -> " .. value_ir(fn.ret, fn.line, fn.col)
   end
   local header = "func.func @" .. fn.sym .. "(" .. params .. ")" .. ret_ir .. " {"
   -- emit body
@@ -1169,10 +2155,10 @@ local function emit_fn(fn)
   if not E.terminated then
     if tail_if ~= nil then
       local v = emit_if_expr(tail_if)
-      terminate("func.return " .. v .. " : " .. ir_ty(fn.ret, fn.line, fn.col))
+      terminate("func.return " .. v .. " : " .. value_ir(fn.ret, fn.line, fn.col))
     elseif body.tail ~= nil then
       local v = emit_expr(body.tail)
-      terminate("func.return " .. v .. " : " .. ir_ty(fn.ret, fn.line, fn.col))
+      terminate("func.return " .. v .. " : " .. value_ir(fn.ret, fn.line, fn.col))
     else
       terminate("func.return")
     end
@@ -1211,12 +2197,28 @@ function run(files)
   E.out = {}
   E.out[#E.out + 1] = "// calque-artifact v0"
   local parsed = {}
+  local types = {}
   for i = 1, #files do
     local f = files[i]
     CURRENT_FILE = f.name
-    local fns = parse_file(f.text, f.name)
-    parsed[#parsed + 1] = { file = f, fns = fns }
+    local unit = parse_file(f.text, f.name)
+    parsed[#parsed + 1] = { file = f, fns = unit.fns }
+    for j = 1, #unit.types do
+      local td = unit.types[j]
+      td.file = f.name
+      if f.ns ~= nil then
+        fail(td.line, td.col, "type declarations cannot live inside a namespace (seed v0)")
+      end
+      if td.name == "str" or td.name == "io" or td.name == "vector" or td.name == "Str" then
+        fail(td.line, td.col, "`" .. td.name .. "` is reserved (SPEC 2)")
+      end
+      if types[td.name] ~= nil then
+        fail(td.line, td.col, "duplicate type `" .. td.name .. "`")
+      end
+      types[td.name] = td
+    end
   end
+  E.types = types
   -- name resolution + mangling (D-094)
   for i = 1, #parsed do
     local p = parsed[i]
@@ -1236,6 +2238,9 @@ function run(files)
       end
       if FNS_BY_SYM[fn.sym] ~= nil then
         fail(fn.line, fn.col, "duplicate top-level name `" .. fn.sym .. "`")
+      end
+      if p.file.ns == nil and E.types[fn.name] ~= nil then
+        fail(fn.line, fn.col, "`" .. fn.name .. "` collides with a declared type")
       end
       FNS_BY_SYM[fn.sym] = fn
       if p.file.ns == nil and fn.name ~= "main" then

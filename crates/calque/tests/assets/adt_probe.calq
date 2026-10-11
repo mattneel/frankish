@@ -1,0 +1,53 @@
+// b0 probe (M37 growth, D-095): records with defaults, immutable
+// update, unions, variant construction, match with bindings,
+// literals, pins, and field access. Expected output is hand-derived
+// from the SPEC (never blessed from output):
+//   "p 3 p 10 circle 7 rect 1,2 nothing hit\n"
+pub const Point = struct {
+    x: i64,
+    y: i64,
+    label: Str = "p",
+};
+
+pub const Shape = union(enum) {
+    Circle: i64,
+    Rect: Point,
+    Nothing,
+};
+
+fn describe(s: Shape) Str {
+    match s {
+        Shape.Circle(r) => str.concat("circle ", str.fromI64(r)),
+        Shape.Rect(p) => str.concat("rect ", str.concat(str.fromI64(p.x), str.concat(",", str.fromI64(p.y)))),
+        Shape.Nothing => "nothing",
+    }
+}
+
+pub fn main() i64 {
+    const a = %Point{x: 3, y: 4};
+    const b = %Point{a | y: 10};
+    io.print(str.concat(a.label, str.concat(" ", str.fromI64(a.x))));
+    io.print(" ");
+    io.print(str.concat(b.label, str.concat(" ", str.fromI64(b.y))));
+    io.print(" ");
+
+    const s1 = Shape.Circle(7);
+    const s2 = Shape.Rect(%Point{x: 1, y: 2});
+    const s3 = Shape.Nothing;
+    io.print(describe(s1));
+    io.print(" ");
+    io.print(describe(s2));
+    io.print(" ");
+    io.print(describe(s3));
+    io.print(" ");
+
+    const target = 4;
+    const hit = match a {
+        %Point{y: ^target} => "hit",
+        %Point{x: 3, y: y} => str.concat("near ", str.fromI64(y)),
+        _ => "miss",
+    };
+    io.print(hit);
+    io.print("\n");
+    0
+}
