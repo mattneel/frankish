@@ -127,6 +127,9 @@ pub fn is_kw(s: Str) bool {
     if s == "catch" {
         return true;
     }
+    if s == "test" {
+        return true;
+    }
     if s == "const" {
         return true;
     }

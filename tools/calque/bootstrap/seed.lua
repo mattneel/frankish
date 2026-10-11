@@ -90,6 +90,7 @@ for _, k in ipairs({
   "i64", "if", "match", "or", "pub", "return", "struct", "true",
   "comptime",
   "union", "var", "while", "not", "try", "catch", "defer", "for",
+  "test",
 }) do
   KEYWORDS[k] = true
 end
@@ -1309,13 +1310,44 @@ local function parse_fn()
   return { name = name.v, params = params, ret = ret, body = body, line = name.line, col = name.col }
 end
 
+local TEST_N = 0
+
+-- `test "name" { ... }` (C2, F33): compiled to a top-level
+-- `__calque_test_<N>` fn carrying the source name in a comment.
+local function parse_test()
+  local kw = next_tok() -- test
+  local nm = peek()
+  if nm.k ~= "str" then
+    fail(nm.line, nm.col, "a test block needs a name string: test \"name\" { ... }")
+  end
+  next_tok()
+  local body = parse_block()
+  TEST_N = (TEST_N or 0) + 1
+  -- test fns return i64 (the kernel's closure.apply carries one
+  -- result): a tail-less body gets a 0 tail.
+  if body.tail == nil then
+    body.tail = { lit = "int", text = "0", line = kw.line, col = kw.col }
+  end
+  return {
+    name = "__calque_test_" .. tostring(TEST_N),
+    params = {},
+    ret = "i64",
+    body = body,
+    line = kw.line,
+    col = kw.col,
+    test_name = nm.v,
+  }
+end
+
 local function parse_file(source, file)
   P = { toks = lex(source, file), pos = 1, file = file }
   local fns = {}
   local types = {}
   while peek().k ~= "eof" do
     local t = peek()
-    if t.k == "kw" and t.v == "const" then
+    if t.k == "kw" and t.v == "test" then
+      fns[#fns + 1] = parse_test()
+    elseif t.k == "kw" and t.v == "const" then
       types[#types + 1] = parse_type_decl()
     elseif t.k == "kw" and t.v == "pub" and P.toks[P.pos + 1].k == "kw" and P.toks[P.pos + 1].v == "const" then
       types[#types + 1] = parse_type_decl()
@@ -2820,6 +2852,44 @@ local function emit_call(node)
     end
     return emit_variant_make(td, named_ty(td.name), callee.name, args, line, col)
   end
+  if callee.mod == "assert" and callee.name == "equal" then
+    -- `assert.equal(a, b)` (C2, F33): compare by the operands' types;
+    -- a mismatch traps with a loud message.
+    if #args ~= 2 then
+      fail(line, col, "assert.equal takes exactly two arguments")
+    end
+    local av = emit_expr(args[1])
+    local bv = emit_expr(args[2])
+    local aty = E.vtypes[av]
+    local bty = E.vtypes[bv]
+    if not same_type(aty, bty) then
+      fail(line, col, "assert.equal operands must have the same type")
+    end
+    local cond = nil
+    if aty == "Str" then
+      cond = fresh()
+      emit(cond .. " = \"frk_bstr.eq\"(" .. av .. ", " .. bv .. ") : (!frk_bstr.str, !frk_bstr.str) -> i1")
+    elseif aty == "bool" then
+      cond = fresh()
+      emit(cond .. " = arith.cmpi eq, " .. av .. ", " .. bv .. " : i1")
+    elseif aty == "i64" then
+      cond = fresh()
+      emit(cond .. " = arith.cmpi eq, " .. av .. ", " .. bv .. " : i64")
+    else
+      fail(line, col, "assert.equal supports i64, bool, and Str (seed v0)")
+    end
+    local okb = fresh_label()
+    local failb = fresh_label()
+    emit("cf.cond_br " .. cond .. ", ^" .. okb .. ", ^" .. failb)
+    new_block(failb)
+    local msg = fresh()
+    emit(msg .. " = \"frk_bstr.lit\"() {text = \"assert.equal failed\"} : () -> !frk_bstr.str")
+    emit("func.call @frk_rt_calque_trap(" .. msg .. ") : (!frk_bstr.str) -> ()")
+    local pv = poison(E.ret, line, col)
+    terminate("func.return " .. pv .. " : " .. value_ir(E.ret, line, col))
+    new_block(okb)
+    return nil
+  end
   if callee.mod == "io" and callee.name == "print" then
     if #args ~= 1 then
       fail(line, col, "io.print takes exactly one Str (seed v0)")
@@ -3232,6 +3302,9 @@ function infer_expr_ty(expr, line, col)
         return "Str"
       end
       if expr.call.mod == "io" then
+        return "unit"
+      end
+      if expr.call.mod == "assert" then
         return "unit"
       end
       if expr.call.mod == "vector" then
@@ -4454,6 +4527,18 @@ local function emit_entry_wrapper(fn)
   E.out[#E.out + 1] = "}"
 end
 
+-- A `test` block's runner entry: no arguments, unit body, i64 0
+-- (the corpus/harness invokes it by symbol).
+local function emit_test_wrapper(fn, idx)
+  E.out[#E.out + 1] = "func.func @__calque_test_entry_" .. tostring(idx) .. "() -> i64 {"
+  E.out[#E.out + 1] = "  %env = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"
+  E.out[#E.out + 1] = "  %cl = \"frk_closure.make\"(%env) {callee = @" .. fn.sym .. "} : (!frk_adt.product<[]>) -> !frk_closure.fn<[], [i64]>"
+  E.out[#E.out + 1] = "  %args = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"
+  E.out[#E.out + 1] = "  %r = \"frk_closure.apply\"(%cl, %args) : (!frk_closure.fn<[], [i64]>, !frk_adt.product<[]>) -> i64"
+  E.out[#E.out + 1] = "  return %r : i64"
+  E.out[#E.out + 1] = "}"
+end
+
 -- ---------------------------------------------------------------- run
 
 FNS = {}
@@ -4524,6 +4609,10 @@ function run(files)
         entry = fn
       elseif not is_generic_fn(fn) then
         emit_fn(fn)
+        if fn.test_name ~= nil then
+          E.test_count = (E.test_count or 0) + 1
+          emit_test_wrapper(fn, E.test_count)
+        end
       end
     end
   end

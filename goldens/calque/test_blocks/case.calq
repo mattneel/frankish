@@ -1,0 +1,25 @@
+// F33: `test "name" { ... }` blocks compile to __calque_test_N entries
+// (+ runner wrappers); assert.equal compares i64/bool/Str and traps on
+// a mismatch. The corpus runs @main.
+// Expected output (hand-derived): "42\n"
+pub fn answer() i64 {
+    42
+}
+
+test "the answer is 42" {
+    assert.equal(answer(), 42);
+}
+
+test "strings agree" {
+    assert.equal("a", "a");
+}
+
+test "bools agree" {
+    assert.equal(true, true);
+}
+
+pub fn main() i64 {
+    io.print(str.fromI64(answer()));
+    io.print("\n");
+    0
+}

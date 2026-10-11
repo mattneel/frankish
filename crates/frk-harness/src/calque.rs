@@ -289,6 +289,42 @@ pub fn run_artifact_with_input(artifact: &str, units: &[UnitFile]) -> Result<Run
     run_composed(&compose_unit_with_input(artifact, units))
 }
 
+/// Runs a compiled artifact's `test` blocks (C2, F33): every
+/// `__calque_test_<N>` entry is evaluated on a fresh interpreter; a
+/// trap marks that block failed. Returns (name, ok) in symbol order.
+pub fn run_test_blocks(artifact: &str) -> Result<Vec<(String, bool)>, String> {
+    check_artifact_marker(artifact)?;
+    let composed = compose_unit(artifact);
+    let context = frk_core::context();
+    frk_dialects::register(&context).map_err(|error| format!("register: {error}"))?;
+    let module = melior::ir::Module::parse(&context, &composed)
+        .ok_or_else(|| "composed module failed to parse".to_string())?;
+    frk_dialects::verify(&context, &module).map_err(|error| format!("verify: {error:?}"))?;
+    let mut names: Vec<String> = Vec::new();
+    for line in composed.lines() {
+        if let Some(rest) = line.strip_prefix("func.func @__calque_test_entry_") {
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            let full = format!("__calque_test_entry_{name}");
+            if !names.contains(&full) {
+                names.push(full);
+            }
+        }
+    }
+    let mut results = Vec::new();
+    for name in names {
+        let mut interp =
+            frk_interp::Interp::new(&module).map_err(|error| format!("interp: {error}"))?;
+        frk_dialects::register_eval(&mut interp);
+        crate::runner::register_protocol_builtins(&mut interp);
+        let ok = interp.eval_function(&name, &[]).is_ok();
+        results.push((name, ok));
+    }
+    Ok(results)
+}
+
 fn run_composed(text: &str) -> Result<RunOutcome, String> {
     let context = frk_core::context();
     frk_dialects::register(&context).map_err(|error| format!("register: {error}"))?;

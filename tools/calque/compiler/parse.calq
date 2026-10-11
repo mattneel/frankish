@@ -1968,41 +1968,64 @@ pub fn p_lit_expr(mut p: P) Expr {
     return bad(p, d.line, d.col, "seed v0 supports literal field defaults only (D-095)");
 }
 
+pub fn p_test(mut p: P, idx: i64) Fn {
+    const kw: Tok = p_next(p);
+    const nm: Tok = p_peek(p);
+    if is_str_tok(nm) == false {
+        p_fail(p, nm.line, nm.col, "a test block needs a name string: test \"name\" { ... }");
+        return poison_fn();
+    }
+    const _n: Tok = p_next(p);
+    const body: Block = p_block(p);
+    var b2: Block = body;
+    if body.has_tail == false {
+        b2 = %Block{stmts: body.stmts, has_tail: true, tail: Expr.Int("0")};
+    }
+    var eps: Vector(Param) = vector.new();
+    return %Fn{name: str.concat("__calque_test_", str.fromI64(idx)), params: eps, ret: Ty.I64, body: b2, file: "", ns: ""};
+}
+
 pub fn p_ast(mut p: P) Ast {
     var fns: Vector(Fn) = vector.new();
     var types: Vector(TypeDecl) = vector.new();
+    var n_tests: i64 = 0;
     while p_ok(p) {
         const t: Tok = p_peek(p);
         if is_eof_tok(t) {
             return %Ast{fns: fns, types: types};
         }
         if is_kw_tok(t) {
-            if t.text == "const" {
-                vector.push(types, p_typedecl(p));
+            if t.text == "test" {
+                n_tests = n_tests + 1;
+                vector.push(fns, p_test(p, n_tests));
             } else {
-                if t.text == "pub" {
-                    const nx: Tok = p_tok_at(p, 1);
-                    if is_kw_tok(nx) {
-                        if nx.text == "const" {
-                            vector.push(types, p_typedecl(p));
-                        } else {
-                            if nx.text == "fn" {
-                                vector.push(fns, p_fn(p));
+                if t.text == "const" {
+                    vector.push(types, p_typedecl(p));
+                } else {
+                    if t.text == "pub" {
+                        const nx: Tok = p_tok_at(p, 1);
+                        if is_kw_tok(nx) {
+                            if nx.text == "const" {
+                                vector.push(types, p_typedecl(p));
                             } else {
-                                p_fail(p, nx.line, nx.col, "expected `fn` or `const` after `pub`");
-                                return %Ast{fns: fns, types: types};
+                                if nx.text == "fn" {
+                                    vector.push(fns, p_fn(p));
+                                } else {
+                                    p_fail(p, nx.line, nx.col, "expected `fn` or `const` after `pub`");
+                                    return %Ast{fns: fns, types: types};
+                                }
                             }
+                        } else {
+                            p_fail(p, nx.line, nx.col, "expected `fn` or `const` after `pub`");
+                            return %Ast{fns: fns, types: types};
                         }
                     } else {
-                        p_fail(p, nx.line, nx.col, "expected `fn` or `const` after `pub`");
-                        return %Ast{fns: fns, types: types};
-                    }
-                } else {
-                    if t.text == "fn" {
-                        vector.push(fns, p_fn(p));
-                    } else {
-                        p_fail(p, t.line, t.col, str.concat("top-level items are fn declarations and struct/union type declarations (got `", str.concat(t.text, "`)")));
-                        return %Ast{fns: fns, types: types};
+                        if t.text == "fn" {
+                            vector.push(fns, p_fn(p));
+                        } else {
+                            p_fail(p, t.line, t.col, str.concat("top-level items are fn declarations and struct/union type declarations (got `", str.concat(t.text, "`)")));
+                            return %Ast{fns: fns, types: types};
+                        }
                     }
                 }
             }

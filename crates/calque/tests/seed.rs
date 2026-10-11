@@ -4,7 +4,7 @@
 //! (L2's no-blessing rule; there is no upstream oracle, MANIFEST
 //! "Conformance").
 
-use calque::{compose_unit_with_input, run_artifact, run_artifact_with_input, seed_translate, seed_translate_jit, UnitFile};
+use calque::{compose_unit_with_input, run_artifact, run_artifact_with_input, run_test_blocks, seed_translate, seed_translate_jit, UnitFile};
 
 
 fn unit(name: &str, ns: Option<&str>, text: &str) -> UnitFile {
@@ -2432,6 +2432,41 @@ fn calq0_matches_the_seed_on_literal_forms() {
     let emitted = run_artifact(&got.output).expect("the emitted literal probe runs");
     assert_eq!(emitted.output, "1000|\nline one\nline two\n|26\n");
 }
+
+#[test]
+fn seed_test_blocks() {
+    // F33: `test "name" { ... }` blocks compile to __calque_test_N
+    // entries; assert.equal passes or traps (the runner marks the
+    // block failed on a trap).
+    let files = vec![stdlib_str(), unit("tb.calq", None, "pub fn twice(x: i64) i64 {\n    x * 2\n}\n\ntest \"twice doubles\" {\n    assert.equal(twice(21), 42);\n}\n\ntest \"strings agree\" {\n    assert.equal(\"ab\", \"a\");\n}\n\npub fn main() i64 {\n    io.print(str.fromI64(twice(2)));\n    io.print(\"\\n\");\n    0\n}\n")];
+    let artifact = seed_translate(&files).expect("the seed emits the test blocks");
+    let results = run_test_blocks(&artifact).expect("the test blocks run");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].1, true, "the doubling assert passes");
+    assert_eq!(results[1].1, false, "the string mismatch traps");
+    let outcome = run_artifact(&artifact).expect("main runs");
+    assert_eq!(outcome.output, "4\n");
+}
+
+#[test]
+fn calq0_matches_the_seed_on_test_blocks() {
+    let files = vec![stdlib_str(), unit("tb.calq", None, TB_SRC)];
+    let artifact = compile_artifact();
+    let expected = seed_translate(&files).expect("the seed emits the test blocks");
+    let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the test blocks");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (test blocks): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let results = run_test_blocks(&got.output).expect("the blocks run under calq0's artifact");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].1, true);
+    assert_eq!(results[1].1, false);
+}
+
+const TB_SRC: &str = "pub fn twice(x: i64) i64 {\n    x * 2\n}\n\ntest \"twice doubles\" {\n    assert.equal(twice(21), 42);\n}\n\ntest \"strings agree\" {\n    assert.equal(\"ab\", \"a\");\n}\n\npub fn main() i64 {\n    io.print(str.fromI64(twice(2)));\n    io.print(\"\\n\");\n    0\n}\n";
 
 #[test]
 fn calq0_compiles_itself() {

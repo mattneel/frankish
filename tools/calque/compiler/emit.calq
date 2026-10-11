@@ -915,12 +915,36 @@ pub fn emit_module(mut e: Emitter, a: Ast) {
     var main_ok: bool = true;
     const nf: i64 = vector.len(a.fns);
     var i: i64 = 0;
+    var test_i: i64 = 0;
     while i < nf {
         const f: Fn = vector.get(a.fns, i);
         if is_generic_fn(f) {
             // D-113: instances are emitted by the flush below.
         } else {
             e_fn(e, f);
+            var is_test_fn: bool = false;
+            if str.len(f.name) >= 14 {
+                if str.sub(f.name, 0, 14) == "__calque_test_" {
+                    is_test_fn = true;
+                }
+            }
+            if is_test_fn {
+                // a runner entry per test (no envref argument)
+                test_i = test_i + 1;
+                var w: Str = "func.func @__calque_test_entry_";
+                w = str.concat(w, str.fromI64(test_i));
+                w = str.concat(w, "() -> i64 {");
+                vector.push(e.output, w);
+                vector.push(e.output, "  %env = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>");
+                var w2: Str = "  %cl = \"frk_closure.make\"(%env) {callee = @";
+                w2 = str.concat(w2, f.name);
+                w2 = str.concat(w2, "} : (!frk_adt.product<[]>) -> !frk_closure.fn<[], [i64]>");
+                vector.push(e.output, w2);
+                vector.push(e.output, "  %args = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>");
+                vector.push(e.output, "  %r = \"frk_closure.apply\"(%cl, %args) : (!frk_closure.fn<[], [i64]>, !frk_adt.product<[]>) -> i64");
+                vector.push(e.output, "  return %r : i64");
+                vector.push(e.output, "}");
+            }
         }
         if f.name == "main" {
             has_main = true;
@@ -2066,6 +2090,56 @@ pub fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
             return emit_variant_make(e, td, Ty.Named(td.name), r.name, c.args, line, col);
         }
     }
+    if r.mod == "assert" {
+        if r.name == "equal" {
+            // `assert.equal(a, b)` (C2, F33): compare by the operands'
+            // types; a mismatch traps loudly.
+            const a2: Ast = e_ast(e);
+            const na2: i64 = vector.len(c.args);
+            if na2 != 2 {
+                return e_fail_at(e, line, col, "assert.equal takes exactly two arguments");
+            }
+            const av: Str = emit_expr(e, vector.get(c.args, 0));
+            const bv: Str = emit_expr(e, vector.get(c.args, 1));
+            const aty: Ty = vget(e, av);
+            const bty: Ty = vget(e, bv);
+            if same_ty(aty, bty) == false {
+                return e_fail_at(e, line, col, "assert.equal operands must have the same type");
+            }
+            const cond: Str = fresh(e);
+            match aty {
+                Ty.StrV => {
+                    var lc: Str = " = \"frk_bstr.eq\"(";
+                    lc = str.concat(lc, av);
+                    lc = str.concat(lc, ", ");
+                    lc = str.concat(lc, bv);
+                    lc = str.concat(lc, ") : (!frk_bstr.str, !frk_bstr.str) -> i1");
+                    emit_line(e, str.concat(cond, lc));
+                },
+                Ty.BoolV => {
+                    emit_line(e, str.concat(cond, str.concat(" = arith.cmpi eq, ", str.concat(av, str.concat(", ", str.concat(bv, " : i1"))))));
+                },
+                Ty.I64 => {
+                    emit_line(e, str.concat(cond, str.concat(" = arith.cmpi eq, ", str.concat(av, str.concat(", ", str.concat(bv, " : i64"))))));
+                },
+                _ => {
+                    return e_fail_at(e, line, col, "assert.equal supports i64, bool, and Str (D-115's slice)");
+                },
+            };
+            const okb: Str = fresh_label(e);
+            const failb: Str = fresh_label(e);
+            emit_line(e, str.concat("cf.cond_br ", str.concat(cond, str.concat(", ^", str.concat(okb, str.concat(", ^", failb))))));
+            new_label(e, failb);
+            const msg: Str = fresh(e);
+            emit_line(e, str.concat(msg, " = \"frk_bstr.lit\"() {text = \"assert.equal failed\"} : () -> !frk_bstr.str"));
+            emit_line(e, str.concat("func.call @frk_rt_calque_trap(", str.concat(msg, ") : (!frk_bstr.str) -> ()")));
+            const rt2: Ty = e_ret(e);
+            const pv2: Str = e_poison(e, rt2);
+            terminate(e, str.concat("func.return ", str.concat(pv2, str.concat(" : ", value_ir_t(a2, rt2)))));
+            new_label(e, okb);
+            return "";
+        }
+    }
     if r.mod == "io" {
         if r.name == "print" {
             const n_io: i64 = vector.len(c.args);
@@ -2423,6 +2497,9 @@ pub fn infer_call_ty(mut e: Emitter, c0: Call, line: i64, col: i64) Ty {
         return Ty.StrV;
     }
     if r0.mod == "io" {
+        return Ty.UnitV;
+    }
+    if r0.mod == "assert" {
         return Ty.UnitV;
     }
     if r0.mod == "vector" {
