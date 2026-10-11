@@ -362,6 +362,33 @@ local function parse_type_atom()
     local rty = parse_type()
     return { fnp = ps, fnr = rty }
   end
+  if t.k == "punct" and t.v == "(" then
+    -- `(T1, T2)` - the tuple type (D-114). `()` is not a tuple (unit
+    -- has its own spelling in type position: it appears as an absent
+    -- return type, not as a paren type).
+    next_tok()
+    if at_punct(")") then
+      fail(t.line, t.col, "`()` is not a tuple type (use no return annotation for unit)")
+    end
+    local tys = {}
+    while true do
+      tys[#tys + 1] = parse_type()
+      if at_punct(",") then
+        next_tok()
+      else
+        break
+      end
+    end
+    local rp2 = peek()
+    if not (rp2.k == "punct" and rp2.v == ")") then
+      fail(rp2.line, rp2.col, "expected `)` after the tuple type")
+    end
+    next_tok()
+    if #tys < 2 then
+      fail(t.line, t.col, "a tuple type has two or more element types (D-114)")
+    end
+    return { tup = tys }
+  end
   if t.k == "punct" and t.v == "[" then
     -- `[T]` - the collection type (D-108's spelling; identical to
     -- Vector(T) in v0, per D-112's constructor-scope ruling).
@@ -556,7 +583,14 @@ function parse_postfix()
       e = { call = e.ref, args = args, line = t.line, col = t.col }
     elseif t.k == "punct" and t.v == "." then
       next_tok()
-      local member = expect_name()
+      local mt2 = peek()
+      local member = nil
+      if mt2.k == "int" then
+        next_tok()
+        member = mt2
+      else
+        member = expect_name()
+      end
       if e.ref == nil or e.ref.mod ~= nil then
         fail(t.line, t.col, "chained module paths are not in seed v0")
       end
@@ -709,9 +743,18 @@ function parse_primary()
   end
   if t.k == "punct" and t.v == "(" then
     next_tok()
-    local e = parse_expr(1)
+    local first = parse_expr(1)
+    if at_punct(",") then
+      local items = { first }
+      while at_punct(",") do
+        next_tok()
+        items[#items + 1] = parse_expr(1)
+      end
+      expect_punct(")")
+      return { tuple = items, line = t.line, col = t.col }
+    end
     expect_punct(")")
-    return e
+    return first
   end
   if t.k == "punct" and t.v == "{" then
     return { block = parse_block() }
@@ -1250,6 +1293,49 @@ local function terminate(line)
   E.terminated = true
 end
 
+-- A digits-only slot reader for tuple members (`t.0`); the host's
+-- tonumber/string.byte are outside the verified lua subset the seed
+-- runs under, so digits come from a lookup table.
+local DIGIT_VAL = {}
+DIGIT_VAL["0"] = 0
+DIGIT_VAL["1"] = 1
+DIGIT_VAL["2"] = 2
+DIGIT_VAL["3"] = 3
+DIGIT_VAL["4"] = 4
+DIGIT_VAL["5"] = 5
+DIGIT_VAL["6"] = 6
+DIGIT_VAL["7"] = 7
+DIGIT_VAL["8"] = 8
+DIGIT_VAL["9"] = 9
+
+-- A `sep`-joined string from a list (table.concat is outside the
+-- verified lua subset the seed runs under).
+local function join_strs(parts, sep)
+  local acc = ""
+  for i = 1, #parts do
+    if i > 1 then
+      acc = acc .. sep
+    end
+    acc = acc .. parts[i]
+  end
+  return acc
+end
+
+local function parse_slot(s)
+  local n = 0
+  if #s == 0 then
+    return nil
+  end
+  for i = 1, #s do
+    local d = DIGIT_VAL[string.sub(s, i, i)]
+    if d == nil then
+      return nil
+    end
+    n = n * 10 + d
+  end
+  return n
+end
+
 local function fresh_label()
   E.label = E.label + 1
   return "b" .. tostring(E.label)
@@ -1314,6 +1400,9 @@ local function lookup(name)
 end
 
 local function ir_ty(ty, line, col)
+  if is_tup(ty) then
+    return value_ir(ty, line, col)
+  end
   if is_opt(ty) or is_res(ty) then
     return value_ir(ty, line, col)
   end
@@ -1527,6 +1616,10 @@ function is_res(ty)
   return ty ~= nil and type(ty) == "table" and ty.reserr ~= nil
 end
 
+function is_tup(ty)
+  return ty ~= nil and type(ty) == "table" and ty.tup ~= nil
+end
+
 function is_fn(ty)
   return ty ~= nil and type(ty) == "table" and ty.fnp ~= nil
 end
@@ -1575,6 +1668,17 @@ function vec_ty(inner)
 end
 
 function same_type(a, b)
+  if is_tup(a) or is_tup(b) then
+    if not (is_tup(a) and is_tup(b) and #a.tup == #b.tup) then
+      return false
+    end
+    for i = 1, #a.tup do
+      if not same_type(a.tup[i], b.tup[i]) then
+        return false
+      end
+    end
+    return true
+  end
   if is_opt(a) or is_opt(b) then
     return is_opt(a) and is_opt(b) and same_type(a.opt, b.opt)
   end
@@ -1659,6 +1763,10 @@ end
 -- ordinary variant path resolves; everything else is the ordinary
 -- path (no inference).
 function emit_expr_typed(node, ty)
+  if node.tuple ~= nil then
+    local tv2, tty2 = emit_tuple(node, ty)
+    return tv2, tty2
+  end
   if node.list ~= nil then
     return emit_list_literal(ty, node, node.line, node.col)
   end
@@ -1738,6 +1846,9 @@ function join_parts(parts)
 end
 
 function storage_ir(ty, line, col)
+  if is_tup(ty) then
+    return value_ir(ty, line, col)
+  end
   if is_opt(ty) or is_res(ty) then
     return value_ir(ty, line, col)
   end
@@ -1774,6 +1885,13 @@ function fn_ir(ty, line, col)
 end
 
 function value_ir(ty, line, col)
+  if is_tup(ty) then
+    local parts = {}
+    for i = 1, #ty.tup do
+      parts[#parts + 1] = storage_ir(ty.tup[i], line, col)
+    end
+    return "!frk_adt.product<[" .. join_strs(parts, ", ") .. "]>"
+  end
   if is_opt(ty) then
     return "!frk_adt.sum<[[" .. storage_ir(ty.opt, line, col) .. "], []]>"
   end
@@ -1822,6 +1940,28 @@ function poison(ty, line, col)
     local v = fresh()
     emit(v .. " = func.call @" .. prefix .. "_new() : () -> " .. vec_box_ir(ty.vec, line, col))
     return v
+  end
+  if is_tup(ty) then
+    local acc = nil
+    local acc_ir = nil
+    for i = 1, #ty.tup do
+      local p = poison(ty.tup[i], line, col)
+      if acc == nil then
+        acc = fresh()
+        emit(acc .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
+        acc_ir = "!frk_adt.product<[]>"
+      end
+      local nv = fresh()
+      emit(nv .. " = \"frk_adt.product_snoc\"(" .. acc .. ", " .. p .. ") : (" .. acc_ir .. ", " .. storage_ir(ty.tup[i], line, col) .. ") -> !frk_adt.product<[" .. storage_ir(ty.tup[i], line, col) .. "]>")
+      acc = nv
+      acc_ir = nil
+    end
+    if acc == nil then
+      acc = fresh()
+      emit(acc .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
+    end
+    E.vtypes[acc] = ty
+    return acc
   end
   if is_opt(ty) or is_res(ty) then
     -- Structural unions (SPEC 6.5): variant 0 (Some/Ok) with a
@@ -2822,6 +2962,13 @@ function is_generic_fn(fn)
 end
 
 function mangle_ty(ty)
+  if is_tup(ty) then
+    local acc = "tup"
+    for i = 1, #ty.tup do
+      acc = acc .. "_" .. mangle_ty(ty.tup[i])
+    end
+    return acc
+  end
   if ty == "i64" then
     return "i64"
   end
@@ -2911,6 +3058,20 @@ function infer_expr_ty(expr, line, col)
   if expr.lit == "int" then
     return "i64"
   end
+  if expr.tuple ~= nil then
+    local tys = {}
+    for i = 1, #expr.tuple do
+      local et = infer_expr_ty(expr.tuple[i], line, col)
+      if et == nil then
+        return nil
+      end
+      if E.tvars ~= nil then
+        et = subst_ast(et, E.tvars)
+      end
+      tys[#tys + 1] = et
+    end
+    return { tup = tys }
+  end
   if expr.bin ~= nil then
     -- a binary expression: comparisons/logic are bool; arithmetic
     -- takes its operand's type (the left unless unknown).
@@ -2950,7 +3111,21 @@ function infer_expr_ty(expr, line, col)
   if expr.ref ~= nil and expr.ref.mod ~= nil then
     -- a field access: the receiver's named type's field, quietly
     local b = lookup(expr.ref.mod)
-    if b == nil or not is_named(b.ty) then
+    if b == nil then
+      return nil
+    end
+    if is_tup(b.ty) then
+      local nidx = parse_slot(expr.ref.name)
+      if nidx ~= nil and nidx >= 0 and nidx < #b.ty.tup then
+        local sty = b.ty.tup[nidx + 1]
+        if E.tvars ~= nil then
+          return subst_ast(sty, E.tvars)
+        end
+        return sty
+      end
+      return nil
+    end
+    if not is_named(b.ty) then
       return nil
     end
     local td = E.types[b.ty.named]
@@ -3000,6 +3175,16 @@ function unify_ty(declared, actual, sub, names)
     end
     return
   end
+  if is_tup(declared) then
+    if is_tup(actual) then
+      if #declared.tup == #actual.tup then
+        for i = 1, #declared.tup do
+          unify_ty(declared.tup[i], actual.tup[i], sub, names)
+        end
+      end
+    end
+    return
+  end
   if is_vec(declared) then
     if is_vec(actual) then
       unify_ty(declared.vec, actual.vec, sub, names)
@@ -3038,6 +3223,14 @@ function has_unbound(ty, sub, names)
   end
   if is_named(ty) and names[ty.named] then
     return sub[ty.named] == nil
+  end
+  if is_tup(ty) then
+    for i = 1, #ty.tup do
+      if has_unbound(ty.tup[i], sub, names) then
+        return true
+      end
+    end
+    return false
   end
   if is_vec(ty) then
     return has_unbound(ty.vec, sub, names)
@@ -3477,9 +3670,53 @@ function emit_catch(node)
   return jarg
 end
 
+emit_tuple = function(node, expected)
+  local items = node.tuple
+  local line = node.line or 1
+  local col = node.col or 1
+  local acc = fresh()
+  emit(acc .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
+  local acc_ir = "!frk_adt.product<[]>"
+  local el_irs = {}
+  local el_tys = {}
+  for i = 1, #items do
+    local want = nil
+    if expected ~= nil and is_tup(expected) and i <= #expected.tup then
+      want = expected.tup[i]
+    end
+    local v = nil
+    if want ~= nil then
+      v = emit_expr_typed(items[i], want)
+    else
+      v = emit_expr(items[i])
+    end
+    local vty = E.vtypes[v]
+    if vty == nil then
+      fail(items[i].line or line, items[i].col or col, "internal: a tuple element produced an untyped value")
+    end
+    el_tys[#el_tys + 1] = vty
+    el_irs[#el_irs + 1] = storage_ir(vty, line, col)
+    local stored = v
+    if is_named(vty) then
+      stored = wrap_store(v, vty, line, col)
+    end
+    local nv = fresh()
+    emit(nv .. " = \"frk_adt.product_snoc\"(" .. acc .. ", " .. stored .. ") : (" .. acc_ir .. ", " .. storage_ir(vty, line, col) .. ") -> !frk_adt.product<[" .. join_strs(el_irs, ", ") .. "]>")
+    acc = nv
+    acc_ir = "!frk_adt.product<[" .. join_strs(el_irs, ", ") .. "]>"
+  end
+  local ty = { tup = el_tys }
+  E.vtypes[acc] = ty
+  return acc, ty
+end
+
 emit_expr = function(node)
   local line = node.line or 1
   local col = node.col or 1
+  if node.tuple ~= nil then
+    local v2 = emit_tuple(node, nil)
+    return v2
+  end
   if node.list ~= nil then
     fail(node.line, node.col, "a collection literal needs a [T]/Vector annotation (bind it: `const v: [i64] = [...]`)")
   end
@@ -3530,6 +3767,23 @@ emit_expr = function(node)
           fail(line, col, "module member `" .. node.ref.mod .. "." .. node.ref.name .. "` used as a value (seed v0)")
         end
         fail(line, col, "unknown name `" .. node.ref.mod .. "`")
+      end
+      if is_tup(owner.ty) then
+        -- `t.0` / `t.1` (D-114): a structural product slot.
+        local nidx = parse_slot(node.ref.name)
+        if nidx == nil then
+          fail(line, col, "a tuple's members are numeric (`t.0`); `" .. node.ref.name .. "` is not")
+        end
+        if nidx < 0 or nidx >= #owner.ty.tup then
+          fail(line, col, "tuple index out of range: " .. node.ref.name)
+        end
+        local slot_ty = owner.ty.tup[nidx + 1]
+        local value = read_binding(owner, line, col)
+        local stored = fresh()
+        emit(stored .. " = \"frk_adt.get\"(" .. value .. ") {field = " .. tostring(nidx) .. " : i64} : (" .. value_ir(owner.ty, line, col) .. ") -> " .. storage_ir(slot_ty, line, col))
+        local out = unwrap_load(stored, slot_ty, line, col)
+        E.vtypes[out] = slot_ty
+        return out
       end
       if not is_named(owner.ty) then
         fail(line, col, "`" .. node.ref.mod .. "` has no fields")

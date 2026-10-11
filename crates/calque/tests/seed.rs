@@ -2356,6 +2356,35 @@ pub fn main() i64 {
 }
 
 #[test]
+fn seed_tuples() {
+    // D-114's tuple surface: `(T1, T2)` types, `(a, b)` literals,
+    // `t.0`/`t.1` access, structural products end to end.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "tp.calq",
+            None,
+            "pub fn swap(p: (i64, Str)) (Str, i64) {
+    (p.1, p.0)
+}
+pub fn main() i64 {
+    const t: (i64, Str) = (7, \"ab\");
+    const s = swap(t);
+    io.print(s.0);
+    io.print(\" \");
+    io.print(str.fromI64(s.1));
+    io.print(\"\\n\");
+    0
+}
+",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed emits the tuple probe");
+    let outcome = run_artifact(&artifact).expect("the tuple probe runs");
+    assert_eq!(outcome.output, "ab 7\n");
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the

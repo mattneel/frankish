@@ -3500,3 +3500,14 @@ veto-ledger pattern and most deserve their review.
   instantiation keeps C3's inference/comptime freedoms intact; the
   surface spellings are the GOAL's `comptime T: type` rows.
   Revisit: C3 inference and value-level comptime params.
+
+- D-114 [calque/tuples] THE TUPLE SURFACE (F25's M38 freeze): type
+  `(T1, T2, ...)` in type position (bare parens; `()` stays unit);
+  literals `(a, b)` (two or more elements; `(e)` remains grouping, no
+  1-tuples); access `t.0` / `t.1` (a numeric member after `.`); 
+  destructuring `const (x, y) = t;` (the struct-destructuring form
+  with parens). Representation: STRUCTURAL - the kernel's anonymous
+  product (`!frk_adt.product<[T1, T2]>`), by value, no brand and no
+  allocation; tuples unify like the other structural types (Vector/
+  Option/Result) in comptime inference. Revisit: named-tuple spreads
+  and `..` rest patterns (the spread row).
