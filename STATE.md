@@ -1573,6 +1573,13 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    INT SET (F33/D-117): `usize` = the i64 alias, landed with the
+    corpus case; the narrow ints (`@intCast`, i8/i16/i32) stay fenced
+    on the kernel's i64-uniform lowering - kernel_lower builds every
+    op at i64 (boxes/guards/ABI) - with the subwidth probe as the
+    evidence the fence hides no semantics bug (it caught the interp's
+    missing arith.extsi, fixed). Style: calq0's own sources now use
+    the ruled `[T]` spelling (D-108; 177 sites, corpus byte-exact).
     IMPORT SYSTEM LANDED (D-116, the C2 module half's first piece):
     `import NAME;` parses in both compilers; the drivers resolve the
     names against the unit set (+ reserved modules), refuse unknown
