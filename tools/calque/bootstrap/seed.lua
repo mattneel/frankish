@@ -15,7 +15,7 @@
 -- Scope (seed v0, frozen at the M37 self-host gate): functions with
 -- explicit types (i64/bool/Str/unit/declared), const/var/assignment,
 -- if (statement and expression), while, return, calls (unqualified and
--- the str/io preludes), the checked-arithmetic subset + - / %,
+-- the str/io preludes), the checked-arithmetic subset + - * / %,
 -- comparisons, string/int/bool literals, `pub`, comments, AND the
 -- records/unions growth (D-095): `const T = struct {...}` /
 -- `union(enum) {...}`, `%T{field: value}` construction with literal
@@ -976,6 +976,46 @@ local function emit_checked(op, a, b, line, col)
     local what = op == "+" and "integer overflow (i64 add)" or "integer overflow (i64 sub)"
     guard(neg, loc_msg(line, col, code, what), line, col)
     return res
+  end
+  if op == "*" then
+    -- multiply: overflow iff b != 0 and the wrapped product does not
+    -- divide back. min * -1 lands the quotient on 0 via select (so the
+    -- check fires) and the divisor selects to 1 when b == 0 (no
+    -- div-by-zero; the b != 0 conjunct rejects that path's
+    -- false positive). No divsi(min, -1) is ever executed.
+    local resm = fresh()
+    emit(resm .. " = arith.muli " .. a .. ", " .. b .. " : i64")
+    local bnz = fresh()
+    emit(bnz .. " = arith.cmpi ne, " .. b .. ", " .. zero .. " : i64")
+    local bz = fresh()
+    emit(bz .. " = arith.cmpi eq, " .. b .. ", " .. zero .. " : i64")
+    local one1 = const_i64("1")
+    local bsafe = fresh()
+    emit(bsafe .. " = arith.select " .. bz .. ", " .. one1 .. ", " .. b .. " : i64")
+    local maxlit = const_i64("9223372036854775807")
+    local one2 = const_i64("1")
+    local m0 = fresh()
+    local minv = fresh()
+    local minus1 = fresh()
+    emit(m0 .. " = arith.subi " .. zero .. ", " .. maxlit .. " : i64")
+    emit(minv .. " = arith.subi " .. m0 .. ", " .. one2 .. " : i64")
+    emit(minus1 .. " = arith.subi " .. zero .. ", " .. one2 .. " : i64")
+    local amin = fresh()
+    local bm1 = fresh()
+    local special = fresh()
+    emit(amin .. " = arith.cmpi eq, " .. a .. ", " .. minv .. " : i64")
+    emit(bm1 .. " = arith.cmpi eq, " .. b .. ", " .. minus1 .. " : i64")
+    emit(special .. " = arith.andi " .. amin .. ", " .. bm1 .. " : i1")
+    local zr = fresh()
+    emit(zr .. " = arith.select " .. special .. ", " .. zero .. ", " .. resm .. " : i64")
+    local q = fresh()
+    emit(q .. " = arith.divsi " .. zr .. ", " .. bsafe .. " : i64")
+    local nq = fresh()
+    emit(nq .. " = arith.cmpi ne, " .. q .. ", " .. a .. " : i64")
+    local ovf = fresh()
+    emit(ovf .. " = arith.andi " .. nq .. ", " .. bnz .. " : i1")
+    guard(ovf, loc_msg(line, col, "CQ0003", "integer overflow (i64 mul)"), line, col)
+    return resm
   end
   -- division/remainder: zero divisor and MIN/-1 overflow checks
   local zero2 = const_i64("0")
@@ -2149,9 +2189,6 @@ emit_expr = function(node)
       local v = emit_cmp(op, a, b)
       E.vtypes[v] = "bool"
       return v
-    end
-    if op == "*" then
-      fail(node.line, node.col, "`*` is not in seed v0 (mul-overflow slice pending)")
     end
     local v = emit_checked(op, a, b, node.line, node.col)
     E.vtypes[v] = "i64"

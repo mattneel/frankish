@@ -1238,9 +1238,9 @@ rework flag, not a knob.
     tools/calque/compiler/lex.calq (b0), driven through the input
     channel; expect a `*`-arithmetic seed slab first (see landmines)
     Landmines (new this session):
-    - `*` is NOT in the seed yet ("mul-overflow slice pending") — a
-      b0 program with `i * i` fails loudly; do not write calq0 code
-      using `*` before that slab lands
+    - `*` LANDED mid-session (checked mul, CQ0003; min*-1 routes
+      through select so divsi(min,-1) never executes) — the
+      "mul-overflow slice pending" fence is gone; `i * i` translates
     - the seed's expression convention: emit_expr returns the SSA id
       only; STATIC TYPES ride E.vtypes[id] (calls may also return a
       pair). Violating this was the one real bug class this session

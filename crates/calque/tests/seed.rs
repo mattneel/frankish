@@ -206,6 +206,52 @@ fn seed_vector_out_of_bounds_traps() {
 }
 
 #[test]
+fn seed_compiles_checked_multiplication() {
+    // Hand-derived: 6*7=42; (0-5)*3=-15; 0*max=0; max*1=max.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "mul.calq",
+            None,
+            "pub fn main() i64 {\n    const a: i64 = 6;\n    const b: i64 = 7;\n    io.print(str.fromI64(a * b));\n    io.print(\"\\n\");\n    const neg: i64 = 0 - 5;\n    io.print(str.fromI64(neg * 3));\n    io.print(\"\\n\");\n    io.print(str.fromI64(0 * 9223372036854775807));\n    io.print(\"\\n\");\n    const m: i64 = 9223372036854775807;\n    io.print(str.fromI64(m * 1));\n    io.print(\"\\n\");\n    0\n}\n",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed translates the mul probe");
+    let outcome = run_artifact(&artifact).expect("the artifact runs");
+    assert_eq!(outcome.output, "42\n-15\n0\n9223372036854775807\n");
+}
+
+#[test]
+fn seed_checked_multiplication_traps_on_overflow() {
+    // max * 2 overflows (CQ0003); the message must carry the code.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "mul_ovf.calq",
+            None,
+            "pub fn main() i64 {\n    const m: i64 = 9223372036854775807;\n    io.print(str.fromI64(m * 2));\n    0\n}\n",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed translates the overflow probe");
+    let error = run_artifact(&artifact).expect_err("max * 2 must trap");
+    assert!(error.contains("CQ0003"), "trap must name CQ0003: {error}");
+
+    // min * -1 overflows too, WITHOUT ever executing divsi(min, -1):
+    // the select path routes it to the quotient 0 and the check fires.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "mul_min.calq",
+            None,
+            "pub fn main() i64 {\n    const mn: i64 = 0 - 9223372036854775807 - 1;\n    const m1: i64 = 0 - 1;\n    io.print(str.fromI64(mn * m1));\n    0\n}\n",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed translates the min probe");
+    let error = run_artifact(&artifact).expect_err("min * -1 must trap");
+    assert!(error.contains("CQ0003"), "trap must name CQ0003: {error}");
+}
+
+#[test]
 fn seed_refuses_non_ascii_input_loudly() {
     let files = vec![unit("bad.calq", None, "pub fn main() i64 { 0 } // héllo")];
     let error = seed_translate(&files).expect_err("bytes >= 0x80 are refused (SPEC F18)");
@@ -215,14 +261,15 @@ fn seed_refuses_non_ascii_input_loudly() {
 #[test]
 fn seed_reports_source_mapped_errors() {
     // A feature outside seed v0 must fail with the marker protocol
-    // (file:line:col), never mis-translate.
+    // (file:line:col), never mis-translate. (`*` used to be the probe;
+    // the mul slice landed, so `!` — still fenced — carries it now.)
     let files = vec![unit(
         "bad.calq",
         None,
-        "pub fn main() i64 {\n    const x: i64 = 1 * 2;\n    x\n}",
+        "pub fn main() i64 {\n    const x: bool = !true;\n    0\n}",
     )];
-    let error = seed_translate(&files).expect_err("`*` is outside seed v0");
+    let error = seed_translate(&files).expect_err("`!` is outside seed v0");
     assert!(error.contains("__calque_seed_error:"), "{error}");
-    assert!(error.contains("bad.calq:2:22"), "{error}");
-    assert!(error.contains("mul-overflow slice pending"), "{error}");
+    assert!(error.contains("bad.calq:2:"), "{error}");
+    assert!(error.contains("`!` is not in seed v0"), "{error}");
 }
