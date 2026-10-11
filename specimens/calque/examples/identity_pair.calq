@@ -1,0 +1,10 @@
+pub fn identity(comptime T: type, value: T) T {
+    value
+}
+
+pub fn Pair(comptime T: type) type {
+    struct {
+        first: T,
+        second: T,
+    }
+}

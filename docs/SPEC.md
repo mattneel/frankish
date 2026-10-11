@@ -7,6 +7,9 @@ Status: v0.1, ratified 2026-07-02. Amendments require a DECISIONS.md entry.
 Milestone → required sections: M0–M1 → §7, §12; M2 → §7.1–7.3; M3–M4 → §3, §4;
 M5–M6 → §6, §8, specimens/ml_core; M7 → §4.3, §10; M8 → §9; M9 → §6.3, §8,
 specimens/typescript; M10 → §4.5, specimens/femto_lua. Everyone reads §1–§2 once.
+M36–M42 (the Calque workstream, D-085) → docs/calque/{GOAL,SPEC,
+BOOTSTRAP,ACCEPTANCE}.md first; the §4.7/§8/§13/§14 amendments below
+apply.
 
 ## §1 Thesis
 
@@ -133,7 +136,10 @@ boundary: dyn↔typed casts are contract ops with blame payloads (D-015).
 Comptime/partial evaluation over kernel IR: the M2 interpreter running at
 compile time over `stage.quote` regions, splicing values (v1: scalars and
 adt values). Comptime types/generics beyond monomorphization are fenced
-(§14) — this dialect is the research frontier, sequenced last.
+(§14) — this dialect is the research frontier, sequenced last; Calque C3
+(D-085/D-087) unfences comptime for its consumer on this dialect or an
+equivalent shared service, under K1–K7 — the fence stands for every
+other specimen.
 
 ## §5 Interaction matrix
 
@@ -249,6 +255,13 @@ Order and rationale:
    one-shot continuations first, hygienic macros exercising the expander.
 5. **c_oracle** (early, parallel) — not a frontend: clang-bitcode import rig,
    per-target ABI/struct-layout diffing against clang, csmith/creduce.
+6. **calque** (M36–M42; D-085) — an ORIGINAL specimen (no upstream, no
+   upstream oracle): a strict, Zig-like functional language with a
+   self-hosted compiler, comptime, generics, and developer tools. Its
+   law is `specimens/calque/MANIFEST.md`; its acceptance contract is
+   `docs/calque/GOAL.md`; its verification layers (independently derived
+   expectations, cross-path and cross-compiler agreement, mutant/property
+   tests) replace upstream triangulation and are defined in the MANIFEST.
 
 **Extraction loop (law):** a specimen's first implementation may cheat
 (private ops, ad-hoc lowerings) to go green; the deliverable is the
@@ -378,6 +391,14 @@ Each ends with: suite green, STATE.md milestone note, tag `mN-done`, push.
 Beyond M10 (unscheduled, ordered): scheme/ctl track; effects lowering;
 frk.stage; TS-1..4; height axis (gpu).
 
+M11–M35 executed those tracks (STATE.md's milestone log is the
+record). **M36–M42 = the Calque workstream** (C0–C6 of
+docs/calque/GOAL.md; D-085): M36 C0 charter, M37 C1 interpreted
+compiler written in Calque, M38 C2 the useful functional language,
+M39 C3 shared compile-time execution, M40 C4 native self-host and
+performance, M41 C5 developer experience and portability, M42 C6
+release and demonstration package.
+
 ## §14 Non-goals (v1)
 
 Lazy evaluation; user-defined dialects (IRDL is the v2 hatch); LSP/editor
@@ -386,6 +407,13 @@ added, but build none of it); WasmGC backend; full call/cc; typeclass
 solving beyond dictionaries; Windows-native dev environment (WSL fine);
 package manager / module registry; self-hosting; performance work beyond
 what correct lowering gives for free.
+
+**Calque carve-outs (D-085, goal §2):** for the Calque workstream ONLY,
+the LSP/editor-tooling, self-hosting, local package/module, performance
+work, and comptime-capability fences in §4.7/§14 are suspended under
+D-085's bounds (local packages + a lockable manifest, no online
+registry). Every other non-goal above stands for every specimen,
+Calque included.
 
 ## §15 Open questions (genuinely open — not blockers)
 

@@ -79,6 +79,18 @@ write the milestone note in STATE.md (what shipped, what was learned, what
 cheats exist awaiting promotion), tag `mN-done`, push. Do not start Mn+1 with
 Mn red.
 
+**Calque workstream (M36–M42).** The user-selected workstream after M35:
+Calque, an ORIGINAL specimen whose canonical compiler is written in Calque
+and whose acceptance contract is `docs/calque/GOAL.md` (stored verbatim)
+with the live evidence matrix in `docs/calque/ACCEPTANCE.md`. D-085
+authorizes its scope additions — suspending SPEC §14's LSP/self-hosting/
+local-package/performance/comptime fences FOR CALQUE ONLY — and relaxes
+L5's admission rule for Calque; L1–L3 are unchanged and MORE load-bearing
+(Calque has no upstream oracle). The Calque carve-outs in SPEC §14 are
+the standing authorization, so L9 does not fire on goal-authorized Calque
+work. Milestones: M36 C0 charter → M42 C6 release; C0–C6 remain the
+goal's vocabulary.
+
 ## Repository map
 
     AGENTS.md            this file (law)          CLAUDE.md -> AGENTS.md
@@ -88,6 +100,9 @@ Mn red.
     docs/DECISIONS.md    veto ledger (append-only)
     docs/LANDSCAPE.md    verified prior art, pinned facts, watch items
     specimens/           per-specimen MANIFESTs (frozen subsets, oracles)
+    docs/calque/         Calque workstream: GOAL (authority), SPEC,
+                         BOOTSTRAP, ACCEPTANCE (live evidence matrix)
+    tools/calque/        Calque compiler sources + bootstrap (M37+)
     crates/              Rust workspace (created in M0; layout in SPEC §12)
     tools/loanword-ts/   TypeScript frontend package (created in M9)
     book/                the mdbook (deep docs; `make book`; CI deploys

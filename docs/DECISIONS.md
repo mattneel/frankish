@@ -193,6 +193,242 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-090 [calque/surface] THE USER'S DEMO PLAYBOOK
+  (docs/calque-demo-playbook.md, delivered 2026-10-11; its own header
+  says "proposed syntax and demo storyboard" and that its commands/
+  outputs "are release targets, not captured runs") is adopted as the
+  surface-intent source and the C6 storyboard of record. It SUPERSEDES
+  the initial SPEC v0.1 freeze where they differ, recorded as revised
+  F5/F7/F9 rows plus new F27–F33 in SPEC §12. The supersessions, in
+  full: (1) IF/WHILE CONDITIONS ARE PAREN-LESS (`if value < low {`);
+  `for (values) |value| { ... }` arrives at C2. (2) CONSTRUCTION IS
+  DOT-FIELD: `Type { .f = e, ... }` and context-typed
+  `.{ .f = e, ... }`; unions spell `union(enum) { V, V: T }` with
+  NAMED payload types and bare unit variants; constructors and
+  patterns use the leading-dot shorthand (`.Sale(.{ ... })`, `.None`,
+  `.Queued(0)`, guards, or-patterns, `..` rest) — the earlier
+  colon-field construction, `union { V(T) }`, and postfix-`?`
+  propagation spellings are RETIRED. (3) ERRORS: PREFIX `try e`
+  propagates (identical error type; no implicit conversion —
+  `result.mapError` for explicit adaptation) and `e catch |err| { }` /
+  `e catch { }` supplies a replacement value; `?T` = `Option(T)`,
+  `E!T` = `Result(T, E)`; `.Ok/.Err/.Some/.None` are ordinary variants;
+  Option combines via `option.*` combinators (no Option-`try`).
+  (4) ADOPTED C2+ SURFACE: multiline `"""` strings, `_` numeric
+  separators, `@intCast` + explicit casts, `u8..u64`/`usize`/`f32`/
+  `f64`, fixed arrays `[N]T`, tuples `(a, b)` and array literals
+  `[...]`, record update via `..spread`, destructuring
+  `const .{ .f, .. } = v`, `test "name" { }` blocks, `defer`,
+  `@noalloc` with per-function `calque explain` contracts, and a
+  `calque.toml` build manifest with named `[build.inputs]` enforced
+  at the execution-service boundary (not by annotations).
+  (5) HOST-SERVICE SPELLINGS: `compiler.compile(source, target)`
+  (the compiler library), `frankish.eval(T, artifact, .{ .entry })`,
+  `frankish.evalSpecimen(T, .{ .profile, .source })` (C3).
+  (6) STORYBOARD: C6 demos follow the playbook's ten demos and its
+  chosen opening order (functional-source loop → self-hosted compiler
+  → compilation-inside-compilation → NOW KITH), with its required
+  proofs honored as executable tests, not terminal decoration:
+  compiler-edit-changes-output; lowered-code + allocation
+  verification for fusion; STACK INSTRUMENTATION for the tail-call
+  clip (a large input alone proves nothing); a live edit that changes
+  the embedded constant; cache reuse/invalidation on real dependency
+  changes; capability denial; and no invented timing.
+  b0's SCOPE is unchanged by this entry (the playbook's surface is
+  release-facing): the b0 examples are updated to the revised
+  spellings in this charter's commits, and each playbook form joins
+  the freeze log at its stage. Revisit: any playbook form that
+  disagrees with the goal document at its stage's planning.
+- D-089 [calque/perf] INCREMENTAL COMPILATION IS A FOUNDATIONAL
+  ARCHITECTURAL PROPERTY, not a C5 retrofit (user directive,
+  2026-10-11). The warm path for a small local edit is: hash the
+  changed source (+ relevant target/config inputs) → cache lookup →
+  reconstruct the dependency graph from the cache → emit/link only
+  what actually changed — NOT a re-run of lex/parse/check/emit/eval.
+  LAWS: (1) HASH GRANULARITY at declaration/function/small-module
+  grain, so a body-local edit invalidates that unit and its
+  transitive inliners only; signature or comptime-input changes
+  propagate through the same dependency graph, as they should.
+  (2) HASH INPUTS, NOT OUTPUTS on the hot path: keys are complete
+  semantic inputs — source content, target/config, capabilities,
+  resource policy, and COMPILER IDENTITY — with artifacts (typed IR,
+  kernel artifacts, comptime results) stored under keys and
+  hash-validated when compared or on cache-cold use; never re-hash
+  megabytes of IR per keystroke, never trust mtimes. (3) PURITY IS
+  THE ENABLER: `compiler.compile` and the comptime evaluation service
+  are pure functions of their inputs (goal §11/§12), so cached
+  outputs are sound by construction; a nested compile+eval (the
+  inception demo) collapses to a cached constant after the first run.
+  (4) FAILED/PARTIAL evaluations stay out of the cache (goal §11);
+  every verification-path use re-validates before comparison
+  (BOOTSTRAP §4's stale-artifact rejection stands — a cache is a
+  convenience, never an authority). EXPECTATIONS are recorded as
+  MEASUREMENT TARGETS, never as claims (goal §15.6/§15.8; budgets
+  recorded before C4): warm body-local change ≈ tens of ms
+  (single-digit possible with a hot process); medium change ≈
+  50–200 ms; cold or large invalidation ≈ a full compile of the
+  affected subgraph; the inception demo's second and later runs ≈
+  free. MILESTONE CONSEQUENCES: C1/C2 must give declarations STABLE
+  IDENTITIES and keep artifacts SEPARABLE (no whole-program blobs
+  that force megabyte hashing); C3's service is cache-first by
+  construction; C4 measures cold vs warm separately with
+  hit/recompute counters; C5 completes user-facing incrementality
+  (batch/REPL/editor share it) and reports cold and warm times
+  separately — never by weakening diagnostics or invalidation
+  correctness (goal §14). Revisit: the ranges at C4, where the
+  measured report replaces the target.
+- D-085 [calque/scope] Calque is admitted as the workbench's first
+  ORIGINAL specimen — a product language with no upstream
+  implementation and no upstream oracle, whose canonical compiler is
+  written IN Calque (goal §1; the goal document is stored verbatim at
+  docs/calque/GOAL.md, sha256 09c9ee8ddb7134fd222e580a908ff7d8e
+  3ff7017a7ceb92a0433576659feff30; recorded as the user-selected
+  next workstream, 2026-10-11). THE AUTHORIZATION, ratified so L9
+  has no ambiguity: (a) original-specimen admission, with the L5
+  admission rule RELAXED for Calque per goal §2 — a feature may
+  enter even when existing kernel operations express it, when the
+  language contract requires it — while genuinely NEW REUSABLE
+  SEMANTICS still require promotion under K1–K7; (b) self-hosted
+  frontend + reproducible bootstrap; (c) editor tools, incremental
+  frontend work, measured performance work; (d) compile-time values,
+  type construction, reflection, generic specialization; (e) local
+  modules/packages + a lockable manifest (an online package registry
+  stays outside the goal); (f) SPEC §14 carve-outs — "LSP/editor
+  tooling", "package manager / module registry" (local-only),
+  "self-hosting", and "performance work beyond what correct lowering
+  gives for free" are SUSPENDED FOR CALQUE ONLY; every general v1
+  non-goal (lazy eval, user-defined dialects, WasmGC, full call/cc,
+  typeclass solving beyond dictionaries, Windows-native) STANDS.
+  SPEC §4.7's comptime fence is likewise suspended for Calque's C3
+  consumer only. MILESTONES from the current ledger: M36 = C0
+  charter (this milestone), M37 = C1, M38 = C2, M39 = C3, M40 = C4,
+  M41 = C5, M42 = C6; the goal's C-labels remain its vocabulary.
+  QUEUED WORK PRESERVED (STATE.md, unchanged debt): ts-4
+  generics/monomorphization + sealed-world switch + any-boundary
+  (with the D-079 static-await note and D-083's dot-separated
+  synthesized-symbol scheme owed), femto_lua v0.5+ fences, the
+  re-entrant rung's remaining consumers (scheme P13 + R7RS 4.2.7
+  together, re-entrant winds), and the D-051/052/053 human reviews.
+  PRESERVED CONSTRAINTS: L1/L2/L3 unchanged and MORE load-bearing
+  with no upstream oracle (the answer to "no oracle" is more
+  verifiers, never fewer); K1–K7 for new ops; the frk-abi registry
+  for new runtime functions; IRDL-only, trait-free dialect designs;
+  no C++ shims; L6/L7/L8. SPEC amendments (§8 specimen list, §13
+  workstream, §14 carve-outs, §4.7 note) land with this charter.
+  Revisit: never for the admission; each stage's scope at its own
+  milestone.
+- D-086 [calque/bootstrap] THE BOOTSTRAP ROUTE (goal §5), frozen at
+  C0; full text in docs/calque/BOOTSTRAP.md. (1) THE SEED IS A
+  LUA 5.1 TRANSLATOR run on the existing femto_lua specimen —
+  chosen under the goal's "prefer an existing specimen" rule; its
+  admitted subset covers the work (tables, closures, the tail-call
+  law, byte strings, print). Priced alternatives recorded, not
+  chosen: a Rust seed (more code; puts Calque-shaped logic in the
+  host language the goal keeps clear), a scheme seed (capable, but
+  weaker string/data surfaces in r7rs v0.4), a hand-written initial
+  MLIR artifact (smallest file count, least maintainable). Seed
+  input channel = driver-assembled Lua text: ASCII-only, bytes
+  ≥ 0x80 refused loudly by the driver (the femto_lua literal fence,
+  D-056; SPEC F18); output = artifact text on stdout; seed failures
+  are PROCESS failures, never compiler diagnostics. THE SEED FREEZES
+  at the M37 initial self-host gate: no evolution afterwards; seed
+  + its unit corpus + the b0 compiler snapshot are the trust root.
+  (2) THE ARTIFACT = a kernel-IR module in MLIR text, version-marked
+  `// calque-artifact v0`, entry main()->i64 with emit_c_interface;
+  the driver composes intrinsics.mlir + artifact + input injection
+  (__calque_input_count/__calque_input — the D-062 seed-module
+  pattern with Calque as its fourth frontend). (3) THE COMPARISON:
+  parse + verify + MLIR default print + canon bytes; exclusions NONE
+  beyond the printer's own conventions — compiler determinism is a
+  hard requirement (SPEC F17), so nondeterminism is a BUG the
+  comparator surfaces, not an exclusion to document; the comparator
+  is verified with intentional semantic mutants, an
+  edit-changes-output test, and a new-program test; stale/hardcoded
+  artifacts are rejected by construction (the driver always
+  regenerates from sources). (4) b0 FROZEN (SPEC §12): the
+  bootstrap subset — ASCII source, explicit types everywhere, no
+  inference/generics/comptime/modules/floats — and the examples
+  under specimens/calque/examples/ are freeze artifacts, not
+  runnable claims. (5) GROWTH: tools/calque/bootstrap/snapshots/
+  keeps a bootstrap-compatible compiler source whenever the
+  canonical one outgrows its translator; each hop is recorded; the
+  frozen seed never learns new syntax. Reported as bootstrap
+  evidence, never as semantic proof (goal §5). Revisit: the
+  Rust-seed fallback only on a concrete documented blocker.
+- D-087 [calque/host] HOST ARCHITECTURE (goal §3/§4/§6/§11/§12/§19,
+  host side), frozen at C0: (1) PROFILE MECHANISM — none exists
+  today (verified: "profile" in code means the memory strategy;
+  language dispatch is hard-wired across frk-harness case
+  discovery + parse_and_verify + default_runners + per-kind print
+  grouping). Ruling per goal §3's "or its generalized replacement":
+  build the MINIMAL dispatcher at M37 — one language table
+  (source kind ↔ case file ↔ compile fn ↔ default runners ↔
+  optional oracle ↔ print-protocol class) consolidating the
+  scattered sites, with behavior-preservation tests for every
+  existing specimen as its verifier; no speculative abstraction
+  beyond the table (D-039's one-data-point warning). (2) PRODUCT
+  ENTRY — crates/calque: lib = host services (bootstrap
+  orchestration, artifact composition/verification/execution,
+  compile/run/check APIs), bin `calque` = thin CLI; frnksh gains a
+  `calque` subcommand over the SAME library (one pipeline behind
+  both entries). The host contains NO Calque frontend logic
+  (goal §4 prohibition: no compile_calque intrinsic hiding parsing
+  or typing). (3) M37 DRIVER SERVICES: seed invocation; artifact
+  parse/verify/execute (reusing frk_interp + frk_dialects + the
+  shared pipeline); input injection; diagnostics passthrough;
+  `make calque-bootstrap` (C1) and `make calque-test` (C0 = charter
+  checks; grows the corpus gate at C1). (4) THE COMPTIME SERVICE
+  (C3 shape, recorded now): a shared Frankish service over the
+  EXISTING interpreter — never a second evaluator; request =
+  verified module + entry + args + target + capabilities + resource
+  limits; response = structured value or source-mapped failure;
+  per-request isolation with restore; nested requests with limits;
+  caching keyed on complete semantic inputs (identity, target,
+  deps, capabilities, policy). Placement (a frk-stage crate vs a
+  frk-interp module) is decided at C3 with the first consumer in
+  hand; `frk.stage` DIALECT ops are admitted ONLY if the service
+  needs reusable staging semantics, under K1–K7 — not preemptively.
+  (5) LOANWORD is NOT used for Calque's kernel emission: the
+  frontend is in-process by construction (written in Calque, run
+  under the interpreter); the boundary is kernel-IR text with the
+  version marker. If an out-of-process Calque producer ever
+  appears, loanword's versioning rules govern (goal §6). Revisit:
+  the profile-table shape when a second non-hardwired language
+  arrives; comptime placement at C3.
+- D-088 [calque/emission] C1 EMISSION AND RUNTIME RULES — the seed's
+  and calq0's shared lowering contract for b0 (SPEC §12 is the
+  language side; both implementations must obey these):
+  (1) CLOSURES use the uniform-signature convention (D-063), so the
+  tail-call guarantee (SPEC F10) holds through closure applies;
+  captures by binding per SPEC §6.4 (const by value, var by box).
+  (2) RECURSIVE TYPES: in-group references erase to
+  frk_mem.recref with rec_ref/rec_cast at construction/read — the
+  D-074 recipe generalized from classes to Calque's nominal groups;
+  no new ops. (3) ARITHMETIC is checked by default (SPEC F11): an
+  explicit overflow-detection IR sequence + a trap call (a new
+  Calque-lane ABI row, deterministic on both twins, located per
+  SPEC §11); `/` and `%` keep the interpreter's D-029 trap
+  semantics; explicit wrapping ops are C2. (4) MATCH lowers to tag
+  compares + cf chains over frk_adt sums; exhaustiveness is
+  compile-enforced, so emitted dispatch needs no default arm (a
+  defensive unreachable is permitted, not required). (5) Vector(T)
+  → frk_mem.arr<lowered T> with SINGLE-SLOT elements (scalar, bstr,
+  or managed box pointer; D-041/D-049 rules); Str → frk_bstr
+  (immutable + interned is sound for Calque because Str never
+  mutates; the emitter adapts SPEC's 0-based sub to bstr's
+  convention). (6) The b0 stdlib surface = the Calque intrinsics
+  module (the D-062 authoring surface, kernel IR text shipped with
+  the host, `__calque_*` names) + Calque-source helpers compiled
+  with the unit (str.fromI64 exact for all i64 — no %.14g
+  dependence). (7) NEW RUNTIME ROWS at C1, registry-first with both
+  twins and `make abi`: byte-exact print/eprint for Str (no
+  implicit newline) and the Calque trap entry; nothing else without
+  a consumer and a verifier. (8) LOCATIONS: every emitted op
+  carries file:line:col from b0 spans (file = unit file index; the
+  driver maps indices to paths); diagnostics that point at IR
+  rather than source are bugs with regression tests, same as any
+  frontend (§6.5). Revisit: at C2, each language growth amends
+  SPEC §12 first and these emission rules second.
 - D-084 [m35/lua] femto_lua v0.4 — COROUTINES AS THE RESUMABLE-FRAME
   PATTERN (adversarial panel: three designers + judge; every
   load-bearing claim repo-, spike-, or oracle-witnessed). THE

@@ -1,0 +1,13 @@
+const User = struct {
+    name: Str,
+    score: i64,
+    active: bool,
+};
+
+pub fn activeScore(users: Vector(User)) i64 {
+    users
+        |> seq.iter()
+        |> seq.filter(fn (user) { user.active })
+        |> seq.map(fn (user) { user.score })
+        |> seq.fold(0, fn (total, score) { total + score })
+}

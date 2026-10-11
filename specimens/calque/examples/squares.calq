@@ -1,0 +1,18 @@
+// b0 (v0.1) example - C1 corpus candidate. Expected output: "385\n".
+pub fn main() i64 {
+    var v: Vector(i64) = vector.new();
+    var i: i64 = 1;
+    while i <= 10 {
+        vector.push(v, i * i);
+        i = i + 1;
+    }
+    var total: i64 = 0;
+    var j: i64 = 0;
+    while j < vector.len(v) {
+        total = total + vector.get(v, j);
+        j = j + 1;
+    }
+    io.print(str.fromI64(total));
+    io.print("\n");
+    0
+}

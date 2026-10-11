@@ -1,0 +1,10 @@
+// b0 (v0.1) example - C1 corpus candidate. Expected output: "55\n".
+pub fn fib(n: i64) i64 {
+    if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+}
+
+pub fn main() i64 {
+    io.print(str.fromI64(fib(10)));
+    io.print("\n");
+    0
+}
