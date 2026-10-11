@@ -964,3 +964,42 @@ fn calq0_matches_the_seed_on_match() {
     let emitted_m5 = run_artifact(&got_m5.output).expect("the emitted M5 runs");
     assert_eq!(emitted_m5.values[0].as_signed().expect("i64"), 1 * 100 + 2);
 }
+
+#[test]
+fn calq0_compiles_the_corpus_examples() {
+    // Slice 3c: the independent corpus - every example that the seed's
+    // b0 subset admits, compiled by BOTH compilers and executed.
+    // identity_pair.calq (comptime generics) and active_score.calq
+    // (pipelines + closures) are C2 frontier and stay fenced.
+    let artifact = compile_artifact();
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "fib.calq",
+            include_str!("../../../specimens/calque/examples/fib.calq"),
+            "55\n",
+        ),
+        (
+            "squares.calq",
+            include_str!("../../../specimens/calque/examples/squares.calq"),
+            "385\n",
+        ),
+        (
+            "user_badge.calq",
+            include_str!("../../../specimens/calque/examples/user_badge.calq"),
+            "Hello, Matt\nPerfect, Matt\n",
+        ),
+    ];
+    for (name, src, want) in cases {
+        let files = vec![stdlib_str(), unit(name, None, src)];
+        let expected = seed_translate(&files).expect("the seed emits the example");
+        let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the example");
+        assert_eq!(
+            got.output,
+            expected,
+            "calq0's emission must equal the seed's ({name}): {}",
+            diff_hint(&got.output, &expected)
+        );
+        let emitted = run_artifact(&got.output).expect("the emitted example runs");
+        assert_eq!(emitted.output, *want, "{name} must print its hand-derived output");
+    }
+}
