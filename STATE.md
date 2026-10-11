@@ -1561,8 +1561,20 @@ rework flag, not a knob.
     `v[i]` reads (frk_mem.array_get), calq0 mirrored (ArrT arms +
     Expr.IndexE + the probes), the `arrays` corpus case + a byte-equal
     differential. Suite 61; corpus 25 cases 0 red; grid GREEN.
-    REMAINING in F33 after that: `@intCast`, `usize` (the full
-    integer-type set), `..spread`. Grid GREEN; corpus 24 cases 0 red.
+    `..base` STRUCT SPREAD landed (the playbook's form; both compilers,
+    corpus + differential). The `calque` CLI now has run/test/check/
+    build (F30's slice 1; PASS/FAIL <name> per the playbook, test names
+    ride `// test:` artifact comments).
+    PRESENTABILITY (user priority): the 0:0 diagnostics debt is PAID
+    (AST spans threaded through the emitter - 57 sites; 3 deliberate
+    internal fences remain); one digit table (lex.calq's digit_val/
+    parse_digits) and one product-prefix builder; headers restored to
+    current reality (parse.calq's stale pre-D-112 text rewritten;
+    emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
+    REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
+    per new variant) - pay it before C3 adds variants.
+    REMAINING in F33: `@intCast`, `usize` (the full integer-type set).
+    Grid GREEN; corpus 26 cases 0 red.
     `calque` CLI SLICE 1 LANDED (F30/D-111): crates/calque/src/bin/
     calque.rs - `run FILE.calq` (main + prints) and `test FILE.calq`
     (PASS/FAIL <name> per the playbook, non-zero exit on failure);
