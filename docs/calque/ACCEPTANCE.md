@@ -341,7 +341,7 @@ its console blocks are release targets, never captured-run substitutes.
 | Calque stdlib | `tools/calque/std/` | M38+ |
 | Seed + snapshots + driver recipe | `tools/calque/bootstrap/` | M37+ |
 | Calque corpus | `goldens/calque/` | M37+ |
-| Calque intrinsics (kernel IR seed) | `tools/calque/intrinsics.mlir` | M37 |
+| Calque intrinsics (kernel IR seed) | `crates/calque/src/intrinsics.mlir` (crate-local, `include_str!` per the D-062 pattern) | M37 |
 | Host lib + CLI | `crates/calque/` (bin `calque`) | M37 |
 | Spec / route / matrix / goal | `docs/calque/{SPEC,BOOTSTRAP,ACCEPTANCE,GOAL}.md` | M36 (exist) |
 | Performance record | `docs/calque/PERFORMANCE.md` | M40 |

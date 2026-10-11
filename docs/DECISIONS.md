@@ -193,6 +193,27 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-091 [calque/emission] AMENDS D-088.5 (vector representation),
+  found at C1 planning: b0's `vector.*` surface is GROWABLE, so
+  Vector(T) is NOT a bare `frk_mem.arr`. Representation: a MANAGED BOX
+  of the product [arr<slot>, i64 len, i64 cap]; the
+  `vector.new/push/get/set/len` surface resolves at COMPILE TIME
+  (b0 spells types) to per-slot-kind monomorphic functions in Calque's
+  intrinsics module — `__calque_vector_{i64,bstr,box}_*` — with growth
+  (double from an initial 4) implemented as ordinary kernel IR in that
+  module (array_new + copy loop + field_set): ZERO new ops and zero
+  runtime-twin code (the D-062/M17 authoring-surface pattern).
+  Instantiations land on demand: i64 + Str for the first corpus; the
+  managed-box instantiation when calq0 collects AST values. If
+  `arr<!frk_bstr.str>` proves inexpressible under the slot model,
+  Vector(Str) boxes through `arr<dyn>` (2-slot elements exist) —
+  decided by a check at implementation, never assumed. ALSO RE-RULED
+  HERE (stage allocation within D-090's adoption): the type-elided
+  dot forms (`.{ .f = e }`, `.Variant` constructors and patterns) land
+  with C2's context propagation; b0 always SPELLS types (SPEC §5/§5.2,
+  rows F5/F27 updated). Revisit: the C2 immutable Vector replaces this
+  surface's semantics (structural sharing + builders); the b0
+  growable Vector lives only inside the bootstrap chain.
 - D-090 [calque/surface] THE USER'S DEMO PLAYBOOK
   (docs/calque-demo-playbook.md, delivered 2026-10-11; its own header
   says "proposed syntax and demo storyboard" and that its commands/

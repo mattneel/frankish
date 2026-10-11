@@ -136,24 +136,25 @@ Locals (inside blocks):
 
 Literals; names; module calls `str.concat(a, b)`; calls `f(a, b)`;
 record construction `User { .name = "a", .score = 1, .active = true }`
-and context-typed `.{ .name = "a", ... }`; union construction
-`.Ident("a")` / bare `.Plus` (context-typed) or qualified
-`Token.Ident("a")`; field access `user.name`; blocks `{ stmt; ...;
+(the TYPE NAME is always spelled in b0; the bare `.{ ... }` form
+arrives with C2 inference); union construction `Token.Ident("a")` /
+`Token.Plus` (same split: `.Ident("a")` / `.Plus` are C2); field
+access `user.name`; blocks `{ stmt; ...;
 expr }` (value = last expression; a trailing `;` makes the block value
 `()`); `if cond { } else if cond { } else { }` (PAREN-LESS conditions,
 D-090; statement or expression; `else` required in expression
 position); `while cond { }`; `break;` `continue;` (innermost loop);
-`match e { .P => expr, ... }` (expression; pattern set in §5.2);
-closures `fn (x: T, y: U) R { ... }` — b0 requires explicit types on
+`match e { Type.Pattern => expr, ... }` (expression; pattern set in
+§5.2); closures
+`fn (x: T, y: U) R { ... }` — b0 requires explicit types on
 closure params/returns; context-inferred closure parameters
 (`fn (user) { ... }`, the goal's example) arrive with C2 inference;
 capture by binding (§6.4); pipeline `x |> f(a)` (sugar, §6.3); prefix
 `try e` and `e catch |err| { ... }` / `e catch { ... }` (§6.5);
 unary `!e`, `-e`; binary operators per §5.1.
-Context-typed (dot) forms are legal wherever the EXPECTED type is
-known (binding annotations, parameter/return types, match arms, field
-positions); elsewhere the qualified spelling is required (b0
-simplicity; C2's inference widens this).
+The b0/C2 line is uniform: b0 always SPELLS types where a type is
+required (construction, patterns); C2's context propagation makes the
+type-elided dot forms legal wherever the expected type is known.
 
 ### §5.1 Operators and precedence
 Loosest to tightest; all binaries left-associative:
@@ -174,8 +175,10 @@ string/float arithmetic). No implicit conversions exist anywhere in
 Calque.
 
 ### §5.2 Patterns [b0]
-`_` wildcard; `name` binding; `.Variant` / `.Variant(pat)` (variant
-patterns; sub-patterns in b0: `_` or `name` only). Match arms
+`_` wildcard; `name` binding; `Type.Variant` / `Type.Variant(pat)`
+(variant patterns, type-qualified in b0; sub-patterns in b0: `_` or
+`name` only). The dot shorthand `.Variant` arrives with C2 (same
+expected-type split as §5). Match arms
 separated by commas; a trailing comma allowed. Exhaustiveness: a
 match over a union must cover every variant or carry a `_` arm;
 violations are compile ERRORS with the missing variant named as a
@@ -387,7 +390,7 @@ require a D-entry and a row here. "Frozen-by" records the decision.
 | F2 | expression-oriented bodies; strict; left-to-right (§6.2) | GOAL §7, D-086 |
 | F3 | `const`/`var` surface; explicit local mutation; no implicit shared mutation | GOAL §7, D-086 |
 | F4 | fn syntax `fn name(params) R`; explicit types everywhere in b0 | D-086 |
-| F5 | nominal records/unions via top-level consts; `struct { f: T }` / `union(enum) { V, V: T }`; construction `Type { .f = e }` / context-typed `.{ .f = e }` / `.Variant` | D-086; revised by D-090 |
+| F5 | nominal records/unions via top-level consts; `struct { f: T }` / `union(enum) { V, V: T }`; b0 construction QUALIFIED (`Type { .f = e }` / `Type.Variant`); type-elided dot forms at C2 | D-086; revised by D-090 |
 | F6 | `match` with exhaustiveness+redundancy as errors; b0 pattern set | D-086 |
 | F7 | operator set + precedence table (§5.1); `try` prefix, `catch` handler; postfix `?` RETIRED | D-086; revised by D-090 |
 | F8 | pipeline desugar exact (§6.3) | GOAL §8, D-086 |
@@ -409,13 +412,14 @@ require a D-entry and a row here. "Frozen-by" records the decision.
 | F24 | non-tail recursion is not constant-stack; documented (§6.4) | GOAL §7, D-086 |
 | F25 | C2-visible syntax (inference, generics, floats, tuples, modules) NOT frozen yet; their freeze rows are due at M38 planning | D-086 |
 | F26 | incrementality is content-addressed at declaration grain; compiler + comptime eval are pure functions; cache keys = complete semantic inputs | D-089 |
-| F27 | if/while conditions paren-less; `for (x) \| v` at C2; dot-shorthand constructors/patterns | D-090 |
+| F27 | if/while conditions paren-less; `for (x) \| v` at C2; dot-shorthand constructors/patterns AT C2 (b0 spells types) | D-090 |
 | F28 | the user's demo playbook (docs/calque-demo-playbook.md) is the surface-intent + C6 storyboard source; its console blocks are release targets | D-090 |
 | F29 | `calque.toml` build manifest + named `[build.inputs]`, enforced at the service boundary | D-090 (C3/C5) |
 | F30 | CLI surfaces: check/build/run/test/explain (+ `--explain-comptime`, `--runtime-artifact`, `--function`) | D-090 (C1/C5) |
 | F31 | `compiler.compile`, `frankish.eval`, `frankish.evalSpecimen` are the host-service spellings | D-090 (C3) |
 | F32 | `@noalloc` spelling; allocation claims require executable tests, never terminal decoration | D-090 (C4) |
 | F33 | multiline `"""` strings, `_` numeric separators, `@intCast`, `usize`, `[N]T`, tuples, `[...]` literals, `..spread`, `test` blocks | D-090 (C2) |
+| F34 | b0 `Vector(T)` = managed box of `[arr<slot>, len, cap]`; `vector.*` resolves to per-slot-kind intrinsic functions with growth in the intrinsics module | D-091 |
 
 Rows cite the entry that froze them; revisions cite the revising
 entry (D-090 revised F5/F7/F9 after the user's demo playbook).
