@@ -33,11 +33,37 @@ pub(crate) fn register(registry: &mut HashMap<&'static str, Box<dyn Eval>>) {
     registry.insert("arith.bitcast", Box::new(Bitcast));
     registry.insert("arith.xori", Box::new(XorI));
     registry.insert("arith.extui", Box::new(ExtUI));
+    registry.insert("arith.extsi", Box::new(ExtSI));
     registry.insert("arith.sitofp", Box::new(SiToFp));
     registry.insert("arith.fptosi", Box::new(FpToSi));
     registry.insert("arith.maxsi", Box::new(MaxSI));
     registry.insert("arith.andi", Box::new(AndI));
     registry.insert("arith.ori", Box::new(OrI));
+}
+
+/// Sign-extension (the ExtUI twin): the operand's bit pattern with its
+/// sign bit spread up, masked to the result width by Value::int.
+struct ExtSI;
+impl Eval for ExtSI {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let values = operand_values(frame, op, 0, 1)?;
+        let (bits, src_width) = values[0].int_parts()?;
+        let width = int_width(
+            op.result(0)
+                .map_err(|_| EvalError::Malformed("extsi without result".into()))?
+                .r#type(),
+        )?;
+        let mut sext = bits;
+        if src_width < 64 && (bits >> (src_width - 1)) & 1 == 1 {
+            sext = bits | !((1u64 << src_width) - 1);
+        }
+        continue_with_result(frame, op, Value::int(sext, width)?)
+    }
 }
 
 struct ExtUI;
