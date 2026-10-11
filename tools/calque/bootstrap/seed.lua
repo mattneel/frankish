@@ -1291,7 +1291,9 @@ local function parse_type_decl()
 end
 
 local function parse_fn()
+  local is_pub = false
   if at_kw("pub") then
+    is_pub = true
     next_tok()
   end
   expect_kw("fn")
@@ -1339,7 +1341,7 @@ local function parse_fn()
     ret = parse_type()
   end
   local body = parse_block()
-  return { name = name.v, params = params, ret = ret, body = body, line = name.line, col = name.col }
+  return { name = name.v, params = params, ret = ret, body = body, line = name.line, col = name.col, pub = is_pub }
 end
 
 local TEST_N = 0
@@ -2922,6 +2924,30 @@ local function emit_apply(cb, args, line, col)
   return res, cb.ty.fnr
 end
 
+
+-- D-118: module-member visibility. `mod.name` is legal iff the mod is
+-- the referring unit itself, or the unit imported it AND the target is
+-- pub. Reserved modules (str/io/vector/seq/opt/res) go through the
+-- builtin tables before this point. ns-less units keep the flat v0
+-- model (pub is still enforced there; imports are not, since there is
+-- no namespace to declare them on).
+local RESERVED_MODS = { str = true, io = true, vector = true, seq = true, opt = true, res = true }
+
+local function check_mod_vis(mod, fn, line, col)
+  if RESERVED_MODS[mod] then
+    return
+  end
+  if E.cur_ns ~= nil and mod == E.cur_ns then
+    return
+  end
+  if not fn.pub then
+    fail(line, col, "`" .. mod .. "." .. fn.name .. "` is not pub")
+  end
+  if E.cur_imports == nil or E.cur_imports[mod] == nil then
+    fail(line, col, "module `" .. mod .. "` is not imported (add `import " .. mod .. ";`)")
+  end
+end
+
 local function emit_call(node)
   local callee = node.call
   local line = node.line
@@ -3159,6 +3185,9 @@ local function emit_call(node)
   if callee.mod ~= nil then
     sym = callee.mod .. "__" .. callee.name
     fn = E.fns_by_sym[sym]
+    if fn ~= nil then
+      check_mod_vis(callee.mod, fn, line, col)
+    end
   else
     fn = E.fns[callee.name]
     sym = fn and fn.sym or nil
@@ -4507,7 +4536,7 @@ local function emit_fn(fn)
   E.terminated = false
   E.scopes = {}
   E.vtypes = {}
-  E.fns = FNS
+  E.fns = E.fns_for_unit or FNS
   E.fns_by_sym = FNS_BY_SYM
   E.ret = fn.ret
   new_block(nil)
@@ -4562,7 +4591,7 @@ local function lift_prepare(flike, env_ty)
   E.cur = 0
   E.terminated = false
   E.vtypes = {}
-  E.fns = FNS
+  E.fns = E.fns_for_unit or FNS
   E.fns_by_sym = FNS_BY_SYM
   E.ret = flike.ret
   E.caps = {}
@@ -4662,6 +4691,7 @@ FNS_BY_SYM = {}
 function run(files)
   E.out = {}
   IMPORTS = {}
+  IMPORTS_BY_NS = {}
   E.out[#E.out + 1] = "// calque-artifact v0"
   local parsed = {}
   local types = {}
@@ -4669,9 +4699,15 @@ function run(files)
     local f = files[i]
     CURRENT_FILE = f.name
     local unit = parse_file(f.text, f.name)
-    parsed[#parsed + 1] = { file = f, fns = unit.fns }
+    parsed[#parsed + 1] = { file = f, fns = unit.fns, imports = unit.imports }
+    if f.ns ~= nil then
+      IMPORTS_BY_NS[f.ns] = IMPORTS_BY_NS[f.ns] or {}
+    end
     for j = 1, #unit.imports do
       local im = unit.imports[j]
+      if f.ns ~= nil then
+        IMPORTS_BY_NS[f.ns][im.name] = true
+      end
       if f.ns ~= nil and im.name == f.ns then
         fail(im.line, im.col, "a unit cannot import itself (cycle: `" .. im.name .. "`)")
       end
@@ -4781,6 +4817,24 @@ function run(files)
   local entry = nil
   for i = 1, #parsed do
     local p = parsed[i]
+    -- own-unit visibility (D-118): bare refs resolve within the unit;
+    -- ns-less units stay flat-merged (the v0 model).
+    local unit_tbl = {}
+    for k, v in pairs(FNS) do
+      unit_tbl[k] = v
+    end
+    for j = 1, #p.fns do
+      local f0 = p.fns[j]
+      if f0.name ~= "main" then
+        unit_tbl[f0.name] = f0
+      end
+    end
+    E.fns_for_unit = unit_tbl
+    E.cur_ns = p.file.ns
+    E.cur_imports = {}
+    for j = 1, #(p.imports or {}) do
+      E.cur_imports[p.imports[j].name] = true
+    end
     for j = 1, #p.fns do
       local fn = p.fns[j]
       if fn.is_entry then

@@ -52,6 +52,12 @@ pub const GRes = struct {
     args: [Expr],
 };
 
+// D-118: one unit's imports (the visibility check's context).
+pub const NsImp = struct {
+    ns: Str,
+    mod: Str,
+};
+
 pub const Emitter = struct {
     output: [Str] = ["// calque-artifact v0"],
 
@@ -73,6 +79,8 @@ pub const Emitter = struct {
     tvars: [TV] = [],
     lams: i64 = 0,
     capbar: i64 = 0,
+    cur_ns: Str = "",
+    imports: [NsImp] = [],
     caps: [Binding] = [],
     cap_origs: [Binding] = [],
     capenv_ty: Str = "",
@@ -84,6 +92,22 @@ pub fn e_init() Emitter {
 
 pub fn e_ast(mut e: Emitter) Ast {
     return vector.get(e.asts, 0);
+}
+
+pub fn e_cur_ns(mut e: Emitter) Str {
+    return e.cur_ns;
+}
+
+pub fn e_cur_ns_set(mut e: Emitter, ns: Str) {
+    e.cur_ns = ns;
+}
+
+pub fn e_imports(mut e: Emitter) [NsImp] {
+    return e.imports;
+}
+
+pub fn e_imports_set(mut e: Emitter, ims: [NsImp]) {
+    e.imports = ims;
 }
 
 pub fn e_ast_set(mut e: Emitter, a: Ast) {
@@ -289,6 +313,7 @@ pub fn sym_of(f: Fn) Str {
 }
 
 pub fn e_fn(mut e: Emitter, f: Fn) {
+    e.cur_ns = f.ns;
     e.next_value = 0;
     e.next_block = 0;
     var fresh_vt: [VTy] = vector.new();
@@ -851,7 +876,7 @@ pub fn emit_lambda_expr(mut e: Emitter, l: LamE) Str {
         lpi = lpi + 1;
     }
     const lret0: Ty = tv_res(e, l.ret);
-    const fake: Fn = %Fn{name: sym, params: lps, ret: lret0, body: l.body, file: e_file(e), ns: "", test_name: ""};
+    const fake: Fn = %Fn{name: sym, params: lps, ret: lret0, body: l.body, file: e_file(e), ns: "", test_name: "", is_pub: false};
     // the return_types CELL is mutated in place (vector.set), so the
     // lift snapshot aliases it: save/restore the enclosing ret
     // explicitly around the closure's emission.
@@ -1931,6 +1956,83 @@ pub fn call_sym(name: Str, mod: Str) Str {
     return name;
 }
 
+// D-118: module-member visibility. `mod.name` is legal iff the mod is
+// the referring unit itself, or the unit imported it AND the target is
+// pub. Reserved modules are implicit (the kernel's host modules).
+pub fn is_reserved_mod(m: Str) bool {
+    if m == "str" {
+        return true;
+    }
+    if m == "io" {
+        return true;
+    }
+    if m == "vector" {
+        return true;
+    }
+    if m == "seq" {
+        return true;
+    }
+    if m == "opt" {
+        return true;
+    }
+    if m == "res" {
+        return true;
+    }
+    return false;
+}
+
+pub fn imported_mod(mut e: Emitter, m: Str) bool {
+    const n: i64 = vector.len(e_imports(e));
+    var i: i64 = 0;
+    while i < n {
+        const im: NsImp = vector.get(e_imports(e), i);
+        if im.ns == e_cur_ns(e) {
+            if im.mod == m {
+                return true;
+            }
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Returns true when visibility failed (the error is recorded).
+pub fn check_mod_vis(mut e: Emitter, mod: Str, f: Fn, line: i64, col: i64) bool {
+    if is_reserved_mod(mod) {
+        return false;
+    }
+    if mod == e_cur_ns(e) {
+        return false;
+    }
+    if f.is_pub == false {
+        const _ = e_fail_at(e, line, col, str.concat("`", str.concat(mod, str.concat(".", str.concat(f.name, "` is not pub")))));
+        return true;
+    }
+    if imported_mod(e, mod) == false {
+        const msg2: Str = str.concat("` is not imported (add `import ", str.concat(mod, ";`)"));
+        const msg1: Str = str.concat("module `", str.concat(mod, msg2));
+        const _ = e_fail_at(e, line, col, msg1);
+        return true;
+    }
+    return false;
+}
+
+// D-118: bare names resolve in the unit first (a namespaced unit's own
+// fns), then the flat table (ns-less units); dotted names go through
+// the qualified sym directly.
+pub fn find_fn_ctx(mut e: Emitter, name: Str, mod: Str) Fn {
+    const sym: Str = call_sym(name, mod);
+    const f: Fn = find_fn(e_ast(e), sym);
+    if f.name == "" {
+        if str.len(mod) == 0 {
+            if str.len(e_cur_ns(e)) > 0 {
+                return find_fn(e_ast(e), str.concat(e_cur_ns(e), str.concat("__", name)));
+            }
+        }
+    }
+    return f;
+}
+
 pub fn find_fn(a: Ast, sym: Str) Fn {
     const n: i64 = vector.len(a.fns);
     var i: i64 = 0;
@@ -2205,15 +2307,20 @@ pub fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
         // str.fromI64 and other members resolve as namespaced functions.
     }
     const sym: Str = call_sym(r.name, r.mod);
-    const f: Fn = find_fn(e_ast(e), sym);
+    const f: Fn = find_fn_ctx(e, r.name, r.mod);
     if f.name == "" {
         return e_fail_at(e, line, col, str.concat("unknown function `", str.concat(sym, "`")));
+    }
+    if str.len(r.mod) > 0 {
+        if check_mod_vis(e, r.mod, f, line, col) {
+            return "";
+        }
     }
     if is_generic_fn(f) {
         const g: GRes = resolve_generic(e, f, c.args, line, col);
         return emit_fn_args(e, g.f, sym_of(g.f), g.args, line, col);
     }
-    return emit_fn_args(e, f, sym, c.args, line, col);
+    return emit_fn_args(e, f, sym_of(f), c.args, line, col);
 }
 
 // ---------------------------------------------------------------- D-113
@@ -2501,7 +2608,7 @@ pub fn infer_call_ty(mut e: Emitter, c0: Call, line: i64, col: i64) Ty {
         return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
     }
     const sym0: Str = call_sym(r0.name, r0.mod);
-    const f2: Fn = find_fn(e_ast(e), sym0);
+    const f2: Fn = find_fn_ctx(e, r0.name, r0.mod);
     if f2.name == "" {
         return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
         return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
@@ -2561,7 +2668,7 @@ pub fn infer_bin_ty(mut e: Emitter, b0: Bin, line: i64, col: i64) Ty {
 
 // A bare top-level fn name used as a VALUE: its signature as a fn type.
 pub fn infer_fn_value_ty(mut e: Emitter, nm: Str, line: i64, col: i64) Ty {
-    const f2: Fn = find_fn(e_ast(e), nm);
+    const f2: Fn = find_fn_ctx(e, nm, "");
     if f2.name == "" {
         return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
     }
@@ -2911,7 +3018,7 @@ pub fn resolve_generic(mut e: Emitter, f: Fn, args: [Expr], line: i64, col: i64)
             }
             pi = pi + 1;
         }
-        instf = %Fn{name: key, params: vps, ret: subst_ty_list(f.ret, sub), body: f.body, file: f.file, ns: "", test_name: ""};
+        instf = %Fn{name: key, params: vps, ret: subst_ty_list(f.ret, sub), body: f.body, file: f.file, ns: "", test_name: "", is_pub: false};
         vector.push(e.insts, %InstN{key: key, f: instf});
         vector.push(e.instq, %InstE{f: instf, sub: sub});
     }
@@ -3078,7 +3185,7 @@ pub fn emit_ref(mut e: Emitter, r: Ref, line: i64, col: i64) Str {
     if b.name == "" {
         // a bare top-level fn name as a VALUE: a closure over an empty
         // environment (first-class fn values, SPEC 6.4).
-        const f2: Fn = find_fn(e_ast(e), r.name);
+        const f2: Fn = find_fn_ctx(e, r.name, r.mod);
         if f2.name != "" {
             if is_generic_fn(f2) {
                 return e_fail_at(e, line, col, "a generic fn value needs explicit instantiation (D-113)");

@@ -1573,6 +1573,13 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    VISIBILITY (D-118, D-116's next slice): dotted members need an
+    import + `pub`; reserved modules implicit; bare own-unit calls in
+    namespaced units now resolve (a latent v0 hole the probes caught).
+    Gates: calq0_matches_the_seed_on_visibility (byte-equal vis1 +
+    matching refusal texts vis2/vis3). Suite 66; corpus 27 cases 0 red;
+    grid GREEN. OPEN from D-118: type visibility, path-qualified/
+    per-item imports, re-exports.
     INT SET (F33/D-117): `usize` = the i64 alias, landed with the
     corpus case; the narrow ints (`@intCast`, i8/i16/i32) stay fenced
     on the kernel's i64-uniform lowering - kernel_lower builds every

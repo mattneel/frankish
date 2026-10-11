@@ -92,7 +92,7 @@ pub fn main() i64 {
         var k: i64 = 0;
         while k < nf {
             const f: Fn = vector.get(a.fns, k);
-            vector.push(fns, %Fn{name: f.name, params: f.params, ret: f.ret, body: f.body, file: uname, ns: uns, test_name: f.test_name});
+            vector.push(fns, %Fn{name: f.name, params: f.params, ret: f.ret, body: f.body, file: uname, ns: uns, test_name: f.test_name, is_pub: f.is_pub});
             k = k + 1;
         }
         // imports (D-116): register the unit's namespace and the
@@ -171,7 +171,21 @@ pub fn main() i64 {
         si = si + 1;
     }
     const merged: Ast = %Ast{fns: fns, types: types, imports: import_decls};
+    var nsimps: [NsImp] = [];
+    var ii: i64 = 0;
+    const ni: i64 = vector.len(import_decls);
+    while ii < ni {
+        const im3: ImpDecl = vector.get(import_decls, ii);
+        const fidx: i64 = vector.get(edge_from, ii);
+        var fns_name: Str = "";
+        if fidx >= 0 {
+            fns_name = vector.get(ns_names, fidx);
+        }
+        vector.push(nsimps, %NsImp{ns: fns_name, mod: im3.name});
+        ii = ii + 1;
+    }
     var e: Emitter = e_init();
+    e_imports_set(e, nsimps);
     emit_module(e, merged);
     if e_ok(e) == false {
         io.print(fail_text(state_fail(e_state(e))));

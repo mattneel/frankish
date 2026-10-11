@@ -2564,6 +2564,64 @@ fn seed_imports() {
 }
 
 #[test]
+fn calq0_matches_the_seed_on_visibility() {
+    // D-118: bare own-unit calls in a namespaced unit resolve; a
+    // dotted member needs an import and pub, with the seed's texts.
+    let artifact = compile_artifact();
+
+    // vis1: bare own-call + imported pub member: runs.
+    let files = vec![
+        stdlib_str(),
+        unit("m.calq", Some("m"), "fn helper() i64 { 7 }\npub fn mf() i64 { helper() + 1 }\n"),
+        unit(
+            "main.calq",
+            None,
+            "import m;\npub fn main() i64 { io.print(str.fromI64(m.mf())); io.print(\"\\n\"); 0 }\n",
+        ),
+    ];
+    let expected = seed_translate(&files).expect("the seed emits the bare-own set");
+    let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the bare-own set");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (bare own-call): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted bare-own set runs");
+    assert_eq!(emitted.output, "8\n");
+
+    // vis2: a dotted member of a unit that was not imported.
+    let files2 = vec![
+        stdlib_str(),
+        unit("m.calq", Some("m"), "pub fn mf() i64 { 7 }\n"),
+        unit(
+            "main.calq",
+            None,
+            "pub fn main() i64 { io.print(str.fromI64(m.mf())); io.print(\"\\n\"); 0 }\n",
+        ),
+    ];
+    let mid = run_artifact_with_input(artifact, &files2).expect("calq0 runs on vis2");
+    assert!(
+        mid.output.contains("module `m` is not imported (add `import m;`)"),
+        "{}",
+        mid.output
+    );
+
+    // vis3: imported but not pub.
+    let files3 = vec![
+        stdlib_str(),
+        unit("m.calq", Some("m"), "fn hidden() i64 { 9 }\n"),
+        unit(
+            "main.calq",
+            None,
+            "import m;\npub fn main() i64 { io.print(str.fromI64(m.hidden())); io.print(\"\\n\"); 0 }\n",
+        ),
+    ];
+    let mid3 = run_artifact_with_input(artifact, &files3).expect("calq0 runs on vis3");
+    assert!(mid3.output.contains("`m.hidden` is not pub"), "{}", mid3.output);
+}
+
+#[test]
 fn calq0_matches_the_seed_on_imports() {
     // D-116's differential: the clean set is byte-equal and runs; the
     // cycle and the unknown name are refused with the seed's texts.

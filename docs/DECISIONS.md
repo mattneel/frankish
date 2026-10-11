@@ -3549,3 +3549,21 @@ veto-ledger pattern and most deserve their review.
   arith IS modular + correct - and the probe caught one real L3 gap
   on the way (the reference interpreter had no Eval for
   arith.extsi; JIT/AOT always handled it), fixed in the same step.
+
+- D-118 [calque/visibility] MODULE-MEMBER VISIBILITY (D-116's named
+  next slice): `mod.name` from a unit is legal iff mod is the unit
+  itself, or the unit imported mod AND the target is `pub`. The
+  reserved modules (str/io/vector/seq/opt/res) are implicit (the
+  kernel's host modules, D-094). Enforced at resolution in both
+  compilers with the same texts (`module `m` is not imported (add
+  `import m;`)`, `` `m.hidden` is not pub``). SAME SLICE, REQUIRED BY
+  THE GATES: bare own-unit calls now resolve inside a namespaced unit
+  (the seed overlays the unit's fns onto the flat table per emit; the
+  mirrored `find_fn_ctx` falls back to the unit-qualified sym), fixing
+  a latent v0 hole the vis probes exposed (`unknown function `helper``
+  in a ns'd unit).
+  `pub` is now recorded (Fn.is_pub - the field can't be named `pub`,
+  it is a keyword). calq0's emission after the fix uses sym_of(f) at
+  the plain call (byte-equal with the seed again).
+  FENCED: type visibility (named-type refs remain flat-merged),
+  path-qualified/per-item imports, re-exports (D-116's list).
