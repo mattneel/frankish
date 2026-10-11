@@ -43,17 +43,42 @@ Steering amendment (D-095..D-097;
 `docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md`): the record surface is
 `%Type{field: value}` / `%Type{base | field: value}` /
 `%Type{field: pat}` / `%Type{}` / `^name` (the dot-initializer forms
-are RETIRED before the bootstrap grammar hardens — b0 has no records
-yet); `calque test` is the project test entry point (mix-shaped
+are RETIRED before the bootstrap grammar hardens — the record surface
+SHIPPED at M37 with the seed growth, so b0 HAS records; see "Scope
+grammar" below); `calque test` is the project test entry point
+(mix-shaped
 surface, ExUnit-style declarations, source-captured assertions,
 isolated execution, run-every-selection incrementality); CON (`.con`)
 and CTF (`.ctf`) are first-class formats over ONE reflection-derived
 codec contract with JSON as the interoperability projection, safe
 decoders by default, and ETF-class performance as a benchmarked
-release objective. Stage extensions: struct grammar lands with the C2
-record work; minimal test runner + structural assertions at C2;
+release objective. Stage extensions: minimal test runner + structural
+assertions at C2;
 codecs at C2/C3; CTF-vs-ETF at C4; full test experience at C5;
 consumers/demos at C6.
+
+Second steering amendment (D-099..D-102;
+`docs/calque/STEERING-DOCS-PACKAGES-FUZZING.md`): documentation is
+STRUCTURED SOURCE (`@moduledoc`/`@doc`/`@typedoc` attached to resolved
+entities; Markdown files first-class) feeding ONE documentation graph
+(`calque docs`) that serves the site, the book, CLI Markdown help for
+every command, and doctest registration; documentation, tests,
+instrumented code, and release code keep independent artifact keys and
+documentation never rides in runtime artifacts. Packages are
+Hex-compatible with TWO distinct operations — verified `fetch`
+(no code execution) and reviewable typed `install` plans over the
+shared source/CON trees (capability-restricted, journaled, idempotent,
+digest-approved) — with publication validation against signed LOCAL
+fixture repositories only (no hosted registry; GOAL §21's exclusion
+stands). Fuzzing is a first-class test mode: registered byte/typed
+targets, deterministic corpus replay under `calque test`, explicit
+coverage-guided campaigns through the real MLIR/LLVM pipeline behind a
+pinned engine, and a failure-preserving minimize/promote lifecycle.
+Stage extensions: doc attributes + parser preservation and doctest
+registration at C2; packages client and fuzzing at C4; docs toolchain +
+CLI Markdown help + full doctest integration + publication validation
+at C5; release packaging of docs/help at C6; gates `calque-docs`/
+`calque-packages`/`calque-fuzz` land with their stages (SPEC §13).
 
 ## Stages
 Each stage freezes at its milestone exit (goal §18; numbers from the
@@ -65,18 +90,23 @@ current ledger, D-085):
 - **C2 (M38) — useful functional language.** Pipelines/seq, matches,
   closures, Option/Result ergonomics, generics (monomorphized),
   recursive data, modules + stdlib; compiler grows through the
-  recorded chain.
+  recorded chain; documentation attributes + parser preservation and
+  doctest registration (D-099/D-100).
 - **C3 (M39) — shared compile-time execution.** `comptime`, type
   construction/reflection/reification, capabilities, budgets,
   caching, nested compiler-library + cross-specimen evaluation.
 - **C4 (M40) — native self-host and performance.** Native compiler
   from canonical source; reproducible fixed point; optimizations +
-  cost controls; published measurements.
+  cost controls; published measurements; the Hex-compatible package
+  client (D-101) and first-class fuzzing (D-102) land here.
 - **C5 (M41) — developer experience and portability.** Formatter,
   language server, REPL, incremental invalidation, native debug,
-  target matrix.
+  target matrix; the documentation toolchain + CLI Markdown help +
+  full doctest integration + package publication validation
+  (D-099/D-100/D-101).
 - **C6 (M42) — release and demonstration package.** Demos A–E
-  (asciinema + MP4), documentation audit, acceptance sweep.
+  (asciinema + MP4), documentation audit, acceptance sweep; generated
+  documentation/help ship in the release artifacts.
 
 ## Scope grammar (b0 — frozen at M36; extended at M37 by the seed growth;
 SPEC §12 is the precise text)

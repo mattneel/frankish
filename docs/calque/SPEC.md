@@ -11,6 +11,9 @@ C2 (M38) adds §7–§9 items marked C2. C3 (M39) owns §8.
 The user's steering amendment (structs, tests, CON/CTF) lives at
 docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md and supersedes conflicting
 surface text here (D-095/D-096/D-097); its stage mapping is in §13.
+The second steering amendment (docs-as-source, packages, fuzzing) lives
+at docs/calque/STEERING-DOCS-PACKAGES-FUZZING.md and extends the release
+surface (D-099/D-100/D-101/D-102); its stage mapping is in §13.
 
 ---
 
@@ -503,3 +506,17 @@ over the shared codec foundation at C2–C3, CTF-vs-ETF optimization at
 C4, the full test experience (fixtures/selection/isolation/
 incremental/coverage) at C5, consumers/docs/demos at C6; the original
 goal file remains the hash-pinned historical contract.
+
+The second steering amendment (docs/packages/fuzzing — D-099..D-102)
+extends the release again: doc attributes (`@moduledoc`/`@doc`/
+`@typedoc`) + parser preservation at C2 (with the attribute surface)
+and doctest registration on the minimal runner; the documentation
+toolchain (one graph → site/book/CLI Markdown help) and full doctest
+integration at C5; the Hex-compatible package client (`fetch` verified
+acquisition + `install` reviewable typed plans + `deps`) at C4 over
+the CON/CTF foundation, with publication validation against local
+signed fixture repositories at C5; first-class fuzzing (registered
+targets, coverage-guided native exploration behind a pinned engine,
+corpus lifecycle + promotion) at C4–C5; release packaging of
+documentation/help and the acceptance sweep at C6. The hosted
+registry service stays OUTSIDE (GOAL §21's exclusion stands).

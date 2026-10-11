@@ -2486,3 +2486,201 @@ veto-ledger pattern and most deserve their review.
   interp-first goldens without weakening L3 where both runners apply.
   Revisit: if directive lists rot after paths catch up (a skip that
   never flips back is a smell — grep for runners= at milestone exits).
+
+- D-098 [bstr] THE v0.1 LITERAL FENCE LIFTS: `frk_bstr.lit` admits
+  ARBITRARY 8-BIT BYTES (executing D-056's deferred note, "arbitrary
+  8-bit literals need an encoding ruling"). The ruling: byte strings
+  have NO encoding — the decoded attribute bytes ARE the value, and
+  every consumer was already byte-based (intern/len/sub; the
+  interpreter's `Value::Bytes` content equality). The forcing
+  consumer is the Calque compiler's input channel (BOOTSTRAP §2.1:
+  unit texts ride as bstr literals, arbitrary bytes — the driver's
+  `input_injection`); the SEED's own channel REMAINS ASCII-only
+  (SPEC F18) — different layers, different fences. Verifier: the
+  attribute-presence check only; the lowering carries `Vec<u8>`
+  into `byte_global` verbatim (the `String::from_utf8` gate
+  deleted). No in-tree producer emits non-ASCII bstr literals
+  today, so no golden moves; the relaxation only ADMITS programs.
+  Frontend lexing fences (D-052's realm) are untouched. Revisit: if
+  a frontend needs non-ASCII string semantics, that is its own
+  ruling — this entry rules the KERNEL's byte domain, not UTF-8.
+
+- D-099 [calque/docs] DOCS-AS-SOURCE + the built-in documentation
+  toolchain (steering: docs/packages/fuzzing, §1–§5 + §9 + §14).
+  Documentation is STRUCTURED SOURCE DATA, not a comment scrape:
+  `@moduledoc` / `@doc` / `@typedoc` attach to RESOLVED entities
+  (stable compiler identities, original spans) for modules,
+  functions, types, fields, variants, and public constants, with
+  Markdown, metadata (version-introduced/deprecated/category/
+  implementation-status), and author-declared visibility preserved;
+  Markdown guide files are equally first-class inputs; tracked
+  includes and named snippets keep their dependency provenance and
+  diagnostic locations. Attachment rules, `@doc false` discovery
+  visibility (≠ language privacy — never a security boundary),
+  missing-doc/broken-reference checks, and stale-reference
+  diagnostics are part of the contract; signatures/types/defaults/
+  errors/effects/verified contracts come from SEMANTIC data, never a
+  hand-maintained second copy; proven contracts stay distinct from
+  prose. `calque docs` builds ONE graph → navigable publication
+  (site + book + release notes + guides) with compiler-identity
+  symbol resolution (never regex), stable permalinks, version-pinned
+  dependency references, deterministic static HTML, a COMPLETE
+  Markdown export, one search index, an agent-facing Markdown index
+  (+ optional llms.txt, never a substitute for retrievable content),
+  bundled assets (no mandatory CDN), sanitized untrusted Markdown,
+  no executable render hooks, loopback-bound preview servers, and
+  site content usable without JavaScript. `calque doc TOPIC` and
+  every command's `--help --format markdown` serve the SAME graph as
+  CLI Markdown (UTF-8, no ANSI/pagers/TTY dependence; help generated
+  from the declarations that define the flags; diagnostics/progress
+  on stderr; actionable alternatives for unknown topics; nothing
+  advertised that does not exist); core help works OFFLINE, outside
+  a project, without compilation or LLVM init; help lookup NEVER
+  executes code (no package hooks, no doctests); package prose is
+  untrusted content, not authority. Documentation and dev
+  instrumentation stay OUT of runtime artifacts; documentation,
+  tests, instrumented code, and release code keep independent
+  artifact keys (AC-11.11's identity rule extends to them). Stage
+  mapping with D-100..D-102 below. Revisit: CONFLICT CHECK — GOAL
+  §21 excludes an online registry only; no §21 line fences docs,
+  doctests, installers, or fuzzing; the hosted registry service
+  therefore stays outside (not built, not required).
+- D-100 [calque/test] DOCTESTS ARE ORDINARY REGISTERED TESTS
+  (steering §6): Calque fences in source docs and guides register
+  through the SAME discovery/source-identity system as `calque test`
+  (no duplicate registration; no second evaluator — the Frankish
+  interpreter and the existing native test paths run them, under
+  the runner's own capabilities and resource limits); REPL
+  transcripts (`calque>` + continuations) keep value expectations
+  distinct from stdout/stderr; explicit compile-only,
+  expected-error, and non-executable modes exist; expected compile
+  errors match by STABLE DIAGNOSTIC IDENTITY + relevant location
+  (an unrelated parser failure is never proof); skipped/illustrative
+  examples REQUIRE a reason and are REPORTED as skipped, never
+  counted as passes; hidden setup is shown on demand and the tested
+  source = published example + declared setup; examples carry
+  stable identities, original spans (source OR Markdown line),
+  wrapper/import policy, target, dependencies, and capabilities for
+  invalidation (compiled examples are reused, historical pass
+  results never are). Sequential transcript bindings scope within
+  an example group; groups are isolated; source-line selection works
+  in both `.calq` and `.md`; `--failed`/`--stale`/tags/trace/
+  timeouts/machine-readable events integrate; `calque test
+  --doctest` selects documentation-only; dependency doctests stay
+  opt-in; ambient network/unrelated filesystem access is denied by
+  default (explicit fixtures otherwise); execution happens ONLY
+  through test commands or a documented verification option — never
+  during help lookup or ordinary docs rendering.
+- D-101 [calque/packages] HEX-COMPATIBLE PACKAGES: VERIFIED
+  ACQUISITION + EXPLICIT INTEGRATION (steering §7–§9). Two
+  operations, never conflated: `calque fetch` (hex:<repo>/<pkg>@ver,
+  https archive, git+rev, local path; `--save` records the
+  dependency WITHOUT executing package code) and `calque install`
+  (proposes a REVIEWABLE, TYPED edit plan; `--dry-run` leaves
+  project files unchanged; application is explicit — approval of an
+  exact plan digest in noninteractive modes, never a hidden prompt
+  fallback, and a generic `--yes` cannot grant capabilities absent
+  from the plan). The installer is a BOUNDED Calque program or
+  declarative plan over typed project-edit operations on the SHARED
+  source/CON syntax trees (comments/imports/formatting preserved;
+  dependency/configuration/source/test/guide/example additions;
+  declared capabilities + parameters; capability-restricted service
+  over a bounded snapshot — no raw host filesystem/process/network/
+  credential access; hosts that cannot enforce isolation REJECT the
+  installer). Plans carry identity/inputs/grants/preconditions in
+  the digest, render identically as human diff / CLI Markdown /
+  machine data, and are revalidated (source hashes + preconditions)
+  before application — a stale plan is REJECTED, not merged;
+  application is staged writes + a recoverable journal, validated in
+  an isolated snapshot; no phantom atomicity claims; rollback never
+  deletes unrelated modifications; repeated installation is
+  idempotent; managed changes are tracked and conflicts reported on
+  upgrade; follow-up actions are preserved, never auto-executed.
+  Hex protocol compatibility is implemented against PINNED official
+  specifications (registry metadata verified against configured
+  trusted keys; package checksums AND repository/package identities
+  verified; a content hash alone is never publisher authentication;
+  public/private/local fixture repositories supported; repository
+  identity rides in dependency keys to prevent namespace confusion);
+  archive traversal/unsafe links/decompression bombs/path
+  collisions are rejected; git dependencies pin COMMITS; mutable
+  local paths are recorded honestly; verified downloads live in a
+  content-addressed cache whose integrity is separate from
+  extracted-tree identity; credentials never appear in manifests/
+  lockfiles/docs/output and are not forwarded across untrusted
+  redirects; conflicts produce useful version-constraint
+  diagnostics; locked builds are exact and offline-reproducible;
+  updates are explicit and minimal; prerelease/retirement/optional
+  policies are conformance-tested; CON carries human-edited package
+  metadata (after CON supports the schema), with a documented
+  lockfile and an inspectable deps tree; older manifests migrate
+  through an explicit transition; non-Calque package languages/build
+  tools are rejected with SPECIFIC diagnostics; Mix/Rebar/NIF/
+  arbitrary shell hooks NEVER run implicitly; native foreign-library
+  builds are separate explicit capabilities; no claim that
+  arbitrary Hex packages run on Frankish. PACKAGE PUBLICATION is a
+  supported explicit authenticated USER command, validated against
+  LOCAL signed fixture repositories during implementation — the
+  implementation itself never publishes or mutates remote accounts.
+  Documentation travels WITH the package (API docs, guides, command
+  help, schemas, source maps, Markdown index bound to the locked,
+  integrity-verified identity; versioned CTF once its stable profile
+  exists; CON/Markdown inspectable without native decoding; core
+  help never depends on a new serializer; unknown dependency code is
+  never built just to read its docs; offline help exports include
+  dependency docs on explicit request with license/attribution
+  preserved).
+- D-102 [calque/fuzz] FUZZING IS A FIRST-CLASS TEST MODE (steering
+  §10–§13). Targets register through the SAME discovery and source-
+  identity system as ordinary tests: raw-input (`bytes: Bytes`) and
+  typed property/state-machine targets, with generator policy and
+  decoder limits in registered metadata. Deterministic corpus replay
+  runs under ordinary `calque test`; NEW exploration is explicit
+  (`calque fuzz`, `calque test --fuzz`) with finite defaults and
+  explicit limits for runs/time/input size/memory/recursion;
+  excessive-rejection (vacuous) properties are rejected; discarded
+  cases are reported. Coverage-guided native exploration sits behind
+  a shared host interface over a MAINTAINED pinned engine (no
+  invented mutation scheduler); instrumentation flows through the
+  ACTUAL MLIR/LLVM pipeline with an instrumentation CANARY that
+  fails when callbacks/counters are absent and a demonstrated
+  coverage edge inside an imported Calque module (host-compiler
+  instrumentation alone does NOT satisfy it); comparison feedback
+  where supported; coverage identities bind to the instrumented
+  build; corpus inputs survive compiler changes (coverage metadata
+  may be rebuilt). Interpreter and native paths are differentially
+  compared for admitted generated programs (values and results; no
+  agreement-as-proof), with state reset between cases, explicit
+  stateful sequences, and no normalization beyond documented
+  incidental differences. Corpus lifecycle: content-identity
+  dedup, EXACT bytes preserved (malformed CTF/invalid UTF-8
+  included), metadata separate from input bytes, regression vs
+  exploration vs findings vs scratch separated, failures deduped by
+  MEANINGFUL signatures; minimization is failure-preserving
+  (assertion/sanitizer/differential), original + minimized inputs
+  both retained, fresh-process replay before classification, flaky
+  findings reported (never silently dropped), promotion into
+  checked-in regressions only after review, promoted cases run in
+  ordinary tests; disk budgets bounded. Failures are actionable:
+  original source location, structural diff, exact rerun command,
+  metadata path, Markdown reports. Sanitizer integration is on the
+  primary native target with DEMONSTRATED instrumentation (never a
+  merely linked runtime) and documented unsupported combinations;
+  fuzz instrumentation/runtime stay OUT of release artifacts; corpus
+  replay works on targets without the exploration engine. Fuzz
+  targets exist for the mandatory families (lex/parse/formatter
+  recovery; Markdown/docs artifact readers; CON/CTF/JSON/schema
+  codec round trips; collections/symbols; package envelopes/extract/
+  registry/constraints; installer plans/conflicts/idempotence/journal
+  recovery; compiler queries/comptime/origins) under bounded
+  malformed inputs without network or persistent host mutation.
+  WORKSTREAM MAPPING (with D-099/D-100/D-101): doc attributes +
+  parser preservation C2 (with the attribute surface); doctest
+  registration on the minimal runner C2, full doctest integration C5;
+  docs toolchain (graph/book/site/search/CLI Markdown help) C5;
+  packages fetch/verify/install C4 (over the CON/CTF foundation),
+  publication validation + fixture flows C5; fuzzing (targets,
+  coverage engine, corpus lifecycle) C4–C5; release packaging of
+  docs/help and the acceptance demos' end-to-end runs C6; gates
+  `make calque-docs` / `make calque-packages` / `make calque-fuzz`
+  land with their stages and join `calque-test`'s matrix.

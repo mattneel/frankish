@@ -22,6 +22,9 @@ CALQUE_GOAL_SHA=09c9ee8ddb7134fd222e580a908ff7d8e3ff7017a7ceb92a0433576659feff30
 # pin moves only with a deliberate amendment edit (never to accommodate
 # new requirements — the goal pin above is likewise untouchable).
 CALQUE_STEERING_SHA=87b4fe7c308830d41254020fe4086a7188ee0ffffd8128a1b9bc9834e6bb24a8
+# The second steering amendment (D-099..D-102: docs, packages, fuzzing)
+# is a permanent record too; same pin discipline.
+CALQUE_STEERING2_SHA=a372428e51df80c51fe8f39c57c89cfd327b2bfb65cc0aab61618b303c1a64bc
 
 fail=0
 err() { echo "calque-check: $1" >&2; fail=1; }
@@ -30,6 +33,7 @@ err() { echo "calque-check: $1" >&2; fail=1; }
 for f in docs/calque/GOAL.md docs/calque/SPEC.md docs/calque/BOOTSTRAP.md \
          docs/calque/ACCEPTANCE.md docs/calque/PERFORMANCE.md \
          docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md \
+         docs/calque/STEERING-DOCS-PACKAGES-FUZZING.md \
          specimens/calque/MANIFEST.md \
          specimens/calque/examples/README.md book/src/specimens/calque.md; do
   [ -f "$f" ] || err "missing artifact: $f"
@@ -49,6 +53,12 @@ if [ -f docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md ]; then
   got=$(sha256sum docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md | cut -d' ' -f1)
   [ "$got" = "$CALQUE_STEERING_SHA" ] \
     || err "STEERING-TESTS-STRUCTS-FORMATS.md sha256 drifted: $got (pin $CALQUE_STEERING_SHA)"
+fi
+# 2c. Second steering amendment pin (D-099..D-102).
+if [ -f docs/calque/STEERING-DOCS-PACKAGES-FUZZING.md ]; then
+  got=$(sha256sum docs/calque/STEERING-DOCS-PACKAGES-FUZZING.md | cut -d' ' -f1)
+  [ "$got" = "$CALQUE_STEERING2_SHA" ] \
+    || err "STEERING-DOCS-PACKAGES-FUZZING.md sha256 drifted: $got (pin $CALQUE_STEERING2_SHA)"
 fi
 
 # 3. Matrix structure.
