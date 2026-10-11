@@ -1350,6 +1350,51 @@ pub fn main() i64 {
 }
 
 #[test]
+fn seed_closures_capture_and_apply() {
+    // SPEC 6.4 / D-092: `fn (x: T) R { ... }` literals lift to
+    // envref-first functions; the capture env rides a product (consts
+    // by value, vars by box); calls through values are apply(args).
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "cl.calq",
+            None,
+            "pub fn apply1(f: fn (i64) i64, x: i64) i64 {
+    f(x)
+}
+pub fn main() i64 {
+    const base: i64 = 10;
+    const addBase: fn (i64) i64 = fn (x: i64) i64 { x + base };
+    io.print(str.fromI64(apply1(addBase, 5)));
+    io.print(\"\\n\");
+    const noCap: fn (i64) i64 = fn (x: i64) i64 { x * 2 };
+    io.print(str.fromI64(noCap(21)));
+    io.print(\"\\n\");
+    0
+}
+",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed emits the closure probe");
+    let outcome = run_artifact(&artifact).expect("the closure probe runs");
+    assert_eq!(outcome.output, "15\n42\n");
+
+    // A captured VAR shares the box (D-092): the closure's mutation is
+    // visible to the caller.
+    let var_probe = vec![
+        stdlib_str(),
+        unit(
+            "clv.calq",
+            None,
+            "pub fn main() i64 {\n    var n: i64 = 5;\n    const bump: fn () i64 = fn () i64 { n = n + 1; n };\n    const a: i64 = bump();\n    const b: i64 = bump();\n    io.print(str.fromI64(a + b + n));\n    io.print(\"\\n\");\n    0\n}\n",
+        ),
+    ];
+    let va = seed_translate(&var_probe).expect("the seed emits the var-capture probe");
+    let vo = run_artifact(&va).expect("the var-capture probe runs");
+    assert_eq!(vo.output, "20\n"); // bump: n=6 ret 6; again: n=7 ret 7; a+b+n = 6+7+7
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the

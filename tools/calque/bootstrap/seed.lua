@@ -333,6 +333,34 @@ local function parse_type()
     next_tok()
     return "unit"
   end
+  if t.k == "kw" and t.v == "fn" then
+    -- `fn (T, ...) R` - a first-class function type (SPEC 6.4).
+    next_tok()
+    local lp = peek()
+    if not (lp.k == "punct" and lp.v == "(") then
+      fail(lp.line, lp.col, "fn type needs a parameter list: `fn (T, ...) R`")
+    end
+    next_tok()
+    local ps = {}
+    if not at_punct(")") then
+      while true do
+        local pt = parse_type()
+        ps[#ps + 1] = pt
+        if at_punct(",") then
+          next_tok()
+        else
+          break
+        end
+      end
+    end
+    local rp = peek()
+    if not (rp.k == "punct" and rp.v == ")") then
+      fail(rp.line, rp.col, "expected `)` after the fn type's parameters")
+    end
+    next_tok()
+    local rty = parse_type()
+    return { fnp = ps, fnr = rty }
+  end
   if t.k == "punct" and t.v == "[" then
     -- `[T]` - the collection type (D-108's spelling; identical to
     -- Vector(T) in v0, per D-112's constructor-scope ruling).
@@ -493,6 +521,40 @@ function parse_primary()
     next_tok()
     return { lit = "bool", text = t.v, line = t.line, col = t.col }
   end
+  if t.k == "kw" and t.v == "fn" then
+    -- `fn (x: T, ...) R { body }` - a closure value (SPEC 6.4).
+    next_tok()
+    local lp = peek()
+    if not (lp.k == "punct" and lp.v == "(") then
+      fail(lp.line, lp.col, "fn literal needs a parameter list")
+    end
+    next_tok()
+    local params = {}
+    if not at_punct(")") then
+      while true do
+        local pn = expect_name()
+        expect_punct(":")
+        local pty = parse_type()
+        params[#params + 1] = { name = pn.v, ty = pty, line = pn.line, col = pn.col }
+        if at_punct(",") then
+          next_tok()
+        else
+          break
+        end
+      end
+    end
+    local rp = peek()
+    if not (rp.k == "punct" and rp.v == ")") then
+      fail(rp.line, rp.col, "expected `)` after the fn literal's parameters")
+    end
+    next_tok()
+    local rty = "unit"
+    if not at_punct("{") then
+      rty = parse_type()
+    end
+    local body = parse_block()
+    return { lam = { params = params, ret = rty, body = body }, line = t.line, col = t.col }
+  end
   if t.k == "kw" and t.v == "if" then
     return parse_if()
   end
@@ -501,6 +563,34 @@ function parse_primary()
   end
   if t.k == "punct" and t.v == "%" then
     return parse_struct_literal_or_map()
+  end
+  if t.k == "kw" and t.v == "fn" then
+    -- `fn (T, ...) R` - a first-class function type (SPEC 6.4).
+    next_tok()
+    local lp = peek()
+    if not (lp.k == "punct" and lp.v == "(") then
+      fail(lp.line, lp.col, "fn type needs a parameter list: `fn (T, ...) R`")
+    end
+    next_tok()
+    local ps = {}
+    if not at_punct(")") then
+      while true do
+        local pt = parse_type()
+        ps[#ps + 1] = pt
+        if at_punct(",") then
+          next_tok()
+        else
+          break
+        end
+      end
+    end
+    local rp = peek()
+    if not (rp.k == "punct" and rp.v == ")") then
+      fail(rp.line, rp.col, "expected `)` after the fn type's parameters")
+    end
+    next_tok()
+    local rty = parse_type()
+    return { fnp = ps, fnr = rty }
   end
   if t.k == "punct" and t.v == "[" then
     -- `[e1, e2]` / `[]` (D-112): the element type comes from the
@@ -1053,11 +1143,42 @@ local function declare(name, binding, line, col)
   end
   top[name] = binding
 end
+local function record_capture(name, b)
+  for i = 1, #E.caps do
+    if E.caps[i].name == name then
+      return E.caps[i].proxy
+    end
+  end
+  local cap_kind = "ssa"
+  local storage = value_ir(b.ty, 1, 1)
+  if b.kind == "box" or b.kind == "mut" then
+    cap_kind = "box"
+    storage = box_ir(b.ty, 1, 1)
+  end
+  local proxy = {
+    kind = "cap",
+    name = name,
+    ty = b.ty,
+    box = box_ir(b.ty, 1, 1),
+    cap_idx = #E.caps,
+    cap_kind = cap_kind,
+    cap_storage = storage,
+    cap_box = box_ir(b.ty, 1, 1),
+  }
+  E.caps[#E.caps + 1] = { name = name, orig = b, proxy = proxy }
+  return proxy
+end
+
 local function lookup(name)
   local i = #E.scopes
   while i >= 1 do
     if E.scopes[i][name] ~= nil then
-      return E.scopes[i][name]
+      local b = E.scopes[i][name]
+      local bar = E.capbar
+      if bar ~= nil and i < bar then
+        return record_capture(name, b)
+      end
+      return b
     end
     i = i - 1
   end
@@ -1065,6 +1186,9 @@ local function lookup(name)
 end
 
 local function ir_ty(ty, line, col)
+  if is_fn(ty) then
+    return fn_ir(ty, line, col)
+  end
   if is_vec(ty) then
     return vec_box_ir(ty.vec, line, col)
   end
@@ -1239,6 +1363,7 @@ end
 -- ------------------------------- expressions
 
 local emit_expr = nil -- forward (initializer-required locals)
+local emit_lambda = nil -- forward (closures, SPEC 6.4)
 
 -- --------------------- declared types, records, unions (D-095/D-088)
 --
@@ -1261,6 +1386,10 @@ end
 
 function is_named(ty)
   return ty ~= nil and type(ty) == "table" and ty.named ~= nil
+end
+
+function is_fn(ty)
+  return ty ~= nil and type(ty) == "table" and ty.fnp ~= nil
 end
 
 function is_vec(ty)
@@ -1307,6 +1436,23 @@ function vec_ty(inner)
 end
 
 function same_type(a, b)
+  if is_fn(a) or is_fn(b) then
+    if not (is_fn(a) and is_fn(b)) then
+      return false
+    end
+    if #a.fnp ~= #b.fnp then
+      return false
+    end
+    if not same_type(a.fnr, b.fnr) then
+      return false
+    end
+    for i = 1, #a.fnp do
+      if not same_type(a.fnp[i], b.fnp[i]) then
+        return false
+      end
+    end
+    return true
+  end
   if is_named(a) or is_named(b) then
     return is_named(a) and is_named(b) and a.named == b.named
   end
@@ -1399,6 +1545,9 @@ function join_parts(parts)
 end
 
 function storage_ir(ty, line, col)
+  if is_fn(ty) then
+    return fn_ir(ty, line, col)
+  end
   if is_vec(ty) then
     return vec_box_ir(ty.vec, line, col)
   end
@@ -1418,6 +1567,14 @@ function product_ir(decl)
     parts[#parts + 1] = storage_ir(decl.fields[i].ty, decl.fields[i].line, decl.fields[i].col)
   end
   return "!frk_adt.product<[" .. join_parts(parts) .. "]>"
+end
+
+function fn_ir(ty, line, col)
+  local ps = {}
+  for i = 1, #ty.fnp do
+    ps[#ps + 1] = value_ir(ty.fnp[i], line, col)
+  end
+  return "!frk_closure.fn<[" .. join_parts(ps) .. "], [" .. value_ir(ty.fnr, line, col) .. "]>"
 end
 
 function value_ir(ty, line, col)
@@ -1599,9 +1756,34 @@ function unwrap_load(stored, ty, line, col)
 end
 
 -- Reads a binding to its VALUE ssa + logical type.
+-- The env slot for a capture (the lazy env_load + adt.get pair).
+function cap_slot(b, line, col)
+  local slot = fresh()
+  emit(slot .. " = \"frk_closure.env_load\"(%env) {index = " .. tostring(b.cap_idx) .. " : i64, env = " .. E.capenv_ty .. "} : (!frk_closure.envref) -> " .. b.cap_storage)
+  return slot
+end
+
+-- The binding's raw slot (the value for ssa, the box for boxes, the
+-- loaded slot for captures) - what assignment writes through.
+function binding_slot(b, line, col)
+  if b.kind == "cap" then
+    return cap_slot(b, line, col)
+  end
+  return b.id
+end
+
 function read_binding(b, line, col)
   if b.kind == "ssa" then
     return b.id, b.ty
+  end
+  if b.kind == "cap" then
+    local slot = cap_slot(b, line, col)
+    if b.cap_kind == "box" then
+      local v = fresh()
+      emit(v .. " = \"frk_mem.box_get\"(" .. slot .. ") : (" .. box_ir(b.ty, line, col) .. ") -> " .. value_ir(b.ty, line, col))
+      return v, b.ty
+    end
+    return slot, b.ty
   end
   local v = fresh()
   emit(v .. " = \"frk_mem.box_get\"(" .. b.id .. ") : (" .. box_ir(b.ty, line, col) .. ") -> " .. value_ir(b.ty, line, col))
@@ -2069,6 +2251,35 @@ local function emit_match(node)
   return nil
 end
 
+-- A call through a fn value: args ride a product into frk_closure.apply.
+local function emit_apply(cb, args, line, col)
+  local fv = read_binding(cb, line, col)
+  if #args ~= #cb.ty.fnp then
+    fail(line, col, "closure expects " .. tostring(#cb.ty.fnp) .. " argument(s), got " .. tostring(#args))
+  end
+  local e0 = fresh()
+  emit(e0 .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
+  local acc = e0
+  local acc_ty = "!frk_adt.product<[]>"
+  local fields = {}
+  for i = 1, #args do
+    local av = emit_expr(args[i])
+    local aty = E.vtypes[av]
+    if not same_type(aty, cb.ty.fnp[i]) then
+      fail(line, col, "closure argument type mismatch")
+    end
+    local st = value_ir(aty, line, col)
+    fields[#fields + 1] = st
+    local nxt = fresh()
+    emit(nxt .. " = \"frk_adt.product_snoc\"(" .. acc .. ", " .. av .. ") : (" .. acc_ty .. ", " .. st .. ") -> !frk_adt.product<[" .. join_parts(fields) .. "]>")
+    acc = nxt
+    acc_ty = "!frk_adt.product<[" .. join_parts(fields) .. "]>"
+  end
+  local res = fresh()
+  emit(res .. " = \"frk_closure.apply\"(" .. fv .. ", " .. acc .. ") : (" .. fn_ir(cb.ty, line, col) .. ", " .. acc_ty .. ") -> " .. value_ir(cb.ty.fnr, line, col))
+  return res, cb.ty.fnr
+end
+
 local function emit_call(node)
   local callee = node.call
   local line = node.line
@@ -2285,6 +2496,13 @@ local function emit_call(node)
     -- (D-094): `str.fromI64` -> @str__fromI64. Fall through.
   end
   -- unit function call (unqualified or namespaced)
+  -- A fn-typed BINDING called as a value: closure apply (SPEC 6.4).
+  if callee.mod == nil then
+    local cb = lookup(callee.name)
+    if cb ~= nil and is_fn(cb.ty) then
+      return emit_apply(cb, args, line, col)
+    end
+  end
   local sym = nil
   local fn = nil
   if callee.mod ~= nil then
@@ -2527,9 +2745,13 @@ emit_expr = function(node)
       E.vtypes[b.id] = b.ty
       return b.id
     end
-    local v = fresh()
-    emit(v .. " = \"frk_mem.box_get\"(" .. b.id .. ") : (" .. b.box .. ") -> " .. value_ir(b.ty, line, col))
-    E.vtypes[v] = b.ty
+    local v, rty = read_binding(b, line, col)
+    E.vtypes[v] = rty
+    return v
+  end
+  if node.lam ~= nil then
+    local v, ty = emit_lambda(node)
+    E.vtypes[v] = ty
     return v
   end
   if node.call ~= nil then
@@ -2662,7 +2884,8 @@ local function emit_stmt(node)
     if b == nil then
       fail(fa.line, fa.col, "unknown name `" .. fa.name .. "` in field assignment")
     end
-    if b.kind ~= "box" then
+    local bcap = b.kind == "cap" and b.cap_kind == "box"
+    if b.kind ~= "box" and not bcap then
       fail(fa.line, fa.col, "cannot set a field through immutable `" .. fa.name .. "` (use a var binding or a mut parameter)")
     end
     if not is_named(b.ty) then
@@ -2679,7 +2902,7 @@ local function emit_stmt(node)
       fail(fa.line, fa.col, "field `" .. fa.field .. "` does not take this value's type")
     end
     local rec = fresh()
-    emit(rec .. " = \"frk_mem.box_get\"(" .. b.id .. ") : (" .. box_ir(b.ty, fa.line, fa.col) .. ") -> " .. value_ir(b.ty, fa.line, fa.col))
+    emit(rec .. " = \"frk_mem.box_get\"(" .. binding_slot(b, fa.line, fa.col) .. ") : (" .. box_ir(b.ty, fa.line, fa.col) .. ") -> " .. value_ir(b.ty, fa.line, fa.col))
     local stored = v
     if is_named(fld.ty) then
       stored, _ = wrap_store(v, fld.ty, fa.line, fa.col)
@@ -2693,11 +2916,17 @@ local function emit_stmt(node)
     if b == nil then
       fail(a.line, a.col, "unknown name `" .. a.name .. "` in assignment")
     end
-    if b.kind ~= "box" then
+    local bcap = b.kind == "cap" and b.cap_kind == "box"
+    if b.kind ~= "box" and not bcap then
       fail(a.line, a.col, "cannot assign to immutable `" .. a.name .. "`")
     end
+    local bid = binding_slot(b, a.line, a.col)
+    local bty = b.box
+    if b.kind == "cap" then
+      bty = b.cap_box
+    end
     local v = emit_expr(a.expr)
-    emit("\"frk_mem.box_set\"(" .. b.id .. ", " .. v .. ") : (" .. b.box .. ", " .. value_ir(b.ty, a.line, a.col) .. ") -> ()")
+    emit("\"frk_mem.box_set\"(" .. bid .. ", " .. v .. ") : (" .. bty .. ", " .. value_ir(b.ty, a.line, a.col) .. ") -> ()")
     return
   end
   if node.ret ~= nil then
@@ -2786,19 +3015,7 @@ E.emit_stmt = emit_stmt
 
 -- ------------------------------- functions
 
-local function emit_fn(fn)
-  CURRENT_FILE = fn.file
-  E.tmp = 0
-  E.label = 0
-  E.blocks = {}
-  E.cur = 0
-  E.terminated = false
-  E.scopes = {}
-  E.vtypes = {}
-  E.fns = FNS
-  E.fns_by_sym = FNS_BY_SYM
-  E.ret = fn.ret
-  new_block(nil)
+local function emit_fn_core(fn)
   local params = "%env: !frk_closure.envref"
   scope_push()
   for i = 1, #fn.params do
@@ -2874,6 +3091,132 @@ local function emit_fn(fn)
     end
   end
   E.out[#E.out + 1] = "}"
+end
+
+local function emit_fn(fn)
+  CURRENT_FILE = fn.file
+  E.tmp = 0
+  E.label = 0
+  E.blocks = {}
+  E.cur = 0
+  E.terminated = false
+  E.scopes = {}
+  E.vtypes = {}
+  E.fns = FNS
+  E.fns_by_sym = FNS_BY_SYM
+  E.ret = fn.ret
+  new_block(nil)
+  emit_fn_core(fn)
+end
+
+-- ------------------------------------------------ closures (SPEC 6.4)
+
+-- The lift context save/restore (a lambda emits its body twice: a
+-- discovery pass that records the captures, then the real pass with
+-- the env's product type known).
+local function lift_snapshot()
+  return {
+    out = E.out, tmp = E.tmp, label = E.label, blocks = E.blocks,
+    cur = E.cur, terminated = E.terminated, vtypes = E.vtypes,
+    ret = E.ret, capbar = E.capbar, caps = E.caps, capenv = E.capenv,
+    capenv_ty = E.capenv_ty, depth = #E.scopes,
+  }
+end
+
+local function lift_restore(s)
+  E.out = s.out
+  E.tmp = s.tmp
+  E.label = s.label
+  E.blocks = s.blocks
+  E.cur = s.cur
+  E.terminated = s.terminated
+  E.vtypes = s.vtypes
+  E.ret = s.ret
+  E.capbar = s.capbar
+  E.caps = s.caps
+  E.capenv = s.capenv
+  E.capenv_ty = s.capenv_ty
+  while #E.scopes > s.depth do
+    E.scopes[#E.scopes] = nil
+  end
+end
+
+local function capenv_ir(caps)
+  local parts = {}
+  for i = 1, #caps do
+    parts[#parts + 1] = caps[i].proxy.cap_storage
+  end
+  return "!frk_adt.product<[" .. join_parts(parts) .. "]>"
+end
+
+local function lift_prepare(flike, env_ty)
+  E.out = {}
+  E.tmp = 0
+  E.label = 0
+  E.blocks = {}
+  E.cur = 0
+  E.terminated = false
+  E.vtypes = {}
+  E.fns = FNS
+  E.fns_by_sym = FNS_BY_SYM
+  E.ret = flike.ret
+  E.caps = {}
+  E.capenv = nil
+  E.capenv_ty = env_ty
+  E.capbar = #E.scopes + 1
+  new_block(nil)
+end
+
+emit_lambda = function(node)
+  local l = node.lam
+  local n = E.lam or 0
+  E.lam = n + 1
+  local sym = "__calque_lam_" .. tostring(n)
+  local flike = {
+    sym = sym, params = l.params, ret = l.ret, body = l.body,
+    file = CURRENT_FILE, line = node.line or 1, col = node.col or 1,
+  }
+  -- PASS 1: discovery (the emission into a discarded buffer records
+  -- the captures in first-encounter order).
+  local s1 = lift_snapshot()
+  lift_prepare(flike, "!frk_adt.product<[]>")
+  emit_fn_core(flike)
+  local caps = E.caps
+  lift_restore(s1)
+  local env_ty = capenv_ir(caps)
+  -- PASS 2: the real lift, with the env's product type known.
+  local s2 = lift_snapshot()
+  lift_prepare(flike, env_ty)
+  emit_fn_core(flike)
+  local lifted = E.out
+  lift_restore(s2)
+  E.pending = E.pending or {}
+  E.pending[#E.pending + 1] = lifted
+  -- The site: the capture env from the OUTER bindings, then `make`.
+  local ln = node.line or 1
+  local lc = node.col or 1
+  local e0 = fresh()
+  emit(e0 .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
+  local acc = e0
+  local acc_ty = "!frk_adt.product<[]>"
+  local acc_fields = {}
+  for i = 1, #caps do
+    local cap = caps[i]
+    local slot = binding_slot(cap.orig, ln, lc)
+    local st = cap.proxy.cap_storage
+    acc_fields[#acc_fields + 1] = st
+    local nxt = fresh()
+    emit(nxt .. " = \"frk_adt.product_snoc\"(" .. acc .. ", " .. slot .. ") : (" .. acc_ty .. ", " .. st .. ") -> !frk_adt.product<[" .. join_parts(acc_fields) .. "]>")
+    acc = nxt
+    acc_ty = "!frk_adt.product<[" .. join_parts(acc_fields) .. "]>"
+  end
+  local fnty = { fnp = {}, fnr = l.ret }
+  for i = 1, #l.params do
+    fnty.fnp[i] = l.params[i].ty
+  end
+  local cl = fresh()
+  emit(cl .. " = \"frk_closure.make\"(" .. acc .. ") {callee = @" .. sym .. "} : (" .. acc_ty .. ") -> " .. fn_ir(fnty, ln, lc))
+  return cl, fnty
 end
 
 local function emit_entry_wrapper(fn)
@@ -2967,6 +3310,14 @@ function run(files)
   end
   emit_fn(entry)
   emit_entry_wrapper(entry)
+  local pi = 1
+  while E.pending ~= nil and pi <= #E.pending do
+    local q = E.pending[pi]
+    pi = pi + 1
+    for i = 1, #q do
+      E.out[#E.out + 1] = q[i]
+    end
+  end
   for i = 1, #E.out do
     print(E.out[i])
   end
