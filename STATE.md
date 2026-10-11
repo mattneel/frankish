@@ -1563,8 +1563,14 @@ rework flag, not a knob.
     differential. Suite 61; corpus 25 cases 0 red; grid GREEN.
     REMAINING in F33 after that: `@intCast`, `usize` (the full
     integer-type set), `..spread`. Grid GREEN; corpus 24 cases 0 red.
-    NOTE for `calque test`: the language side exists; the CLI subcommand
-    (F30/D-111's seed-invocation services) still needs its slice.
+    `calque` CLI SLICE 1 LANDED (F30/D-111): crates/calque/src/bin/
+    calque.rs - `run FILE.calq` (main + prints) and `test FILE.calq`
+    (PASS/FAIL <name> per the playbook, non-zero exit on failure);
+    test names ride `// test: <name>` comments in the artifact (calq0's
+    Fn carries test_name), run_test_blocks pairs them. Gates: the CLI
+    smoke tests (tests/cli.rs: the pass path, the fail path) + suite 61
+    + corpus 25 cases 0 red + grid GREEN. Remaining F30 subcommands
+    (check/build/explain + --explain-* flags) = later slices.
     CLOSURE DESIGN (settled, ready to implement; verified against the
     dialect this session): the frk_closure ops are make(env:
     product) {callee} -> fn, apply(fn, args: product) -> value, and
