@@ -3484,3 +3484,19 @@ veto-ledger pattern and most deserve their review.
   with real analysis if a defect demands it; the seed's lack of
   and/or emission is a separate recorded gap (STATE), not covered
   here.
+
+- D-113 [calque/generics] MONOMORPHIZED GENERIC FUNCTIONS AT C2: A
+  fn parameter declared `comptime NAME: type` is a TYPE parameter
+  usable wherever a type appears in the fn's signature and body;
+  instantiation is EXPLICIT at call sites (leading argument type
+  values: `identity(i64, 5)`), the call resolving the arg as a type
+  (a bare name arg = a Named type; a type-keyword arg parses as a
+  type value). Each distinct instantiation emits ONE specialized
+  function, symbol `name__<mangled types>` (i64/str/bool/b vec_...,
+  Named = the name), memoized per compile; generic fns WITHOUT
+  instantiation are not emitted. Substitution happens on the AST's
+  TYPE positions only (the seed's {named=...} tables, calq0's Ty
+  union fields), so no expression is rewritten. Explicit-only
+  instantiation keeps C3's inference/comptime freedoms intact; the
+  surface spellings are the GOAL's `comptime T: type` rows.
+  Revisit: C3 inference and value-level comptime params.
