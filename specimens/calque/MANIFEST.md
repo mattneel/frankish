@@ -112,7 +112,9 @@ current ledger, D-085):
 SPEC §12 is the precise text)
 ASCII-source subset: `i64`, `bool`, `Str`, `Vector(T)`, `Option(T)`,
 `Result(T, E)`; `const`/`var` locals and assignment (unannotated
-`const` takes its initializer's type); `fn` with explicit types
+`const` takes its initializer's type; Vector slots are
+i64/Str/declared types and `vector.new()` is instantiated by the
+binding's annotation — b0 spells types); `fn` with explicit types
 everywhere; closures; recursion (direct/mutual) with the tail-call
 guarantee; records (`const T = struct {...}` with literal per-field
 defaults; `%T{field: value}` construction, `%T{base | field: value}`

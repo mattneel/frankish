@@ -153,6 +153,59 @@ fn seed_compiles_the_input_channel() {
 }
 
 #[test]
+fn seed_compiles_the_vector_surface() {
+    // Vector(i64): growth across 4 -> 8 -> 16 with 10 pushes, get/set
+    // bounds, len. Hand-derived: get(3) = 6; after set(0, 42) get(0)
+    // = 42; len = 10.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "vec.calq",
+            None,
+            "pub fn main() i64 {\n    var v: Vector(i64) = vector.new();\n    var i: i64 = 0;\n    while i < 10 {\n        vector.push(v, i + i);\n        i = i + 1;\n    }\n    io.print(str.fromI64(vector.get(v, 3)));\n    io.print(\"\\n\");\n    vector.set(v, 0, 42);\n    io.print(str.fromI64(vector.get(v, 0)));\n    io.print(\"\\n\");\n    io.print(str.fromI64(vector.len(v)));\n    io.print(\"\\n\");\n    0\n}\n",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed translates the vector probe");
+    let outcome = run_artifact(&artifact).expect("the artifact runs");
+    assert_eq!(outcome.output, "6\n42\n10\n");
+}
+
+#[test]
+fn seed_compiles_str_and_named_vector_slots() {
+    // bstr slots (growth past the initial 4) and erased-reference slots
+    // (declared struct values). Hand-derived: get(4) = "epsilon";
+    // len = 5; 5 + 7 = 12.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "vec2.calq",
+            None,
+            "pub const Pair = struct {\n    left: i64,\n    right: i64,\n};\n\npub fn main() i64 {\n    var names: Vector(Str) = vector.new();\n    vector.push(names, \"alpha\");\n    vector.push(names, \"beta\");\n    vector.push(names, \"gamma\");\n    vector.push(names, \"delta\");\n    vector.push(names, \"epsilon\");\n    io.print(vector.get(names, 4));\n    io.print(\"\\n\");\n    io.print(str.fromI64(vector.len(names)));\n    io.print(\"\\n\");\n    var pairs: Vector(Pair) = vector.new();\n    vector.push(pairs, %Pair{left: 2, right: 3});\n    vector.push(pairs, %Pair{left: 5, right: 7});\n    const p: Pair = vector.get(pairs, 1);\n    io.print(str.fromI64(p.left + p.right));\n    io.print(\"\\n\");\n    0\n}\n",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed translates the slot probe");
+    let outcome = run_artifact(&artifact).expect("the artifact runs");
+    assert_eq!(outcome.output, "epsilon\n5\n12\n");
+}
+
+#[test]
+fn seed_vector_out_of_bounds_traps() {
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "vec_oob.calq",
+        None,
+        "pub fn main() i64 {\n    var v: Vector(i64) = vector.new();\n    vector.push(v, 1);\n    io.print(str.fromI64(vector.get(v, 5)));\n    0\n}\n",
+    )];
+    let artifact = seed_translate(&files).expect("the seed translates the oob probe");
+    let error = run_artifact(&artifact).expect_err("the oob get must trap");
+    assert!(
+        error.contains("vector.get: index out of bounds"),
+        "trap message must name the operation: {error}"
+    );
+}
+
+#[test]
 fn seed_refuses_non_ascii_input_loudly() {
     let files = vec![unit("bad.calq", None, "pub fn main() i64 { 0 } // héllo")];
     let error = seed_translate(&files).expect_err("bytes >= 0x80 are refused (SPEC F18)");

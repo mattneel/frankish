@@ -22,7 +22,14 @@
 -- defaults, `%T{base | field: value}` immutable update, record
 -- patterns `%T{f: pat}` / `%T{}`, variant patterns, `^pin`, literal
 -- sub-patterns, and `match` (tag dispatch for unions; field-test
--- chains for records; literal chains for builtins). REPRESENTATION:
+-- chains for records; literal chains for builtins), AND Vector(T)
+-- (F34/D-091: i64/Str/declared-type slots; `vector.new()` is
+-- instantiated by the BINDING ANNOTATION - b0 spells types, the seed
+-- never infers; `vector.push/get/set/len` resolve to per-slot-kind
+-- monomorphic intrinsics in the driver's intrinsics module). Vectors
+-- mutate IN PLACE through any binding (const included - like a managed
+-- box); out-of-range get/set trap through the runtime row.
+-- REPRESENTATION:
 -- struct = managed box of its product; union = frk_adt sum; every
 -- NAMED type in storage position erases to !frk_mem.recref over a box
 -- (D-074/D-088.2 applied uniformly — no cycle analysis in the seed).
@@ -323,6 +330,24 @@ local function parse_type()
     next_tok()
     next_tok()
     return "unit"
+  end
+  if t.k == "name" and t.v == "Vector" then
+    next_tok()
+    local lp = peek()
+    if not (lp.k == "punct" and lp.v == "(") then
+      fail(lp.line, lp.col, "Vector takes a slot type: write `Vector(i64)` (seed v0)")
+    end
+    next_tok()
+    local inner = parse_type()
+    local rp = peek()
+    if not (rp.k == "punct" and rp.v == ")") then
+      fail(rp.line, rp.col, "expected `)` after the Vector slot type")
+    end
+    next_tok()
+    if inner ~= "i64" and inner ~= "Str" and not (type(inner) == "table" and inner.named ~= nil) then
+      fail(t.line, t.col, "unsupported Vector slot (seed v0 instantiations: i64, Str, declared types)")
+    end
+    return { vec = inner }
   end
   if t.k == "name" then
     next_tok()
@@ -891,6 +916,9 @@ local function lookup(name)
 end
 
 local function ir_ty(ty, line, col)
+  if is_vec(ty) then
+    return vec_box_ir(ty.vec, line, col)
+  end
   local mapped = TY_IR[ty]
   if mapped == nil then
     fail(line, col, "type `" .. ty .. "` has no IR mapping (seed v0)")
@@ -1016,7 +1044,57 @@ function find_type(name, line, col)
 end
 
 function is_named(ty)
-  return ty ~= nil and type(ty) == "table"
+  return ty ~= nil and type(ty) == "table" and ty.named ~= nil
+end
+
+function is_vec(ty)
+  return ty ~= nil and type(ty) == "table" and ty.vec ~= nil
+end
+
+function same_type(a, b)
+  if is_named(a) or is_named(b) then
+    return is_named(a) and is_named(b) and a.named == b.named
+  end
+  if is_vec(a) or is_vec(b) then
+    return is_vec(a) and is_vec(b) and same_type(a.vec, b.vec)
+  end
+  return a == b
+end
+
+-- Vector(T) (F34/D-091): a managed box of [arr<slot>, len, cap];
+-- vector.* resolves to the per-slot-kind intrinsics module functions.
+function vec_slot(inner, line, col)
+  if inner == "i64" then
+    return "i64", "__calque_vector_i64"
+  end
+  if inner == "Str" then
+    return "!frk_bstr.str", "__calque_vector_bstr"
+  end
+  if is_named(inner) then
+    find_type(inner.named, line, col)
+    return "!frk_mem.recref", "__calque_vector_box"
+  end
+  fail(line, col, "unsupported Vector slot (seed v0 instantiations: i64, Str, declared types)")
+end
+
+function vec_box_ir(inner, line, col)
+  local slot = vec_slot(inner, line, col)
+  return "!frk_mem.box<!frk_adt.product<[!frk_mem.arr<" .. slot .. ">, i64, i64]>>"
+end
+
+-- `vector.new()` is instantiated by its declaration's annotation
+-- (syntax-directed: b0 spells types; the seed never infers).
+function is_vec_new_call(expr)
+  return expr ~= nil and expr.call ~= nil and expr.args ~= nil
+    and expr.call.mod == "vector" and expr.call.name == "new" and #expr.args == 0
+end
+
+function emit_vec_new(inner, line, col)
+  local slot, prefix = vec_slot(inner, line, col)
+  local res = fresh()
+  emit(res .. " = func.call @" .. prefix .. "_new() : () -> " .. vec_box_ir(inner, line, col))
+  E.vtypes[res] = { vec = inner }
+  return res
 end
 
 function join_parts(parts)
@@ -1031,6 +1109,9 @@ function join_parts(parts)
 end
 
 function storage_ir(ty, line, col)
+  if is_vec(ty) then
+    return vec_box_ir(ty.vec, line, col)
+  end
   if is_named(ty) then
     find_type(ty.named, line, col)
     return "!frk_mem.recref"
@@ -1050,6 +1131,9 @@ function product_ir(decl)
 end
 
 function value_ir(ty, line, col)
+  if is_vec(ty) then
+    return vec_box_ir(ty.vec, line, col)
+  end
   if not is_named(ty) then
     return ir_ty(ty, line, col)
   end
@@ -1722,6 +1806,84 @@ local function emit_call(node)
     emit(res .. " = func.call @__calque_input(" .. a .. ") : (i64) -> !frk_bstr.str")
     return res, "Str"
   end
+  if callee.mod == "vector" then
+    -- Vector(T) surface (F34/D-091): monomorphic intrinsics. `new`
+    -- spells the slot; push/get/set/len resolve it from the receiver's
+    -- static type (b0 spells types; nothing is inferred).
+    local vname = callee.name
+    if vname == "new" then
+      fail(line, col, "vector.new() takes its instantiation from the declaration's annotation (seed v0): write `const v: Vector(i64) = vector.new();`")
+    end
+    if #args < 1 then
+      fail(line, col, "vector." .. vname .. " needs the vector as its first argument")
+    end
+    local vid = emit_expr(args[1])
+    local vty = E.vtypes[vid]
+    if not is_vec(vty) then
+      fail(line, col, "vector." .. vname .. " expects a Vector receiver")
+    end
+    local slot, prefix = vec_slot(vty.vec, line, col)
+    if vname == "len" then
+      if #args ~= 1 then
+        fail(line, col, "vector.len takes exactly one argument")
+      end
+      local res = fresh()
+      emit(res .. " = func.call @" .. prefix .. "_len(" .. vid .. ") : (" .. vec_box_ir(vty.vec, line, col) .. ") -> i64")
+      E.vtypes[res] = "i64"
+      return res, "i64"
+    end
+    if vname == "push" or vname == "set" then
+      local want = (vname == "push") and 2 or 3
+      if #args ~= want then
+        fail(line, col, "vector." .. vname .. " takes " .. tostring(want) .. " arguments (seed v0)")
+      end
+      local index_id = nil
+      if vname == "set" then
+        local iid = emit_expr(args[2])
+        if E.vtypes[iid] ~= "i64" then
+          fail(line, col, "vector.set index must be i64")
+        end
+        index_id = iid
+      end
+      local xid = emit_expr(args[want])
+      local xty = E.vtypes[xid]
+      if not same_type(xty, vty.vec) then
+        fail(line, col, "vector." .. vname .. " value type does not match the Vector slot")
+      end
+      local stored = xid
+      if is_named(vty.vec) then
+        stored, _ = wrap_store(xid, xty, line, col)
+      end
+      local call_args = vid
+      local call_types = vec_box_ir(vty.vec, line, col)
+      if vname == "set" then
+        call_args = call_args .. ", " .. index_id
+        call_types = call_types .. ", i64"
+      end
+      call_args = call_args .. ", " .. stored
+      call_types = call_types .. ", " .. slot
+      emit("func.call @" .. prefix .. "_" .. vname .. "(" .. call_args .. ") : (" .. call_types .. ") -> ()")
+      return nil
+    end
+    if vname == "get" then
+      if #args ~= 2 then
+        fail(line, col, "vector.get takes exactly two arguments (seed v0)")
+      end
+      local iid = emit_expr(args[2])
+      if E.vtypes[iid] ~= "i64" then
+        fail(line, col, "vector.get index must be i64")
+      end
+      local res = fresh()
+      emit(res .. " = func.call @" .. prefix .. "_get(" .. vid .. ", " .. iid .. ") : (" .. vec_box_ir(vty.vec, line, col) .. ", i64) -> " .. slot)
+      local value = res
+      if is_named(vty.vec) then
+        value = unwrap_load(res, vty.vec, line, col)
+      end
+      E.vtypes[value] = vty.vec
+      return value, vty.vec
+    end
+    fail(line, col, "unknown vector operation `" .. vname .. "` (seed v0: new/push/get/set/len)")
+  end
   if callee.mod == "str" then
     local member = callee.name
     if member == "len" then
@@ -2003,7 +2165,15 @@ end
 local function emit_stmt(node)
   if node.const ~= nil then
     local c = node.const
-    local v = emit_expr(c.expr)
+    local v = nil
+    if is_vec_new_call(c.expr) then
+      if not is_vec(c.ty) then
+        fail(c.line, c.col, "vector.new() needs an annotated Vector binding (seed v0)")
+      end
+      v = emit_vec_new(c.ty.vec, c.line, c.col)
+    else
+      v = emit_expr(c.expr)
+    end
     if v == nil then
       fail(c.line, c.col, "const initializer must be a value")
     end
@@ -2019,7 +2189,15 @@ local function emit_stmt(node)
   end
   if node.var ~= nil then
     local d = node.var
-    local v = emit_expr(d.expr)
+    local v = nil
+    if is_vec_new_call(d.expr) then
+      if not is_vec(d.ty) then
+        fail(d.line, d.col, "vector.new() needs an annotated Vector binding (seed v0)")
+      end
+      v = emit_vec_new(d.ty.vec, d.line, d.col)
+    else
+      v = emit_expr(d.expr)
+    end
     local b = fresh()
     emit(b .. " = \"frk_mem.box_new\"(" .. v .. ") : (" .. value_ir(d.ty, d.line, d.col) .. ") -> " .. box_ir(d.ty, d.line, d.col))
     declare(d.name, { kind = "box", ty = d.ty, id = b, box = box_ir(d.ty, d.line, d.col) }, d.line, d.col)
