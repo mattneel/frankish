@@ -778,6 +778,19 @@ function parse_pattern()
     next_tok()
     return { pat = "lit", litty = "bool", text = t.v, line = t.line, col = t.col }
   end
+  if t.k == "punct" and t.v == "." then
+    -- `.Variant` / `.Variant(pat)` - the type-elided pattern (the
+    -- scrutinee's union supplies the type; SPEC 6.5's `.Err(x)`).
+    next_tok()
+    local v = expect_name()
+    local sub = nil
+    if at_punct("(") then
+      next_tok()
+      sub = parse_pattern()
+      expect_punct(")")
+    end
+    return { pat = "dot", variant = v.v, sub = sub, line = t.line, col = t.col }
+  end
   if t.k == "punct" and t.v == "%" then
     next_tok()
     local name = expect_name()
@@ -2003,6 +2016,21 @@ local function pattern_conditions(sub, value, lty, out_bindings)
     end
     return cond
   end
+  if sub.pat == "dot" then
+    if not is_named(lty) then
+      fail(sub.line, sub.col, "`.Variant` patterns need a union subject")
+    end
+    local d = find_type(lty.named, sub.line, sub.col)
+    if d.kind ~= "union" then
+      fail(sub.line, sub.col, "`.Variant` patterns need a union subject")
+    end
+    find_variant(d, sub.variant, sub.line, sub.col)
+    local tag = fresh()
+    emit(tag .. " = \"frk_adt.tag_of\"(" .. value .. ") : (" .. value_ir(lty, sub.line, sub.col) .. ") -> i64")
+    local eq = fresh()
+    emit(eq .. " = arith.cmpi eq, " .. tag .. ", " .. const_i64(tostring(find_variant(d, sub.variant, sub.line, sub.col) - 1)) .. " : i64")
+    return eq
+  end
   if sub.pat == "variant" then
     if not is_named(lty) then
       fail(sub.line, sub.col, "variant patterns need a union subject")
@@ -2097,9 +2125,11 @@ local function emit_match(node)
       local covered = {}
       for i = 1, #m.arms do
         local a = m.arms[i]
-        if a.pat.pat == "variant" then
-          if a.pat.ty ~= d.name then
-            fail(a.pat.line, a.pat.col, "pattern `" .. a.pat.ty .. "` does not match scrutinee type `" .. d.name .. "`")
+        if a.pat.pat == "variant" or a.pat.pat == "dot" then
+          if a.pat.pat == "variant" then
+            if a.pat.ty ~= d.name then
+              fail(a.pat.line, a.pat.col, "pattern `" .. a.pat.ty .. "` does not match scrutinee type `" .. d.name .. "`")
+            end
           end
           local idx = find_variant(d, a.pat.variant, a.pat.line, a.pat.col)
           if covered[idx] then
@@ -2174,7 +2204,7 @@ local function emit_match(node)
       local a = fall
       local conditions = nil
       local bindings = {}
-      if a.pat.pat == "variant" then
+      if a.pat.pat == "variant" or a.pat.pat == "dot" then
         local idx = find_variant(d, a.pat.variant, a.pat.line, a.pat.col)
         local vty = d.variants[idx].ty
         if a.pat.sub ~= nil then

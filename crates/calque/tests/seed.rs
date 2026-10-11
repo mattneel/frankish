@@ -1585,6 +1585,86 @@ pub fn main() i64 {
 }
 
 #[test]
+fn seed_dot_patterns_in_matches() {
+    // `.Variant` patterns (D-090's type-elided dot forms): the
+    // scrutinee's union supplies the type for the recovery match.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "dp.calq",
+            None,
+            "pub const Res = union(enum) { Ok: i64, Err: i64 };
+pub fn parse1(x: i64) Res {
+    if x > 0 { return .Ok(x); }
+    return .Err(7);
+}
+pub fn twice(x: i64) Res {
+    const v = try parse1(x);
+    return .Ok(v * 2);
+}
+pub fn score(r: Res) i64 {
+    const s = match r {
+        .Ok(v) => v,
+        .Err(e) => e,
+    };
+    s
+}
+pub fn main() i64 {
+    const a = twice(5);
+    const b = twice(0);
+    io.print(str.fromI64(score(a) * 100 + score(b)));
+    io.print(\"\\n\");
+    0
+}",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed emits the dot-pattern probe");
+    let outcome = run_artifact(&artifact).expect("the dot-pattern probe runs");
+    assert_eq!(outcome.output, "1007\n");
+}
+
+#[test]
+fn calq0_matches_the_seed_on_dot_patterns() {
+    // `.Variant` patterns through the canonical compiler (the recovery
+    // match form of SPEC 6.5): byte-equal, then executed.
+    let artifact = compile_artifact();
+    let src = "pub const Res = union(enum) { Ok: i64, Err: i64 };
+pub fn parse1(x: i64) Res {
+    if x > 0 { return .Ok(x); }
+    return .Err(7);
+}
+pub fn twice(x: i64) Res {
+    const v = try parse1(x);
+    return .Ok(v * 2);
+}
+pub fn score(r: Res) i64 {
+    const s = match r {
+        .Ok(v) => v,
+        .Err(e) => e,
+    };
+    s
+}
+pub fn main() i64 {
+    const a = twice(5);
+    const b = twice(0);
+    io.print(str.fromI64(score(a) * 100 + score(b)));
+    io.print(\"\\n\");
+    0
+}";
+    let files = vec![stdlib_str(), unit("dp.calq", None, src)];
+    let expected = seed_translate(&files).expect("the seed emits the dot-pattern probe");
+    let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the dot-pattern probe");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (dot patterns): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted probe runs");
+    assert_eq!(emitted.output, "1007\n");
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the

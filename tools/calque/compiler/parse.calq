@@ -872,6 +872,8 @@ pub const Pat = union(enum) {
     Pin: Str,
     Rec: PRec,
     Variant: PVar,
+    // `.Variant` / `.Variant(pat)`: the scrutinee supplies the union.
+    Dot: PVar,
     PatBad: BadNode,
 };
 
@@ -1010,6 +1012,26 @@ pub fn p_type(mut p: P) Ty {
 }
 
 pub fn p_pattern(mut p: P) Pat {
+    if at_punct(p, ".") {
+        const dot: Tok = p_next(p);
+        const vn: Tok = p_peek(p);
+        if is_name_tok(vn) == false {
+            p_fail(p, vn.line, vn.col, "expected a variant name after `.`");
+            return poison_pat();
+        }
+        const _v: Tok = p_next(p);
+        var dsub: Pat = Pat.Wild;
+        var has_sub: bool = false;
+        if at_punct(p, "(") {
+            const _lp: Tok = p_next(p);
+            dsub = p_pattern(p);
+            has_sub = true;
+            if expect_punct(p, ")") == false {
+                return poison_pat();
+            }
+        }
+        return Pat.Dot(%PVar{ty: "", variant: vn.text, has_payload: has_sub, sub: dsub});
+    }
     const t: Tok = p_peek(p);
     if is_name_tok(t) {
         if t.text == "_" {
@@ -1799,6 +1821,7 @@ pub fn d_pat(pat: Pat) Str {
         Pat.Pin(n) => str.concat("(pat pin ", str.concat(n, ")")),
         Pat.Rec(r) => d_prec(r),
         Pat.Variant(v) => d_pvar(v),
+        Pat.Dot(v) => str.concat("(pat dot ", str.concat(v.variant, ")")),
         Pat.PatBad(b) => d_bad(b),
     };
 }

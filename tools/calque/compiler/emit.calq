@@ -2831,6 +2831,7 @@ pub fn pattern_is_catch_all2(p: Pat) bool {
         Pat.Lit(l) => false,
         Pat.Pin(n) => false,
         Pat.Variant(v) => false,
+        Pat.Dot(v2) => false,
         Pat.PatBad(b) => false,
     };
 }
@@ -2857,21 +2858,11 @@ pub fn pattern_conditions(mut e: Emitter, p: Pat, value: Str, lty: Ty, out_bindi
         Pat.Lit(l) => pc_lit(e, l, value, lty, p),
         Pat.Rec(r) => pc_rec(e, r, value, lty, p, out_bindings),
         Pat.Variant(v) => pc_variant(e, v, value, lty, p),
+        Pat.Dot(v) => pc_dot(e, v, value, lty, p),
         Pat.PatBad(b) => e_fail(e, b),
     };
 }
 
-pub fn pat_line(p: Pat) i64 {
-    return match p {
-        Pat.Wild => 0,
-        Pat.Bind(n) => 0,
-        Pat.Lit(l) => 0,
-        Pat.Pin(n) => 0,
-        Pat.Rec(r) => 0,
-        Pat.Variant(v) => 0,
-        Pat.PatBad(b) => b.line,
-    };
-}
 
 pub fn pc_bind(mut e: Emitter, n: Str, value: Str, lty: Ty, p: Pat, out_bindings: Vector(MBind)) Str {
     vector.push(out_bindings, %MBind{name: n, ty: lty, id: value, line: 0, col: 0});
@@ -2955,6 +2946,32 @@ pub fn pc_rec(mut e: Emitter, r: PRec, value: Str, lty: Ty, p: Pat, out_bindings
         i = i + 1;
     }
     return cond;
+}
+
+pub fn pc_dot(mut e: Emitter, v: PVar, value: Str, lty: Ty, p: Pat) Str {
+    if is_named_t(lty) == false {
+        return e_fail_at(e, 0, 0, "`.Variant` patterns need a union subject");
+    }
+    const a: Ast = e_ast(e);
+    const td: TypeDecl = find_td(a, named_of(lty));
+    if td.is_union == false {
+        return e_fail_at(e, 0, 0, "`.Variant` patterns need a union subject");
+    }
+    const idx: i64 = variant_index(td, v.variant);
+    if idx < 0 {
+        return e_fail_at(e, 0, 0, str.concat("unknown variant `", str.concat(v.variant, "`")));
+    }
+    const tag: Str = fresh(e);
+    var l: Str = " = \"frk_adt.tag_of\"(";
+    l = str.concat(l, value);
+    l = str.concat(l, ") : (");
+    l = str.concat(l, value_ir_t(a, lty));
+    l = str.concat(l, ") -> i64");
+    emit_line(e, str.concat(tag, l));
+    const eq: Str = fresh(e);
+    emit_line(e, str.concat(eq, str.concat(" = arith.cmpi eq, ", str.concat(tag, str.concat(", ", str.concat(const_i64(e, str.fromI64(idx)), " : i64"))))));
+    vset(e, eq, Ty.BoolV);
+    return eq;
 }
 
 pub fn pc_variant(mut e: Emitter, v: PVar, value: Str, lty: Ty, p: Pat) Str {
@@ -3251,6 +3268,7 @@ pub fn emit_join(mut e: Emitter, c: MTy) Str {
 pub fn pv_of(p: Pat) PVar {
     return match p {
         Pat.Variant(v) => v,
+        Pat.Dot(v) => v,
         _ => %PVar{ty: "", variant: "", has_payload: false, sub: Pat.Wild},
     };
 }
@@ -3319,6 +3337,20 @@ pub fn emit_match_union(mut e: Emitter, m: MatchE, d: TypeDecl, value: Str, sty:
                 }
                 vector.set(covered, idx, 1);
                 vector.push(chain_idx, idx);
+                vector.push(chain_arm, i);
+            },
+            Pat.Dot(v3) => {
+                const idx2: i64 = variant_index(d, v3.variant);
+                if idx2 < 0 {
+                    e_fail_at(e, 0, 0, str.concat("unknown variant `", str.concat(v3.variant, "`")));
+                    return "";
+                }
+                if vector.get(covered, idx2) > 0 {
+                    e_fail_at(e, 0, 0, str.concat("redundant arm: `", str.concat(v3.variant, "` is already covered")));
+                    return "";
+                }
+                vector.set(covered, idx2, 1);
+                vector.push(chain_idx, idx2);
                 vector.push(chain_arm, i);
             },
             Pat.Wild => {
@@ -3461,6 +3493,32 @@ pub fn emit_match_union(mut e: Emitter, m: MatchE, d: TypeDecl, value: Str, sty:
                 emit_line(e, str.concat(stored2, sl2));
                 const pv2: Str = unwrap_load(e, stored2, vd3.ty, 0, 0);
                 conditions2 = pattern_conditions(e, v.sub, pv2, vd3.ty, bindings2);
+                if str.len(conditions2) > 0 {
+                    e_fail_at(e, 0, 0, "internal: the fall arm's conditions can fail");
+                    return "";
+                }
+            }
+        },
+        Pat.Dot(v4) => {
+            if v4.has_payload {
+                const idx4: i64 = variant_index(d, v4.variant);
+                const vd4: VariantDecl = vector.get(d.variants, idx4);
+                if vd4.has_payload == false {
+                    e_fail_at(e, 0, 0, str.concat("variant `", str.concat(v4.variant, "` has no payload")));
+                    return "";
+                }
+                const stored4: Str = fresh(e);
+                var sl4: Str = " = \"frk_adt.extract\"(";
+                sl4 = str.concat(sl4, value);
+                sl4 = str.concat(sl4, ") {variant = ");
+                sl4 = str.concat(sl4, str.fromI64(idx4));
+                sl4 = str.concat(sl4, " : i64, field = 0 : i64} : (");
+                sl4 = str.concat(sl4, value_ir_t(a, sty));
+                sl4 = str.concat(sl4, ") -> ");
+                sl4 = str.concat(sl4, storage_ir_t(a, vd4.ty));
+                emit_line(e, str.concat(stored4, sl4));
+                const pv4: Str = unwrap_load(e, stored4, vd4.ty, 0, 0);
+                conditions2 = pattern_conditions(e, v4.sub, pv4, vd4.ty, bindings2);
                 if str.len(conditions2) > 0 {
                     e_fail_at(e, 0, 0, "internal: the fall arm's conditions can fail");
                     return "";
