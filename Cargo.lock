@@ -47,6 +47,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "calque"
+version = "0.0.1"
+dependencies = [
+ "frk-core",
+ "frk-dialects",
+ "frk-harness",
+ "frk-interp",
+ "melior",
+]
+
+[[package]]
 name = "caseless"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

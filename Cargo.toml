@@ -12,6 +12,7 @@ members = [
     "crates/frk-harness",
     "crates/frk-repl",
     "crates/frk-rt",
+    "crates/calque",
 ]
 
 [workspace.package]
