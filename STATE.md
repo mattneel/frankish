@@ -1509,11 +1509,23 @@ rework flag, not a knob.
     partial substitution), namespaced generic dispatch, and the
     structural (same_type) match-arm join check. The frozen
     active_score.calq chain emits + executes to "17 2 2"; suite 52.
-    NEXT SLICE: calq0's mirror of all four surfaces (its resolve_
-    generic has the explicit path only; its call args emit untyped;
-    its match-arm check may share the identity bug - check), then a
-    `seq_*` corpus golden + active_score.calq into the corpus (M38),
-    then flat_map carried (zip waits on tuples, its own C2 row).
+    CALQ0'S MIRROR LANDED (commit on top): inferred closure params
+    (TyBad "<hole>" markers filled from the expected FnT), explicit+
+    UNIFIED comptime inference (arg probes: refs/literals/field reads
+    and LAMBDA TAIL probes under the LOCAL sub - the differential's
+    one real bug was the probe reading ambient tvars), namespaced
+    generic dispatch, typed call args/assignment RHS, e_fail_at
+    first-wins, and THE VALUE-BLOCK LIFT in BOTH compilers (a value
+    block's trailing if/else IS its value, recursive; both statement
+    grammars take bare true/false). The frozen active_score chain
+    byte-equal + "17 2 2"; calq0_compiles_itself green; suite 53;
+    SET OK; grid 13/13.
+    NOTE: one session mishap (a botched python slice ate emit.calq's
+    helper block) was fully recovered from git + reapplied; the
+    lesson: never slice by a FIRST-OCCURRENCE index - anchor on
+    unique text.
+    NEXT: `seq_*` corpus golden + active_score.calq into the corpus
+    (M38); flat_map carried; zip waits on tuples (its own C2 row).
     CLOSURE DESIGN (settled, ready to implement; verified against the
     dialect this session): the frk_closure ops are make(env:
     product) {callee} -> fn, apply(fn, args: product) -> value, and
