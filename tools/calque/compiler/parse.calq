@@ -1081,9 +1081,16 @@ pub const Fn = struct {
     test_name: Str, // a `test "name"` block's source name ("" otherwise)
 };
 
+pub const ImpDecl = struct {
+    name: Str,
+    line: i64,
+    col: i64,
+};
+
 pub const Ast = struct {
     fns: Vector(Fn),
     types: Vector(TypeDecl),
+    imports: Vector(ImpDecl),
 };
 
 pub fn ty_is_hole(t: Ty) bool {
@@ -2082,6 +2089,20 @@ pub fn p_lit_expr(mut p: P) Expr {
     return bad(p, d.line, d.col, "seed v0 supports literal field defaults only (D-095)");
 }
 
+pub fn p_import(mut p: P) ImpDecl {
+    const kw: Tok = p_next(p);
+    const nm: Tok = p_peek(p);
+    if is_name_tok(nm) == false {
+        p_fail(p, nm.line, nm.col, "expected a unit name after `import`");
+        return %ImpDecl{name: "", line: kw.line, col: kw.col};
+    }
+    const _n: Tok = p_next(p);
+    if expect_punct(p, ";") == false {
+        return %ImpDecl{name: "", line: kw.line, col: kw.col};
+    }
+    return %ImpDecl{name: nm.text, line: kw.line, col: kw.col};
+}
+
 pub fn p_test(mut p: P, idx: i64) Fn {
     const kw: Tok = p_next(p);
     const nm: Tok = p_peek(p);
@@ -2102,13 +2123,17 @@ pub fn p_test(mut p: P, idx: i64) Fn {
 pub fn p_ast(mut p: P) Ast {
     var fns: Vector(Fn) = vector.new();
     var types: Vector(TypeDecl) = vector.new();
+    var imports: Vector(ImpDecl) = vector.new();
     var n_tests: i64 = 0;
     while p_ok(p) {
         const t: Tok = p_peek(p);
         if is_eof_tok(t) {
-            return %Ast{fns: fns, types: types};
+            return %Ast{fns: fns, types: types, imports: imports};
         }
         if is_kw_tok(t) {
+            if t.text == "import" {
+                vector.push(imports, p_import(p));
+            } else {
             if t.text == "test" {
                 n_tests = n_tests + 1;
                 vector.push(fns, p_test(p, n_tests));
@@ -2126,29 +2151,30 @@ pub fn p_ast(mut p: P) Ast {
                                     vector.push(fns, p_fn(p));
                                 } else {
                                     p_fail(p, nx.line, nx.col, "expected `fn` or `const` after `pub`");
-                                    return %Ast{fns: fns, types: types};
+                                    return %Ast{fns: fns, types: types, imports: imports};
                                 }
                             }
                         } else {
                             p_fail(p, nx.line, nx.col, "expected `fn` or `const` after `pub`");
-                            return %Ast{fns: fns, types: types};
+                            return %Ast{fns: fns, types: types, imports: imports};
                         }
                     } else {
                         if t.text == "fn" {
                             vector.push(fns, p_fn(p));
                         } else {
                             p_fail(p, t.line, t.col, str.concat("top-level items are fn declarations and struct/union type declarations (got `", str.concat(t.text, "`)")));
-                            return %Ast{fns: fns, types: types};
+                            return %Ast{fns: fns, types: types, imports: imports};
                         }
                     }
                 }
             }
+            }
         } else {
             p_fail(p, t.line, t.col, str.concat("top-level items are fn declarations and struct/union type declarations (got `", str.concat(t.text, "`)")));
-            return %Ast{fns: fns, types: types};
+            return %Ast{fns: fns, types: types, imports: imports};
         }
     }
-    return %Ast{fns: fns, types: types};
+    return %Ast{fns: fns, types: types, imports: imports};
 }
 
 // ---------------------------------------------------------------- AST dump

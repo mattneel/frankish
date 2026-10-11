@@ -90,7 +90,7 @@ for _, k in ipairs({
   "i64", "if", "match", "or", "pub", "return", "struct", "true",
   "comptime",
   "union", "var", "while", "not", "try", "catch", "defer", "for",
-  "test",
+  "test", "import",
 }) do
   KEYWORDS[k] = true
 end
@@ -1375,9 +1375,15 @@ local function parse_file(source, file)
   P = { toks = lex(source, file), pos = 1, file = file }
   local fns = {}
   local types = {}
+  local imports = {}
   while peek().k ~= "eof" do
     local t = peek()
-    if t.k == "kw" and t.v == "test" then
+    if t.k == "kw" and t.v == "import" then
+      next_tok()
+      local nm = expect_name()
+      expect_punct(";")
+      imports[#imports + 1] = { name = nm.v, line = t.line, col = t.col }
+    elseif t.k == "kw" and t.v == "test" then
       fns[#fns + 1] = parse_test()
     elseif t.k == "kw" and t.v == "const" then
       types[#types + 1] = parse_type_decl()
@@ -1389,7 +1395,7 @@ local function parse_file(source, file)
       fail(t.line, t.col, "seed v0 accepts top-level fn declarations and struct/union type declarations (got `" .. t.v .. "`)")
     end
   end
-  return { fns = fns, types = types }
+  return { fns = fns, types = types, imports = imports }
 end
 
 -- ---------------------------------------------------------------- emitter
@@ -4655,6 +4661,7 @@ FNS_BY_SYM = {}
 
 function run(files)
   E.out = {}
+  IMPORTS = {}
   E.out[#E.out + 1] = "// calque-artifact v0"
   local parsed = {}
   local types = {}
@@ -4663,6 +4670,13 @@ function run(files)
     CURRENT_FILE = f.name
     local unit = parse_file(f.text, f.name)
     parsed[#parsed + 1] = { file = f, fns = unit.fns }
+    for j = 1, #unit.imports do
+      local im = unit.imports[j]
+      if f.ns ~= nil and im.name == f.ns then
+        fail(im.line, im.col, "a unit cannot import itself (cycle: `" .. im.name .. "`)")
+      end
+      IMPORTS[#IMPORTS + 1] = { from = f.ns, to = im.name, line = im.line, col = im.col, file = f.name }
+    end
     for j = 1, #unit.types do
       local td = unit.types[j]
       td.file = f.name
@@ -4679,6 +4693,61 @@ function run(files)
     end
   end
   E.types = types
+  -- imports (D-116): resolve names against the unit set, then the
+  -- cycle check over the graph.
+  local seen_units = {}
+  for i = 1, #files do
+    if files[i].ns ~= nil then
+      seen_units[files[i].ns] = true
+    end
+  end
+  seen_units["str"] = true
+  seen_units["seq"] = true
+  seen_units["opt"] = true
+  seen_units["res"] = true
+  seen_units["io"] = true
+  for i = 1, #IMPORTS do
+    local im = IMPORTS[i]
+    if seen_units[im.to] ~= nil then
+      seen_units[im.to] = true
+    end
+  end
+  for i = 1, #IMPORTS do
+    local im = IMPORTS[i]
+    if seen_units[im.to] == nil then
+      fail(im.line, im.col, "unknown import `" .. im.to .. "` (no such unit)")
+    end
+  end
+  -- cycle detection: DFS over the imports (two edges per unit pair)
+  local adj = {}
+  for i = 1, #IMPORTS do
+    local im = IMPORTS[i]
+    local from = im.from or "<main>"
+    if adj[from] == nil then
+      adj[from] = {}
+    end
+    adj[from][#adj[from] + 1] = im.to
+  end
+  local mark = {}
+  local stack = {}
+  local function dfs(u)
+    mark[u] = 1
+    local succ = adj[u] or {}
+    for k = 1, #succ do
+      local v = succ[k]
+      if mark[v] == 1 then
+        fail(1, 1, "import cycle detected: `" .. u .. "` -> `" .. v .. "`")
+      elseif mark[v] == nil then
+        dfs(v)
+      end
+    end
+    mark[u] = 2
+  end
+  for u, succ in pairs(adj) do
+    if mark[u] == nil then
+      dfs(u)
+    end
+  end
   -- name resolution + mangling (D-094)
   for i = 1, #parsed do
     local p = parsed[i]

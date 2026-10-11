@@ -130,6 +130,9 @@ pub fn is_kw(s: Str) bool {
     if s == "test" {
         return true;
     }
+    if s == "import" {
+        return true;
+    }
     if s == "const" {
         return true;
     }

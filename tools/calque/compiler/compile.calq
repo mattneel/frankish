@@ -2,6 +2,57 @@
 // seed's multi-file shape: host-ordered units, one flat module),
 // printing the artifact text. Unit names ride the __calque_input_name
 // channel (diagnostics embed the file).
+pub fn is_reserved_ns(n: Str) bool {
+    if n == "str" {
+        return true;
+    }
+    if n == "io" {
+        return true;
+    }
+    if n == "vector" {
+        return true;
+    }
+    if n == "seq" {
+        return true;
+    }
+    if n == "opt" {
+        return true;
+    }
+    if n == "res" {
+        return true;
+    }
+    return false;
+}
+
+// The import-cycle DFS (D-116): 0 = unseen, 1 = on the stack, 2 = done.
+// Returns "" on success or the rendered error naming one back edge.
+pub fn dfs_imports(edge_from: Vector(i64), edge_to: Vector(i64), marks: Vector(i64), u: i64, ns_names: Vector(Str)) Str {
+    vector.set(marks, u, 1);
+    const ne: i64 = vector.len(edge_from);
+    var i: i64 = 0;
+    while i < ne {
+        if vector.get(edge_from, i) == u {
+            const v: i64 = vector.get(edge_to, i);
+            if v >= 0 {
+                if vector.get(marks, v) == 1 {
+                    const un: Str = vector.get(ns_names, u);
+                    const vn: Str = vector.get(ns_names, v);
+                    return str.concat("error 1:1 import cycle detected: `", str.concat(un, str.concat("` -> `", str.concat(vn, "`"))));
+                }
+                if vector.get(marks, v) == 0 {
+                    const inner: Str = dfs_imports(edge_from, edge_to, marks, v, ns_names);
+                    if str.len(inner) > 0 {
+                        return inner;
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    vector.set(marks, u, 2);
+    return "";
+}
+
 pub fn main() i64 {
     const count: i64 = __calque_input_count();
     if count < 1 {
@@ -10,6 +61,9 @@ pub fn main() i64 {
     }
     var fns: Vector(Fn) = vector.new();
     var types: Vector(TypeDecl) = vector.new();
+    var import_decls: Vector(ImpDecl) = vector.new();
+    var ns_names: Vector(Str) = vector.new();
+    var edge_from: Vector(i64) = vector.new();
     var i: i64 = 0;
     while i < count {
         const src: Str = __calque_input(i);
@@ -41,9 +95,82 @@ pub fn main() i64 {
             vector.push(fns, %Fn{name: f.name, params: f.params, ret: f.ret, body: f.body, file: uname, ns: uns, test_name: f.test_name});
             k = k + 1;
         }
+        // imports (D-116): register the unit's namespace and the
+        // outgoing edges.
+        var uidx: i64 = 0 - 1;
+        if str.len(uns) > 0 {
+            var nsi: i64 = 0;
+            const nns: i64 = vector.len(ns_names);
+            var found_ns: bool = false;
+            while nsi < nns {
+                if vector.get(ns_names, nsi) == uns {
+                    uidx = nsi;
+                    found_ns = true;
+                }
+                nsi = nsi + 1;
+            }
+            if found_ns == false {
+                uidx = vector.len(ns_names);
+                vector.push(ns_names, uns);
+            }
+        }
+        const nim: i64 = vector.len(a.imports);
+        var imi: i64 = 0;
+        while imi < nim {
+            const im: ImpDecl = vector.get(a.imports, imi);
+            vector.push(import_decls, im);
+            vector.push(edge_from, uidx);
+            imi = imi + 1;
+        }
         i = i + 1;
     }
-    const merged: Ast = %Ast{fns: fns, types: types};
+    // the import checks: unknown names, then the cycle DFS.
+    var edge_to: Vector(i64) = vector.new();
+    var ei: i64 = 0;
+    const ne: i64 = vector.len(import_decls);
+    while ei < ne {
+        const im2: ImpDecl = vector.get(import_decls, ei);
+        var tidx: i64 = 0 - 1;
+        if is_reserved_ns(im2.name) == false {
+            var ni: i64 = 0;
+            const nn: i64 = vector.len(ns_names);
+            var found_t: bool = false;
+            while ni < nn {
+                if vector.get(ns_names, ni) == im2.name {
+                    tidx = ni;
+                    found_t = true;
+                }
+                ni = ni + 1;
+            }
+            if found_t == false {
+                io.print(fail_text(%Fail{msg: str.concat("unknown import `", str.concat(im2.name, "`")), line: im2.line, col: im2.col}));
+                io.print("\n");
+                return 1;
+            }
+        }
+        vector.push(edge_to, tidx);
+        ei = ei + 1;
+    }
+    var marks: Vector(i64) = vector.new();
+    var mi: i64 = 0;
+    const nmk: i64 = vector.len(ns_names);
+    while mi < nmk {
+        vector.push(marks, 0);
+        mi = mi + 1;
+    }
+    var si: i64 = 0;
+    while si < nmk {
+        if vector.get(marks, si) == 0 {
+            const cyc: Str = dfs_imports(edge_from, edge_to, marks, si, ns_names);
+            if str.len(cyc) > 0 {
+                io.print(cyc);
+                io.print("\n");
+                return 1;
+            }
+        }
+        si = si + 1;
+    }
+    const merged: Ast = %Ast{fns: fns, types: types, imports: import_decls};
     var e: Emitter = e_init();
     emit_module(e, merged);
     if e_ok(e) == false {

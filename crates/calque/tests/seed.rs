@@ -2527,6 +2527,84 @@ fn calq0_matches_the_seed_on_struct_spread() {
 }
 
 #[test]
+fn seed_imports() {
+    // D-116: `import NAME;` resolves against the unit set; cycles and
+    // unknown names are loud.
+    let std = stdlib_str();
+    let files = vec![
+        std,
+        unit("a.calq", Some("a"), "import b;\npub fn fa(x: i64) i64 { b.fb(x) + 1 }\n"),
+        unit("b.calq", Some("b"), "pub fn fb(x: i64) i64 { x * 2 }\n"),
+        unit(
+            "main.calq",
+            None,
+"import a;\npub fn main() i64 { io.print(str.fromI64(a.fa(20))); io.print(\"\\n\"); 0 }\n",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the import set emits");
+    let outcome = run_artifact(&artifact).expect("the import set runs");
+    assert_eq!(outcome.output, "41\n");
+
+    // a cycle is an error naming one edge
+    let cyc = vec![
+        stdlib_str(),
+        unit("a.calq", Some("a"), "import b;\npub fn fa(x: i64) i64 { x }\n"),
+        unit("b.calq", Some("b"), "import a;\npub fn fb(x: i64) i64 { x }\n"),
+    ];
+    let err = seed_translate(&cyc).expect_err("the cycle is refused");
+    assert!(err.contains("import cycle detected"), "{err}");
+
+    // an unknown name is refused with its position
+    let unk = vec![
+        stdlib_str(),
+        unit("a.calq", Some("a"), "import nope;\npub fn fa(x: i64) i64 { x }\n"),
+    ];
+    let err2 = seed_translate(&unk).expect_err("the unknown import is refused");
+    assert!(err2.contains("unknown import `nope`"), "{err2}");
+}
+
+#[test]
+fn calq0_matches_the_seed_on_imports() {
+    // D-116's differential: the clean set is byte-equal and runs; the
+    // cycle and the unknown name are refused with the seed's texts.
+    let files = vec![
+        stdlib_str(),
+        unit("a.calq", Some("a"), "import b;\npub fn fa(x: i64) i64 { b.fb(x) + 1 }\n"),
+        unit("b.calq", Some("b"), "pub fn fb(x: i64) i64 { x * 2 }\n"),
+        unit(
+            "main.calq",
+            None,
+            "import a;\npub fn main() i64 { io.print(str.fromI64(a.fa(20))); io.print(\"\\n\"); 0 }\n",
+        ),
+    ];
+    let artifact = compile_artifact();
+    let expected = seed_translate(&files).expect("the seed emits the import set");
+    let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the import set");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (imports): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted import set runs");
+    assert_eq!(emitted.output, "41\n");
+
+    let cyc = vec![
+        stdlib_str(),
+        unit("a.calq", Some("a"), "import b;\npub fn fa(x: i64) i64 { x }\n"),
+        unit("b.calq", Some("b"), "import a;\npub fn fb(x: i64) i64 { x }\n"),
+    ];
+    let cg = run_artifact_with_input(artifact, &cyc).expect("calq0 runs on the cycle set");
+    assert!(cg.output.contains("import cycle detected"), "{}", cg.output);
+    let unk = vec![
+        stdlib_str(),
+        unit("a.calq", Some("a"), "import nope;\npub fn fa(x: i64) i64 { x }\n"),
+    ];
+    let ug = run_artifact_with_input(artifact, &unk).expect("calq0 runs on the unknown set");
+    assert!(ug.output.contains("unknown import `nope`"), "{}", ug.output);
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the

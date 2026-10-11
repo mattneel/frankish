@@ -3520,3 +3520,15 @@ veto-ledger pattern and most deserve their review.
   trimming) - the nested-source demos are whitespace-insensitive, so
   the raw text serves them directly. Revisit: an indentation-
   normalizing form if a demo's expected bytes demand it.
+
+- D-116 [calque/modules] THE IMPORT SURFACE (F25's M38 freeze): a
+  unit declares dependencies with top-level `import NAME;` items
+  (NAME = a namespace: the host-supplied unit namespace or a reserved
+  module). Semantics: the driver resolves each import against the
+  compiled unit set, refuses unknown names loudly, and detects import
+  CYCLES (a DFS/SCC check at compile start; a cycle is an error
+  naming one edge). Imports are the declaration of the dependency
+  graph the incremental layer (D-089) and the visibility rules build
+  on; ENFORCING visibility at call sites (a module's members reachable
+  only where imported) is the next slice. Revisit: path-qualified
+  imports, per-item imports, re-exports.
