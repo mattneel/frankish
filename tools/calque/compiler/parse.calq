@@ -447,7 +447,7 @@ pub fn p_lambda(mut p: P) Expr {
         lret = p_type(p);
     }
     const lbody: Block = p_block(p);
-    return Expr.Lam(%LamE{params: lps, ret: lret, body: lbody});
+    return Expr.Lam(%LamE{params: lps, ret: lret, body: lbody, line: kw.line, col: kw.col});
 }
 
 pub fn parse_postfix(mut p: P) Expr {
@@ -536,7 +536,7 @@ pub fn do_index(mut p: P, e: Expr) Expr {
     if expect_punct(p, "]") == false {
         return bad(p, t.line, t.col, "expected `]` after the index");
     }
-    return Expr.IndexE(%IdxE{base: r, idx: ix});
+    return Expr.IndexE(%IdxE{base: r, idx: ix, line: t.line, col: t.col});
 }
 
 pub fn do_dot(mut p: P, e: Expr) Expr {
@@ -879,6 +879,8 @@ pub const TDestrS = struct {
     names: Vector(Str),
     expr: Expr,
     mutable: bool,
+    line: i64,
+    col: i64,
 };
 
 pub const ConstS = struct {
@@ -886,6 +888,8 @@ pub const ConstS = struct {
     has_ty: bool,
     ty: Ty,
     expr: Expr,
+    line: i64,
+    col: i64,
 };
 
 pub const VarS = struct {
@@ -893,16 +897,22 @@ pub const VarS = struct {
     has_ty: bool,
     ty: Ty,
     expr: Expr,
+    line: i64,
+    col: i64,
 };
 
 pub const AssignS = struct {
     name: Str,
     expr: Expr,
+    line: i64,
+    col: i64,
 };
 
 pub const RetS = struct {
     has_expr: bool,
     expr: Expr,
+    line: i64,
+    col: i64,
 };
 
 pub const IfS = struct {
@@ -910,6 +920,8 @@ pub const IfS = struct {
     then: Block,
     has_else: bool,
     els: Block,
+    line: i64,
+    col: i64,
 };
 
 pub const WhileS = struct {
@@ -949,6 +961,8 @@ pub const Stmt = union(enum) {
 pub const IdxE = struct {
     base: Ref,
     idx: Expr,
+    line: i64,
+    col: i64,
 };
 
 pub const TryX = struct {
@@ -969,12 +983,16 @@ pub const LamE = struct {
     params: Vector(Param),
     ret: Ty,
     body: Block,
+    line: i64,
+    col: i64,
 };
 
 pub const FAssS = struct {
     name: Str,
     field: Str,
     expr: Expr,
+    line: i64,
+    col: i64,
 };
 
 pub const IfE = struct {
@@ -982,16 +1000,22 @@ pub const IfE = struct {
     then: Block,
     has_else: bool,
     els: Block,
+    line: i64,
+    col: i64,
 };
 
 pub const Arm = struct {
     pat: Pat,
     body: Expr,
+    line: i64,
+    col: i64,
 };
 
 pub const MatchE = struct {
     scrut: Expr,
     arms: Vector(Arm),
+    line: i64,
+    col: i64,
 };
 
 pub const MakeField = struct {
@@ -1029,6 +1053,8 @@ pub const PVar = struct {
     variant: Str,
     has_payload: bool,
     sub: Pat,
+    line: i64,
+    col: i64,
 };
 
 pub const Pat = union(enum) {
@@ -1302,7 +1328,7 @@ pub fn p_pattern(mut p: P) Pat {
                 return poison_pat();
             }
         }
-        return Pat.Dot(%PVar{ty: "", variant: vn.text, has_payload: has_sub, sub: dsub});
+        return Pat.Dot(%PVar{ty: "", variant: vn.text, has_payload: has_sub, sub: dsub, line: vn.line, col: vn.col});
     }
     const t: Tok = p_peek(p);
     if is_name_tok(t) {
@@ -1398,9 +1424,9 @@ pub fn p_pattern(mut p: P) Pat {
                 if expect_punct(p, ")") == false {
                     return bad_pat(p, t.line, t.col, "invalid pattern");
                 }
-                return Pat.Variant(%PVar{ty: t.text, variant: v.text, has_payload: true, sub: sub});
+                return Pat.Variant(%PVar{ty: t.text, variant: v.text, has_payload: true, sub: sub, line: v.line, col: v.col});
             }
-            return Pat.Variant(%PVar{ty: t.text, variant: v.text, has_payload: false, sub: poison_pat()});
+            return Pat.Variant(%PVar{ty: t.text, variant: v.text, has_payload: false, sub: poison_pat(), line: v.line, col: v.col});
         }
         return Pat.Bind(t.text);
     }
@@ -1409,7 +1435,7 @@ pub fn p_pattern(mut p: P) Pat {
 }
 
 pub fn p_if(mut p: P) IfE {
-    const _kw: Tok = p_next(p);
+    const kw: Tok = p_next(p);
     const cond: Expr = parse_expr(p, 1);
     const then_blk: Block = p_block(p);
     var has_else: bool = false;
@@ -1427,11 +1453,11 @@ pub fn p_if(mut p: P) IfE {
             else_blk = p_block(p);
         }
     }
-    return %IfE{cond: cond, then: then_blk, has_else: has_else, els: else_blk};
+    return %IfE{cond: cond, then: then_blk, has_else: has_else, els: else_blk, line: kw.line, col: kw.col};
 }
 
 pub fn p_match(mut p: P) Expr {
-    const _kw: Tok = p_next(p);
+    const kw: Tok = p_next(p);
     const scrut: Expr = parse_expr(p, 1);
     if expect_punct(p, "{") == false {
         return bad_here(p);
@@ -1440,14 +1466,15 @@ pub fn p_match(mut p: P) Expr {
     while p_ok(p) {
         if at_punct(p, "}") {
             const _c: Tok = p_next(p);
-            return Expr.Match(%MatchE{scrut: scrut, arms: arms});
+            return Expr.Match(%MatchE{scrut: scrut, arms: arms, line: kw.line, col: kw.col});
         }
+        const pt: Tok = p_peek(p);
         const pat: Pat = p_pattern(p);
         if expect_punct(p, "=>") == false {
             return bad_here(p);
         }
         const body: Expr = parse_expr(p, 1);
-        vector.push(arms, %Arm{pat: pat, body: body});
+        vector.push(arms, %Arm{pat: pat, body: body, line: pt.line, col: pt.col});
         if at_punct(p, ",") {
             const _c2: Tok = p_next(p);
         } else {
@@ -1585,14 +1612,14 @@ pub fn p_tdestr(mut p: P, mutable: bool, kw_line: i64, kw_col: i64) TDestrS {
         }
     }
     if expect_punct(p, ")") == false {
-        return %TDestrS{names: names, expr: poison(), mutable: mutable};
+        return %TDestrS{names: names, expr: poison(), mutable: mutable, line: kw_line, col: kw_col};
     }
     if expect_punct(p, "=") == false {
-        return %TDestrS{names: names, expr: poison(), mutable: mutable};
+        return %TDestrS{names: names, expr: poison(), mutable: mutable, line: kw_line, col: kw_col};
     }
     const e: Expr = parse_expr(p, 1);
     const _s: bool = expect_semi(p);
-    return %TDestrS{names: names, expr: e, mutable: mutable};
+    return %TDestrS{names: names, expr: e, mutable: mutable, line: kw_line, col: kw_col};
 }
 
 pub fn p_destr(mut p: P, mutable: bool, kw_line: i64, kw_col: i64) DestrS {
@@ -1696,7 +1723,7 @@ pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
             }
             const e: Expr = parse_expr(p, 1);
             const _s: bool = expect_semi(p);
-            vector.push(stmts, Stmt.Const(%ConstS{name: name.text, has_ty: has_ty, ty: ty, expr: e}));
+            vector.push(stmts, Stmt.Const(%ConstS{name: name.text, has_ty: has_ty, ty: ty, expr: e, line: t.line, col: t.col}));
             return %StmtOut{added: true, tail: poison()};
         }
         if t.text == "var" {
@@ -1729,19 +1756,19 @@ pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
             }
             const e: Expr = parse_expr(p, 1);
             const _s: bool = expect_semi(p);
-            vector.push(stmts, Stmt.Var(%VarS{name: name.text, has_ty: has_ty, ty: ty, expr: e}));
+            vector.push(stmts, Stmt.Var(%VarS{name: name.text, has_ty: has_ty, ty: ty, expr: e, line: t.line, col: t.col}));
             return %StmtOut{added: true, tail: poison()};
         }
         if t.text == "return" {
             const _a: Tok = p_next(p);
             if at_punct(p, ";") {
                 const _c: Tok = p_next(p);
-                vector.push(stmts, Stmt.Ret(%RetS{has_expr: false, expr: poison()}));
+                vector.push(stmts, Stmt.Ret(%RetS{has_expr: false, expr: poison(), line: t.line, col: t.col}));
                 return %StmtOut{added: true, tail: poison()};
             }
             const e: Expr = parse_expr(p, 1);
             const _s: bool = expect_semi(p);
-            vector.push(stmts, Stmt.Ret(%RetS{has_expr: true, expr: e}));
+            vector.push(stmts, Stmt.Ret(%RetS{has_expr: true, expr: e, line: t.line, col: t.col}));
             return %StmtOut{added: true, tail: poison()};
         }
         if t.text == "while" {
@@ -1753,7 +1780,7 @@ pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
         }
         if t.text == "if" {
             const iff: IfE = p_if(p);
-            vector.push(stmts, Stmt.If(%IfS{cond: iff.cond, then: iff.then, has_else: iff.has_else, els: iff.els}));
+            vector.push(stmts, Stmt.If(%IfS{cond: iff.cond, then: iff.then, has_else: iff.has_else, els: iff.els, line: iff.line, col: iff.col}));
             return %StmtOut{added: true, tail: poison()};
         }
         if t.text == "match" {
@@ -1787,7 +1814,7 @@ pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
                 const _b: Tok = p_next(p);
                 const e: Expr = parse_expr(p, 1);
                 const _s: bool = expect_semi(p);
-                vector.push(stmts, Stmt.Assign(%AssignS{name: t.text, expr: e}));
+                vector.push(stmts, Stmt.Assign(%AssignS{name: t.text, expr: e, line: t.line, col: t.col}));
                 return %StmtOut{added: true, tail: poison()};
             }
             if nx.text == "." {
@@ -1808,7 +1835,7 @@ pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
                     const _e2: Tok = p_next(p);
                     const e2: Expr = parse_expr(p, 1);
                     const _s2: bool = expect_semi(p);
-                    vector.push(stmts, Stmt.FAssign(%FAssS{name: t.text, field: fld.text, expr: e2}));
+                    vector.push(stmts, Stmt.FAssign(%FAssS{name: t.text, field: fld.text, expr: e2, line: t.line, col: t.col}));
                     return %StmtOut{added: true, tail: poison()};
                 }
             }
@@ -2363,7 +2390,7 @@ pub fn d_stmt(s: Stmt) Str {
         Stmt.Var(v) => d_var(v),
         Stmt.Assign(a) => str.concat("(assign ", str.concat(a.name, str.concat(" ", str.concat(dump(a.expr), ")")))),
         Stmt.Ret(r) => d_ret(r),
-        Stmt.If(f) => d_if(%IfE{cond: f.cond, then: f.then, has_else: f.has_else, els: f.els}),
+        Stmt.If(f) => d_if(%IfE{cond: f.cond, then: f.then, has_else: f.has_else, els: f.els, line: f.line, col: f.col}),
         Stmt.While(w) => str.concat("(while ", str.concat(dump(w.cond), str.concat(" ", str.concat(d_block(w.body), ")")))),
         Stmt.Destr(d) => d_destr(d),
         Stmt.TDestr(td) => {

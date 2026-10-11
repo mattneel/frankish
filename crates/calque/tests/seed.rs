@@ -1048,45 +1048,44 @@ fn calq0_matches_the_seed_on_match() {
 #[test]
 fn calq0_reports_match_errors() {
     // Slice 3c: the match rules' error paths, asserted by hand. The
-    // texts mirror the seed's; pattern-level positions are 0:0 because
-    // Pat nodes do not carry positions yet (recorded in STATE as the
-    // C2 diagnostics item).
+    // texts mirror the seed's, with REAL spans (the match keyword's
+    // position; the pattern-level 0:0 debt is paid).
     let artifact = compile_artifact();
 
     let e1 = "pub const S = union(enum) { A: i64, B };\npub fn f(s: S) i64 {\n    const r = match s {\n        S.A(x) => 1,\n        S.A(y) => 2,\n        S.B => 0,\n    };\n    r\n}\npub fn main() i64 { 0 }\n";
     let o1 = run_artifact_with_input(artifact, &[unit("e.calq", None, e1)]).expect("runs");
-    assert_eq!(o1.output, "error 0:0 redundant arm: `A` is already covered\n");
+    assert_eq!(o1.output, "error 3:15 redundant arm: `A` is already covered\n");
     assert_eq!(o1.values[0].as_signed().expect("i64"), 1);
 
     let e2 = "pub const S = union(enum) { A: i64, B };\npub fn f(s: S) i64 {\n    const r = match s {\n        S.A(x) => 1,\n    };\n    r\n}\npub fn main() i64 { 0 }\n";
     let o2 = run_artifact_with_input(artifact, &[unit("e.calq", None, e2)]).expect("runs");
-    assert_eq!(o2.output, "error 0:0 match does not cover S.B\n");
+    assert_eq!(o2.output, "error 3:15 match does not cover S.B\n");
     assert_eq!(o2.values[0].as_signed().expect("i64"), 1);
 
     let e3 = "pub const P = struct { a: i64 };\npub fn f(p: P) i64 {\n    const r = match p {\n        %P{a: 1} => 1,\n    };\n    r\n}\npub fn main() i64 { 0 }\n";
     let o3 = run_artifact_with_input(artifact, &[unit("e.calq", None, e3)]).expect("runs");
     assert_eq!(
         o3.output,
-        "error 0:0 a struct match needs a final catch-all arm (`_`, a binding, or an all-binding record pattern) (seed v0)\n"
+        "error 3:15 a struct match needs a final catch-all arm (`_`, a binding, or an all-binding record pattern) (seed v0)\n"
     );
     assert_eq!(o3.values[0].as_signed().expect("i64"), 1);
 
     let e4 = "pub fn f(n: i64) i64 {\n    const r = match n {\n        1 => 1,\n    };\n    r\n}\npub fn main() i64 { 0 }\n";
     let o4 = run_artifact_with_input(artifact, &[unit("e.calq", None, e4)]).expect("runs");
-    assert_eq!(o4.output, "error 0:0 a builtin match needs a final `_` or binding arm (seed v0)\n");
+    assert_eq!(o4.output, "error 2:15 a builtin match needs a final `_` or binding arm (seed v0)\n");
     assert_eq!(o4.values[0].as_signed().expect("i64"), 1);
 
     let e5 = "pub const S = union(enum) { A: i64, B: i64 };\npub fn f(s: S) i64 {\n    const r = match s {\n        S.A(1) => 1,\n        S.B(2) => 0,\n    };\n    r\n}\npub fn main() i64 { 0 }\n";
     let o5 = run_artifact_with_input(artifact, &[unit("e.calq", None, e5)]).expect("runs");
     assert_eq!(
         o5.output,
-        "error 0:0 this payload pattern can fail; add a following `_` arm (seed v0)\n"
+        "error 3:15 this payload pattern can fail; add a following `_` arm (seed v0)\n"
     );
     assert_eq!(o5.values[0].as_signed().expect("i64"), 1);
 
     let e6 = "pub const S = union(enum) { A: i64, B };\npub const T = union(enum) { C: i64 };\npub fn f(s: S) i64 {\n    const r = match s {\n        T.C(x) => 1,\n        _ => 0,\n    };\n    r\n}\npub fn main() i64 { 0 }\n";
     let o6 = run_artifact_with_input(artifact, &[unit("e.calq", None, e6)]).expect("runs");
-    assert_eq!(o6.output, "error 0:0 pattern `T` does not match scrutinee type `S`\n");
+    assert_eq!(o6.output, "error 4:15 pattern `T` does not match scrutinee type `S`\n");
     assert_eq!(o6.values[0].as_signed().expect("i64"), 1);
 }
 
