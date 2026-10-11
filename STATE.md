@@ -1439,6 +1439,18 @@ rework flag, not a knob.
     independent instances are covered by the seed-side mut probe and
     the corpus's per-run re-initinalization. NEXT: C2 planning (the
     language grown through the chain, stdlib + modules).
+    C2 IN FLIGHT (fd4f8b1): increment 1 landed - short-circuit
+    and/or (bool, SPEC 5.1) + pipelines (SPEC 6.3) in the seed and
+    calq0, expression levels retargeted to 1 everywhere, the
+    abandoned-join emission fix (a match of returns no longer leaves
+    a dead predecessor-less join - a dead func.return there survives
+    lowering unconverted and mlir-opt rejects it), the latched-error
+    guard, a 12th golden (pipeline/), and two new differentials.
+    Suite: 37 passed; make calque-test green.
+    NEXT C2 ITEMS: closures (fn expressions, capture-by-binding per
+    D-092; the gating feature of active_score.calq), then errors
+    (try/catch + Option/Result), generics (monomorphized,
+    identity_pair.calq), modules + stdlib.
     Slice 3c COMPLETE (same session): the self-compilation fixed point
     (calq0 - built by the seed - compiles its own sources
     byte-identically; the self-produced compiler compiles fib equal
