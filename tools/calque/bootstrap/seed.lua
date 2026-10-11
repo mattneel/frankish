@@ -1027,6 +1027,18 @@ function parse_block()
         expect_punct("}")
         break
       end
+    elseif t.k == "kw" and (t.v == "true" or t.v == "false") then
+      -- a bare bool literal as a statement or block tail (b0's
+      -- statement grammar owns `true`/`false` too).
+      local e = parse_expr(1)
+      if at_punct(";") then
+        next_tok()
+        stmts[#stmts + 1] = { expr = e }
+      else
+        tail = e
+        expect_punct("}")
+        break
+      end
     elseif t.k == "kw" then
       fail(t.line, t.col, "`" .. t.v .. "` is not in seed v0")
     else
@@ -2268,7 +2280,19 @@ local function emit_match(node)
     local function run_body()
       scope_push()
       collect_bindings(bindings)
-      local v = emit_expr(body)
+      local v = nil
+      -- An arm body written `{ ... }` arrives wrapped as
+      -- `{ block = ... }`; value-position blocks lift their trailing
+      -- `if ... else ...` statement to their value.
+      local blk = body
+      if body.block ~= nil then
+        blk = body.block
+      end
+      if body.block ~= nil or body.stmts ~= nil then
+        v = EMIT_VALUE_BLOCK(blk)
+      else
+        v = emit_expr(body)
+      end
       local vty = v ~= nil and E.vtypes[v] or "unit"
       if not E.terminated then
         if vty == "unit" then
@@ -3186,6 +3210,28 @@ local function emit_block_expr(node)
   return value
 end
 
+-- A value-position block's trailing `if ... else ...` statement IS
+-- its value (recursively - the fn-tail convention generalised to
+-- match arms and if branches).
+local function emit_value_block(blk)
+  if blk.stmts ~= nil and blk.tail == nil and #blk.stmts > 0 then
+    local last = blk.stmts[#blk.stmts]
+    if last.ifstmt ~= nil and last.ifstmt.els ~= nil then
+      local upto = #blk.stmts - 1
+      for si = 1, upto do
+        if not E.terminated then
+          E.emit_stmt(blk.stmts[si])
+        end
+      end
+      if E.terminated then
+        return nil
+      end
+      return EMIT_IF_EXPR(last.ifstmt)
+    end
+  end
+  return emit_block_expr(blk)
+end
+
 local function emit_if_expr(node)
   local line = node.line
   local col = node.col
@@ -3198,13 +3244,13 @@ local function emit_if_expr(node)
   local join_label = fresh_label()
   emit("cf.cond_br " .. cond .. ", ^" .. then_label .. ", ^" .. else_label)
   new_block(then_label)
-  local tv = emit_block_expr(node.yes)
+  local tv = emit_value_block(node.yes)
   local then_end = E.cur
   local then_term = E.terminated
   new_block(else_label)
   local ev = nil
   if node.els ~= nil then
-    ev = emit_block_expr(node.els)
+    ev = emit_value_block(node.els)
   end
   local else_end = E.cur
   local else_term = E.terminated
@@ -3215,7 +3261,7 @@ local function emit_if_expr(node)
   if (tv ~= nil or ev ~= nil) and ty == nil then
     fail(line, col, "internal: an if arm produced an untyped value")
   end
-  if tv ~= nil and ev ~= nil and E.vtypes[tv] ~= E.vtypes[ev] then
+  if tv ~= nil and ev ~= nil and not same_type(E.vtypes[tv], E.vtypes[ev]) then
     fail(line, col, "if arm types differ (`" .. tostring(E.vtypes[tv]) .. "` vs `" .. tostring(E.vtypes[ev]) .. "`)")
   end
   new_block(join_label)
@@ -3672,7 +3718,7 @@ local function emit_stmt(node)
     if b.kind == "cap" then
       bty = b.cap_box
     end
-    local v = emit_expr(a.expr)
+    local v = emit_expr_typed(a.expr, b.ty)
     emit("\"frk_mem.box_set\"(" .. bid .. ", " .. v .. ") : (" .. bty .. ", " .. value_ir(b.ty, a.line, a.col) .. ") -> ()")
     return
   end
@@ -4094,3 +4140,8 @@ function run(files)
     print(E.out[i])
   end
 end
+
+-- forward hook: the match machinery's arm-value lift calls the if
+-- expression emitter through this alias (declared later as a local).
+EMIT_IF_EXPR = emit_if_expr
+EMIT_VALUE_BLOCK = emit_value_block

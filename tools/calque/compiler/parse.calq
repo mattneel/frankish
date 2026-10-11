@@ -419,10 +419,13 @@ pub fn p_lambda(mut p: P) Expr {
                     return bad(p, pn.line, pn.col, "lambda");
                 }
                 const _pn: Tok = p_next(p);
-                if expect_punct(p, ":") == false {
-                    return bad(p, pn.line, pn.col, "lambda");
+                // a bare parameter (no `: T`) is INFERRED from the
+                // expected fn type at the closure's position (D-086).
+                var pty: Ty = Ty.TyBad(%BadNode{msg: "<hole>", line: pn.line, col: pn.col});
+                if at_punct(p, ":") {
+                    const _cl: Tok = p_next(p);
+                    pty = p_type(p);
                 }
-                const pty: Ty = p_type(p);
                 vector.push(lps, %Param{name: pn.text, ty: pty, mut: false, is_comptime: false});
                 if at_punct(p, ",") {
                     const _c: Tok = p_next(p);
@@ -435,7 +438,7 @@ pub fn p_lambda(mut p: P) Expr {
     if expect_punct(p, ")") == false {
         return bad(p, kw.line, kw.col, "lambda");
     }
-    var lret: Ty = Ty.UnitV;
+    var lret: Ty = Ty.TyBad(%BadNode{msg: "<hole>", line: kw.line, col: kw.col});
     if at_punct(p, "{") == false {
         lret = p_type(p);
     }
@@ -968,6 +971,13 @@ pub const Ast = struct {
     fns: Vector(Fn),
     types: Vector(TypeDecl),
 };
+
+pub fn ty_is_hole(t: Ty) bool {
+    return match t {
+        Ty.TyBad(b) => b.msg == "<hole>",
+        _ => false,
+    };
+}
 
 pub fn bad_ty(mut p: P, line: i64, col: i64, msg: Str) Ty {
     p_fail(p, line, col, msg);
@@ -1505,6 +1515,17 @@ pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
             return %StmtOut{added: true, tail: poison()};
         }
         if t.text == "match" {
+            const e: Expr = parse_expr(p, 1);
+            if at_punct(p, ";") {
+                const _c: Tok = p_next(p);
+                vector.push(stmts, Stmt.Expr(%ExprS{expr: e}));
+                return %StmtOut{added: true, tail: poison()};
+            }
+            return %StmtOut{added: false, tail: e};
+        }
+        if t.text == "true" or t.text == "false" {
+            // a bare bool literal as a statement or block tail (the
+            // seed's statement grammar owns true/false too).
             const e: Expr = parse_expr(p, 1);
             if at_punct(p, ";") {
                 const _c: Tok = p_next(p);

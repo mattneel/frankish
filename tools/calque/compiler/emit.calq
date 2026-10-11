@@ -120,6 +120,11 @@ pub fn e_fail(mut e: Emitter, b: BadNode) Str {
 }
 
 pub fn e_fail_at(mut e: Emitter, line: i64, col: i64, msg: Str) Str {
+    // FIRST failure wins: later diagnostics usually cascade from the
+    // root (D-109's state model).
+    if state_ok(e.state) == false {
+        return "";
+    }
     e.state = State.Failed(%Fail{msg: msg, line: line, col: col});
     return "";
 }
@@ -727,6 +732,18 @@ pub fn emit_catch_e(mut e: Emitter, cx: CatchX) Str {
 }
 
 pub fn emit_lambda_expr(mut e: Emitter, l: LamE) Str {
+    const npg: i64 = vector.len(l.params);
+    var pgi: i64 = 0;
+    while pgi < npg {
+        const pg: Param = vector.get(l.params, pgi);
+        if ty_is_hole(pg.ty) {
+            return e_fail_at(e, 0, 0, "cannot infer this closure's parameter types; annotate them, or place the closure where a fn type is expected");
+        }
+        pgi = pgi + 1;
+    }
+    if ty_is_hole(l.ret) {
+        return e_fail_at(e, 0, 0, "cannot infer this closure's return type; annotate it, or place the closure where a fn type is expected");
+    }
     const n: i64 = e.lams;
     e.lams = n + 1;
     const sym: Str = str.concat("__calque_lam_", str.fromI64(n));
@@ -738,7 +755,11 @@ pub fn emit_lambda_expr(mut e: Emitter, l: LamE) Str {
         vector.push(lps, %Param{name: lp.name, ty: tv_res(e, lp.ty), mut: lp.mut, is_comptime: false});
         lpi = lpi + 1;
     }
-    const fake: Fn = %Fn{name: sym, params: lps, ret: tv_res(e, l.ret), body: l.body, file: e_file(e), ns: ""};
+    const lret0: Ty = tv_res(e, l.ret);
+    const fake: Fn = %Fn{name: sym, params: lps, ret: lret0, body: l.body, file: e_file(e), ns: ""};
+    // the closure's OWN return type types its `return` statements
+    // (lift_snapshot/restore bracket the enclosing context).
+    e_ret_set(e, lret0);
     const s1: LiftS = lift_snapshot(e);
     lift_prepare(e, s1.depth);
     e.capenv_ty = "!frk_adt.product<[]>";
@@ -2037,42 +2058,357 @@ pub fn sig_res(e: Emitter, sig: FnSig) FnSig {
     return %FnSig{params: ps, ret: tv_res(e, sig.ret)};
 }
 
-pub fn resolve_generic(mut e: Emitter, f: Fn, args: Vector(Expr), line: i64, col: i64) GRes {
-    var sub: Vector(TV) = vector.new();
-    const np: i64 = vector.len(f.params);
-    var ai: i64 = 0;
+pub fn ty_is_unknown(t: Ty) bool {
+    return match t {
+        Ty.TyBad(b) => true,
+        _ => false,
+    };
+}
+
+pub fn name_bound(names: Vector(Str), nm: Str) bool {
+    const n: i64 = vector.len(names);
     var i: i64 = 0;
-    while i < np {
-        const prm: Param = vector.get(f.params, i);
-        if prm.is_comptime {
-            const na: i64 = vector.len(args);
-            if ai >= na {
-                e_fail_at(e, line, col, str.concat("`", str.concat(f.name, str.concat("` needs an explicit type argument for `", str.concat(prm.name, "` (D-113)")))));
-                return %GRes{f: f, args: args};
+    while i < n {
+        if vector.get(names, i) == nm {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+pub fn tv_get(sub: Vector(TV), nm: Str) Ty {
+    const n: i64 = vector.len(sub);
+    var i: i64 = 0;
+    while i < n {
+        const tv: TV = vector.get(sub, i);
+        if tv.name == nm {
+            return tv.ty;
+        }
+        i = i + 1;
+    }
+    return Ty.TyBad(%BadNode{msg: "<unknown>", line: 0, col: 0});
+}
+
+pub fn is_tyarg_expr(mut e: Emitter, a: Expr) bool {
+    return match a {
+        Expr.TyV(t0) => true,
+        Expr.Ref(r0) => {
+            const b0: Binding = lookup(e, r0.name);
+            b0.name == "" and str.len(r0.mod) == 0
+        },
+        _ => false,
+    };
+}
+
+pub fn tyarg_value(mut e: Emitter, a: Expr, line: i64, col: i64) Ty {
+    return match a {
+        Expr.TyV(t0) => tv_res(e, t0),
+        Expr.Ref(r0) => {
+            if r0.name == "Str" {
+                Ty.StrV
+            } else {
+                Ty.Named(r0.name)
             }
-            const arg: Expr = vector.get(args, ai);
-            var got: bool = false;
-            var targ: Ty = Ty.UnitV;
-            match arg {
-                Expr.TyV(tv0) => { got = true; targ = tv0; },
-                Expr.Ref(r0) => {
-                    if str.len(r0.mod) == 0 {
-                        got = true;
-                        if r0.name == "Str" {
-                            targ = Ty.StrV;
-                        } else {
-                            targ = Ty.Named(r0.name);
+        },
+        _ => {
+            const _x: Str = e_fail_at(e, line, col, "a comptime type argument must be a type name or type keyword");
+            Ty.UnitV
+        },
+    };
+}
+
+pub fn infer_field_ty(mut e: Emitter, recv: Str, field: Str, line: i64, col: i64) Ty {
+    const b0: Binding = lookup(e, recv);
+    if b0.name == "" {
+        e_fail_at(e, line, col, str.concat("generic inference probe: unknown receiver `", str.concat(recv, "`")));
+        return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
+    }
+    const bty: Ty = b0.ty;
+    return match bty {
+        Ty.Named(nm) => {
+            const a: Ast = e_ast(e);
+            const td: TypeDecl = find_td(a, nm);
+            if td.name == "" {
+                e_fail_at(e, line, col, str.concat("generic inference probe: unknown type `", str.concat(nm, "`")));
+                Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col})
+            } else {
+                if td.is_union {
+                    Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col})
+                } else {
+                    const nf: i64 = vector.len(td.fields);
+                    var found: bool = false;
+                    var fty: Ty = Ty.UnitV;
+                    var i: i64 = 0;
+                    while i < nf {
+                        const fd: FieldDecl = vector.get(td.fields, i);
+                        if fd.name == field {
+                            found = true;
+                            fty = fd.ty;
                         }
+                        i = i + 1;
+                    }
+                    if found {
+                        tv_res(e, fty)
+                    } else {
+                        e_fail_at(e, line, col, str.concat("generic inference probe: no field `", str.concat(field, "`")));
+                        Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col})
+                    }
+                }
+            }
+        },
+        _ => {
+            Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col})
+        },
+    };
+}
+
+pub fn infer_call_ty(mut e: Emitter, c0: Call, line: i64, col: i64) Ty {
+    const r0: Ref = c0.callee;
+    const sym0: Str = call_sym(r0.name, r0.mod);
+    const f2: Fn = find_fn(e_ast(e), sym0);
+    if f2.name == "" {
+        return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
+    }
+    if is_generic_fn(f2) {
+        const g: GRes = resolve_generic(e, f2, c0.args, line, col);
+        const gf: Fn = g.f;
+        return gf.ret;
+    }
+    return f2.ret;
+}
+
+pub fn infer_expr_ty(mut e: Emitter, ex: Expr, line: i64, col: i64) Ty {
+    return match ex {
+        Expr.Int(t0) => Ty.I64,
+        Expr.Str(t0) => Ty.StrV,
+        Expr.Bool(t0) => Ty.BoolV,
+        Expr.Ref(r0) => {
+            if str.len(r0.mod) == 0 {
+                const b0: Binding = lookup(e, r0.name);
+                if b0.name == "" {
+                    Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col})
+                } else {
+                    b0.ty
+                }
+            } else {
+                infer_field_ty(e, r0.mod, r0.name, line, col)
+            }
+        },
+        Expr.Call(c0) => infer_call_ty(e, c0, line, col),
+        _ => Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col}),
+    };
+}
+
+pub fn has_unbound(t: Ty, sub: Vector(TV), names: Vector(Str)) bool {
+    return match t {
+        Ty.Named(nm) => {
+            if name_bound(names, nm) {
+                ty_is_unknown(tv_get(sub, nm))
+            } else {
+                false
+            }
+        },
+        Ty.Vec(inner) => has_unbound(inner, sub, names),
+        Ty.OptT(inner) => has_unbound(inner, sub, names),
+        Ty.ResT(rz) => has_unbound(rz.err, sub, names) or has_unbound(rz.ok, sub, names),
+        Ty.FnT(sig) => {
+            var found: bool = false;
+            const n: i64 = vector.len(sig.params);
+            var i: i64 = 0;
+            while i < n {
+                if has_unbound(vector.get(sig.params, i), sub, names) {
+                    found = true;
+                }
+                i = i + 1;
+            }
+            found or has_unbound(sig.ret, sub, names)
+        },
+        _ => false,
+    };
+}
+
+pub fn unify_ty(declared: Ty, actual: Ty, sub: Vector(TV), names: Vector(Str)) {
+    if ty_is_unknown(actual) {
+        return;
+    }
+    match declared {
+        Ty.Named(nm) => {
+            if name_bound(names, nm) {
+                if ty_is_unknown(tv_get(sub, nm)) {
+                    vector.push(sub, %TV{name: nm, ty: actual});
+                }
+            }
+        },
+        Ty.Vec(inner) => {
+            match actual {
+                Ty.Vec(a2) => unify_ty(inner, a2, sub, names),
+                _ => {},
+            };
+        },
+        Ty.OptT(inner) => {
+            match actual {
+                Ty.OptT(a2) => unify_ty(inner, a2, sub, names),
+                _ => {},
+            };
+        },
+        Ty.ResT(rz) => {
+            match actual {
+                Ty.ResT(a2) => {
+                    unify_ty(rz.err, a2.err, sub, names);
+                    unify_ty(rz.ok, a2.ok, sub, names);
+                },
+                _ => {},
+            };
+        },
+        Ty.FnT(sig) => {
+            match actual {
+                Ty.FnT(s2) => {
+                    if vector.len(sig.params) == vector.len(s2.params) {
+                        const n: i64 = vector.len(sig.params);
+                        var i: i64 = 0;
+                        while i < n {
+                            unify_ty(vector.get(sig.params, i), vector.get(s2.params, i), sub, names);
+                            i = i + 1;
+                        }
+                        unify_ty(sig.ret, s2.ret, sub, names);
                     }
                 },
                 _ => {},
             };
-            if got == false {
-                e_fail_at(e, line, col, "a comptime type argument must be a type name or type keyword");
+        },
+        _ => {},
+    };
+}
+
+pub fn probe_lam_unify(mut e: Emitter, l0: LamE, declared: Ty, sub: Vector(TV), names: Vector(Str), line: i64, col: i64) {
+    var dps: Vector(Ty) = vector.new();
+    var dsig: FnSig = %FnSig{params: dps, ret: Ty.UnitV};
+    var is_fn_t: bool = false;
+    match declared {
+        Ty.FnT(s2) => {
+            dsig = s2;
+            is_fn_t = true;
+        },
+        _ => {},
+    };
+    if is_fn_t == false {
+        return;
+    }
+    scope_push(e);
+    var bound: bool = true;
+    const nlp: i64 = vector.len(l0.params);
+    var i: i64 = 0;
+    while i < nlp {
+        const lp: Param = vector.get(l0.params, i);
+        var lty: Ty = lp.ty;
+        if ty_is_hole(lty) {
+            if i < vector.len(dsig.params) {
+                lty = subst_ty_list(vector.get(dsig.params, i), sub);
+            } else {
+                bound = false;
+            }
+        }
+        if bound {
+            declare(e, %Binding{name: lp.name, is_box: false, ty: lty, id: str.concat("%", lp.name), box: ""});
+        }
+        i = i + 1;
+    }
+    var pret: Ty = Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
+    if bound {
+        const b0: Block = l0.body;
+        if b0.has_tail {
+            pret = infer_expr_ty(e, b0.tail, line, col);
+        }
+    }
+    scope_pop(e);
+    if ty_is_unknown(pret) {
+        e_fail_at(e, line, col, "generic inference: the closure's body tail is not typeable");
+        return;
+    }
+    var ps2: Vector(Ty) = vector.new();
+    const nn: i64 = vector.len(dsig.params);
+    var j: i64 = 0;
+    while j < nn {
+        vector.push(ps2, subst_ty_list(vector.get(dsig.params, j), sub));
+        j = j + 1;
+    }
+    unify_ty(declared, Ty.FnT(%FnSig{params: ps2, ret: pret}), sub, names);
+}
+
+pub fn resolve_generic(mut e: Emitter, f: Fn, args: Vector(Expr), line: i64, col: i64) GRes {
+    var names: Vector(Str) = vector.new();
+    const np: i64 = vector.len(f.params);
+    var i: i64 = 0;
+    while i < np {
+        const prm: Param = vector.get(f.params, i);
+        if prm.is_comptime {
+            vector.push(names, prm.name);
+        }
+        i = i + 1;
+    }
+    var sub: Vector(TV) = vector.new();
+    var ai: i64 = 0;
+    i = 0;
+    while i < np {
+        const prm: Param = vector.get(f.params, i);
+        if prm.is_comptime {
+            const na: i64 = vector.len(args);
+            if ai < na {
+                if is_tyarg_expr(e, vector.get(args, ai)) {
+                    const t0: Ty = tyarg_value(e, vector.get(args, ai), line, col);
+                    vector.push(sub, %TV{name: prm.name, ty: t0});
+                    ai = ai + 1;
+                }
+            }
+        }
+        i = i + 1;
+    }
+    var vi: i64 = ai;
+    i = 0;
+    while i < np {
+        const prm: Param = vector.get(f.params, i);
+        if prm.is_comptime == false {
+            const na2: i64 = vector.len(args);
+            if vi < na2 {
+                const a: Expr = vector.get(args, vi);
+                var did_probe: bool = false;
+                match a {
+                    Expr.Lam(l0) => {
+                        if has_unbound(prm.ty, sub, names) {
+                            did_probe = true;
+                            probe_lam_unify(e, l0, prm.ty, sub, names, line, col);
+                        }
+                    },
+                    _ => {},
+                };
+                if did_probe == false {
+                    const actual: Ty = infer_expr_ty(e, a, line, col);
+                    if ty_is_unknown(actual) == false {
+                        unify_ty(prm.ty, actual, sub, names);
+                    }
+                }
+            }
+            vi = vi + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < np {
+        const prm2: Param = vector.get(f.params, i);
+        if prm2.is_comptime {
+            if ty_is_unknown(tv_get(sub, prm2.name)) {
+                var bmsg: Str = "cannot infer `";
+                bmsg = str.concat(bmsg, prm2.name);
+                bmsg = str.concat(bmsg, "` of `");
+                bmsg = str.concat(bmsg, f.name);
+                bmsg = str.concat(bmsg, "` bound=");
+                bmsg = str.concat(bmsg, str.fromI64(vector.len(sub)));
+                bmsg = str.concat(bmsg, " na=");
+                bmsg = str.concat(bmsg, str.fromI64(vector.len(args)));
+                e_fail_at(e, line, col, bmsg);
                 return %GRes{f: f, args: args};
             }
-            vector.push(sub, %TV{name: prm.name, ty: tv_res(e, targ)});
-            ai = ai + 1;
         }
         i = i + 1;
     }
@@ -2084,25 +2420,25 @@ pub fn resolve_generic(mut e: Emitter, f: Fn, args: Vector(Expr), line: i64, col
         key = str.concat(key, str.concat("__", mangle_ty(sv.ty)));
         si = si + 1;
     }
-    var found: bool = false;
+    var found2: bool = false;
     var instf: Fn = f;
     const ni: i64 = vector.len(e.insts);
     var ii: i64 = 0;
     while ii < ni {
         const ie: InstN = vector.get(e.insts, ii);
         if ie.key == key {
-            found = true;
+            found2 = true;
             instf = ie.f;
         }
         ii = ii + 1;
     }
-    if found == false {
+    if found2 == false {
         var vps: Vector(Param) = vector.new();
         var pi: i64 = 0;
         while pi < np {
-            const prm2: Param = vector.get(f.params, pi);
-            if prm2.is_comptime == false {
-                vector.push(vps, %Param{name: prm2.name, ty: subst_ty_list(prm2.ty, sub), mut: prm2.mut, is_comptime: false});
+            const prm3: Param = vector.get(f.params, pi);
+            if prm3.is_comptime == false {
+                vector.push(vps, %Param{name: prm3.name, ty: subst_ty_list(prm3.ty, sub), mut: prm3.mut, is_comptime: false});
             }
             pi = pi + 1;
         }
@@ -2111,16 +2447,19 @@ pub fn resolve_generic(mut e: Emitter, f: Fn, args: Vector(Expr), line: i64, col
         vector.push(e.instq, %InstE{f: instf, sub: sub});
     }
     var valargs: Vector(Expr) = vector.new();
-    const na2: i64 = vector.len(args);
-    var vi: i64 = ai;
-    while vi < na2 {
-        vector.push(valargs, vector.get(args, vi));
-        vi = vi + 1;
+    const na3: i64 = vector.len(args);
+    var vj: i64 = ai;
+    while vj < na3 {
+        vector.push(valargs, vector.get(args, vj));
+        vj = vj + 1;
     }
     return %GRes{f: instf, args: valargs};
 }
 
 pub fn emit_fn_args(mut e: Emitter, f: Fn, sym: Str, args: Vector(Expr), line: i64, col: i64) Str {
+    if state_ok(e.state) == false {
+        return "";
+    }
     const a: Ast = e_ast(e);
     var parts: Str = "%env";
     var types: Str = "!frk_closure.envref";
@@ -2167,9 +2506,9 @@ pub fn emit_fn_args(mut e: Emitter, f: Fn, sym: Str, args: Vector(Expr), line: i
             parts = str.concat(parts, str.concat(", ", ab.id));
             types = str.concat(types, str.concat(", ", box_ir_t(a, prm.ty)));
         } else {
-            const v: Str = emit_expr(e, vector.get(args, i));
+            const v: Str = emit_expr_typed(e, vector.get(args, i), tv_res(e, prm.ty));
             parts = str.concat(parts, str.concat(", ", v));
-            types = str.concat(types, str.concat(", ", value_ir_t(a, prm.ty)));
+            types = str.concat(types, str.concat(", ", value_ir_t(a, tv_res(e, prm.ty))));
         }
         i = i + 1;
     }
@@ -2312,6 +2651,40 @@ pub fn emit_block_expr(mut e: Emitter, b: Block) Str {
 
 // `if` expression (else required): then/else arms branch to a join
 // with the value; mirrors the seed's block reordering linearly.
+// A value-position block's trailing `if ... else ...` statement IS
+// its value (recursively - the seed's fn-tail convention generalised
+// to match arms and if branches).
+pub fn emit_value_block(mut e: Emitter, blk: Block) Str {
+    if blk.has_tail == false {
+        const n: i64 = vector.len(blk.stmts);
+        if n > 0 {
+            const last: Stmt = vector.get(blk.stmts, n - 1);
+            match last {
+                Stmt.If(f0) => {
+                    if f0.has_else {
+                        var upto: i64 = n - 1;
+                        var si: i64 = 0;
+                        while si < upto {
+                            if is_terminated(e) {
+                                si = upto;
+                            } else {
+                                emit_stmt(e, vector.get(blk.stmts, si));
+                                si = si + 1;
+                            }
+                        }
+                        if is_terminated(e) == false {
+                            return emit_ifx(e, %IfE{cond: f0.cond, then: f0.then, has_else: f0.has_else, els: f0.els});
+                        }
+                        return "";
+                    }
+                },
+                _ => {},
+            };
+        }
+    }
+    return emit_block_expr(e, blk);
+}
+
 pub fn emit_ifx(mut e: Emitter, f: IfE) Str {
     if f.has_else == false {
         return e_fail_at(e, 0, 0, "an `if` in expression position requires `else` (SPEC 5)");
@@ -2322,7 +2695,7 @@ pub fn emit_ifx(mut e: Emitter, f: IfE) Str {
     const jl: Str = fresh_label(e);
     emit_line(e, str.concat("cf.cond_br ", str.concat(cond, str.concat(", ^", str.concat(tl, str.concat(", ^", el))))));
     new_label(e, tl);
-    const tv: Str = emit_block_expr(e, f.then);
+    const tv: Str = emit_value_block(e, f.then);
     var ty: Ty = Ty.UnitV;
     var has_ty: bool = false;
     if str.len(tv) > 0 {
@@ -2331,7 +2704,7 @@ pub fn emit_ifx(mut e: Emitter, f: IfE) Str {
     }
     const then_end_len: i64 = vector.len(e.output);
     new_label(e, el);
-    const ev: Str = emit_block_expr(e, f.els);
+    const ev: Str = emit_value_block(e, f.els);
     if has_ty == false {
         if str.len(ev) > 0 {
             ty = vget(e, ev);
@@ -2477,10 +2850,11 @@ pub fn emit_assign(mut e: Emitter, x: AssignS) {
         bty = b.cap_box;
     }
     const bid: Str = binding_slot(e, b);
-    const v: Str = emit_expr(e, x.expr);
+    const bwt: Ty = tv_res(e, b.ty);
+    const v: Str = emit_expr_typed(e, x.expr, bwt);
     const a: Ast = e_ast(e);
 
-    emit_line(e, str.concat("\"frk_mem.box_set\"(", str.concat(bid, str.concat(", ", str.concat(v, str.concat(") : (", str.concat(bty, str.concat(", ", str.concat(value_ir_t(a, b.ty), ") -> ()")))))))));
+    emit_line(e, str.concat("\"frk_mem.box_set\"(", str.concat(bid, str.concat(", ", str.concat(v, str.concat(") : (", str.concat(bty, str.concat(", ", str.concat(value_ir_t(a, bwt), ") -> ()")))))))));
 }
 
 pub fn emit_ret(mut e: Emitter, r: RetS) {
@@ -3495,6 +3869,55 @@ pub fn ref_of_expr(ex: Expr) Ref {
 }
 
 pub fn emit_expr_typed(mut e: Emitter, ex: Expr, ty: Ty) Str {
+    match ex {
+        Expr.Lam(l2) => {
+            // Inferred closure parameters (D-086): a bare/partial
+            // literal at a fn-typed position takes its signature from
+            // the expected type.
+            match ty {
+                Ty.FnT(sig) => {
+                    const nps: i64 = vector.len(sig.params);
+                    const nlp: i64 = vector.len(l2.params);
+                    if nps != nlp {
+                        return e_fail_at(e, 0, 0, "the closure's parameter count does not match the expected fn type");
+                    }
+                    var lps2: Vector(Param) = vector.new();
+                    var i2: i64 = 0;
+                    while i2 < nlp {
+                        const lp: Param = vector.get(l2.params, i2);
+                        var lty: Ty = lp.ty;
+                        if ty_is_hole(lty) {
+                            lty = vector.get(sig.params, i2);
+                        } else {
+                            const lty0: Ty = tv_res(e, lty);
+                            if same_ty(lty0, vector.get(sig.params, i2)) == false {
+                                return e_fail_at(e, 0, 0, "the closure's parameter type does not match the expected fn type");
+                            }
+                            lty = lty0;
+                        }
+                        vector.push(lps2, %Param{name: lp.name, ty: lty, mut: lp.mut, is_comptime: false});
+                        i2 = i2 + 1;
+                    }
+                    var lrt: Ty = l2.ret;
+                    if ty_is_hole(lrt) {
+                        lrt = sig.ret;
+                    } else {
+                        const lrt0: Ty = tv_res(e, lrt);
+                        if same_ty(lrt0, sig.ret) == false {
+                            return e_fail_at(e, 0, 0, "the closure's return type does not match the expected fn type");
+                        }
+                        lrt = lrt0;
+                    }
+                    const filled: LamE = %LamE{params: lps2, ret: lrt, body: l2.body};
+                    return emit_lambda_expr(e, filled);
+                },
+                _ => {
+                    return e_fail_at(e, 0, 0, "this closure has no expected fn type; annotate its parameters and return type");
+                },
+            };
+        },
+        _ => {},
+    };
     var dot: Ref = %Ref{name: "", mod: ""};
     var dot_args: Vector(Expr) = empty_expr_vec();
     var is_dot: bool = false;
@@ -3684,7 +4107,18 @@ pub fn emit_arm(mut e: Emitter, c: MTy, conditions: Str, bindings: Vector(MBind)
 pub fn emit_arm_body(mut e: Emitter, c: MTy, bindings: Vector(MBind), body: Expr) {
     scope_push(e);
     collect_bindings(e, bindings);
-    const v: Str = emit_expr(e, body);
+    var v: Str = "";
+    var is_blk: bool = false;
+    match body {
+        Expr.Blk(b0) => {
+            is_blk = true;
+            v = emit_value_block(e, b0);
+        },
+        _ => {},
+    };
+    if is_blk == false {
+        v = emit_expr(e, body);
+    }
     var vty: Ty = Ty.UnitV;
     var has: bool = false;
     if str.len(v) > 0 {
