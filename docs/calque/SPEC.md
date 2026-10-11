@@ -8,6 +8,9 @@ intent, frozen by the stage that lands them).
 
 Reading guide: C1 (M37) implementers need §2–§6, §10, §11 and §12.
 C2 (M38) adds §7–§9 items marked C2. C3 (M39) owns §8.
+The user's steering amendment (structs, tests, CON/CTF) lives at
+docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md and supersedes conflicting
+surface text here (D-095/D-096/D-097); its stage mapping is in §13.
 
 ---
 
@@ -78,6 +81,10 @@ User types: bound by top-level `const Name = <type expression>;`:
 
 - `struct { field: T, ... }` — named fields, declaration order;
   duplicate field = error; trailing comma allowed; empty allowed.
+  [D-095] Fields may declare PURE COMPTIME defaults (`score: i64 = 0`);
+  omitted fields take their declared default at construction; fields
+  without a default are REQUIRED; no implicit nulls/zero-init.
+  Construction/update/patterns use the `%Type{...}` surface (§5).
 - `union(enum) { Name, Name: T, ... }` — variants carry a NAMED
   payload TYPE (multi-field payloads use an inline `struct { ... }`);
   a bare `Name` is a unit variant; duplicate variant = error; ≥1
@@ -97,6 +104,12 @@ User types: bound by top-level `const Name = <type expression>;`:
 - [roadmap C2] local inference, tuples, f32/f64, `Bytes`, `Map`,
   `Set`, user generics `Fn(comptime T: type) type`, inference at
   binding sites, optional/union field types.
+- [roadmap C2, D-095/steering §2] `%{key: value}` symbol-keyed maps,
+  `%{"key" => value}` general key-value entries, and `:name` SYMBOLS —
+  distinct from strings and from tagged-union constructors. Structs
+  are nominal and DISTINCT from maps: conversion map/term → struct is
+  explicit and checked; no magic-field nominal forgery; heterogeneity
+  and inference for maps are specified before implementation.
 
 ## §4 Declarations [b0]
 
@@ -135,16 +148,17 @@ Locals (inside blocks):
 ## §5 Expressions [b0]
 
 Literals; names; module calls `str.concat(a, b)`; calls `f(a, b)`;
-record construction `User { .name = "a", .score = 1, .active = true }`
-(the TYPE NAME is always spelled in b0; the bare `.{ ... }` form
-arrives with C2 inference); union construction `Token.Ident("a")` /
-`Token.Plus` (same split: `.Ident("a")` / `.Plus` are C2); field
-access `user.name`; blocks `{ stmt; ...;
+STRUCT CONSTRUCTION — the canonical surface (D-095/steering §2):
+`%User{name: "a", score: 1}` (Type-qualified, trailing commas and
+multiline allowed) and the immutable update `%User{base | score: 42}`;
+union construction `Token.Ident("a")` / `Token.Plus` in b0 (the
+type-elided `.Ident("a")` / `.Plus` forms arrive with C2 inference);
+field access `user.name`; blocks `{ stmt; ...;
 expr }` (value = last expression; a trailing `;` makes the block value
 `()`); `if cond { } else if cond { } else { }` (PAREN-LESS conditions,
 D-090; statement or expression; `else` required in expression
 position); `while cond { }`; `break;` `continue;` (innermost loop);
-`match e { Type.Pattern => expr, ... }` (expression; pattern set in
+`match e { pattern => expr, ... }` (expression; pattern set in
 §5.2); closures
 `fn (x: T, y: U) R { ... }` — b0 requires explicit types on
 closure params/returns; context-inferred closure parameters
@@ -152,9 +166,10 @@ closure params/returns; context-inferred closure parameters
 capture by binding (§6.4); pipeline `x |> f(a)` (sugar, §6.3); prefix
 `try e` and `e catch |err| { ... }` / `e catch { ... }` (§6.5);
 unary `!e`, `-e`; binary operators per §5.1.
-The b0/C2 line is uniform: b0 always SPELLS types where a type is
-required (construction, patterns); C2's context propagation makes the
-type-elided dot forms legal wherever the expected type is known.
+The RETIRED dot-initializer record spellings (`Type { .f = e }`,
+`.{ .f = e }`, and their pattern mirrors) are superseded by D-095 and
+MUST NOT reappear; b0 itself has no record surface (the seed's subset),
+so the amendment lands before the bootstrap grammar hardens.
 
 ### §5.1 Operators and precedence
 Loosest to tightest; all binaries left-associative:
@@ -178,7 +193,16 @@ Calque.
 `_` wildcard; `name` binding; `Type.Variant` / `Type.Variant(pat)`
 (variant patterns, type-qualified in b0; sub-patterns in b0: `_` or
 `name` only). The dot shorthand `.Variant` arrives with C2 (same
-expected-type split as §5). Match arms
+expected-type split as §5). [C2, D-095/steering §2] `%Type{field:
+pattern}` struct patterns in matches, destructuring, and test
+assertions — omitted pattern fields are UNCONSTRAINED (never
+defaulted), `%Type{}` matches the nominal type regardless of field
+values, unknown pattern fields are rejected, and explicit pinning
+`^name` compares an EXISTING binding (fresh bindings vs pinned values
+are distinguished; binding scope survives a successful assertion
+pattern); nested patterns, guards, exhaustiveness, and redundancy all
+extend through the SHARED pattern machinery — never a test-only
+matcher. Match arms
 separated by commas; a trailing comma allowed. Exhaustiveness: a
 match over a union must cover every variant or carry a `_` arm;
 violations are compile ERRORS with the missing variant named as a
@@ -314,8 +338,14 @@ conversions, shifts/bit ops, wrapping ops.]
 [b0] One flat compilation unit: the driver passes an ordered list of
 source files; they form ONE module; duplicate top-level names are
 errors; `pub` is accepted (semantics identical to private within the
-unit). Stdlib in b0 = the intrinsic set of §6.6/§6.8 + `vector.*` +
-`str.fromI64` (Calque source), all compiled with the unit.
+unit). Files may carry a NAMESPACE tag from the driver: a namespaced
+file's declarations mangle as `ns__name`, and qualified calls
+(`str.X`, `io.X`, `vector.X`) resolve first against the prelude table
+(kernel ops / runtime rows), then against namespaced declarations
+(D-094); unqualified names resolve in the main namespace.
+Stdlib in b0 = the intrinsic set of §6.6/§6.8 + `vector.*` +
+`str.fromI64` (Calque source under `tools/calque/std/`, compiled with
+the unit — namespace `str`, D-094).
 
 [C2] Explicit imports with public boundaries, import-cycle detection,
 path-independent resolution, local package dependencies + lockable
@@ -408,7 +438,7 @@ require a D-entry and a row here. "Frozen-by" records the decision.
 | F2 | expression-oriented bodies; strict; left-to-right (§6.2) | GOAL §7, D-086 |
 | F3 | `const`/`var` surface; explicit local mutation; no implicit shared mutation | GOAL §7, D-086 |
 | F4 | fn syntax `fn name(params) R`; explicit types everywhere in b0 | D-086 |
-| F5 | nominal records/unions via top-level consts; `struct { f: T }` / `union(enum) { V, V: T }`; b0 construction QUALIFIED (`Type { .f = e }` / `Type.Variant`); type-elided dot forms at C2 | D-086; revised by D-090 |
+| F5 | nominal records/unions via top-level consts; `struct { f: T }` / `union(enum) { V, V: T }`; CONSTRUCTION `%Type{f: v}` / update `%Type{base &#124; f: v}` (D-095; the dot-initializer forms are RETIRED); type-elided union constructors at C2 | D-086; revised by D-090 and D-095 |
 | F6 | `match` with exhaustiveness+redundancy as errors; b0 pattern set | D-086 |
 | F7 | operator set + precedence table (§5.1); `try` prefix, `catch` handler; postfix `?` RETIRED | D-086; revised by D-090 |
 | F8 | pipeline desugar exact (§6.3) | GOAL §8, D-086 |
@@ -430,7 +460,7 @@ require a D-entry and a row here. "Frozen-by" records the decision.
 | F24 | non-tail recursion is not constant-stack; documented (§6.4) | GOAL §7, D-086 |
 | F25 | C2-visible syntax (inference, generics, floats, tuples, modules) NOT frozen yet; their freeze rows are due at M38 planning | D-086 |
 | F26 | incrementality is content-addressed at declaration grain; compiler + comptime eval are pure functions; cache keys = complete semantic inputs | D-089 |
-| F27 | if/while conditions paren-less; `for (x) \| v` at C2; dot-shorthand constructors/patterns AT C2 (b0 spells types) | D-090 |
+| F27 | if/while conditions paren-less; `for (x) \| v` at C2; struct surface `%Type{...}` per D-095 (dot-initializers retired); type-elided union dot forms at C2 | D-090; revised by D-095 |
 | F28 | the user's demo playbook (docs/calque-demo-playbook.md) is the surface-intent + C6 storyboard source; its console blocks are release targets | D-090 |
 | F29 | `calque.toml` build manifest + named `[build.inputs]`, enforced at the service boundary | D-090 (C3/C5) |
 | F30 | CLI surfaces: check/build/run/test/explain (+ `--explain-comptime`, `--explain-incremental`, `--runtime-artifact`, `--function`) | D-090/D-093 (C1/C5) |
@@ -438,6 +468,9 @@ require a D-entry and a row here. "Frozen-by" records the decision.
 | F32 | `@noalloc` spelling; allocation claims require executable tests, never terminal decoration | D-090 (C4) |
 | F33 | multiline `"""` strings, `_` numeric separators, `@intCast`, `usize`, `[N]T`, tuples, `[...]` literals, `..spread`, `test` blocks | D-090 (C2) |
 | F34 | b0 `Vector(T)` = managed box of `[arr<slot>, len, cap]`; `vector.*` resolves to per-slot-kind intrinsic functions with growth in the intrinsics module | D-091 |
+| F35 | struct surface: `%Type{f: v}` construction, `%Type{base &#124; f: v}` update, `%Type{f: pat}`/`%Type{}`/`^name` patterns, pure comptime per-field defaults, required fields, nominal-vs-map separation | D-095 (steering §2) |
+| F36 | `calque test` is the project test entry point: discovery, selection/flags, ExUnit-style declarations/fixtures, source-captured assertions, isolated supervised execution, stable identities, machine-readable events, run-every-selection incrementality (`--stale` is explicit) | D-096 (steering §§3–5) |
+| F37 | CON (`.con`) and CTF (`.ctf`) + JSON over ONE reflection-derived codec contract (typed direct paths, optional dynamic Term, shared validation); CTF versioned self-describing wire with fast vs canonical profiles; safe decoders by default; ETF-class performance as a benchmarked objective; loanword/artifact format untouched without explicit migration | D-097 (steering §§6–13) |
 
 Rows cite the entry that froze them; revisions cite the revising
 entry (D-090 revised F5/F7/F9 after the user's demo playbook).
@@ -452,4 +485,12 @@ targets the newest frozen version; bootstrap snapshots keep older
 versions compilable by the frozen seed (BOOTSTRAP §5). The user's
 demo playbook (docs/calque-demo-playbook.md) fixes the C6 narrative
 order and the surface-intent; its console blocks are release
-targets, never captured-run substitutes (D-090).
+targets, never captured-run substitutes (D-090). The steering
+amendment (docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md; D-095/
+D-096/D-097) extends the release: struct syntax and the bootstrap
+grammar land now (C1, pre-hardening), the minimal `calque test` runner
+and structural assertions at C2 (the project's own gate), CON/CTF/JSON
+over the shared codec foundation at C2–C3, CTF-vs-ETF optimization at
+C4, the full test experience (fixtures/selection/isolation/
+incremental/coverage) at C5, consumers/docs/demos at C6; the original
+goal file remains the hash-pinned historical contract.

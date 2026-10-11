@@ -18,6 +18,10 @@ set -eu
 cd "$(dirname "$0")/.."
 
 CALQUE_GOAL_SHA=09c9ee8ddb7134fd222e580a908ff7d8e3ff7017a7ceb92a0433576659feff30
+# The steering amendment (D-095..D-097) is a permanent record too; its
+# pin moves only with a deliberate amendment edit (never to accommodate
+# new requirements — the goal pin above is likewise untouchable).
+CALQUE_STEERING_SHA=87b4fe7c308830d41254020fe4086a7188ee0ffffd8128a1b9bc9834e6bb24a8
 
 fail=0
 err() { echo "calque-check: $1" >&2; fail=1; }
@@ -25,6 +29,7 @@ err() { echo "calque-check: $1" >&2; fail=1; }
 # 1. Required artifacts.
 for f in docs/calque/GOAL.md docs/calque/SPEC.md docs/calque/BOOTSTRAP.md \
          docs/calque/ACCEPTANCE.md docs/calque/PERFORMANCE.md \
+         docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md \
          specimens/calque/MANIFEST.md \
          specimens/calque/examples/README.md book/src/specimens/calque.md; do
   [ -f "$f" ] || err "missing artifact: $f"
@@ -33,11 +38,17 @@ for e in active_score identity_pair fib squares; do
   [ -f "specimens/calque/examples/$e.calq" ] || err "missing example: $e.calq"
 done
 
-# 2. Goal pin.
+# 2. Goal pin (historical contract; NEVER weakened for new requirements).
 if [ -f docs/calque/GOAL.md ]; then
   got=$(sha256sum docs/calque/GOAL.md | cut -d' ' -f1)
   [ "$got" = "$CALQUE_GOAL_SHA" ] \
     || err "GOAL.md sha256 drifted: $got (pin $CALQUE_GOAL_SHA)"
+fi
+# 2b. Steering amendment pin (D-095..D-097).
+if [ -f docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md ]; then
+  got=$(sha256sum docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md | cut -d' ' -f1)
+  [ "$got" = "$CALQUE_STEERING_SHA" ] \
+    || err "STEERING-TESTS-STRUCTS-FORMATS.md sha256 drifted: $got (pin $CALQUE_STEERING_SHA)"
 fi
 
 # 3. Matrix structure.
@@ -47,7 +58,7 @@ if [ ! -f "$m" ]; then
   exit 1
 fi
 
-ids=$(sed -n 's/^| \(AC-[0-9][0-9]*\.[0-9][0-9]*\) |.*$/\1/p' "$m")
+ids=$(sed -E -n 's/^\| (AC-[0-9]+\.[0-9]+|AC-S[0-9]+) \|.*$/\1/p' "$m")
 [ -n "$ids" ] || err "no AC rows parsed from $m"
 
 dups=$(printf '%s\n' $ids | sort | uniq -d)
@@ -61,14 +72,14 @@ done
 
 # Statuses: first word must be one of the four legal keywords. Parse the
 # LAST cell ($NF) so a stray pipe inside an earlier cell cannot shift it.
-bad_status=$(awk -F'|' '/^\| AC-[0-9]+\.[0-9]+ / { s=$(NF-1); gsub(/^ +| +$/, "", s); split(s, w, " "); print w[1] }' "$m" \
+bad_status=$(awk -F'|' '/^\| AC-([0-9]+\.[0-9]+|S[0-9]+) / { s=$(NF-1); gsub(/^ +| +$/, "", s); split(s, w, " "); print w[1] }' "$m" \
   | sort -u | grep -vxE 'done|pending|ongoing|never' || true)
 [ -z "$bad_status" ] || err "illegal status keyword(s): $bad_status"
 
 # 4. `done` rows: evidence must resolve. (No pipes around the loops that
 # call err: POSIX subshells would swallow the failure flag.)
 m4=$(mktemp)
-awk -F'|' '/^\| AC-[0-9]+\.[0-9]+ / { s=$(NF-1); gsub(/^ +| +$/, "", s); if (s ~ /^done/) print }' "$m" > "$m4"
+awk -F'|' '/^\| AC-([0-9]+\.[0-9]+|S[0-9]+) / { s=$(NF-1); gsub(/^ +| +$/, "", s); if (s ~ /^done/) print }' "$m" > "$m4"
 while IFS= read -r row; do
   [ -n "$row" ] || continue
   tokens=$(printf '%s\n' "$row" | tr '`' '\n' | awk 'NR % 2 == 0')

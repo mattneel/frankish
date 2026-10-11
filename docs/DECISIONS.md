@@ -193,6 +193,181 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-097 [calque/formats] CON, CTF, JSON OVER ONE CODEC FOUNDATION
+  (user steering amendment, 2026-10-11; stored at
+  docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md, sha256 87b4fe7c3088
+  30d41254020fe4086a7188ee0ffffd8128a1b9bc9834e6bb24a8; §§6–13).
+  NAMES: **CON** = Calque Object Notation (`.con`); **CTF** = Calque
+  Term Format (`.ctf`); JSON stays the interoperability projection.
+  ONE reflection-derived codec contract with three backends and an
+  OPTIONAL dynamic `Term` model — never a mandatory intermediate
+  allocation; direct typed encode/decode paths; buffer/reader/writer/
+  incremental-decoder interfaces; shared field metadata, validation,
+  error paths, schema-evolution rules; `json.Codec(T)` kept as
+  facades; specializations generated through Calque's comptime;
+  codec policy + ordinary algorithms in Calque; NO frk_dyn routing
+  for serialization; no I/O in pure in-memory codec operations.
+  TERM MODEL EXCEEDS JSON: unit/bool/null distinct; signed/unsigned/
+  arbitrary-precision integers; f32/f64 with specials and negative
+  zero under a specified bit-preservation + NaN policy; UTF-8 text,
+  bytes, bitstrings; bounded symbols (no immortal atom table); tuples
+  distinct from sequences/lists (improper lists in the dynamic model);
+  maps with arbitrary admitted keys; nominal structs, tagged variants
+  (Option/Result preserved as variants), concrete generic identities;
+  logical (never compiler-local) type identities with schema versions;
+  exact round-trip laws for typed values AND schema-free terms;
+  cycles rejected in the initial portable profile; pointers/
+  resources/continuations/closures rejected by default. CON is SAFE
+  DATA SYNTAX (not executable, not JSON-with-comments): frozen
+  versioned grammar + term mapping, lossless CST, comment-preserving
+  formatting, canonical mode independent of locale and insertion
+  order, unknown nominals parse as inert data, explicit schema
+  resolution for typed decode, parse-recovery diagnostics. CTF is a
+  VERSIONED SELF-DESCRIBING WIRE (magic/tags/lengths/endianness/
+  extensions specified BEFORE tags become compatibility rules),
+  independent of compiler layouts/pointer width/machine endianness,
+  overflow-checked, standalone-decodable, optional bounded in-frame
+  dictionaries, exact/prefix/incremental decoders, framed sequences,
+  opt-in bounded decompression; FAST vs CANONICAL profiles (canonical
+  bytes for hashes and reproducible artifacts, defined independently
+  of traversal order); existing bootstrap/interchange formats stay
+  until an explicit migration PROVES safer — loanword and the artifact
+  format are never silently replaced. SAFE DECODERS BY DEFAULT:
+  bounds on nesting/count/bytes/containers/symbols/allocation applied
+  before expensive work, checked arithmetic, strict UTF-8 for text
+  (bytes arbitrary), malformed-bitstring/dictionary rejection, no
+  deserialization-triggered authority, fuzzed truncation at every
+  byte boundary, tested cancellation/leak paths; structural validity
+  ≠ schema validity ≠ application authorization. JSON stays
+  standards-conforming with explicit mappings for everything JSON
+  cannot preserve (bytes/symbols/tuples/variants/nominals, nonfinite
+  numbers, big integers — never silently rounded through f64),
+  omitted ≠ null under schema, round-trips tested on the projection
+  domain only. PERFORMANCE (§12) is a RELEASE OBJECTIVE with benchmark
+  evidence: pinned Erlang/OTP reference + recorded options, frozen
+  workloads and pass criteria BEFORE optimization, medians/tails/
+  variability, ordinary vs canonical vs compressed vs scatter/gather
+  measured separately, workload coverage from tiny control messages
+  to compiler-shaped trees and big binaries; targets stay OPEN until
+  met; no unrepresentative aggregate. ADOPTION EVIDENCE (§13/§14):
+  structs in the compiler's own data types; the test framework used
+  for its own behavior and codec conformance; checked-in CON fixtures
+  incl. one hand-edited file; one versioned CTF internal consumer
+  after an explicit migration; conformance vectors preserved
+  independently of the encoder plus a small independent reference
+  decoder; demos for field typo, structural assertion failure,
+  `--failed` rerun, CON→CTF→typed, and comptime-embedded decode.
+  WORKSTREAM MAPPING: struct syntax + bootstrap grammar now (C1,
+  pre-hardening — D-095); minimal runner + structural assertions C2;
+  CON/CTF/safe baseline/shared JSON C2–C3; fixtures/selection/
+  isolation/incremental/coverage C5; CTF-vs-ETF optimization C4;
+  consumers/docs/demos C6 + release verification. The original GOAL
+  stays hash-pinned and UNTOUCHED; the checker's integrity check is
+  not weakened. Revisit: the CTF wire spec freeze at implementation;
+  canonical-profile details at the first hash consumer.
+- D-096 [calque/tests] `calque test` IS THE PROJECT TEST ENTRY POINT
+  (steering §§3–5). mix-test-shaped surface: discovery of
+  `test/**/*_test.calq`, optional `test/test_helper.calq` lifecycle,
+  file/dir/`file:line` selection (line selects the enclosing test or
+  describe), name/tag selection, and the flag set of §3 (`--failed`,
+  `--stale`, `--only`, `--exclude`, `--include`, `--seed`, `--trace`,
+  `--max-cases`, `--timeout`, `--max-failures`, `--slowest`,
+  `--watch`, `--list`, `--cover`); copyable rerun command per failure;
+  stable test identities across ordinary line moves; empty selections
+  reported and explicit selectors that match nothing FAIL (documented
+  empty `--failed`/`--stale` excepted); machine-readable events kept
+  separate from captured application stdout; nonzero statuses for
+  failures/compilation errors/crashes/invalid invocations.
+  DECLARATIONS (ExUnit-style): named `test "..."`, `describe`,
+  file-level `@case(%{...})`, `@tag`, `setup`/`setup_all`/`on_exit`
+  (setup per selected test, setup_all once per selected case, both
+  skipped when the case has no selected tests; cleanup in reverse
+  order with reported failures that do not mask the original);
+  context merging under explicit precedence; context patterns in test
+  declarations; doctests integrated into selection/locations/reports;
+  parameterized tests with stable identities; seeded property tests
+  with shrinking. ASSERTIONS: `assert`/`refute` capture the source
+  expression and evaluated operands EXACTLY ONCE; `assert pattern =
+  expression` with useful binding/mismatch reports; float tolerances;
+  expected-error results and expected language TRAPS under an isolated
+  boundary (memory corruption never counts as an expected trap);
+  structural diffs for structs/maps/collections/strings/bytes with
+  the first relevant nested path plus full detail on demand under
+  documented display budgets; introspection lives in source-aware
+  compilation — no second assertion interpreter. EXECUTION: serial by
+  default; concurrency only on explicit opt-in under a bounded worker
+  limit; per-case isolation of interpreter context, runtime state,
+  seeds, and captured output; supervised workers where native traps
+  or global state prevent safe in-process isolation; timed-out native
+  work is STOPPED (no abandoned threads); worker crashes are failures
+  with unaffected tests continuing; `--trace` serial and finite;
+  randomized order + seed recorded (no claims about OS scheduling);
+  the shared corpus runs under interpreter AND native with the
+  existing JIT/AOT differential gates intact; no BEAM clone required.
+  INCREMENTALITY WITHOUT FALSE CACHE HITS (§5): compiled tests are
+  cacheable ARTIFACTS, but an ordinary `calque test` ALWAYS EXECUTES
+  its selection — a previous success is never a cached promise;
+  `--stale` is an explicit SELECTION optimization whose dependency
+  tracking (sources, fixtures, helpers, imports, comptime inputs,
+  configuration, doctests) must be CONSERVATIVE (incomplete coverage
+  selects the affected case; never silently omit to improve latency);
+  debounced watch with cancellation/stale-result handling;
+  explanatory mode prints stale reasons; compile/discovery/execution/
+  total times reported separately with query and artifact counters
+  beside latency; coverage instrumentation in distinct artifact keys,
+  mapped to source, off by default. Integration order: the minimal
+  runner + structural assertions land at C2 and become the project's
+  own gate; full fixtures/selection/isolation/incremental at C5.
+  Revisit: worker/supervision shape when native-trap handling lands.
+- D-095 [calque/structs] ELIXIR-STYLE STRUCTS SUPERSEDE THE
+  DOT-INITIALIZER SURFACE (steering §2): canonical construction
+  `%User{name: "Matt"}`; immutable update `%User{original | score:
+  42}`; patterns `%User{name: name, active: true}` and `%Type{}`
+  (matches the nominal type regardless of field values); explicit
+  pinning `^name`; maps `%{key: value}` (symbol-keyed) and
+  `%{"key" => value}` (general); `:name` symbols distinct from strings
+  AND from union constructors (`.Some/.None/.Ok/.Err` unchanged — no
+  Elixir-tuple conversion). SEMANTICS: per-field PURE COMPTIME defaults
+  (`field: T = expr`); omitted fields take declared defaults; missing
+  REQUIRED fields rejected; no implicit nulls or zero initialization;
+  duplicate/unknown/incompatible fields rejected with spelling
+  suggestions; update evaluates the base ONCE then explicit fields in
+  source order, preserves untouched fields and existing aliases,
+  rejects field introduction or nominal-type change; pattern fields
+  omitted are UNCONSTRAINED (never defaulted), unknown pattern fields
+  rejected, nested patterns/guards/exhaustiveness/redundancy extended
+  through the SHARED pattern machinery; structs ≠ maps, with explicit
+  checked conversion and no magic-field nominal forgery; native field
+  access/layout independent of serialization metadata; allocation-free
+  struct operations wherever the representation permits. MIGRATION:
+  this RETIRES the `Type { .f = e }` / `.{ .f = e }` construction and
+  their pattern mirrors frozen at M36 (SPEC freeze rows F5/F27 revised
+  again); the seed's v0 subset contains NO records yet, so the
+  bootstrap grammar is amended BEFORE it hardens — no bootstrap
+  transition is needed, recorded here for the freeze-log discipline;
+  parser recovery, formatting, editor completion, rename, reflection,
+  diagnostics, examples, and compiler sources migrate as they land
+  (C1/C2); complete structural displays use `%Type{...}` while
+  truncated inspection stays distinct from lossless CON output.
+  Revisit: the full semantics freeze at C2's inference-era surface
+  (maps: heterogeneity/inference specified before implementation).
+- D-094 [calque/b0-naming] b0 NAMING AND NAMESPACING (found at seed-v0
+  design). The driver passes each unit file with an optional NAMESPACE
+  tag (the seed input carries {name, ns, text}); a namespaced file's
+  top-level declarations mangle as `ns__name` — `tools/calque/std/
+  str.calq`, ns `str`, declaring `fromI64` yields `@str__fromI64`.
+  Qualified calls (`str.X`, `io.X`, `vector.X`) resolve FIRST against
+  the b0 PRELUDE table — `io.print` → `frk_rt_calque_print`; `str.len/
+  concat/eq/sub` → the frk_bstr kernel ops, with the emitter adapting
+  0-based [start, len) for `sub` and emitting the OOB bounds GUARDS at
+  the call site (the M15 frontend-guard pattern; the trap message
+  carries the call site) — THEN against namespaced declarations.
+  Unqualified names resolve in the main (untagged) namespace. Duplicate
+  top-level names within a namespace are errors; the reserved-namespace
+  rule (SPEC §2) also forbids user declarations named str/io/vector.
+  This is C1's stand-in for the C2 module system (goal §13), recorded
+  so the seed, calq0, and the corpus share ONE rule; C2's import design
+  replaces it under its own entry. Revisit: at C2's module work.
 - D-093 [calque/incremental] THE INCREMENTAL COMPUTATION ENGINE (user
   directive, 2026-10-11; extends and sharpens D-089). Calque needs a
   demand-driven QUERY ENGINE with dependency tracking and

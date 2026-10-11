@@ -5,8 +5,13 @@ Phase: M35 complete (tag m35-done, note written late — see the log);
 M36 complete (tag m36-done): the Calque C0 charter — goal record
 (verbatim, sha-pinned), scope rulings D-085..D-090, b0 frozen
 (SPEC §12, F1–F33), the bootstrap route, the 180-row acceptance
-matrix, and the gates (`make calque-test`, in CI). M37/C1 (the
-interpreted compiler written in Calque) is next.
+matrix, and the gates (`make calque-test`, in CI). M37/C1 is IN FLIGHT:
+the bootstrap SEED translates b0 end to end (fib.calq + the exact i64
+corner vectors green under `cargo test -p calque`); the user's STEERING
+amendment (structs `%Type{}`, `calque test`, CON/CTF; D-095..D-097) is
+recorded at docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md (sha-pinned;
+the original GOAL stays pinned and untouched) and threaded through
+SPEC/ACCEPTANCE/MANIFEST.
 Tree: green — `make test` workspace suite green (554 s, gating run
 2026-10-11); diff 162 cases 0 divergent (8 runners); grid 157/157 ×
 BOTH strategies × 4 triples + s390x canary 157/157; `make calque-test`
@@ -24,8 +29,15 @@ is the live evidence matrix; the target family is `make calque-*`.
    Calque intrinsics module + the new rt rows (print/eprint/trap), (c)
    the seed (Lua translator on femto_lua) targeting the D-088 emission
    rules, (d) calq0 (the compiler core, written in b0), (e) the corpus
-   (goldens/calque/), (f) the initial self-compilation gate. Verifiers
-   and acceptance: ACCEPTANCE AC-18.2; BOOTSTRAP §3.
+   (goldens/calque/), (f) the initial self-compilation gate, (g) the
+   seed slab committed (seed.translate + stdlib + tests) — done this
+   session; remaining: (h) the struct surface lands WITH the C2 record
+   work (`%Type{...}`; b0 has no records, so the grammar is amended
+   pre-hardening — D-095), (i) the minimal `calque test` runner +
+   structural assertions are a C2 EXIT item (D-096), (j) CON/CTF/JSON
+   over one codec foundation at C2–C3 (D-097), CTF-vs-ETF at C4, the
+   full test experience at C5. Verifiers
+   and acceptance: ACCEPTANCE AC-18.2 + the AC-S rows; BOOTSTRAP §3.
 2. QUEUED (preserved; not this workstream's):
    - ts-4: generics (monomorphized), sealed-world switch, any/gradual
      boundary as contract ops (frk_contract's second act); the D-079
@@ -61,14 +73,17 @@ Nothing.
   fenced; remaining consumers: scheme P13/R7RS 4.2.7, re-entrant
   winds). If that consumer-first reinterpretation reads wrong, strike
   via D-entry.
-- CALQUE ADMISSION (D-085..D-090, this session's charter): the goal's
+- CALQUE ADMISSION (D-085..D-097, this session's charter): the goal's
   §2 scope additions are recorded as ledger law (SPEC §14 carve-outs
   for Calque only; L5's admission rule relaxed for Calque while
   genuinely new shared semantics still promote under K1–K7; D-089
   makes incrementality an architectural property with measured-not-
   claimed targets; D-090 adopts the user's demo playbook as the
-  surface-intent + C6 storyboard source). The goal document itself is
-  the authority; if the charter misreads it, strike via D-entry.
+  surface-intent + C6 storyboard source; D-095..D-097 record the
+  STEERING amendment — structs/tests/CON/CTF — at
+  docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md). The goal document
+  itself is the authority; if the charter or the steering mapping
+  misreads it, strike via D-entry.
 
 ## Milestone log
 m36-done — Shipped: the Calque C0 charter (D-085..D-090) — the
@@ -1176,6 +1191,16 @@ rework flag, not a knob.
       §0/§4.7/§8/§13/§14 + AGENTS.md amendments; scripts/
       calque-check.sh + make calque-test (wired into scripts/ci.sh);
       book chapter + specimens overview/README refresh
+    - C1 seed slab: tools/calque/bootstrap/seed.lua (b0 -> kernel IR:
+      checked arithmetic with located CQ traps, boxes, blocks, the
+      D-092 convention, marker protocol) + tools/calque/std/str.calq
+      (exact fromI64) + crates/calque driver (seed_translate,
+      run_artifact) + tests (fib "55\n", the i64 corner vectors);
+      arith.ori joins the interp (its guard conjunctions run at i1)
+    - STEERING amendment recorded (D-095..D-097; structs `%Type{}`,
+      `calque test`, CON/CTF over one codec foundation) and threaded
+      through SPEC (F35-F37, §3/§5/§5.2), ACCEPTANCE (AC-S1..S18),
+      MANIFEST, checker (+sha pin; the GOAL pin untouched)
     - baseline recorded at commit 791709d (this file's header + the
       ACCEPTANCE §Baseline table)
     Next: M37/C1 in the recorded slice order (Next action item 1)
@@ -1198,6 +1223,20 @@ rework flag, not a knob.
       admitted without new idioms when the language contract requires
       them, while genuinely new shared semantics still promote under
       K1–K7 — do not read L5 as unrepealed for this specimen
+    - the SEED's host-language constraints (found the hard way):
+      table keys cannot be Lua keywords (no `then =`, `while =` —
+      renamed to `yes`/`loop`); `{...}[k]` constructor-indexing is
+      invalid Lua (5.1); locals REQUIRE initializers (forward locals
+      need `= nil`); mutually recursive functions must be GLOBALS
+      (locals are nil at earlier call sites); string order comparison
+      is outside the verified subset (use lookup tables); a
+      top-level `return <value>` in a chunk is REFUSED by the
+      femto_lua frontend (out of its admitted subset, loud) — keep
+      top-level returns out of seed-shaped programs
+    - b0 IR spellings the seed pins: `arith.constant true/false` with
+      NO `: i1` suffix (the typed bool form is invalid MLIR);
+      `arith.andi/ori` on i1 guards; `frk_bstr.sub` takes 1-based
+      INCLUSIVE bounds (the emitter adapts 0-based [start, len))
 
     Session end: 2026-07-18 (thirty-fourth entry)
     Milestone/step: M32 complete, tagged m32-done; TS-3 frozen

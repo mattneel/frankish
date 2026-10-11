@@ -332,7 +332,35 @@ its console blocks are release targets, never captured-run substitutes.
 
 ---
 
-## File map (planned locations; defaults per GOAL §19)
+## STEERING AMENDMENT (structs, tests, formats — D-095/D-096/D-097)
+
+Authority: `docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md` (the user's
+amendment, stored verbatim; its own requirement set is the source —
+these rows are the tracking index). The ORIGINAL goal stays hash-pinned
+and untouched; the checker does not weaken its integrity check.
+
+| ID | Requirement | Stage | Evidence | Status |
+|---|---|---|---|---|
+| AC-S1 | Amendment recorded permanently; goal untouched; integrity pin intact | C1 | this file + `docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md`; `scripts/calque-check.sh` pins both hashes | done |
+| AC-S2 | Struct surface: `%Type{f: v}` construction, `%Type{base \| f: v}` immutable update (base once, source-order fields, aliases preserved), pure comptime defaults, required fields, `%Type{f: pat}`/`%Type{}`/`^name` patterns through the shared machinery | C1/C2 | SPEC §3/§5/§5.2 + F35; negative tests (duplicate/unknown/missing/incompatible fields); bootstrap grammar check (no records in seed v0 today) | pending (M38) |
+| AC-S3 | Maps `%{k: v}` / `%{"k" => v}` + `:name` symbols distinct from strings and union constructors; nominal-vs-map separation with explicit checked conversion; heterogeneity/inference specified before implementation | C2 | SPEC §3 roadmap; corpus + inference spec (D-entry at freeze) | pending (M38) |
+| AC-S4 | Migration: examples/compiler sources/tooling use `%Type{...}`; retired dot-initializer forms never reappear; display uses it (truncated inspection ≠ lossless CON) | C1/C2 | example sources; parser-recovery/formatting/completion/rename/reflection tests at C2/C5 | pending (M38) |
+| AC-S5 | `calque test` discovery + selection + statuses + events: `test/**/*_test.calq`, `test_helper.calq`, file/dir/line, name/tag, the §3 flag set, copyable reruns, stable identities, empty-selection reporting, nonzero statuses, machine-readable events | C2/C5 | runner + protocol tests; `--failed` demo | pending (M38) |
+| AC-S6 | Declarations/fixtures: `test`/`describe`/`@case`/`@tag`, `setup`/`setup_all`/`on_exit` with selection-aware skipping, precedence rules, reverse cleanup with reported failures, context patterns, doctests, parameterized + seeded property tests | C2/C5 | fixture-order/failure-rerun tests (steering §13 list) | pending (M38) |
+| AC-S7 | Assertions: `assert`/`refute` + source/operand capture ONCE; `assert pattern = expr` with binding + structural diffs (first nested path, display budgets); float tolerances; expected errors + expected traps under isolation; no second interpreter | C2 | assertion tests incl. mutation-proof verifiers | pending (M38) |
+| AC-S8 | Execution/isolation: serial default, bounded opt-in concurrency, per-case isolation, supervised workers for traps/global state, stopped timeouts, worker crashes as failures, `--trace` serial/finite, recorded seed, interpreter+native corpus with existing gates | C5 (+native C4) | worker-crash/timeout/isolation tests; trace transcripts | pending (M41) |
+| AC-S9 | Incremental tests WITHOUT false hits: ordinary runs always execute; `--stale` explicit with conservative dependency coverage (sources/fixtures/helpers/imports/comptime inputs/config/doctests); watch debouncing; reason reporting; separated timings + counters; coverage keyed distinctly and off by default | C5 | stale-selection tests + counters (AC-14.6 machinery) | pending (M41) |
+| AC-S10 | One reflection-derived codec contract: typed direct paths + optional dynamic `Term`; buffer/reader/writer/incremental interfaces; shared validation/errors/schema evolution; `json.Codec(T)` facades; comptime specialization; codec policy in Calque; no frk_dyn routing; no I/O in pure ops | C2/C3 | codec tests; API review | pending (M39) |
+| AC-S11 | CON: frozen versioned grammar + term mapping, lossless CST, comment-preserving formatting, canonical mode (locale/insertion-order independent), inert unknown nominals, explicit typed-decode schema resolution, parse-recovery diagnostics, editor highlighting | C3/C5 | CON grammar doc + conformance vectors + formatter tests | pending (M39) |
+| AC-S12 | CTF: versioned self-describing wire (spec'd before tag freeze), layout/endianness independence, overflow-checked lengths, standalone term decode, bounded in-frame dictionaries, exact/prefix/incremental decoders, framed sequences, opt-in bounded decompression, fast vs canonical profiles | C2/C3 | wire spec + conformance vectors (independent of the encoder) | pending (M39) |
+| AC-S13 | Safe decoders by default: resource bounds before allocation, checked arithmetic, strict UTF-8 (bytes arbitrary), malformed-bitstring/dictionary rejection, no deserialization-triggered authority, cancellation/leak tests, every-byte truncation fuzzing; validity ≠ schema validity ≠ authorization | C3 | safety test suite + fuzz vectors | pending (M39) |
+| AC-S14 | JSON projection: standards-conforming; explicit mappings for bytes/symbols/tuples/variants/nominals; no silent big-int rounding/nonfinite by default; omitted ≠ null under schema; projection-domain round-trips | C3 | JSON backend tests on the projection domain | pending (M39) |
+| AC-S15 | Round-trip laws (§13) + preserved conformance vectors + a small independent reference decoder + generated/shrunk recursive tests + interp/JIT/AOT comparison + canonical bytes across 32/64-bit and big-endian | C3 | `make calque-test` format suite; reference decoder | pending (M39) |
+| AC-S16 | ETF-class performance as a benchmarked release objective: pinned OTP reference, frozen workloads/pass criteria BEFORE optimization, medians/tails/variability, separated profiles, workload coverage incl. compiler-shaped trees; targets open until met | C4 | `make calque-bench` + raw results + scripts | pending (M40) |
+| AC-S17 | Adoption evidence: structs in compiler data types; self-used test framework; checked-in CON hand-edited fixture; one versioned CTF internal consumer post-migration; demos for field typo, structural assertion failure, `--failed` rerun, CON→CTF→typed, comptime-embedded decode | C6 | demos/ records + committed fixtures | pending (M42) |
+| AC-S18 | Targets wired: `calque-test` carries the project-test + format suites as they land; codec benches ride `calque-bench`; documented in this matrix | C2–C6 | Makefile + this file | pending (M38) |
+
+---
 
 | Component | Path | Stage |
 |---|---|---|

@@ -39,6 +39,22 @@ C2+ spellings (dot construction, `union(enum)`, `try`/`catch`,
 attributes, test blocks, the `calque.toml` build manifest) and the
 C6 storyboard; SPEC §12's freeze log records what is frozen when.
 
+Steering amendment (D-095..D-097;
+`docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md`): the record surface is
+`%Type{field: value}` / `%Type{base | field: value}` /
+`%Type{field: pat}` / `%Type{}` / `^name` (the dot-initializer forms
+are RETIRED before the bootstrap grammar hardens — b0 has no records
+yet); `calque test` is the project test entry point (mix-shaped
+surface, ExUnit-style declarations, source-captured assertions,
+isolated execution, run-every-selection incrementality); CON (`.con`)
+and CTF (`.ctf`) are first-class formats over ONE reflection-derived
+codec contract with JSON as the interoperability projection, safe
+decoders by default, and ETF-class performance as a benchmarked
+release objective. Stage extensions: struct grammar lands with the C2
+record work; minimal test runner + structural assertions at C2;
+codecs at C2/C3; CTF-vs-ETF at C4; full test experience at C5;
+consumers/demos at C6.
+
 ## Stages
 Each stage freezes at its milestone exit (goal §18; numbers from the
 current ledger, D-085):
@@ -142,8 +158,9 @@ canonical line format of SPEC §11.
   audited; §23 audit complete with evidence.
 
 ## Status
-M36 (C0) in flight: charter artifacts under `docs/calque/`,
-`specimens/calque/examples/`, acceptance matrix, and the make target
-skeleton (`calque-test`). No compiler exists yet; nothing here is
-claimed executable. See `docs/calque/ACCEPTANCE.md` for the current,
-command-backed status of every goal requirement.
+M36 (C0) complete; M37 (C1) in flight: the seed translates b0 end to
+end (fib.calq and the exact i64 corner vectors green under
+`cargo test -p calque`), and the user's steering amendment
+(D-095..D-097) is recorded and threaded through SPEC/ACCEPTANCE. No
+compiler exists yet; nothing here is claimed executable beyond what
+`docs/calque/ACCEPTANCE.md` marks with command-backed evidence.
