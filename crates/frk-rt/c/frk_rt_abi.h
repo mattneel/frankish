@@ -57,5 +57,7 @@ void frk_rt_scm_display_num(double);
 void frk_rt_scm_display_str(const uint8_t *);
 void frk_rt_scm_newline(void);
 void frk_rt_scm_trap(int64_t);
+void frk_rt_calque_print(const uint8_t *);
+void frk_rt_calque_trap(const uint8_t *);
 
 #endif /* FRK_RT_ABI_H */

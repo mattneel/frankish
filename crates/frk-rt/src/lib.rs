@@ -615,6 +615,33 @@ pub extern "C" fn frk_rt_scm_trap(code: i64) {
     std::process::abort();
 }
 
+// ---- Calque (M37, D-088): the byte-exact print protocol — NO
+// implicit newline (SPEC §6.6) — and the deterministic trap entry. ----
+
+/// Writes the bstr's bytes to stdout exactly; no newline, no
+/// formatting (SPEC F16/§11 leave line discipline to the program).
+/// # Safety
+/// `s` must be an interned bstr pointer (the ABI's PtrConstU8 class).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_calque_print(s: *const u8) {
+    use std::io::Write;
+    let bytes = unsafe { bstr_parts(s) };
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(bytes);
+}
+
+/// Deterministic abort for Calque's safety checks (D-088.3): the
+/// emitter composes the message (file:line:col + cause) into a bstr;
+/// both twins abort with it — never UB, never a silent wrong value.
+/// # Safety
+/// `s` must be an interned bstr pointer (the ABI's PtrConstU8 class).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn frk_rt_calque_trap(s: *const u8) {
+    let bytes = unsafe { bstr_parts(s) };
+    eprintln!("frk: calque trap: {}", String::from_utf8_lossy(bytes));
+    std::process::abort();
+}
+
 // ---- control effects (M15; κ_frk, D-060): the result-passing
 // carrier for escape continuations. NO unwinder (Tier-0/wasm) — abort
 // sets a process-global "pending cell", every non-tail caller checks

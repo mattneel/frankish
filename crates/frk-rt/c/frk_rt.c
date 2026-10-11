@@ -821,6 +821,21 @@ void frk_rt_scm_display_str(const uint8_t *s) {
     fwrite(s + 8, 1, (size_t)len, stdout);
 }
 
+/* Calque (M37, D-088): byte-exact print — NO implicit newline — and
+ * the deterministic trap entry; the Rust twin's mirror. */
+void frk_rt_calque_print(const uint8_t *s) {
+    uint64_t len = *(const uint64_t *)s;
+    fwrite(s + 8, 1, (size_t)len, stdout);
+}
+
+void frk_rt_calque_trap(const uint8_t *s) {
+    uint64_t len = *(const uint64_t *)s;
+    fputs("frk: calque trap: ", stderr);
+    fwrite(s + 8, 1, (size_t)len, stderr);
+    fputc('\n', stderr);
+    abort();
+}
+
 /* ---- strings (M9, D-049): {u64 len; u16 units[]}; plain malloc,
  * strategy-independent. UTF-16 code-unit semantics throughout. ---- */
 

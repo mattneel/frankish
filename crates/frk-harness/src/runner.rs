@@ -477,6 +477,18 @@ extern "C" fn capture_print_lua_str(s: *const u8) {
     });
 }
 
+/// Calque's print (M37): byte-exact, NO newline. Lossy UTF-8 is safe
+/// at C1 — b0 sources and the artifact stream are ASCII (SPEC F18) —
+/// and this comment is the recorded debt for the UTF-8 widening.
+extern "C" fn capture_calque_print(s: *const u8) {
+    let text = unsafe {
+        let len = *(s as *const u64) as usize;
+        let bytes = std::slice::from_raw_parts(s.add(8), len);
+        String::from_utf8_lossy(bytes).into_owned()
+    };
+    CAPTURE.with(|buffer| buffer.borrow_mut().push_str(&text));
+}
+
 extern "C" fn capture_print_str(s: *const u8) {
     let text = unsafe {
         let len = *(s as *const u64) as usize;
@@ -553,6 +565,20 @@ fn builtin_for(name: &str) -> Option<frk_interp::Builtin> {
             let bytes = arguments[0].as_bytes()?;
             output.push_str(&String::from_utf8_lossy(bytes));
             Ok(vec![])
+        }),
+        "frk_rt_calque_print" => Box::new(|arguments, output| {
+            // Byte-exact, no implicit newline (SPEC §6.6); lossy UTF-8
+            // is safe at C1 (b0/artifact streams are ASCII, F18).
+            let bytes = arguments[0].as_bytes()?;
+            output.push_str(&String::from_utf8_lossy(bytes));
+            Ok(vec![])
+        }),
+        "frk_rt_calque_trap" => Box::new(|arguments, _output| {
+            let bytes = arguments[0].as_bytes()?;
+            Err(frk_interp::EvalError::Trap(format!(
+                "calque trap: {} (D-088)",
+                String::from_utf8_lossy(bytes)
+            )))
         }),
         "frk_rt_print_f64" => Box::new(|arguments, output| {
             output.push_str(&frk_rt::format_f64(arguments[0].as_float()?));
@@ -683,6 +709,8 @@ fn jit_symbol(name: &str) -> Option<*mut ()> {
         "frk_rt_coro_trap" => frk_rt::frk_rt_coro_trap as *mut (),
         // Scheme fence traps bind REAL for the same reason (D-081).
         "frk_rt_scm_trap" => frk_rt::frk_rt_scm_trap as *mut (),
+        // Calque's trap binds REAL (stderr + abort).
+        "frk_rt_calque_trap" => frk_rt::frk_rt_calque_trap as *mut (),
         // Capture shims (stdout is protocol output, D-047).
         "frk_rt_print_f64" => capture_print_f64 as *mut (),
         "frk_rt_print_bool" => capture_print_bool as *mut (),
@@ -692,6 +720,7 @@ fn jit_symbol(name: &str) -> Option<*mut ()> {
         "frk_rt_scm_display_bool" => capture_scm_display_bool as *mut (),
         "frk_rt_scm_newline" => capture_scm_newline as *mut (),
         "frk_rt_scm_display_str" => capture_scm_display_str as *mut (),
+        "frk_rt_calque_print" => capture_calque_print as *mut (),
         "frk_rt_ctl_pack_head" => frk_rt::frk_rt_ctl_pack_head as *mut (),
         _ => return None,
     })

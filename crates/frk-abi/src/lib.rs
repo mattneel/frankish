@@ -100,6 +100,9 @@ pub enum Lane {
     Lua,
     /// r7rs_core display protocol.
     Scheme,
+    /// Calque (M37, D-088): the byte-exact print protocol and the
+    /// deterministic safety traps (checked arithmetic and kin).
+    Calque,
 }
 
 /// How the in-process JIT resolves the symbol.
@@ -208,6 +211,13 @@ pub const RT_ABI: &[RtFn] = &[
     RtFn { name: "frk_rt_scm_display_str", args: &[PtrConstU8], ret: None, lane: Lane::Scheme, jit: Capture, interp: Builtin },
     RtFn { name: "frk_rt_scm_newline", args: &[], ret: None, lane: Lane::Scheme, jit: Capture, interp: Builtin },
     RtFn { name: "frk_rt_scm_trap", args: &[I64], ret: None, lane: Lane::Scheme, jit: Real, interp: Builtin },
+    // ---- Calque (M37, D-088/D-091): byte-exact print (NO implicit
+    // newline — line discipline belongs to the program, SPEC §6.6)
+    // and the deterministic trap entry the checked-arithmetic and
+    // safety paths call with an emission-composed message that
+    // already carries file:line:col (SPEC §11). ----
+    RtFn { name: "frk_rt_calque_print", args: &[PtrConstU8], ret: None, lane: Lane::Calque, jit: Capture, interp: Builtin },
+    RtFn { name: "frk_rt_calque_trap", args: &[PtrConstU8], ret: None, lane: Lane::Calque, jit: Real, interp: Builtin },
 ];
 
 /// Looks up one registry row.
