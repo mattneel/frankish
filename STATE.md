@@ -1550,9 +1550,15 @@ rework flag, not a knob.
     the corpus case's single-shot re-consumption. Corpus: 22 cases incl.
     tuples + seq_zip (byte-diff 0) - AC-8.3's list is COMPLETE.
     Suite 55 passed; grid GREEN 22/22 x BOTH strategies.
-    NEXT: the rest of F33's C2 batch (multiline strings, `_` separators,
-    `@intCast`, `usize`, `[N]T`, `[...]` literals, `..spread`, `test`
-    blocks) or the compiler-side module work; keep the corpus growing.
+    F33 PROGRESS (commits on top): `_` digit separators + verbatim
+    `"""` multiline strings (D-115; both lexers; literals corpus case +
+    differential), `test` blocks + assert.equal (__calque_test_N +
+    __calque_test_entry_N wrappers, byte-equal differential, the
+    harness's run_test_blocks, the test_blocks corpus case).
+    REMAINING in F33: `@intCast`, `usize` (the full integer-type set),
+    `[N]T`, `..spread`. Suite 59; corpus 24 cases 0 red; grid GREEN.
+    NOTE for `calque test`: the language side exists; the CLI subcommand
+    (F30/D-111's seed-invocation services) still needs its slice.
     CLOSURE DESIGN (settled, ready to implement; verified against the
     dialect this session): the frk_closure ops are make(env:
     product) {callee} -> fn, apply(fn, args: product) -> value, and
