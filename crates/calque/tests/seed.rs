@@ -263,6 +263,11 @@ fn calq0_lexes_b0_source() {
             None,
             include_str!("../../../tools/calque/compiler/lex.calq"),
         ),
+        unit(
+            "tools/calque/compiler/lexdump.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/lexdump.calq"),
+        ),
     ];
     let artifact = seed_translate(&files).expect("the seed translates calq0's lexer");
     let source = "const x: i64 = 42 + 7; // note\nfn main() i64 { return x; }";
@@ -303,6 +308,11 @@ fn calq0_lexes_strings_and_comments() {
             None,
             include_str!("../../../tools/calque/compiler/lex.calq"),
         ),
+        unit(
+            "tools/calque/compiler/lexdump.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/lexdump.calq"),
+        ),
     ];
     let artifact = seed_translate(&files).expect("the seed translates calq0's lexer");
     let source = "/* c1 */ const s: Str = \"a\\tb\";";
@@ -330,6 +340,11 @@ fn calq0_reports_lexical_errors() {
             None,
             include_str!("../../../tools/calque/compiler/lex.calq"),
         ),
+        unit(
+            "tools/calque/compiler/lexdump.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/lexdump.calq"),
+        ),
     ];
     let artifact = seed_translate(&files).expect("the seed translates calq0's lexer");
     let source = "pub fn main() i64 { 0 } @";
@@ -340,6 +355,84 @@ fn calq0_reports_lexical_errors() {
         "{}",
         outcome.output
     );
+    assert_eq!(outcome.values[0].as_signed().expect("i64 result"), 1);
+}
+
+#[test]
+fn calq0_parses_expressions() {
+    // Slice 2a: expressions. Precedence: 10 + (3 * 2); the qualified
+    // callee keeps its module in the Ref. Hand-derived dump.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "tools/calque/compiler/lex.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/lex.calq"),
+        ),
+        unit(
+            "tools/calque/compiler/parse.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/parse.calq"),
+        ),
+        unit(
+            "tools/calque/compiler/parsedump.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/parsedump.calq"),
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed translates calq0's parser");
+    let source = "fib(10) + str.fromI64(3) * 2";
+    let outcome = run_artifact_with_input(&artifact, &[unit("probe.calq", None, source)])
+        .expect("the artifact runs");
+    assert_eq!(
+        outcome.output,
+        "(bin + (call (ref fib) (int 10)) (bin * (call (ref str.fromI64) (int 3)) (int 2)))\n"
+    );
+    assert_eq!(outcome.values[0].as_signed().expect("i64 result"), 0);
+}
+
+#[test]
+fn calq0_reports_parse_errors() {
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "tools/calque/compiler/lex.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/lex.calq"),
+        ),
+        unit(
+            "tools/calque/compiler/parse.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/parse.calq"),
+        ),
+        unit(
+            "tools/calque/compiler/parsedump.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/parsedump.calq"),
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed translates calq0's parser");
+
+    // truncated expression: the EOF token carries the position
+    let outcome = run_artifact_with_input(&artifact, &[unit("probe.calq", None, "1 + ")])
+        .expect("the artifact runs");
+    assert_eq!(outcome.output, "error 1:5 unexpected end of input\n");
+    assert_eq!(outcome.values[0].as_signed().expect("i64 result"), 1);
+
+    // the 2a fences are loud
+    let outcome =
+        run_artifact_with_input(&artifact, &[unit("probe.calq", None, "if x { y }")])
+            .expect("the artifact runs");
+    assert_eq!(
+        outcome.output,
+        "error 1:1 if-expressions land in slice 2b (statements first)\n"
+    );
+    assert_eq!(outcome.values[0].as_signed().expect("i64 result"), 1);
+
+    // comparisons do not chain
+    let outcome = run_artifact_with_input(&artifact, &[unit("probe.calq", None, "1 < 2 < 3")])
+        .expect("the artifact runs");
+    assert_eq!(outcome.output, "error 1:7 comparisons do not chain (SPEC 5.1)\n");
     assert_eq!(outcome.values[0].as_signed().expect("i64 result"), 1);
 }
 

@@ -1,0 +1,368 @@
+// calq0 slice 2a - EXPRESSION parsing (b0). The token stream comes
+// from lex.calq; the AST is built as b0 values (unions + records +
+// Vector). Parser state is PURE-REBUILT around VECTOR cells: b0 has no
+// mutable records, so the vector IS the mutable cell (pos[0], err[0]),
+// and any function can share it.
+//
+// ERRORS ARE VALUES (D-104-upgradeable): err[0] is "" (ok) or
+// "error <line>:<col> <message>" - the provisional projection the
+// record schema will replace. Error paths return a POISON Expr and set
+// err; every loop re-checks p_ok, so parsing stops cleanly.
+//
+// FENCED in 2a (loud): match, %literals, if-EXPRESSIONS, and
+// statements/declarations (they need block parsing - slice 2b).
+// The grammar mirrors the seed's: level 4 comparisons (no chaining),
+// 5 +-, 6 */%, postfix call/.field chains, primary literals/refs/
+// parens; unary -/! stay seed-v0 fenced.
+
+pub const Expr = union(enum) {
+    Int: Str,
+    Str: Str,
+    Bool: Str,
+    Ref: Ref,
+    Call: Call,
+    Bin: Bin,
+};
+
+pub const Ref = struct {
+    name: Str,
+    mod: Str,
+};
+
+pub const Call = struct {
+    callee: Ref,
+    args: Vector(Expr),
+};
+
+pub const Bin = struct {
+    op: Str,
+    l: Expr,
+    r: Expr,
+};
+
+pub const P = struct {
+    toks: Vector(Tok),
+    pos: Vector(i64),
+    err: Vector(Str),
+};
+
+pub fn p_new(toks: Vector(Tok)) P {
+    var pos: Vector(i64) = vector.new();
+    vector.push(pos, 0);
+    var errs: Vector(Str) = vector.new();
+    vector.push(errs, "");
+    return %P{toks: toks, pos: pos, err: errs};
+}
+
+pub fn p_ok(p: P) bool {
+    return str.len(vector.get(p.err, 0)) == 0;
+}
+
+pub fn p_fail(p: P, line: i64, col: i64, msg: Str) {
+    vector.set(p.err, 0, str.concat("error ", str.concat(str.fromI64(line), str.concat(":", str.concat(str.fromI64(col), str.concat(" ", msg))))));
+}
+
+pub fn p_error(p: P) Str {
+    return vector.get(p.err, 0);
+}
+
+pub fn p_peek(p: P) Tok {
+    return vector.get(p.toks, vector.get(p.pos, 0));
+}
+
+pub fn p_next(p: P) Tok {
+    const t: Tok = p_peek(p);
+    if kind_is(t.kind, "eof") {
+        return t;
+    }
+    vector.set(p.pos, 0, vector.get(p.pos, 0) + 1);
+    return t;
+}
+
+pub fn kind_is(k: Kind, want: Str) bool {
+    return kind_name(k) == want;
+}
+
+pub fn at_punct(p: P, v: Str) bool {
+    const t: Tok = p_peek(p);
+    if kind_is(t.kind, "punct") == false {
+        return false;
+    }
+    return t.text == v;
+}
+
+pub fn at_kw(p: P, v: Str) bool {
+    const t: Tok = p_peek(p);
+    if kind_is(t.kind, "kw") == false {
+        return false;
+    }
+    return t.text == v;
+}
+
+pub fn expect_punct(p: P, v: Str) bool {
+    if at_punct(p, v) {
+        const _t: Tok = p_next(p);
+        return true;
+    }
+    const t: Tok = p_peek(p);
+    p_fail(p, t.line, t.col, str.concat("expected `", str.concat(v, "`")));
+    return false;
+}
+
+pub fn poison() Expr {
+    return Expr.Int("0");
+}
+
+pub fn op_at(p: P, level: i64) Str {
+    const t: Tok = p_peek(p);
+    if kind_is(t.kind, "punct") == false {
+        return "";
+    }
+    if level == 4 {
+        if t.text == "==" {
+            return "==";
+        }
+        if t.text == "!=" {
+            return "!=";
+        }
+        if t.text == "<" {
+            return "<";
+        }
+        if t.text == "<=" {
+            return "<=";
+        }
+        if t.text == ">" {
+            return ">";
+        }
+        if t.text == ">=" {
+            return ">=";
+        }
+        return "";
+    }
+    if level == 5 {
+        if t.text == "+" {
+            return "+";
+        }
+        if t.text == "-" {
+            return "-";
+        }
+        return "";
+    }
+    if level == 6 {
+        if t.text == "*" {
+            return "*";
+        }
+        if t.text == "/" {
+            return "/";
+        }
+        if t.text == "%" {
+            return "%";
+        }
+        return "";
+    }
+    return "";
+}
+
+pub fn parse_expr(p: P, level: i64) Expr {
+    if level > 6 {
+        return parse_postfix(p);
+    }
+    var left: Expr = parse_expr(p, level + 1);
+    var go: bool = true;
+    while go {
+        if p_ok(p) == false {
+            go = false;
+        } else {
+            const op: Str = op_at(p, level);
+            if str.len(op) == 0 {
+                go = false;
+            } else {
+                const _t: Tok = p_next(p);
+                const right: Expr = parse_expr(p, level + 1);
+                left = Expr.Bin(%Bin{op: op, l: left, r: right});
+                if level == 4 {
+                    const o2: Str = op_at(p, 4);
+                    if str.len(o2) != 0 {
+                        const t2: Tok = p_peek(p);
+                        p_fail(p, t2.line, t2.col, "comparisons do not chain (SPEC 5.1)");
+                    }
+                }
+            }
+        }
+    }
+    return left;
+}
+
+pub fn parse_postfix(p: P) Expr {
+    var e: Expr = parse_primary(p);
+    var go: bool = true;
+    while go {
+        if p_ok(p) == false {
+            go = false;
+        } else {
+            if at_punct(p, "(") {
+                e = do_call(p, e);
+            } else {
+                if at_punct(p, ".") {
+                    e = do_dot(p, e);
+                } else {
+                    go = false;
+                }
+            }
+        }
+    }
+    return e;
+}
+
+pub fn do_call(p: P, e: Expr) Expr {
+    const t: Tok = p_peek(p);
+    const r: Ref = match e {
+        Expr.Ref(r0) => r0,
+        _ => %Ref{name: "", mod: ""},
+    };
+    if str.len(r.name) == 0 {
+        p_fail(p, t.line, t.col, "callee must be a name or module member (slice 2a)");
+        return poison();
+    }
+    const _t: Tok = p_next(p);
+    var args: Vector(Expr) = vector.new();
+    if at_punct(p, ")") {
+        const _c: Tok = p_next(p);
+    } else {
+        var more: bool = true;
+        while more {
+            if p_ok(p) == false {
+                more = false;
+            } else {
+                vector.push(args, parse_expr(p, 4));
+                if at_punct(p, ",") {
+                    const _c2: Tok = p_next(p);
+                } else {
+                    more = false;
+                }
+            }
+        }
+        if expect_punct(p, ")") == false {
+            return poison();
+        }
+    }
+    return Expr.Call(%Call{callee: r, args: args});
+}
+
+pub fn do_dot(p: P, e: Expr) Expr {
+    const t: Tok = p_peek(p);
+    const r: Ref = match e {
+        Expr.Ref(r0) => r0,
+        _ => %Ref{name: "", mod: ""},
+    };
+    if str.len(r.name) == 0 {
+        p_fail(p, t.line, t.col, "`.' applies to a name (slice 2a)");
+        return poison();
+    }
+    if str.len(r.mod) != 0 {
+        p_fail(p, t.line, t.col, "chained module paths are not in slice 2a");
+        return poison();
+    }
+    const _t: Tok = p_next(p);
+    const m: Tok = p_peek(p);
+    if kind_is(m.kind, "name") == false {
+        p_fail(p, m.line, m.col, "expected an identifier after `.'");
+        return poison();
+    }
+    const _m: Tok = p_next(p);
+    return Expr.Ref(%Ref{name: m.text, mod: r.name});
+}
+
+pub fn parse_primary(p: P) Expr {
+    const t: Tok = p_peek(p);
+    if kind_is(t.kind, "int") {
+        const _t: Tok = p_next(p);
+        return Expr.Int(t.text);
+    }
+    if kind_is(t.kind, "str") {
+        const _t: Tok = p_next(p);
+        return Expr.Str(t.text);
+    }
+    if kind_is(t.kind, "kw") {
+        if t.text == "true" {
+            const _t: Tok = p_next(p);
+            return Expr.Bool(t.text);
+        }
+        if t.text == "false" {
+            const _t: Tok = p_next(p);
+            return Expr.Bool(t.text);
+        }
+        if t.text == "if" {
+            p_fail(p, t.line, t.col, "if-expressions land in slice 2b (statements first)");
+            return poison();
+        }
+        if t.text == "match" {
+            p_fail(p, t.line, t.col, "match lands in slice 2b (statements first)");
+            return poison();
+        }
+        p_fail(p, t.line, t.col, str.concat("unexpected keyword `", str.concat(t.text, "`")));
+        return poison();
+    }
+    if kind_is(t.kind, "name") {
+        const _t: Tok = p_next(p);
+        return Expr.Ref(%Ref{name: t.text, mod: ""});
+    }
+    if at_punct(p, "-") {
+        p_fail(p, t.line, t.col, "unary minus is not in seed v0 (write `0 - x`)");
+        return poison();
+    }
+    if at_punct(p, "!") {
+        p_fail(p, t.line, t.col, "`!` is not in seed v0");
+        return poison();
+    }
+    if at_punct(p, "%") {
+        p_fail(p, t.line, t.col, "struct literals land in slice 2b");
+        return poison();
+    }
+    if at_punct(p, "(") {
+        const _t: Tok = p_next(p);
+        const e: Expr = parse_expr(p, 4);
+        if expect_punct(p, ")") == false {
+            return poison();
+        }
+        return e;
+    }
+    if kind_is(t.kind, "eof") {
+        p_fail(p, t.line, t.col, "unexpected end of input");
+        return poison();
+    }
+    p_fail(p, t.line, t.col, str.concat("unexpected token `", str.concat(t.text, "`")));
+    return poison();
+}
+
+// ---------------------------------------------------------------- dump
+
+pub fn dump_ref(r: Ref) Str {
+    if str.len(r.mod) == 0 {
+        return str.concat("(ref ", str.concat(r.name, ")"));
+    }
+    return str.concat("(ref ", str.concat(r.mod, str.concat(".", str.concat(r.name, ")"))));
+}
+
+pub fn dump_call(c: Call) Str {
+    var acc: Str = str.concat("(call ", dump_ref(c.callee));
+    const n: i64 = vector.len(c.args);
+    var i: i64 = 0;
+    while i < n {
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, dump(vector.get(c.args, i)));
+        i = i + 1;
+    }
+    return str.concat(acc, ")");
+}
+
+pub fn dump(e: Expr) Str {
+    return match e {
+        Expr.Int(t) => str.concat("(int ", str.concat(t, ")")),
+        Expr.Str(t) => str.concat("(str ", str.concat(str.fromI64(str.len(t)), str.concat(" ", str.concat(t, ")")))),
+        Expr.Bool(t) => str.concat("(bool ", str.concat(t, ")")),
+        Expr.Ref(r) => dump_ref(r),
+        Expr.Call(c) => dump_call(c),
+        Expr.Bin(b) => str.concat("(bin ", str.concat(b.op, str.concat(" ", str.concat(dump(b.l), str.concat(" ", str.concat(dump(b.r), ")")))))),
+    };
+}

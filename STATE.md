@@ -1266,17 +1266,26 @@ rework flag, not a knob.
       erasure now nests recref -> box<product<[box<sum>]>>), and
       `frnksh run` skipped the protocol builtins (0ea1d77, the fast
       calq0 dev loop)
+    - calq0 slice 2a: tools/calque/compiler/parse.calq (expressions +
+      AST) + parsedump.calq; lex.calq became a pure library (its
+      slice-1 driver moved to lexdump.calq — ONE main per
+      translation). FOURTH seed finding: the match-join compares
+      result types by IDENTITY, so type instances are now canonical
+      (TY_CACHE + named_ty/vec_ty; never write bare {named=...} /
+      {vec=...} type tables in seed code). Grammar: levels 4-6 +
+      postfix + primary, seed-mirrored; match/%literals/if-exprs and
+      statements fenced loudly to 2b
     - vectors 43c4ade (F34/D-091): Vector(T) parses/slots
       i64/Str/declared; the 15 per-slot-kind intrinsics (new/len/get/
       set/push) as kernel IR in crates/calque/src/intrinsics.mlir
       with doubling growth (4) + `ult` bounds traps; `vector.new()`
       instantiated by the binding ANNOTATION (syntax-directed);
       named slots marshalled via wrap_store/unwrap_load (recref)
-    Next: calq0 slice 2 — the PARSER in tools/calque/compiler/parse.calq
-    (b0): the token vector from lex.calq into the b0 AST (declarations,
-    functions, statements, expressions), mirroring the seed's grammar;
-    then slice 3 the emitter. The lexer's slice-1 dump main is replaced
-    by the compiler's real main when the corpus gate lands.
+    Next: calq0 slice 2b — statements/declarations (const/var/assign/
+    return/if/while/blocks + fn decls + type decls) and then
+    match/%literals patterns in parse.calq; slice 3 is the emitter.
+    The slice drivers (lexdump.calq/parsedump.calq) are replaced by
+    the compiler's real main when the corpus gate lands.
     Landmines (new this session):
     - `*` LANDED mid-session (checked mul, CQ0003; min*-1 routes
       through select so divsi(min,-1) never executes) — the

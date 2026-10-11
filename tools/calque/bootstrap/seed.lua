@@ -347,11 +347,11 @@ local function parse_type()
     if inner ~= "i64" and inner ~= "Str" and not (type(inner) == "table" and inner.named ~= nil) then
       fail(t.line, t.col, "unsupported Vector slot (seed v0 instantiations: i64, Str, declared types)")
     end
-    return { vec = inner }
+    return vec_ty(inner)
   end
   if t.k == "name" then
     next_tok()
-    return { named = t.v }
+    return named_ty(t.v)
   end
   fail(t.line, t.col, "unsupported type (seed v0: i64, bool, Str, unit, declared types)")
 end
@@ -1118,6 +1118,45 @@ function is_vec(ty)
   return ty ~= nil and type(ty) == "table" and ty.vec ~= nil
 end
 
+-- Canonical type instances: the seed's match-join compares result
+-- types by IDENTITY, and record/union-typed match results (calq0's
+-- parser is the first b0 program whose matches yield named types)
+-- need every {named=X} / {vec=T} occurrence to be the SAME Lua table
+-- per type. TY_CACHE interns both forms.
+TY_CACHE = {}
+
+function named_ty(name)
+  local t = TY_CACHE["n:" .. name]
+  if t == nil then
+    t = { named = name }
+    TY_CACHE["n:" .. name] = t
+  end
+  return t
+end
+
+function ty_key(ty)
+  if type(ty) == "table" then
+    if ty.named ~= nil then
+      return "n:" .. ty.named
+    end
+    if ty.vec ~= nil then
+      return "v:" .. ty_key(ty.vec)
+    end
+    return "?"
+  end
+  return tostring(ty)
+end
+
+function vec_ty(inner)
+  local key = "v:" .. ty_key(inner)
+  local t = TY_CACHE[key]
+  if t == nil then
+    t = { vec = inner }
+    TY_CACHE[key] = t
+  end
+  return t
+end
+
 function same_type(a, b)
   if is_named(a) or is_named(b) then
     return is_named(a) and is_named(b) and a.named == b.named
@@ -1160,7 +1199,7 @@ function emit_vec_new(inner, line, col)
   local slot, prefix = vec_slot(inner, line, col)
   local res = fresh()
   emit(res .. " = func.call @" .. prefix .. "_new() : () -> " .. vec_box_ir(inner, line, col))
-  E.vtypes[res] = { vec = inner }
+  E.vtypes[res] = vec_ty(inner)
   return res
 end
 
@@ -1444,7 +1483,7 @@ local function emit_make(node)
       value = emit_expr(provided[field.name].expr)
     elseif base_value ~= nil then
       local stored = fresh()
-      emit(stored .. " = \"frk_mem.field_get\"(" .. base_value .. ") {field = " .. tostring(index - 1) .. " : i64} : (" .. value_ir({ named = m.ty }, line, col) .. ") -> " .. storage_ir(field.ty, field.line, field.col))
+      emit(stored .. " = \"frk_mem.field_get\"(" .. base_value .. ") {field = " .. tostring(index - 1) .. " : i64} : (" .. value_ir(named_ty(m.ty), line, col) .. ") -> " .. storage_ir(field.ty, field.line, field.col))
       value = unwrap_load(stored, field.ty, field.line, field.col)
     elseif field.default ~= nil then
       value = emit_expr(field.default)
@@ -1455,8 +1494,8 @@ local function emit_make(node)
     return stored, sty
   end)
   local box = fresh()
-  emit(box .. " = \"frk_mem.box_new\"(" .. prod.value .. ") : (" .. prod.ty .. ") -> " .. value_ir({ named = m.ty }, line, col))
-  E.vtypes[box] = { named = m.ty }
+  emit(box .. " = \"frk_mem.box_new\"(" .. prod.value .. ") : (" .. prod.ty .. ") -> " .. value_ir(named_ty(m.ty), line, col))
+  E.vtypes[box] = named_ty(m.ty)
   return box
 end
 
@@ -1529,7 +1568,7 @@ local function pattern_conditions(sub, value, lty, out_bindings)
       local idx = find_field(d, fp.name, fp.line, fp.col)
       local fld = d.fields[idx]
       local stored = fresh()
-      emit(stored .. " = \"frk_mem.field_get\"(" .. value .. ") {field = " .. tostring(idx - 1) .. " : i64} : (" .. value_ir({ named = d.name }, fp.line, fp.col) .. ") -> " .. storage_ir(fld.ty, fld.line, fld.col))
+      emit(stored .. " = \"frk_mem.field_get\"(" .. value .. ") {field = " .. tostring(idx - 1) .. " : i64} : (" .. value_ir(named_ty(d.name), fp.line, fp.col) .. ") -> " .. storage_ir(fld.ty, fld.line, fld.col))
       local fv = unwrap_load(stored, fld.ty, fld.line, fld.col)
       local c2 = pattern_conditions(fp.sub, fv, fld.ty, out_bindings)
       if c2 ~= nil then
@@ -1832,7 +1871,7 @@ local function emit_call(node)
     end
     local idx = find_variant(td, callee.name, line, col)
     local v = td.variants[idx]
-    local uty = { named = td.name }
+    local uty = named_ty(td.name)
     local uir = value_ir(uty, line, col)
     if #args == 0 then
       if v.ty ~= nil then
@@ -2159,7 +2198,7 @@ emit_expr = function(node)
         if td.variants[idx].ty ~= nil then
           fail(line, col, "variant `" .. node.ref.name .. "` carries a payload (call its constructor)")
         end
-        local uty = { named = td.name }
+        local uty = named_ty(td.name)
         local e = fresh()
         emit(e .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
         local s = fresh()
