@@ -252,6 +252,98 @@ fn seed_checked_multiplication_traps_on_overflow() {
 }
 
 #[test]
+fn calq0_lexes_b0_source() {
+    // calq0 slice 1: the lexer translates and runs; the dump is
+    // hand-derived from the seed's lexical rules (positions counted
+    // by hand, comments consume no columns on the line).
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "tools/calque/compiler/lex.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/lex.calq"),
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed translates calq0's lexer");
+    let source = "const x: i64 = 42 + 7; // note\nfn main() i64 { return x; }";
+    let outcome = run_artifact_with_input(&artifact, &[unit("probe.calq", None, source)])
+        .expect("the artifact runs");
+    let expected = "\
+kw const 1:1\n\
+name x 1:7\n\
+punct : 1:8\n\
+kw i64 1:10\n\
+punct = 1:14\n\
+int 42 1:16\n\
+punct + 1:19\n\
+int 7 1:21\n\
+punct ; 1:22\n\
+kw fn 2:1\n\
+name main 2:4\n\
+punct ( 2:8\n\
+punct ) 2:9\n\
+kw i64 2:11\n\
+punct { 2:15\n\
+kw return 2:17\n\
+name x 2:24\n\
+punct ; 2:25\n\
+punct } 2:27\n\
+eof  2:28\n\
+count 20\n";
+    assert_eq!(outcome.output, expected);
+    assert_eq!(outcome.values[0].as_signed().expect("i64 result"), 0);
+}
+
+#[test]
+fn calq0_lexes_strings_and_comments() {
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "tools/calque/compiler/lex.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/lex.calq"),
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed translates calq0's lexer");
+    let source = "/* c1 */ const s: Str = \"a\\tb\";";
+    let outcome = run_artifact_with_input(&artifact, &[unit("probe.calq", None, source)])
+        .expect("the artifact runs");
+    let expected = "\
+kw const 1:10\n\
+name s 1:16\n\
+punct : 1:17\n\
+name Str 1:19\n\
+punct = 1:23\n\
+str a\tb 1:25\n\
+punct ; 1:31\n\
+eof  1:32\n\
+count 8\n";
+    assert_eq!(outcome.output, expected);
+}
+
+#[test]
+fn calq0_reports_lexical_errors() {
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "tools/calque/compiler/lex.calq",
+            None,
+            include_str!("../../../tools/calque/compiler/lex.calq"),
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed translates calq0's lexer");
+    let source = "pub fn main() i64 { 0 } @";
+    let outcome = run_artifact_with_input(&artifact, &[unit("probe.calq", None, source)])
+        .expect("the artifact runs");
+    assert!(
+        outcome.output.starts_with("error 1:25 unexpected character @"),
+        "{}",
+        outcome.output
+    );
+    assert_eq!(outcome.values[0].as_signed().expect("i64 result"), 1);
+}
+
+#[test]
 fn seed_refuses_non_ascii_input_loudly() {
     let files = vec![unit("bad.calq", None, "pub fn main() i64 { 0 } // héllo")];
     let error = seed_translate(&files).expect_err("bytes >= 0x80 are refused (SPEC F18)");

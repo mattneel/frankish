@@ -1053,7 +1053,34 @@ local function cmp_pred(op)
   return "sge"
 end
 
-local function emit_cmp(op, a, b)
+local function emit_cmp(op, a, b, line, col)
+  -- Str and bool operands (found by calq0's lexer, the first b0
+  -- program to compare two Str/bool VALUES): == / != via
+  -- emit_equality + an i1 negation; ordering stays i64-only (SPEC
+  -- F-notes: use lookup tables for strings).
+  local ty = E.vtypes[a]
+  if ty == nil then
+    ty = E.vtypes[b]
+  end
+  if ty == "i64" or ty == "bool" or ty == "Str" then
+    if op == "==" or op == "!=" then
+      local eqr = emit_equality(a, b, ty, line, col)
+      if op == "==" then
+        return eqr
+      end
+      local t = fresh()
+      emit(t .. " = arith.constant true")
+      local n = fresh()
+      emit(n .. " = arith.xori " .. eqr .. ", " .. t .. " : i1")
+      return n
+    end
+    if ty == "bool" then
+      fail(line, col, "boolean ordering is not in the seed (use == / !=)")
+    end
+    if ty == "Str" then
+      fail(line, col, "string ordering is outside the verified subset (use == / !=)")
+    end
+  end
   local res = fresh()
   local pred = cmp_pred(op)
   emit(res .. " = arith.cmpi " .. pred .. ", " .. a .. ", " .. b .. " : i64")
@@ -1294,10 +1321,20 @@ function wrap_store(value, ty, line, col)
   local box = value
   local ref_operand_ty = vty
   if d.kind == "union" then
-    -- a union value is the raw sum; box it before erasing
-    box = fresh()
-    emit(box .. " = \"frk_mem.box_new\"(" .. value .. ") : (" .. vty .. ") -> !frk_mem.box<" .. vty .. ">")
-    ref_operand_ty = "!frk_mem.box<" .. vty .. ">"
+    -- frk_mem.rec_ref erases a box of a PRODUCT only (the mem
+    -- dialect's verifier, D-074). Unions therefore nest: the sum is
+    -- boxed, the box is wrapped in a single-field product box, and
+    -- THAT box is erased: recref -> box<product<[box<sum>]>>.
+    local sb = fresh()
+    emit(sb .. " = \"frk_mem.box_new\"(" .. value .. ") : (" .. vty .. ") -> !frk_mem.box<" .. vty .. ">")
+    local e = fresh()
+    emit(e .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
+    local p1 = fresh()
+    emit(p1 .. " = \"frk_adt.product_snoc\"(" .. e .. ", " .. sb .. ") : (!frk_adt.product<[]>, !frk_mem.box<" .. vty .. ">) -> !frk_adt.product<[!frk_mem.box<" .. vty .. ">]>")
+    local pb = fresh()
+    emit(pb .. " = \"frk_mem.box_new\"(" .. p1 .. ") : (!frk_adt.product<[!frk_mem.box<" .. vty .. ">]>) -> !frk_mem.box<!frk_adt.product<[!frk_mem.box<" .. vty .. ">]>>")
+    box = pb
+    ref_operand_ty = "!frk_mem.box<!frk_adt.product<[!frk_mem.box<" .. vty .. ">]>>"
   end
   local r = fresh()
   emit(r .. " = \"frk_mem.rec_ref\"(" .. box .. ") : (" .. ref_operand_ty .. ") -> !frk_mem.recref")
@@ -1312,13 +1349,17 @@ function unwrap_load(stored, ty, line, col)
   local vty = value_ir(ty, line, col)
   local cast_ty = vty
   if d.kind == "union" then
-    cast_ty = "!frk_mem.box<" .. vty .. ">"
+    cast_ty = "!frk_mem.box<!frk_adt.product<[!frk_mem.box<" .. vty .. ">]>>"
   end
   local box = fresh()
   emit(box .. " = \"frk_mem.rec_cast\"(" .. stored .. ") : (!frk_mem.recref) -> " .. cast_ty)
   if d.kind == "union" then
+    local prod = fresh()
+    emit(prod .. " = \"frk_mem.box_get\"(" .. box .. ") : (" .. cast_ty .. ") -> !frk_adt.product<[!frk_mem.box<" .. vty .. ">]>")
+    local inb = fresh()
+    emit(inb .. " = \"frk_adt.get\"(" .. prod .. ") {field = 0 : i64} : (!frk_adt.product<[!frk_mem.box<" .. vty .. ">]>) -> !frk_mem.box<" .. vty .. ">")
     local s = fresh()
-    emit(s .. " = \"frk_mem.box_get\"(" .. box .. ") : (" .. cast_ty .. ") -> " .. vty)
+    emit(s .. " = \"frk_mem.box_get\"(" .. inb .. ") : (!frk_mem.box<" .. vty .. ">) -> " .. vty)
     return s
   end
   return box
@@ -2186,7 +2227,7 @@ emit_expr = function(node)
     local a = emit_expr(node.l)
     local b = emit_expr(node.r)
     if op == "==" or op == "!=" or op == "<" or op == "<=" or op == ">" or op == ">=" then
-      local v = emit_cmp(op, a, b)
+      local v = emit_cmp(op, a, b, node.line, node.col)
       E.vtypes[v] = "bool"
       return v
     end

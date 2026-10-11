@@ -1254,6 +1254,18 @@ rework flag, not a knob.
       transform as prior art) must not preclude the async
       representation, and the minimal scope/await + deterministic
       scheduler land WITH the early core (C2->C4)
+    - calq0 slice 1: tools/calque/compiler/lex.calq (b0) — the lexer,
+      mirroring the seed's lexical rules, driven through the input
+      channel; three byte-exact tests (program dump with hand-counted
+      positions, block comments + escapes, the error path + exit code
+      1) cross-checked against an independent Python reference lexer
+      BEFORE first run; THREE seed findings along the way: Str/bool
+      VALUES were never compared at source level (emit_cmp now
+      dispatches by operand type), the growth slab's union erasure
+      violated the mem dialect's product-only rec_ref fence (the
+      erasure now nests recref -> box<product<[box<sum>]>>), and
+      `frnksh run` skipped the protocol builtins (0ea1d77, the fast
+      calq0 dev loop)
     - vectors 43c4ade (F34/D-091): Vector(T) parses/slots
       i64/Str/declared; the 15 per-slot-kind intrinsics (new/len/get/
       set/push) as kernel IR in crates/calque/src/intrinsics.mlir
