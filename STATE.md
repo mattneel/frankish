@@ -18,7 +18,12 @@ intrinsics with growth, and the annotated `vector.new()` surface). The
 first steering amendment (structs/tests/CON/CTF; D-095..D-097) stays
 threaded through SPEC/ACCEPTANCE/MANIFEST; the THIRD steering
 amendment (the built-in language server — D-103, sha-pinned at
-docs/calque/STEERING-LSP.md; AC-S31..S41) is recorded and mapped to C5.
+docs/calque/STEERING-LSP.md; AC-S31..S41) is recorded and mapped to C5;
+the FOURTH (diagnostics/lint/agent help — D-104, sha-pinned at
+docs/calque/STEERING-DIAGNOSTICS-LINT-AGENT-HELP.md; AC-S42..S52) maps
+the record schema to C2 and its renderers/catalog/lint/ci/fix to C5 —
+calq0's provisional one-line diagnostic projection is explicitly
+upgradeable, and no second text shape may ship meanwhile.
 Tree: green — `cargo test -p calque` 13/13 seed + reference; `make
 test` green on this session's commits; diff 162 cases 0 divergent (8
 runners); grid 157/157 × BOTH strategies × 4 triples + s390x canary
@@ -1228,6 +1233,12 @@ rework flag, not a knob.
       AC-S31..S41 + the `calque-lsp` planned target, MANIFEST C5
       deepening, checker pin — recorded mid-session per the user's
       interjection; implementation at C5 (nothing here precedes it)
+    - steering 4 (D-104): the diagnostics/lint/agent-help amendment
+      stored at docs/calque/STEERING-DIAGNOSTICS-LINT-AGENT-HELP.md
+      (sha-pinned), SPEC header + §13, AC-S42..S52 + the planned
+      `calque-diagnostics`/`calque-lint` gates, MANIFEST C2/C5 notes,
+      checker pin; the record schema + source origins own C2 — the
+      diagnostics printer freeze applies to calq0 from now on
     - vectors 43c4ade (F34/D-091): Vector(T) parses/slots
       i64/Str/declared; the 15 per-slot-kind intrinsics (new/len/get/
       set/push) as kernel IR in crates/calque/src/intrinsics.mlir

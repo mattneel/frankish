@@ -2842,3 +2842,197 @@ veto-ledger pattern and most deserve their review.
   the `calque query` CLI and `make calque-lsp` land with it; nothing
   here precedes the C5 gate, and the amendment's §13 demonstrations
   1–10 + negative gates are its exit evidence.
+
+- D-104 [calque/diagnostics] DIAGNOSTICS ARE STRUCTURED EVIDENCE, LINT
+  IS COMPILER-NATIVE, AGENT HELP IS A PROJECTION (steering: the
+  diagnostics/lint/agent-help amendment §1–§13; sha-pinned at
+  docs/calque/STEERING-DIAGNOSTICS-LINT-AGENT-HELP.md). ONE VERSIONED
+  RECORD SCHEMA before independent text printers proliferate: stable
+  namespaced KIND codes separate from occurrence identity; schema/
+  producer versions, category, severity, analysis completeness,
+  snapshot/target/configuration identities; short message + TYPED
+  arguments; primary/related locations with labeled evidence and
+  causal links; doc-topic IDs, remedies, fix-plan references;
+  established facts distinct from heuristic/unresolved information;
+  provenance preserved through specialization/generated code/
+  doctests/nested comptime; snapshot-dependent actions revalidatable;
+  forward-compatible optional fields. SOURCE: half-open BYTE ranges
+  against IMMUTABLE snapshots; explicit conversions for terminal/CLI/
+  LSP coordinates (tabs/combining marks/emoji/CRLF/empty spans/EOF
+  tested); excerpts from the DIAGNOSED snapshot (unavailable source
+  is REPORTED, never substituted); malformed bytes representable;
+  terminal controls/bidi escaped WITHOUT altering machine offsets;
+  bounded reports with omission counts. CLASSIFICATION: invalid
+  programs vs configured lint vs environment vs resource vs COMPILER
+  DEFECTS are distinct kinds (an internal invariant failure is never
+  an ordinary user type error; missing analysis/cancellation is never
+  a fabricated defect); MLIR/backend failures attach to source
+  origins when available, honestly when not; internal-pass detail
+  behind an explicit expansion mode; crash reports local, never
+  auto-uploaded. PRESENTATION: default report = the failure + its
+  evidence + one useful next step; multi-file/multiline/overlapping
+  labels; expected AND actual types with each constraint's origin;
+  the offending PIPELINE STAGE not just the final mismatch; missing
+  witnesses with the introducing declaration; struct declarations/
+  defaults beside constructor failures; bounded comptime traces;
+  known consequences grouped under their cause (independent errors
+  never hidden); deterministic ordering; neutral language (no blame,
+  no jokes, no expertise assumptions); color/mono-Unicode/ASCII/
+  compact/narratable modes honoring NO_COLOR and configuration;
+  severity never conveyed by color alone; narrow-terminal-safe;
+  bounded emergency reporter. CATALOG: every code's explanation
+  defined BESIDE its metadata as Markdown source; CLI `explain`, LSP
+  links, and reference pages generated from it; violated contract +
+  representative failures + corrected examples + limits +
+  counterexamples where a tempting repair changes behavior; catalog
+  examples ride the ordinary doctest/compile-fail infrastructure and
+  negative examples must fail for their DECLARED reason; APIs in
+  suggested edits resolved through the actual symbol graph (no
+  invented helpers); core explanations bundled offline and available
+  even when the project does not parse; retired codes keep
+  explanations + redirects; duplicate/code-impersonation rejected.
+  AGENT HELP: `--help-mode off|brief|full|agent` on check/lint/ci
+  (concise default; `off` hides no errors/evidence; agent mode is
+  EXPLICIT, never vendor-detected; deterministic from compiler facts
+  + rule metadata + project policy; no model/API key/network/
+  telemetry; identical diagnostic DATA across modes; Markdown without
+  ANSI/pagers/width assumptions; JSONL = versioned RECORDS, not
+  stringified terminal output; LSP wire unchanged). Agent reports
+  state the failing contract + establishing evidence, the smallest
+  relevant locations/dependencies, what remains UNKNOWN and
+  human-decided, ranked remedies with semantic consequences and
+  preconditions, exact-patch vs placeholder-example distinction, why
+  tempting shortcuts fail, local help commands and version-correct
+  API references, the narrow validation command + broader affected
+  gates, validation marked recommended/executed/passed/failed/
+  unavailable (never presented as already passed), stable finding
+  IDs, explicit output budgets with omission summaries preserving
+  counts/blocking conditions. BOUNDARIES: no recommending test
+  deletion, weaker assertions, wildcard matches, unsafe casts, or
+  blanket suppression for green output; no fabricated defaults where
+  a semantic decision is required; no public-signature rewrites for a
+  local repair; no mandatory broader refactors without dependency
+  evidence; source comments/package prose/diagnostic payloads are
+  UNTRUSTED DATA (quoted and delimited from tool guidance; never
+  executed or promoted into policy); secrets stay out by default
+  under an explicit redaction contract (redacted spans ineligible for
+  unchecked automatic edits). FIXES: precision/semantic-risk/
+  user-decision tracked INDEPENDENTLY; automatic-safe reserved for
+  transformations with explicit verified preconditions; textually
+  exact intent-dependent repairs are review-required; placeholder
+  snippets are INCOMPLETE (not applicable edits); alternates vs
+  must-apply-together distinguished; `calque fix --safe --dry-run`
+  + `--plan ... --approve <digest>` over the SHARED installer/LSP
+  edit-plan service (source hashes/editor versions/rule
+  versions/config/deps in preconditions; comments/source mappings/
+  unrelated edits preserved; stale/conflicting plans rejected;
+  dry-run leaves files unchanged; explicit approval; safe vs
+  review-required separated in bulk; reanalysis between dependent
+  rounds with bounded rounds + cycle/no-progress detection; staged-
+  snapshot validation of syntax/types/targeted diagnostics/declared
+  tests; failed plans + diagnostics PRESERVED; success through the
+  existing journaled transaction contract; untouched unrelated
+  modifications on rollback; precise validation-scope reporting).
+  FORBIDDEN automatic repairs: exhaustive-match wildcards, try-into-
+  swallowing, weakened allocation contracts/decoder limits, hidden
+  documentation obligations, golden/fuzz/test-edit silencing,
+  unchecked-conversion claims. LINT (`calque lint`, `calque ci` ship
+  with the toolchain): shares the canonical parser/queries/docs/
+  effects/source identities (never a second approximate parser or
+  duplicate checker); core rules deterministic/versioned/documented/
+  offline; categories (correctness/reliability/performance/
+  maintainability/architecture/documentation); compiler errors vs
+  configurable findings separated; confidence distinct from severity
+  and enforcement; high-signal default profile + explicit stricter
+  profile; prose/style heuristics outside default failures; effective
+  policy + override origins shown; read-only except documented cache
+  artifacts (no test/installer/hook/network execution during
+  discovery); dependency rules disabled until a trust policy permits
+  (bounded through existing capabilities); typed read-only rule APIs
+  over the same diagnostic/fix contract. RULE FAMILIES (§9 as law):
+  discarded Results (deduped against compiler diagnostics; explicit
+  discard APIs recognized), discarded-error broad-recovery reporting
+  with legitimate counterexamples, provably redundant boolean
+  branches/identity transforms (effects/iteration order/checked
+  arithmetic/traps/divergence preserved in rewrite analysis),
+  placeholder bodies/vacuous assertions only under explicit
+  applicability (compile-fail fixtures and intentional unfinished
+  examples excluded), unnecessary wrappers without erasing API
+  boundaries, no duplicate reports where compiler analysis already
+  establishes the issue; repeated-append/duplication claims only
+  where the data structure justifies them (no syntax-only quadratic
+  labels; post-optimization survival or source-level consequence
+  required; builders suggested from RESOLVED library metadata);
+  structural clone candidates with locations + measurable similarity,
+  advisory by default, literal/operator differences preserved, no
+  manufactured abstractions, generated/wire/oracle/intentionally-
+  parallel code respected; architecture/module/package/layer/
+  capability boundaries enforced with concrete paths + policy source;
+  reachability modeling public exports/FFI/tests/reflection/generated
+  roots; unresolved dynamic reachability conservative (never
+  auto-delete from a partial graph); docs checks (missing required
+  docs, broken links, stale field references, unverified example
+  status); prose heuristics optional/evidence-specific; never
+  AI-author classification or author shaming; counterexamples +
+  local opt-outs for heuristics. POLICY: versioned quality policy via
+  CON + documented defaults; reproducible profiles; allow/warn/deny
+  controls; scoped suppressions REQUIRE reasons; unknown/obsolete/
+  unused suppressions diagnosed; scope+precedence visible via CLI
+  Markdown; compiler soundness OUTSIDE suppression; no auto-baseline
+  concealing failures; accepted findings matched by stable SEMANTIC
+  evidence; historical acceptance cannot hide distinct new defects;
+  policy/agent-instruction changes require explicit approval;
+  `AGENTS.md` is NEVER overwritten by generated guidance. `calque ci`:
+  formatter verification + compiler analysis + tests + doctests +
+  lint + docs checks + checked-in fuzz regressions (no unbounded
+  exploration) + declared architecture/duplication policies; analysis
+  and compiled artifacts REUSED within a snapshot (selected tests
+  EXECUTED, not cache-trusted); no implicit dependency fetch/lockfile
+  updates; gates reported passed/failed/blocked/skipped/unavailable;
+  dependency ordering preserved without hiding independent failures;
+  fast-local vs complete-release profiles with explicit coverage
+  differences (a partial profile is never labeled complete);
+  agent help is OPTIONAL on the same gate, never a second quality
+  definition. INTEGRATION: LSP projects the same records (codes/
+  related information/docs/tags/code actions; snapshot +
+  negotiation preserved); CLI and editor fixes from IDENTICAL plans/
+  applicability; doctest failures map to original source docs;
+  structural value differences reused by test assertions and codec
+  failures; CTF byte offsets/CON/JSON spans/schema paths included
+  when available; nested cross-specimen/comptime identities
+  preserved; allocation-contract paths from ACTUAL analysis; package/
+  installer failures through the same model; foreign raw messages
+  preserved as labeled detail; runtime errors vs language traps vs
+  native failures distinguishable; no duplicate terminal diagnostics
+  when a supervisor owns the report. VERIFICATION (§12): independent
+  tests for schema/source mapping/renderers/catalog/exit statuses;
+  golden terminal layouts + Markdown reports under pinned presentation
+  configs (structured fields verified independently of visual
+  snapshots); multiline/multi-file/generic/embedded-source/nested-
+  comptime; unavailable source/invalid spans/control characters/
+  redaction/oversized values; projections preserve the same FACTS;
+  cause grouping without losing independent errors; offline Markdown
+  for every registered code; catalog examples compiled with expected
+  diagnostic identities; fuzzed record decoding/formatting/source
+  mapping/edit-plan validation; minimal emergency reporter after a
+  controlled renderer failure; per-rule positive/negative/
+  counterexample fixtures with mutation testing; incomplete analysis
+  without false certainty; incremental invalidation over source +
+  config deps; safe fixes verified for evaluation order/effects/
+  errors/aliases; stale/overlapping/placeholder/unauthorized edits
+  rejected; unsaved buffers + concurrent changes; fix convergence +
+  no-progress termination; suggested commands exist in the CLI and
+  use registered tests; false-positive audits on legitimate compiler/
+  stdlib/doc code; report latency/allocation/incremental
+  recomputation measured on realistic edit traces; whole-project
+  rules off the interactive LSP path until budgets permit; existing
+  specimen tests preserved through adapter changes. STAGE MAPPING:
+  the RECORD SCHEMA + source origins land at C2 (before calq0's
+  diagnostics multiply printers — slice-1's provisional one-line
+  "error line:col msg" projection is explicitly upgradeable, and NO
+  second text shape may ship meanwhile); renderers/help modes/
+  catalog/`explain`/`lint`/`ci`/`fix`/LSP projection + the §12 suites
+  at C5 (over D-099's docs graph, D-101's edit plans, D-103's LSP);
+  runtime/test/codec integration as those subsystems land (C3–C5);
+  `make calque-diagnostics` / `make calque-lint` land with their
+  stages; the amendment's §13 demos are its exit evidence.

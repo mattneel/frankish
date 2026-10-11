@@ -93,6 +93,24 @@ and CLI parity (`calque query ...`). Stage: C5 (the DX stage's
 "language server" entry, deepened), with `make calque-lsp` carrying
 the §13 gate list and the VS Code/Neovim smoke evidence.
 
+Fourth steering amendment (D-104;
+`docs/calque/STEERING-DIAGNOSTICS-LINT-AGENT-HELP.md`): diagnostics are
+STRUCTURED EVIDENCE over one versioned record schema (namespaced kind
+codes, byte-range source origins over immutable snapshots, typed
+arguments, causal links, completeness, honest classification incl.
+compiler defects) with projections for terminal/plain/Markdown
+(agent)/JSONL/LSP and a Markdown explanation catalog (`calque
+explain`) whose examples ride the doctest infrastructure; optional
+agent quickfix-help modes (`off|brief|full|agent`) are deterministic,
+model-free, and never a second quality definition; quick fixes share
+D-101's reviewed edit-plan service (automatic-safe only with verified
+preconditions; intent-dependent repairs review-required; forbidden
+auto-repairs enumerated); and `calque lint`/`calque ci` ship with the
+toolchain as a compiler-native quality baseline over CON-versioned
+policy. Stage: the record schema + origins at C2 (before calq0's
+diagnostics multiply printers); renderers/catalog/help/lint/ci/fix/LSP
+at C5; runtime/test/codec integrations as those land.
+
 ## Stages
 Each stage freezes at its milestone exit (goal §18; numbers from the
 current ledger, D-085):
@@ -104,7 +122,8 @@ current ledger, D-085):
   closures, Option/Result ergonomics, generics (monomorphized),
   recursive data, modules + stdlib; compiler grows through the
   recorded chain; documentation attributes + parser preservation and
-  doctest registration (D-099/D-100).
+  doctest registration (D-099/D-100); the shared diagnostic record
+  schema + source origins (D-104).
 - **C3 (M39) — shared compile-time execution.** `comptime`, type
   construction/reflection/reification, capabilities, budgets,
   caching, nested compiler-library + cross-specimen evaluation.
@@ -117,7 +136,9 @@ current ledger, D-085):
   target matrix; the documentation toolchain + CLI Markdown help +
   full doctest integration + package publication validation
   (D-099/D-100/D-101); the built-in first-class language server +
-  `calque query` CLI (D-103).
+  `calque query` CLI (D-103); diagnostic renderers + explanation
+  catalog + agent help modes + `calque lint`/`calque ci` + reviewed
+  quick fixes (D-104).
 - **C6 (M42) — release and demonstration package.** Demos A–E
   (asciinema + MP4), documentation audit, acceptance sweep; generated
   documentation/help ship in the release artifacts.

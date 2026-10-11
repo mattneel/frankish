@@ -17,6 +17,9 @@ surface (D-099/D-100/D-101/D-102); its stage mapping is in §13.
 The third steering amendment (the built-in language server) lives at
 docs/calque/STEERING-LSP.md and deepens C5's server obligation (D-103);
 its stage mapping is in §13.
+The fourth steering amendment (diagnostics, lint, agent help) lives at
+docs/calque/STEERING-DIAGNOSTICS-LINT-AGENT-HELP.md and governs §11's
+record model (D-104); its stage mapping is in §13.
 
 ---
 
@@ -533,3 +536,15 @@ hover|definition|references|rename --format markdown`) and the
 `make calque-lsp` gate with its VS Code/Neovim smoke evidence; the
 protocol remains JSON-RPC on the wire (never CON/CTF), and the
 amendment's §13 demonstrations are its exit evidence.
+
+The fourth steering amendment (diagnostics/lint/agent help — D-104)
+governs §11: ONE versioned diagnostic record schema + source-origin
+model lands at C2 (calq0's provisional one-line projection is
+explicitly upgradeable; no second text shape may ship meanwhile), and
+C5 carries the renderers (human/Markdown/JSONL), the explanation
+catalog + `calque explain`, the agent help modes, the compiler-native
+`calque lint` + `calque ci` quality gate over the shared analysis, and
+the reviewed quick-fix plans over D-101's edit service; integrations
+with the runtime/tests/codecs and the LSP land as those subsystems
+exist. Forbidden defaults, trust boundaries, and the §12 verification
+matrix are ledger law.
