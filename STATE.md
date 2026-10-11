@@ -1,18 +1,16 @@
 # STATE — frankish live handoff
 
 Updated: 2026-10-11 (M35 close + M36/C0 charter session)
-Phase: M35 complete (tag m35-done): femto_lua v0.4 — coroutines as the
-resumable-frame pattern (D-084). NOTE: the M33+M34 session shipped M35
-but left its STATE note and tag unwritten; the close note below is
-written this session from the commit record + D-084. M36/C0 (the Calque
-charter) is IN FLIGHT in this session: docs/calque/{GOAL,SPEC,BOOTSTRAP,
-ACCEPTANCE}.md, specimens/calque/MANIFEST.md + frozen examples, ledger
-D-085..D-089, SPEC §8/§13/§14 + AGENTS.md amendments,
-scripts/calque-check.sh + `make calque-test` (wired into CI).
+Phase: M35 complete (tag m35-done, note written late — see the log);
+M36 complete (tag m36-done): the Calque C0 charter — goal record
+(verbatim, sha-pinned), scope rulings D-085..D-090, b0 frozen
+(SPEC §12, F1–F33), the bootstrap route, the 180-row acceptance
+matrix, and the gates (`make calque-test`, in CI). M37/C1 (the
+interpreted compiler written in Calque) is next.
 Tree: green — `make test` workspace suite green (554 s, gating run
 2026-10-11); diff 162 cases 0 divergent (8 runners); grid 157/157 ×
 BOTH strategies × 4 triples + s390x canary 157/157; `make calque-test`
-green (28/178 acceptance rows done).
+green (28/180 acceptance rows done).
 
 WORKSTREAM: CALQUE (user-selected 2026-10-11). M36 = C0 → M42 = C6.
 docs/calque/GOAL.md is the acceptance contract (stored verbatim; its
@@ -20,10 +18,7 @@ sha256 is pinned in scripts/calque-check.sh); docs/calque/ACCEPTANCE.md
 is the live evidence matrix; the target family is `make calque-*`.
 
 ## Next action
-1. M36/C0 — land the charter commits (this session's remaining work),
-   then tag m36-done. Exit bars: specimens/calque/MANIFEST.md "Exit
-   bars" M36 row (all authored; checker green; baseline recorded).
-2. M37/C1 — the interpreted compiler written in Calque. Slice order:
+1. M37/C1 — the interpreted compiler written in Calque. Slice order:
    (a) the minimal language-dispatch table in frk-harness (+
    behavior-preservation tests for every existing specimen), (b) the
    Calque intrinsics module + the new rt rows (print/eprint/trap), (c)
@@ -31,7 +26,7 @@ is the live evidence matrix; the target family is `make calque-*`.
    rules, (d) calq0 (the compiler core, written in b0), (e) the corpus
    (goldens/calque/), (f) the initial self-compilation gate. Verifiers
    and acceptance: ACCEPTANCE AC-18.2; BOOTSTRAP §3.
-3. QUEUED (preserved; not this workstream's):
+2. QUEUED (preserved; not this workstream's):
    - ts-4: generics (monomorphized), sealed-world switch, any/gradual
      boundary as contract ops (frk_contract's second act); the D-079
      static-await-dispatch soundness note comes due; ALSO owed (D-083):
@@ -43,8 +38,7 @@ is the live evidence matrix; the target family is `make calque-*`.
      together), re-entrant winds — entry points recorded in D-084.8.
 
 ## In flight
-M36/C0 charter — authored in this session (see Phase); its commits are
-this session's remaining work.
+Nothing.
 
 ## For the human
 - RESOLVED (2026-07-03): the Rocq anchor — delegated back ("Atli is
@@ -67,15 +61,51 @@ this session's remaining work.
   fenced; remaining consumers: scheme P13/R7RS 4.2.7, re-entrant
   winds). If that consumer-first reinterpretation reads wrong, strike
   via D-entry.
-- CALQUE ADMISSION (D-085/D-089, this session's charter): the goal's
+- CALQUE ADMISSION (D-085..D-090, this session's charter): the goal's
   §2 scope additions are recorded as ledger law (SPEC §14 carve-outs
   for Calque only; L5's admission rule relaxed for Calque while
   genuinely new shared semantics still promote under K1–K7; D-089
   makes incrementality an architectural property with measured-not-
-  claimed targets). The goal document itself is the authority; if the
-  charter misreads it, strike via D-entry.
+  claimed targets; D-090 adopts the user's demo playbook as the
+  surface-intent + C6 storyboard source). The goal document itself is
+  the authority; if the charter misreads it, strike via D-entry.
 
 ## Milestone log
+m36-done — Shipped: the Calque C0 charter (D-085..D-090) — the
+workbench's first ORIGINAL specimen is chartered. THE SCOPE: the
+user's goal (docs/calque/GOAL.md, verbatim; its sha256 pinned in the
+checker) with SPEC §14 carve-outs for Calque only, the L5 admission
+rule relaxed for Calque, and milestones M36..M42 = C0..C6 (D-085).
+THE LANGUAGE: SPEC v0.1 freezes b0 — ASCII source, explicit types,
+records/unions with dot-field construction, match with concrete-
+witness errors, pipelines, error unions with `try`/`catch`, the
+tail-call guarantee, checked arithmetic — plus the §12 freeze log
+(F1–F33) and the incrementality contract (§7.3, D-089). THE PLAYBOOK:
+the user's ten-demo storyboard adopted as the surface-intent and C6
+source of record (D-090); its console blocks are release targets.
+THE ROUTE: BOOTSTRAP.md — the Lua seed on femto_lua, kernel-IR-text
+artifacts with a version marker, the eight chain steps, zero-exclusion
+fixed-point comparison with mutant verification, snapshots, and the
+explicit trust boundaries. THE GATE: the 180-row acceptance matrix +
+scripts/calque-check.sh (`make calque-test`, in CI; mutant-tested both
+ways; 28 rows done, every pending row naming its planned verifier).
+Baseline recorded: make test green (554 s); diff 162/0; grid 157/157 ×
+2 × 4 + s390x 157/157.
+M36 EXTRACTION: (1) A CHARTER IS A VERIFIABLE ARTIFACT — the
+acceptance matrix got a checker (structure, §1..§23 coverage, done-row
+evidence resolution, the sha-pinned contract document), so "the
+charter is complete" is a command, not a feeling; the checker's own
+mutants prove it can fail. (2) THE SEED'S HOST LANGUAGE CONSTRAINS THE
+BOOTSTRAP SUBSET — femto_lua's ASCII literal fence pushed a real
+decision (F18: ASCII-only seed channel with loud refusal, unrestricted
+compiler channel later) that was found by reading the lexer before
+freezing, not at implementation. (3) SURFACE INTENT ARRIVES MID-FLIGHT
+— the user's demo playbook (D-090) superseded four frozen rows within
+the hour they were written; the freeze log's "revised by" citations
+made that a one-edit reconciliation, and the playbook's storyboard
+order (functional loop → self-hosted compiler → compilation-inside-
+compilation → NOW KITH) now drives the C6 plan.
+
 m35-done — Shipped: femto_lua v0.4 (D-084) — COROUTINES as the
 resumable-frame pattern. TAG_THREAD = 8 (the fourth D-051 widening,
 walked by the D-070 checklist; the tag-8-slot cycle drill lands in the
@@ -1132,10 +1162,10 @@ rework flag, not a knob.
     milestone notes but no session entries; recorded here rather than
     backfilled)
     Milestone/step: M35 closed (tag m35-done, written late); M36/C0
-    Calque charter authored and landing
+    Calque charter LANDED (tag m36-done)
     Green? yes — make test green (554 s); diff 162/0 (8 runners);
     grid 157/157 × 2 × 4 triples + s390x 157/157; make calque-test
-    green (28/178 acceptance rows done)
+    green (28/180 acceptance rows done)
     Did:
     - M35 close written from the commit record + D-084; docs rollup
       791709d (book + MANIFEST v0.4; corpus count corrected 17→16)
@@ -1148,8 +1178,7 @@ rework flag, not a knob.
       book chapter + specimens overview/README refresh
     - baseline recorded at commit 791709d (this file's header + the
       ACCEPTANCE §Baseline table)
-    Next: land the charter commits + tag m36-done; then M37/C1 in the
-    recorded slice order (Next action item 2)
+    Next: M37/C1 in the recorded slice order (Next action item 1)
     Landmines:
     - the seed input channel is ASCII-ONLY (femto_lua's literal fence,
       D-056 → SPEC F18): non-ASCII in a b0 unit must be a LOUD driver
