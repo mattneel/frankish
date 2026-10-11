@@ -1500,10 +1500,20 @@ rework flag, not a knob.
     read late (aliased inner joins under nesting); now named from the
     join's own block label in BOTH compilers - the try/catch/match
     sites' bytes are unchanged.
-    NEXT in the C2 plan: `seq` stdlib in Calque (AC-8.3: iter/map/
-    filter/fold/flat_map/take/zip/collect + seq_* corpus; needs
-    inferred closure params) then active_score.calq (M38) - then
-    generics at C3 (identity_pair.calq, type-returning fns).
+    C2 SEQ increment, seed side LANDED (commit on top): tools/calque/
+    std/seq.calq (iter/filter/map/fold/collect/take over `fn () ?T`
+    closures) + the surfaces it forced: inferred closure params
+    (D-086; bare `fn (user) { ... }` at fn-typed positions), comptime
+    TYPE-ARG inference (D-113 revisit: explicit tyargs first, else
+    unification against arg probes incl. lambda tail probes under the
+    partial substitution), namespaced generic dispatch, and the
+    structural (same_type) match-arm join check. The frozen
+    active_score.calq chain emits + executes to "17 2 2"; suite 52.
+    NEXT SLICE: calq0's mirror of all four surfaces (its resolve_
+    generic has the explicit path only; its call args emit untyped;
+    its match-arm check may share the identity bug - check), then a
+    `seq_*` corpus golden + active_score.calq into the corpus (M38),
+    then flat_map carried (zip waits on tuples, its own C2 row).
     CLOSURE DESIGN (settled, ready to implement; verified against the
     dialect this session): the frk_closure ops are make(env:
     product) {callee} -> fn, apply(fn, args: product) -> value, and
