@@ -1524,8 +1524,25 @@ rework flag, not a knob.
     helper block) was fully recovered from git + reapplied; the
     lesson: never slice by a FIRST-OCCURRENCE index - anchor on
     unique text.
-    NEXT: `seq_*` corpus golden + active_score.calq into the corpus
-    (M38); flat_map carried; zip waits on tuples (its own C2 row).
+    C2 STDLIB + CORPUS increment LANDED (commits on top): six seq_*
+    goldens + active_score (the frozen M38 example) in goldens/calque
+    (all green interp/jit/jit-rc/AOT), the corpus front-end compiles
+    every case with str+seq+opt+res; opt.calq/res.calq helpers
+    (AC-13.1) incl. mapError; FIRST-CLASS FN VALUES (a bare top-level
+    fn name emits a closure over an empty env + a type probe) in both
+    compilers; the opt_res golden. Bugs the corpus forced: flat_map's
+    cursor must live in the ENCLOSING fn (a `var` inside a closure
+    body is per-INVOCATION - the trace proved the restarted-state
+    loss), and calq0's lift snapshot must carry capenv_ty AND the
+    return type must be saved/restored explicitly (return_types is a
+    mutated-in-place cell; the missing restores emitted env_loads
+    against empty envs and mis-typed traps). Suite 53; calque-check
+    ok (34/248); corpus 20 cases 0 red; grid GREEN.
+    REMAINING in AC-8.3: zip (needs tuples, F33's own C2 row).
+    NEXT: the F33 C2 batch (multiline strings, `_` separators,
+    `@intCast`, `usize`, `[N]T`, tuples, `[...]` literals, `..spread`,
+    `test` blocks) or the compiler-side module/stdlib work per the
+    goal; keep the corpus growing with each surface.
     CLOSURE DESIGN (settled, ready to implement; verified against the
     dialect this session): the frk_closure ops are make(env:
     product) {callee} -> fn, apply(fn, args: product) -> value, and
