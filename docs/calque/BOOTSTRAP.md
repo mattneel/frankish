@@ -116,7 +116,9 @@ M17's seed-module pattern, with Calque as the fourth frontend:
       __calque_input(i: i64) -> Str     // 0-based; bstr literal
 
   generated as kernel IR with proper MLIR string escapes (arbitrary
-  bytes allowed here). This is the compiler's "stdin"; it is the
+  bytes allowed here — D-098 lifted the bstr literal's v0.1 ASCII
+  fence for exactly this channel; the seed's own §1.1 channel stays
+  ASCII-only). This is the compiler's "stdin"; it is the
   ONLY difference between compiling a unit and compiling the
   compiler itself.
 

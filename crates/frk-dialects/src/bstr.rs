@@ -59,14 +59,12 @@ pub(crate) fn verify_op<'c>(
             let text = op
                 .attribute("text")
                 .map_err(|_| "frk_bstr.lit without a text attribute".to_string())?;
-            // v0.1 literal fence (D-056): ASCII bytes only. Read via
-            // the printed form — melior's raw read is UB on "".
-            let bytes = crate::attr_util::string_attr_bytes(text)?;
-            if bytes.iter().any(|&byte| byte >= 0x80) {
-                return Err(
-                    "non-ASCII byte-string literal (fenced in v0.1, D-056)".to_string()
-                );
-            }
+            // v0.2 (D-098, amending D-056's v0.1 literal fence): the
+            // decoded attribute bytes are admitted AS-IS — arbitrary
+            // 8-bit bytes included. The IR attribute carries decoded
+            // bytes; intern/len/sub are byte-based end to end. The
+            // fence ruled on the ENCODING; byte strings have none.
+            let _ = crate::attr_util::string_attr_bytes(text)?;
             Ok(())
         }
         "concat" | "eq" | "len" | "sub" | "rep" => Ok(()),

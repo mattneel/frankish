@@ -468,7 +468,7 @@ enum Planned<'c, 'a> {
     },
     BstrLit {
         op: OperationRef<'c, 'a>,
-        text: String,
+        text: Vec<u8>,
         symbol: String,
     },
     /// A DEMOTED narrowing fact (D-072): the promotion pass could not
@@ -1665,11 +1665,11 @@ fn plan_bstr<'c, 'a>(
                 .attribute("text")
                 .map_err(|_| "frk_bstr.lit without text".to_string())?;
             let bytes = crate::attr_util::string_attr_bytes(attribute)?;
-            let text = String::from_utf8(bytes)
-                .map_err(|_| "non-UTF-8 bstr literal (ASCII fence, D-056)".to_string())?;
+            // D-098: bytes ride through verbatim (no UTF-8 gate); the
+            // global + intern recipe is byte-based (byte_global).
             let symbol = format!("__frk_bstr_{}", *str_counter);
             *str_counter += 1;
-            Ok(Planned::BstrLit { op, text, symbol })
+            Ok(Planned::BstrLit { op, text: bytes, symbol })
         }
         "concat" => Ok(Planned::BstrConcat { op }),
         "eq" => Ok(Planned::BstrEq { op }),
@@ -3806,7 +3806,7 @@ fn apply<'c, 'a>(
             let location = op.location();
             let i64_type: Type = IntegerType::new(context, 64).into();
             let ptr = llvm::r#type::pointer(context, 0);
-            let bytes = text.as_bytes();
+            let bytes = text.as_slice();
 
             let module = root_module(op)?;
             let body = module

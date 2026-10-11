@@ -1702,6 +1702,26 @@ local function emit_call(node)
     emit("func.call @frk_rt_calque_print(" .. a .. ") : (!frk_bstr.str) -> ()")
     return nil
   end
+  -- The compiler's input channel (BOOTSTRAP 2.1): the driver-injected
+  -- __calque_input_count()/__calque_input(i). Definitions live in the
+  -- injection component; a call without it fails verification (loud).
+  if callee.mod == nil and callee.name == "__calque_input_count" then
+    if #args ~= 0 then
+      fail(line, col, "__calque_input_count takes no arguments")
+    end
+    local res = fresh()
+    emit(res .. " = func.call @__calque_input_count() : () -> i64")
+    return res, "i64"
+  end
+  if callee.mod == nil and callee.name == "__calque_input" then
+    if #args ~= 1 then
+      fail(line, col, "__calque_input takes exactly one i64")
+    end
+    local a = emit_expr(args[1])
+    local res = fresh()
+    emit(res .. " = func.call @__calque_input(" .. a .. ") : (i64) -> !frk_bstr.str")
+    return res, "Str"
+  end
   if callee.mod == "str" then
     local member = callee.name
     if member == "len" then

@@ -4,7 +4,7 @@
 //! (L2's no-blessing rule; there is no upstream oracle, MANIFEST
 //! "Conformance").
 
-use calque::{run_artifact, seed_translate, UnitFile};
+use calque::{run_artifact, run_artifact_with_input, seed_translate, UnitFile};
 
 fn unit(name: &str, ns: Option<&str>, text: &str) -> UnitFile {
     UnitFile {
@@ -130,6 +130,26 @@ fn seed_compiles_the_steering_struct_example() {
     let artifact = seed_translate(&files).expect("the seed translates the example");
     let outcome = run_artifact(&artifact).expect("the artifact runs");
     assert_eq!(outcome.output, "Hello, Matt\nPerfect, Matt\n");
+}
+
+#[test]
+fn seed_compiles_the_input_channel() {
+    // The compiler's "stdin" (BOOTSTRAP 2.1): count + 0-based index,
+    // UNRESTRICTED bytes (the seed's own channel is ASCII-only; this
+    // one rides kernel-IR literals).
+    let files = vec![unit(
+        "channel.calq",
+        None,
+        "pub fn main() i64 {\n    const count: i64 = __calque_input_count();\n    const n: i64 = count - 1;\n    io.print(__calque_input(n));\n    0\n}\n",
+    )];
+    let artifact = seed_translate(&files).expect("the seed translates the channel probe");
+    let units = vec![
+        unit("alpha.calq", None, "alpha line\n"),
+        unit("beta.calq", None, "beta caf\u{e9}\n"),
+    ];
+    let outcome =
+        run_artifact_with_input(&artifact, &units).expect("the artifact runs with input");
+    assert_eq!(outcome.output, "beta caf\u{e9}\n");
 }
 
 #[test]
