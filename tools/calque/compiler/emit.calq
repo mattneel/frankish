@@ -15,6 +15,16 @@
 // checked arithmetic, matches, records - one proving test each,
 // differential against the SEED's emission for the same program).
 
+// INVARIANTS this file keeps:
+//   - one canonical helper per mechanism (emit_variant_make for every
+//     variant construction, synth_td/decl_for for decls, tv_res as the
+//     only substitution funnel, emit_value_block for value-position
+//     blocks, lift_snapshot/restore around every closure lift);
+//   - diagnostics carry the node's real span (the 0:0 sites left are
+//     deliberate internal fences);
+//   - emission is BYTE-IDENTICAL to the seed's - the differential
+//     tests are the spec (L3), and a divergence is a first-rank bug.
+//
 pub const Blk = struct {
     label: Str = "",
     lines: [Str] = [],
@@ -751,7 +761,6 @@ pub fn emit_tuple_e(mut e: Emitter, items: Vector(Expr), expected: Ty) Str {
     emit_line(e, str.concat(e0a, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
     var acc: Str = e0a;
     var el_tys: Vector(Ty) = vector.new();
-    var el_irs: Vector(Str) = vector.new();
     var i: i64 = 0;
     while i < n {
         var v: Str = "";
@@ -765,38 +774,14 @@ pub fn emit_tuple_e(mut e: Emitter, items: Vector(Expr), expected: Ty) Str {
         }
         const stored: Str = wrap_store(e, v, vt, 0, 0);
         vector.push(el_tys, vt);
-        vector.push(el_irs, storage_ir_t(a, vt));
-        var pt_new: Str = "!frk_adt.product<[";
-        var j: i64 = 0;
-        while j <= i {
-            if j > 0 {
-                pt_new = str.concat(pt_new, ", ");
-            }
-            pt_new = str.concat(pt_new, vector.get(el_irs, j));
-            j = j + 1;
-        }
-        pt_new = str.concat(pt_new, "]>");
+        const pt_new: Str = product_prefix(a, el_tys, i + 1);
         const sn: Str = fresh(e);
         var l: Str = " = \"frk_adt.product_snoc\"(";
         l = str.concat(l, acc);
         l = str.concat(l, ", ");
         l = str.concat(l, stored);
         l = str.concat(l, ") : (");
-        if i == 0 {
-            l = str.concat(l, "!frk_adt.product<[]>");
-        } else {
-            var pt_prev: Str = "!frk_adt.product<[";
-            var k: i64 = 0;
-            while k < i {
-                if k > 0 {
-                    pt_prev = str.concat(pt_prev, ", ");
-                }
-                pt_prev = str.concat(pt_prev, vector.get(el_irs, k));
-                k = k + 1;
-            }
-            pt_prev = str.concat(pt_prev, "]>");
-            l = str.concat(l, pt_prev);
-        }
+        l = str.concat(l, product_prefix(a, el_tys, i));
         l = str.concat(l, ", ");
         l = str.concat(l, storage_ir_t(a, vt));
         l = str.concat(l, ") -> ");
@@ -1233,59 +1218,19 @@ pub fn storage_ir_t(a: Ast, t: Ty) Str {
     };
 }
 
-pub fn parse_slot_e(s: Str) i64 {
-    const n: i64 = str.len(s);
-    if n == 0 {
-        return 0 - 1;
-    }
-    var acc: i64 = 0;
-    var i: i64 = 0;
-    while i < n {
-        const c: Str = str.sub(s, i, i + 1);
-        if c == "0" {
-            acc = acc * 10;
-        } else {
-            if c == "1" {
-                acc = acc * 10 + 1;
-            } else {
-                if c == "2" {
-                    acc = acc * 10 + 2;
-                } else {
-                    if c == "3" {
-                        acc = acc * 10 + 3;
-                    } else {
-                        if c == "4" {
-                            acc = acc * 10 + 4;
-                        } else {
-                            if c == "5" {
-                                acc = acc * 10 + 5;
-                            } else {
-                                if c == "6" {
-                                    acc = acc * 10 + 6;
-                                } else {
-                                    if c == "7" {
-                                        acc = acc * 10 + 7;
-                                    } else {
-                                        if c == "8" {
-                                            acc = acc * 10 + 8;
-                                        } else {
-                                            if c == "9" {
-                                                acc = acc * 10 + 9;
-                                            } else {
-                                                return 0 - 1;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+// The IR prefix of a product holding the first `upto` storage types
+// (the snoc-chain scaffold's one spelling).
+pub fn product_prefix(a: Ast, tys: Vector(Ty), upto: i64) Str {
+    var acc: Str = "!frk_adt.product<[";
+    var j: i64 = 0;
+    while j < upto {
+        if j > 0 {
+            acc = str.concat(acc, ", ");
         }
-        i = i + 1;
+        acc = str.concat(acc, storage_ir_t(a, vector.get(tys, j)));
+        j = j + 1;
     }
-    return acc;
+    return str.concat(acc, "]>");
 }
 
 pub fn tup_ir(a: Ast, tys: Vector(Ty)) Str {
@@ -1509,18 +1454,10 @@ pub fn poison_tup(mut e: Emitter, tys: Vector(Ty), sum_ty: Ty) Str {
             pt_prev = "!frk_adt.product<[]>";
         } else {
             from = acc;
+            pt_prev = product_prefix(a, tys, i);
         }
         const stored: Str = wrap_store(e, p, sty, 0, 0);
-        var pt_new: Str = "!frk_adt.product<[";
-        var j: i64 = 0;
-        while j <= i {
-            if j > 0 {
-                pt_new = str.concat(pt_new, ", ");
-            }
-            pt_new = str.concat(pt_new, storage_ir_t(a, vector.get(tys, j)));
-            j = j + 1;
-        }
-        pt_new = str.concat(pt_new, "]>");
+        const pt_new: Str = product_prefix(a, tys, i + 1);
         const sn: Str = fresh(e);
         var l: Str = " = \"frk_adt.product_snoc\"(";
         l = str.concat(l, from);
@@ -2500,7 +2437,7 @@ pub fn infer_field_ty(mut e: Emitter, recv: Str, field: Str, line: i64, col: i64
     const bty: Ty = b0.ty;
     match bty {
         Ty.Tup(tys) => {
-            const nidx: i64 = parse_slot_e(field);
+            const nidx: i64 = parse_digits(field);
             if nidx >= 0 {
                 if nidx < vector.len(tys) {
                     return tv_res(e, vector.get(tys, nidx));
@@ -3117,7 +3054,7 @@ pub fn emit_ref(mut e: Emitter, r: Ref, line: i64, col: i64) Str {
         const oty2: Ty = owner.ty;
         match oty2 {
             Ty.Tup(tys) => {
-                const nidx: i64 = parse_slot_e(r.name);
+                const nidx: i64 = parse_digits(r.name);
                 if nidx < 0 {
                     return e_fail_at(e, line, col, str.concat("a tuple's members are numeric (`t.0`); `", str.concat(r.name, "` is not")));
                 }

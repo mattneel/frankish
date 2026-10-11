@@ -1,19 +1,21 @@
-// calq0 slice 2a - EXPRESSION parsing (b0). The token stream comes
-// from lex.calq; the AST is built as b0 values (unions + records +
-// Vector). Parser state is PURE-REBUILT around VECTOR cells: b0 has no
-// mutable records, so the vector IS the mutable cell (pos[0], err[0]),
-// and any function can share it.
+// calq0 - the PARSER: tokens -> AST (unions + records + Vectors, b0
+// values throughout). The grammar mirrors the SEED's parser (the
+// normative shape); where the two must agree byte-for-byte the
+// differential tests enforce it, and every surface slice lands in
+// both. The freeze sources are SPEC (5/6) and the demo playbook.
 //
-// ERRORS ARE VALUES (D-104-upgradeable): err[0] is "" (ok) or
-// "error <line>:<col> <message>" - the provisional projection the
-// record schema will replace. Error paths return a POISON Expr and set
-// err; every loop re-checks p_ok, so parsing stops cleanly.
+// STATE (D-112): the parser threads ONE `P` value; helpers that
+// advance take `mut p: P` (the scoped exclusive interface), lookahead
+// helpers take plain `p`. No hidden globals.
 //
-// FENCED in 2a (loud): match, %literals, if-EXPRESSIONS, and
-// statements/declarations (they need block parsing - slice 2b).
-// The grammar mirrors the seed's: level 4 comparisons (no chaining),
-// 5 +-, 6 */%, postfix call/.field chains, primary literals/refs/
-// parens; unary -/! stay seed-v0 fenced.
+// ERRORS ARE VALUES (D-109): `p_fail` records the FIRST failure in
+// the State (later diagnostics cascade from the root); poisoned
+// nodes keep the grammar total, and every loop re-checks `p_ok`, so
+// parsing stops cleanly at the first error.
+//
+// SPANS: every user-facing node carries line/col (consts, vars,
+// assignments, returns, ifs, matches, arms, patterns, lambdas, tuple
+// destructuring, indexes); diagnostics render through report.calq.
 
 pub const BadNode = struct {
     msg: Str,
@@ -1084,56 +1086,6 @@ pub const Ast = struct {
     types: Vector(TypeDecl),
 };
 
-// A digits-only i64 reader (the seed's parse_slot shape; `t.0`-style
-// indices and `[N]T` lengths arrive as plain digit runs).
-pub fn parse_i64_tok(s: Str) i64 {
-    const n: i64 = str.len(s);
-    var acc: i64 = 0;
-    var i: i64 = 0;
-    while i < n {
-        const c: Str = str.sub(s, i, i + 1);
-        if c == "0" {
-            acc = acc * 10;
-        } else {
-            if c == "1" {
-                acc = acc * 10 + 1;
-            } else {
-                if c == "2" {
-                    acc = acc * 10 + 2;
-                } else {
-                    if c == "3" {
-                        acc = acc * 10 + 3;
-                    } else {
-                        if c == "4" {
-                            acc = acc * 10 + 4;
-                        } else {
-                            if c == "5" {
-                                acc = acc * 10 + 5;
-                            } else {
-                                if c == "6" {
-                                    acc = acc * 10 + 6;
-                                } else {
-                                    if c == "7" {
-                                        acc = acc * 10 + 7;
-                                    } else {
-                                        if c == "8" {
-                                            acc = acc * 10 + 8;
-                                        } else {
-                                            acc = acc * 10 + 9;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        i = i + 1;
-    }
-    return acc;
-}
-
 pub fn ty_is_hole(t: Ty) bool {
     return match t {
         Ty.TyBad(b) => b.msg == "<hole>",
@@ -1251,7 +1203,7 @@ pub fn p_type_atom(mut p: P) Ty {
                 if at_punct(p, "]") {
                     const _c1: Tok = p_next(p);
                     const ety: Ty = p_type(p);
-                    return Ty.ArrT(%ArrTT{n: parse_i64_tok(nx.text), ty: ety});
+                    return Ty.ArrT(%ArrTT{n: parse_digits(nx.text), ty: ety});
                 }
                 p.pos = save;
             }

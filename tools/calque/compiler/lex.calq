@@ -201,6 +201,62 @@ pub fn mk_tok(kind: Kind, text: Str, line: i64, col: i64) Tok {
 }
 
 // Moves the scan to (i, line, col), preserving error state.
+// The digit-value table (the single copy: tuple slots, `[N]T`
+// lengths, and any digit run share it).
+pub fn digit_val(c: Str) i64 {
+    if c == "0" {
+        return 0;
+    }
+    if c == "1" {
+        return 1;
+    }
+    if c == "2" {
+        return 2;
+    }
+    if c == "3" {
+        return 3;
+    }
+    if c == "4" {
+        return 4;
+    }
+    if c == "5" {
+        return 5;
+    }
+    if c == "6" {
+        return 6;
+    }
+    if c == "7" {
+        return 7;
+    }
+    if c == "8" {
+        return 8;
+    }
+    if c == "9" {
+        return 9;
+    }
+    return 0 - 1;
+}
+
+// A digits-only i64 (`t.0`-style slots, `[N]T` lengths); -1 if the
+// text is empty or holds a non-digit.
+pub fn parse_digits(s: Str) i64 {
+    const n: i64 = str.len(s);
+    if n == 0 {
+        return 0 - 1;
+    }
+    var acc: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        const d: i64 = digit_val(str.sub(s, i, i + 1));
+        if d < 0 {
+            return 0 - 1;
+        }
+        acc = acc * 10 + d;
+        i = i + 1;
+    }
+    return acc;
+}
+
 pub fn move(st: Scan, i: i64, line: i64, col: i64) Scan {
     return %Scan{i, line, col, state: st.state};
 }
