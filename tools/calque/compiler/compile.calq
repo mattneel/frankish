@@ -38,7 +38,7 @@ pub fn main() i64 {
         var k: i64 = 0;
         while k < nf {
             const f: Fn = vector.get(a.fns, k);
-            vector.push(fns, %Fn{name: f.name, params: f.params, ret: f.ret, body: f.body, file: uname, ns: uns});
+            vector.push(fns, %Fn{name: f.name, params: f.params, ret: f.ret, body: f.body, file: uname, ns: uns, test_name: f.test_name});
             k = k + 1;
         }
         i = i + 1;

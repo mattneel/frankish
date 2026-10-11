@@ -1050,6 +1050,7 @@ pub const Fn = struct {
     body: Block,
     file: Str, // the unit it came from (the driver tags it; the seed's CURRENT_FILE)
     ns: Str,   // the unit's namespace (D-094 mangling: ns__name)
+    test_name: Str, // a `test "name"` block's source name ("" otherwise)
 };
 
 pub const Ast = struct {
@@ -1817,7 +1818,7 @@ pub fn p_block(mut p: P) Block {
 
 pub fn poison_fn() Fn {
     var empty: Vector(Param) = vector.new();
-    return %Fn{name: "", params: empty, ret: poison_ty(), body: poison_block(), file: "", ns: ""};
+    return %Fn{name: "", params: empty, ret: poison_ty(), body: poison_block(), file: "", ns: "", test_name: ""};
 }
 
 pub fn p_fn(mut p: P) Fn {
@@ -1845,7 +1846,7 @@ pub fn p_fn(mut p: P) Fn {
                 ret = p_type(p);
             }
             const body: Block = p_block(p);
-            return %Fn{name: name.text, params: params, ret: ret, body: body, file: "", ns: ""};
+            return %Fn{name: name.text, params: params, ret: ret, body: body, file: "", ns: "", test_name: ""};
         }
         var is_mut: bool = false;
         var is_ct: bool = false;
@@ -2087,7 +2088,7 @@ pub fn p_test(mut p: P, idx: i64) Fn {
         b2 = %Block{stmts: body.stmts, has_tail: true, tail: Expr.Int("0")};
     }
     var eps: Vector(Param) = vector.new();
-    return %Fn{name: str.concat("__calque_test_", str.fromI64(idx)), params: eps, ret: Ty.I64, body: b2, file: "", ns: ""};
+    return %Fn{name: str.concat("__calque_test_", str.fromI64(idx)), params: eps, ret: Ty.I64, body: b2, file: "", ns: "", test_name: nm.text};
 }
 
 pub fn p_ast(mut p: P) Ast {

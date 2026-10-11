@@ -876,7 +876,7 @@ pub fn emit_lambda_expr(mut e: Emitter, l: LamE) Str {
         lpi = lpi + 1;
     }
     const lret0: Ty = tv_res(e, l.ret);
-    const fake: Fn = %Fn{name: sym, params: lps, ret: lret0, body: l.body, file: e_file(e), ns: ""};
+    const fake: Fn = %Fn{name: sym, params: lps, ret: lret0, body: l.body, file: e_file(e), ns: "", test_name: ""};
     // the return_types CELL is mutated in place (vector.set), so the
     // lift snapshot aliases it: save/restore the enclosing ret
     // explicitly around the closure's emission.
@@ -964,13 +964,16 @@ pub fn emit_module(mut e: Emitter, a: Ast) {
         if is_generic_fn(f) {
             // D-113: instances are emitted by the flush below.
         } else {
-            e_fn(e, f);
             var is_test_fn: bool = false;
             if str.len(f.name) >= 14 {
                 if str.sub(f.name, 0, 14) == "__calque_test_" {
                     is_test_fn = true;
                 }
             }
+            if is_test_fn {
+                vector.push(e.output, str.concat("// test: ", f.test_name));
+            }
+            e_fn(e, f);
             if is_test_fn {
                 // a runner entry per test (no envref argument)
                 test_i = test_i + 1;
@@ -2981,7 +2984,7 @@ pub fn resolve_generic(mut e: Emitter, f: Fn, args: Vector(Expr), line: i64, col
             }
             pi = pi + 1;
         }
-        instf = %Fn{name: key, params: vps, ret: subst_ty_list(f.ret, sub), body: f.body, file: f.file, ns: ""};
+        instf = %Fn{name: key, params: vps, ret: subst_ty_list(f.ret, sub), body: f.body, file: f.file, ns: "", test_name: ""};
         vector.push(e.insts, %InstN{key: key, f: instf});
         vector.push(e.instq, %InstE{f: instf, sub: sub});
     }

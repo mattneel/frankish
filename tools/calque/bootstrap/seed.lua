@@ -4704,6 +4704,9 @@ function run(files)
       if fn.is_entry then
         entry = fn
       elseif not is_generic_fn(fn) then
+        if fn.test_name ~= nil then
+          E.out[#E.out + 1] = "// test: " .. fn.test_name
+        end
         emit_fn(fn)
         if fn.test_name ~= nil then
           E.test_count = (E.test_count or 0) + 1

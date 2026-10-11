@@ -300,27 +300,35 @@ pub fn run_test_blocks(artifact: &str) -> Result<Vec<(String, bool)>, String> {
     let module = melior::ir::Module::parse(&context, &composed)
         .ok_or_else(|| "composed module failed to parse".to_string())?;
     frk_dialects::verify(&context, &module).map_err(|error| format!("verify: {error:?}"))?;
-    let mut names: Vec<String> = Vec::new();
+    let mut names: Vec<(String, String)> = Vec::new();
+    let mut pending = String::new();
     for line in composed.lines() {
+        if let Some(rest) = line.strip_prefix("// test: ") {
+            pending = rest.trim().to_string();
+        }
         if let Some(rest) = line.strip_prefix("func.func @__calque_test_entry_") {
-            let name: String = rest
+            let suffix: String = rest
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                 .collect();
-            let full = format!("__calque_test_entry_{name}");
-            if !names.contains(&full) {
-                names.push(full);
-            }
+            let full = format!("__calque_test_entry_{suffix}");
+            let label = if pending.is_empty() {
+                full.clone()
+            } else {
+                pending.clone()
+            };
+            names.push((label, full));
+            pending.clear();
         }
     }
     let mut results = Vec::new();
-    for name in names {
+    for (label, sym) in names {
         let mut interp =
             frk_interp::Interp::new(&module).map_err(|error| format!("interp: {error}"))?;
         frk_dialects::register_eval(&mut interp);
         crate::runner::register_protocol_builtins(&mut interp);
-        let ok = interp.eval_function(&name, &[]).is_ok();
-        results.push((name, ok));
+        let ok = interp.eval_function(&sym, &[]).is_ok();
+        results.push((label, ok));
     }
     Ok(results)
 }
