@@ -87,7 +87,7 @@ end
 local KEYWORDS = {}
 for _, k in ipairs({
   "and", "bool", "break", "const", "continue", "else", "false", "fn",
-  "i64", "if", "match", "mut", "or", "pub", "return", "struct", "true",
+  "i64", "if", "match", "or", "pub", "return", "struct", "true",
   "union", "var", "while", "not", "try", "catch", "defer", "for",
 }) do
   KEYWORDS[k] = true
@@ -709,6 +709,16 @@ local function parse_destr(kw_tok, mutable)
   return { mutable = mutable, names = names, expr = e, line = kw_tok.line, col = kw_tok.col }
 end
 
+-- Bounds-safe lookahead: reads past the eof sentinel as eof (the
+-- multi-token lookahead needs more than one slot).
+local function tok_ahead(off)
+  local x = P.toks[P.pos + off]
+  if x == nil then
+    return { k = "eof", v = "", line = 1, col = 1 }
+  end
+  return x
+end
+
 function parse_block()
   expect_punct("{")
   local stmts = {}
@@ -771,9 +781,9 @@ function parse_block()
     elseif t.k == "kw" and t.v == "if" then
       local iff = parse_if()
       stmts[#stmts + 1] = { ifstmt = iff.iff }
-    elseif t.k == "name" and P.toks[P.pos + 1].k == "punct" and P.toks[P.pos + 1].v == "."
-       and P.toks[P.pos + 2].k == "name"
-       and P.toks[P.pos + 3].k == "punct" and P.toks[P.pos + 3].v == "=" then
+    elseif t.k == "name" and tok_ahead(1).k == "punct" and tok_ahead(1).v == "."
+       and tok_ahead(2).k == "name"
+       and tok_ahead(3).k == "punct" and tok_ahead(3).v == "=" then
       -- D-112 field assignment: `e.field = expr;`
       local base = next_tok()
       next_tok() -- `.`
@@ -905,7 +915,8 @@ local function parse_fn()
   if not at_punct(")") then
     while true do
       local is_mut = false
-      if at_kw("mut") then
+      local mt = peek()
+      if mt.k == "name" and mt.v == "mut" then
         next_tok()
         is_mut = true
       end

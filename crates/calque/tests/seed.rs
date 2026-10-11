@@ -1204,6 +1204,80 @@ pub fn main() i64 {
 }
 
 #[test]
+fn calq0_matches_the_seed_on_the_new_surface() {
+    // D-112's surface through the canonical compiler: [T] types,
+    // collection literals (i64/Str/named slots), struct field defaults,
+    // var inference, mut parameters, and field assignment - calq0's
+    // emission must equal the seed's byte-for-byte, then run.
+    let artifact = compile_artifact();
+    let lit = "pub const P2 = struct { a: i64, b: i64 };
+pub const B = struct { label: Str = \"\", lines: [Str] = [] };
+pub fn main() i64 {
+    var v: [i64] = [1, 2, 3];
+    const names: [Str] = [\"a\", \"b\"];
+    var empty: [i64] = [];
+    var inferred = 42;
+    const ps: [P2] = [%P2{a: 1, b: 2}];
+    const b = %B{};
+    io.print(str.fromI64(vector.len(v)));
+    io.print(\"\\n\");
+    io.print(str.fromI64(vector.len(names)));
+    io.print(\"\\n\");
+    io.print(str.fromI64(vector.len(empty)));
+    io.print(\"\\n\");
+    io.print(str.fromI64(inferred));
+    io.print(\"\\n\");
+    io.print(str.fromI64(vector.len(ps)));
+    io.print(\"\\n\");
+    io.print(str.fromI64(vector.len(b.lines)));
+    io.print(\"\\n\");
+    0
+}";
+    let mts = "pub const Emitter = struct {
+    count: i64 = 0,
+    total: i64 = 0,
+    label: Str = \"\",
+};
+pub fn bump(mut e: Emitter, n: i64) i64 {
+    e.count = e.count + 1;
+    e.total = e.total + n;
+    e.count
+}
+pub fn main() i64 {
+    var a = %Emitter{};
+    var b = %Emitter{};
+    const c1: i64 = bump(a, 5);
+    const c2: i64 = bump(a, 7);
+    const c3: i64 = bump(b, 1);
+    io.print(str.fromI64(a.total));
+    io.print(\"\\n\");
+    io.print(str.fromI64(b.total));
+    io.print(\"\\n\");
+    io.print(str.fromI64(a.count));
+    io.print(\"\\n\");
+    io.print(str.fromI64(c1 + c2 + c3));
+    io.print(\"\\n\");
+    0
+}";
+    for (name, src, want) in [
+        ("lit.calq", lit, "3\n2\n0\n42\n1\n0\n"),
+        ("mut.calq", mts, "12\n1\n2\n4\n"),
+    ] {
+        let files = vec![stdlib_str(), unit(name, None, src)];
+        let expected = seed_translate(&files).expect("the seed emits the probe");
+        let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the probe");
+        assert_eq!(
+            got.output,
+            expected,
+            "calq0's emission must equal the seed's ({name}): {}",
+            diff_hint(&got.output, &expected)
+        );
+        let emitted = run_artifact(&got.output).expect("the emitted probe runs");
+        assert_eq!(emitted.output, *want, "{name}");
+    }
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the
@@ -1291,20 +1365,20 @@ fn calq0_compiles_the_corpus_examples() {
 
 #[test]
 fn seed_translates_the_compiler_set() {
+    // The seed compiles the whole compiler set through the JIT path
+    // (cached like the self-gate): a fast smoke of the set against the
+    // current seed, before any differential runs.
     let files = compiler_files();
     let seed_src = include_str!("../../../tools/calque/bootstrap/seed.lua");
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
     use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
     seed_src.hash(&mut hasher);
     for f in &files {
         f.name.hash(&mut hasher);
         f.ns.hash(&mut hasher);
         f.text.hash(&mut hasher);
     }
-    let key = format!(
-        "calque-artifacts/setcheck-{:016x}.mlir",
-        hasher.finish()
-    );
+    let key = format!("calque-artifacts/setcheck-{:016x}.mlir", hasher.finish());
     let path = std::path::Path::new("../../target").join(&key);
     if let Ok(cached) = std::fs::read_to_string(&path) {
         println!("SET OK {} (cached)", cached.len());

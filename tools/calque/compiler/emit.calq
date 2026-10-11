@@ -283,8 +283,13 @@ pub fn e_fn(e: Emit, f: Fn) {
     var i: i64 = 0;
     while i < np {
         const prm: Param = vector.get(f.params, i);
-        args = str.concat(args, str.concat(", %", str.concat(prm.name, str.concat(": ", value_ir_t(e_ast(e), prm.ty)))));
-        declare(e, %Binding{name: prm.name, is_box: false, ty: prm.ty, id: str.concat("%", prm.name), box: ""});
+        if prm.mut {
+            args = str.concat(args, str.concat(", %", str.concat(prm.name, str.concat(": ", box_ir_t(e_ast(e), prm.ty)))));
+            declare(e, %Binding{name: prm.name, is_box: true, ty: prm.ty, id: str.concat("%", prm.name), box: box_ir_t(e_ast(e), prm.ty)});
+        } else {
+            args = str.concat(args, str.concat(", %", str.concat(prm.name, str.concat(": ", value_ir_t(e_ast(e), prm.ty)))));
+            declare(e, %Binding{name: prm.name, is_box: false, ty: prm.ty, id: str.concat("%", prm.name), box: ""});
+        }
         i = i + 1;
     }
     head = str.concat(head, str.concat("(", str.concat(args, ")")));
@@ -1188,10 +1193,46 @@ pub fn emit_call(e: Emit, c: Call, line: i64, col: i64) Str {
     }
     var i: i64 = 0;
     while i < na {
-        const v: Str = emit_expr(e, vector.get(c.args, i));
         const prm: Param = vector.get(f.params, i);
-        parts = str.concat(parts, str.concat(", ", v));
-        types = str.concat(types, str.concat(", ", value_ir_t(a, prm.ty)));
+        if prm.mut {
+            const agr: Expr = vector.get(c.args, i);
+            const ar: Ref = ref_of_expr(agr);
+            if str.len(ar.name) == 0 {
+                e_fail_at(e, line, col, "mut arguments must be names (a variable or a mut parameter)");
+                return "";
+            }
+            if str.len(ar.mod) > 0 {
+                e_fail_at(e, line, col, "mut arguments must be names (a variable or a mut parameter)");
+                return "";
+            }
+            const ab: Binding = lookup(e, ar.name);
+            if ab.name == "" {
+                e_fail_at(e, line, col, str.concat("unknown name `", str.concat(ar.name, "`")));
+                return "";
+            }
+            if ab.is_box == false {
+                e_fail_at(e, line, col, str.concat("`", str.concat(ar.name, "` is not mutable (declare it with var, or take it as a mut parameter)")));
+                return "";
+            }
+            var k: i64 = 0;
+            while k < i {
+                const pk: Param = vector.get(f.params, k);
+                if pk.mut {
+                    const ak: Ref = ref_of_expr(vector.get(c.args, k));
+                    if ak.name == ar.name {
+                        e_fail_at(e, line, col, str.concat("`", str.concat(ar.name, "` cannot occupy two mut positions in one call")));
+                        return "";
+                    }
+                }
+                k = k + 1;
+            }
+            parts = str.concat(parts, str.concat(", ", ab.id));
+            types = str.concat(types, str.concat(", ", box_ir_t(a, prm.ty)));
+        } else {
+            const v: Str = emit_expr(e, vector.get(c.args, i));
+            parts = str.concat(parts, str.concat(", ", v));
+            types = str.concat(types, str.concat(", ", value_ir_t(a, prm.ty)));
+        }
         i = i + 1;
     }
     if ty_is_unit(f.ret) {
@@ -1215,6 +1256,7 @@ pub fn emit_expr(e: Emit, ex: Expr) Str {
         Expr.Bin(b) => emit_bin(e, b),
         Expr.If(f) => emit_ifx(e, f),
         Expr.Blk(b) => emit_block_expr(e, b),
+        Expr.List(l) => e_fail_at(e, 0, 0, "a collection literal needs a [T]/Vector annotation (bind it: `const v: [i64] = [...]`)"),
         Expr.Bad(b) => e_fail(e, b),
         Expr.Match(m) => emit_match(e, m),
         Expr.Make(m) => emit_make(e, m, m.line, m.col),
@@ -1413,6 +1455,7 @@ pub fn emit_stmt(e: Emit, s: Stmt) {
     match s {
         Stmt.Const(c) => emit_const(e, c),
         Stmt.Var(v) => emit_var(e, v),
+        Stmt.FAssign(f) => emit_fassign(e, f),
         Stmt.Assign(a) => emit_assign(e, a),
         Stmt.Ret(r) => emit_ret(e, r),
         Stmt.While(w) => emit_while(e, w),
@@ -1427,7 +1470,11 @@ pub fn emit_const(e: Emit, c: ConstS) {
     if is_vec_new(c.expr) {
         v = emit_vec_new(e, c.ty, 0, 0);
     } else {
-        v = emit_expr(e, c.expr);
+        if c.has_ty {
+            v = emit_expr_typed(e, c.expr, c.ty);
+        } else {
+            v = emit_expr(e, c.expr);
+        }
     }
     var ty: Ty = c.ty;
     if c.has_ty == false {
@@ -1441,12 +1488,20 @@ pub fn emit_var(e: Emit, d: VarS) {
     if is_vec_new(d.expr) {
         v = emit_vec_new(e, d.ty, 0, 0);
     } else {
-        v = emit_expr(e, d.expr);
+        if d.has_ty {
+            v = emit_expr_typed(e, d.expr, d.ty);
+        } else {
+            v = emit_expr(e, d.expr);
+        }
+    }
+    var dty: Ty = d.ty;
+    if d.has_ty == false {
+        dty = vget(e, v);
     }
     const b: Str = fresh(e);
     const a: Ast = e_ast(e);
-    emit_line(e, str.concat(b, str.concat(" = \"frk_mem.box_new\"(", str.concat(v, str.concat(") : (", str.concat(value_ir_t(a, d.ty), str.concat(") -> ", box_ir_t(a, d.ty))))))));
-    declare(e, %Binding{name: d.name, is_box: true, ty: d.ty, id: b, box: box_ir_t(a, d.ty)});
+    emit_line(e, str.concat(b, str.concat(" = \"frk_mem.box_new\"(", str.concat(v, str.concat(") : (", str.concat(value_ir_t(a, dty), str.concat(") -> ", box_ir_t(a, dty))))))));
+    declare(e, %Binding{name: d.name, is_box: true, ty: dty, id: b, box: box_ir_t(a, dty)});
 }
 
 pub fn emit_assign(e: Emit, x: AssignS) {
@@ -1807,7 +1862,7 @@ pub fn emit_make(e: Emit, m: MakeE, line: i64, col: i64) Str {
                 value = unwrap_load(e, stored, fld.ty, line, col);
             } else {
                 if fld.has_default {
-                    value = emit_expr(e, fld.default);
+                    value = emit_expr_typed(e, fld.default, fld.ty);
                 } else {
                     return e_fail_at(e, line, col, str.concat("missing required field `", str.concat(fld.name, "`")));
                 }
@@ -2386,6 +2441,134 @@ pub fn pc_variant(e: Emit, v: PVar, value: Str, lty: Ty, p: Pat) Str {
     emit_line(e, str.concat(eq, str.concat(" = arith.cmpi eq, ", str.concat(tag, str.concat(", ", str.concat(const_i64(e, str.fromI64(idx)), " : i64"))))));
     vset(e, eq, Ty.BoolV);
     return eq;
+}
+
+
+// ---------------------------------------------------------------- D-112
+// Collection literals, typed by the target annotation only (never
+// inference), emitted through the mirrored vector prelude; the same
+// shapes as the seed's emit_list_literal.
+pub fn ref_of_expr(ex: Expr) Ref {
+    return match ex {
+        Expr.Ref(r) => r,
+        _ => %Ref{name: "", mod: ""},
+    };
+}
+
+pub fn emit_expr_typed(e: Emit, ex: Expr, ty: Ty) Str {
+    if has_ty_annotation(ty) {
+        return match ex {
+            Expr.List(l) => emit_list_literal(e, ty, l),
+            _ => emit_expr(e, ex),
+        };
+    }
+    return emit_expr(e, ex);
+}
+
+pub fn has_ty_annotation(ty: Ty) bool {
+    return match ty {
+        Ty.TyBad(b) => false,
+        _ => true,
+    };
+}
+
+pub fn emit_list_literal(e: Emit, ty: Ty, items: Vector(Expr)) Str {
+    if is_vec_t(ty) == false {
+        return e_fail_at(e, 0, 0, "a collection literal needs a [T]/Vector annotation (seed v0)");
+    }
+    const a: Ast = e_ast(e);
+    const inner: Ty = vec_inner(ty);
+    const prefix: Str = vec_prefix(inner);
+    const v: Str = fresh(e);
+    emit_line(e, str.concat(v, str.concat(" = func.call @", str.concat(prefix, str.concat("_new() : () -> ", vec_box(a, inner))))));
+    const n: i64 = vector.len(items);
+    var i: i64 = 0;
+    while i < n {
+        const xid: Str = emit_expr(e, vector.get(items, i));
+        const xty: Ty = vget(e, xid);
+        if same_ty(xty, inner) == false {
+            e_fail_at(e, 0, 0, "collection literal element type does not match the [T] annotation");
+            return "";
+        }
+        var stored: Str = xid;
+        if is_named_t(inner) {
+            stored = wrap_store(e, xid, xty, 0, 0);
+        }
+        const slot: Str = storage_ir_t(a, inner);
+        var l: Str = "func.call @";
+        l = str.concat(l, prefix);
+        l = str.concat(l, "_push(");
+        l = str.concat(l, v);
+        l = str.concat(l, ", ");
+        l = str.concat(l, stored);
+        l = str.concat(l, ") : (");
+        l = str.concat(l, vec_box(a, inner));
+        l = str.concat(l, ", ");
+        l = str.concat(l, slot);
+        l = str.concat(l, ") -> ()");
+        emit_line(e, l);
+        i = i + 1;
+    }
+    vset(e, v, ty);
+    return v;
+}
+
+// Field assignment (D-112): legal only through a mutable binding (a
+// var local or a mut parameter); the write is frk_mem.field_set on the
+// record's box.
+pub fn emit_fassign(e: Emit, f: FAssS) {
+    const b: Binding = lookup(e, f.name);
+    if b.name == "" {
+        e_fail_at(e, 0, 0, str.concat("unknown name `", str.concat(f.name, "` in field assignment")));
+        return;
+    }
+    if b.is_box == false {
+        e_fail_at(e, 0, 0, str.concat("cannot set a field through immutable `", str.concat(f.name, "` (use a var binding or a mut parameter)")));
+        return;
+    }
+    if is_named_t(b.ty) == false {
+        e_fail_at(e, 0, 0, "field assignment needs a record binding (seed v0)");
+        return;
+    }
+    const a: Ast = e_ast(e);
+    const td: TypeDecl = find_td(a, named_of(b.ty));
+    if td.is_union {
+        e_fail_at(e, 0, 0, str.concat("`", str.concat(named_of(b.ty), "` is a union; assign through `match`")));
+        return;
+    }
+    const idx: i64 = field_index(td, f.field);
+    const fld: FieldDecl = vector.get(td.fields, idx);
+    const v: Str = emit_expr_typed(e, f.expr, fld.ty);
+    const vty: Ty = vget(e, v);
+    if same_ty(vty, fld.ty) == false {
+        e_fail_at(e, 0, 0, str.concat("field `", str.concat(f.field, "` does not take this value's type")));
+        return;
+    }
+    const rec: Str = fresh(e);
+    const self_ty: Ty = b.ty;
+    var l0: Str = " = \"frk_mem.box_get\"(";
+    l0 = str.concat(l0, b.id);
+    l0 = str.concat(l0, ") : (");
+    l0 = str.concat(l0, box_ir_t(a, self_ty));
+    l0 = str.concat(l0, ") -> ");
+    l0 = str.concat(l0, value_ir_t(a, self_ty));
+    emit_line(e, str.concat(rec, l0));
+    var stored: Str = v;
+    if is_named_t(fld.ty) {
+        stored = wrap_store(e, v, fld.ty, 0, 0);
+    }
+    var l1: Str = "\"frk_mem.field_set\"(";
+    l1 = str.concat(l1, rec);
+    l1 = str.concat(l1, ", ");
+    l1 = str.concat(l1, stored);
+    l1 = str.concat(l1, ") {field = ");
+    l1 = str.concat(l1, str.fromI64(idx));
+    l1 = str.concat(l1, " : i64} : (");
+    l1 = str.concat(l1, value_ir_t(a, self_ty));
+    l1 = str.concat(l1, ", ");
+    l1 = str.concat(l1, storage_ir_t(a, fld.ty));
+    l1 = str.concat(l1, ") -> ()");
+    emit_line(e, l1);
 }
 
 // ---------------------------------------------------------------- match

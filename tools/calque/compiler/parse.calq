@@ -32,6 +32,9 @@ pub const Expr = union(enum) {
     Match: MatchE,
     Make: MakeE,
     Blk: Block,
+    // A collection literal (D-112): typed ONLY by its target
+    // annotation; the bare emitter rejects it.
+    List: Vector(Expr),
     // Explicit recovery node (D-109): the emitter MUST reject it before
     // execution can treat it as a valid expression. Also carries the
     // "<absent>" marker for optional fields that are read only when
@@ -424,6 +427,27 @@ pub fn parse_primary(p: P) Expr {
         const b: Block = p_block(p);
         return Expr.Blk(b);
     }
+    if at_punct(p, "[") {
+        const _lb: Tok = p_next(p);
+        var items: Vector(Expr) = vector.new();
+        while p_ok(p) {
+            if at_punct(p, "]") {
+                const _rb: Tok = p_next(p);
+                return Expr.List(items);
+            }
+            const item: Expr = parse_expr(p, 4);
+            vector.push(items, item);
+            if at_punct(p, ",") {
+                const _c: Tok = p_next(p);
+            } else {
+                if at_punct(p, "]") == false {
+                    const bt: Tok = p_peek(p);
+                    return bad(p, bt.line, bt.col, "expected `]` to close the collection literal");
+                }
+            }
+        }
+        return bad(p, t.line, t.col, "unterminated collection literal");
+    }
     if is_eof_tok(t) {
         return bad(p, t.line, t.col, "unexpected end of input");
     }
@@ -463,8 +487,21 @@ pub fn dump(e: Expr) Str {
         Expr.Match(m) => d_match(m),
         Expr.Make(m) => d_make(m),
         Expr.Blk(b) => d_block(b),
+        Expr.List(l) => d_list(l),
         Expr.Bad(b) => d_bad(b),
     };
+}
+
+pub fn d_list(items: Vector(Expr)) Str {
+    var acc: Str = "(list";
+    const n: i64 = vector.len(items);
+    var i: i64 = 0;
+    while i < n {
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, dump(vector.get(items, i)));
+        i = i + 1;
+    }
+    return str.concat(acc, ")");
 }
 
 pub fn d_bad(b: BadNode) Str {
@@ -498,6 +535,7 @@ pub const Ty = union(enum) {
 pub const Param = struct {
     name: Str,
     ty: Ty,
+    mut: bool,
 };
 
 pub const FieldDecl = struct {
@@ -535,6 +573,7 @@ pub const ConstS = struct {
 
 pub const VarS = struct {
     name: Str,
+    has_ty: bool,
     ty: Ty,
     expr: Expr,
 };
@@ -585,6 +624,13 @@ pub const Stmt = union(enum) {
     While: WhileS,
     Destr: DestrS,
     Expr: ExprS,
+    FAssign: FAssS,
+};
+
+pub const FAssS = struct {
+    name: Str,
+    field: Str,
+    expr: Expr,
 };
 
 pub const IfE = struct {
@@ -713,12 +759,22 @@ pub fn p_type(p: P) Ty {
         p_fail(p, t.line, t.col, str.concat("unsupported type keyword `", str.concat(t.text, "`")));
         return bad_ty(p, t.line, t.col, "invalid type");
     }
+    if is_punct_tok(t) {
+        if t.text == "[" {
+            const _t: Tok = p_next(p);
+            const inner: Ty = p_type(p);
+            if expect_punct(p, "]") == false {
+                return bad_ty(p, t.line, t.col, "invalid type");
+            }
+            return Ty.Vec(inner);
+        }
+    }
     if is_name_tok(t) {
         if t.text == "Str" {
             const _t: Tok = p_next(p);
             return Ty.StrV;
         }
-        if t.text == "Vector" {
+    if t.text == "Vector" {
             const _t: Tok = p_next(p);
             if expect_punct(p, "(") == false {
                 return bad_ty(p, t.line, t.col, "invalid type");
@@ -1023,7 +1079,12 @@ pub fn p_destr(p: P, mutable: bool, kw_line: i64, kw_col: i64) DestrS {
 }
 
 pub fn p_tok_at(p: P, offset: i64) Tok {
-    return vector.get(p.toks, vector.get(p.pos, 0) + offset);
+    const i: i64 = vector.get(p.pos, 0) + offset;
+    if i < vector.len(p.toks) {
+        return vector.get(p.toks, i);
+    }
+    // Lookahead past the eof sentinel reads as eof, never traps.
+    return %Tok{kind: Kind.Eof, text: "", line: 1, col: 1};
 }
 
 pub fn expect_semi(p: P) bool {
@@ -1081,16 +1142,19 @@ pub fn p_stmt_into(p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
                 return %StmtOut{added: true, tail: poison()};
             }
             const _n: Tok = p_next(p);
-            if expect_punct(p, ":") == false {
-                return %StmtOut{added: true, tail: poison()};
+            var has_ty: bool = false;
+            var ty: Ty = poison_ty();
+            if at_punct(p, ":") {
+                const _c: Tok = p_next(p);
+                ty = p_type(p);
+                has_ty = true;
             }
-            const ty: Ty = p_type(p);
             if expect_punct(p, "=") == false {
                 return %StmtOut{added: true, tail: poison()};
             }
             const e: Expr = parse_expr(p, 4);
             const _s: bool = expect_semi(p);
-            vector.push(stmts, Stmt.Var(%VarS{name: name.text, ty: ty, expr: e}));
+            vector.push(stmts, Stmt.Var(%VarS{name: name.text, has_ty: has_ty, ty: ty, expr: e}));
             return %StmtOut{added: true, tail: poison()};
         }
         if t.text == "return" {
@@ -1139,6 +1203,28 @@ pub fn p_stmt_into(p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
                 const _s: bool = expect_semi(p);
                 vector.push(stmts, Stmt.Assign(%AssignS{name: t.text, expr: e}));
                 return %StmtOut{added: true, tail: poison()};
+            }
+            if nx.text == "." {
+                const fld: Tok = p_tok_at(p, 2);
+                const eq: Tok = p_tok_at(p, 3);
+                var is_fa: bool = false;
+                if is_name_tok(fld) {
+                    if is_punct_tok(eq) {
+                        if eq.text == "=" {
+                            is_fa = true;
+                        }
+                    }
+                }
+                if is_fa {
+                    const _a2: Tok = p_next(p);
+                    const _d2: Tok = p_next(p);
+                    const _f2: Tok = p_next(p);
+                    const _e2: Tok = p_next(p);
+                    const e2: Expr = parse_expr(p, 4);
+                    const _s2: bool = expect_semi(p);
+                    vector.push(stmts, Stmt.FAssign(%FAssS{name: t.text, field: fld.text, expr: e2}));
+                    return %StmtOut{added: true, tail: poison()};
+                }
             }
         }
     }
@@ -1205,6 +1291,14 @@ pub fn p_fn(p: P) Fn {
             const body: Block = p_block(p);
             return %Fn{name: name.text, params: params, ret: ret, body: body, file: "", ns: ""};
         }
+        var is_mut: bool = false;
+        const mt: Tok = p_peek(p);
+        if is_name_tok(mt) {
+            if mt.text == "mut" {
+                const _m: Tok = p_next(p);
+                is_mut = true;
+            }
+        }
         const pn: Tok = p_peek(p);
         if is_name_tok(pn) == false {
             p_fail(p, pn.line, pn.col, "expected a parameter name");
@@ -1215,7 +1309,20 @@ pub fn p_fn(p: P) Fn {
             return poison_fn();
         }
         const ty: Ty = p_type(p);
-        vector.push(params, %Param{name: pn.text, ty: ty});
+        if is_mut {
+            // Parse-side only: this file may not call emitter helpers
+            // (the dump driver compiles without emit.calq).
+            var named_ok: bool = false;
+            match ty {
+                Ty.Named(n) => { named_ok = true; },
+                _ => {},
+            };
+            if named_ok == false {
+                p_fail(p, pn.line, pn.col, "mut parameters take a record type (seed v0, D-112)");
+                return poison_fn();
+            }
+        }
+        vector.push(params, %Param{name: pn.text, ty: ty, mut: is_mut});
         if at_punct(p, ",") {
             const _c2: Tok = p_next(p);
         } else {
@@ -1369,6 +1476,13 @@ pub fn p_lit_expr(p: P) Expr {
         if d.text == "false" {
             const _c: Tok = p_next(p);
             return Expr.Bool(d.text);
+        }
+    }
+    if is_punct_tok(d) {
+        if d.text == "[" {
+            // Collection-typed defaults (D-112): the literal takes the
+            // field's declared element type at emission.
+            return parse_expr(p, 4);
         }
     }
     return bad(p, d.line, d.col, "seed v0 supports literal field defaults only (D-095)");
@@ -1576,14 +1690,22 @@ pub fn d_destr(d: DestrS) Str {
 pub fn d_stmt(s: Stmt) Str {
     return match s {
         Stmt.Const(c) => d_const(c),
-        Stmt.Var(v) => str.concat("(var ", str.concat(v.name, str.concat(" ", str.concat(d_ty(v.ty), str.concat(" ", str.concat(dump(v.expr), ")")))))),
+        Stmt.Var(v) => d_var(v),
         Stmt.Assign(a) => str.concat("(assign ", str.concat(a.name, str.concat(" ", str.concat(dump(a.expr), ")")))),
         Stmt.Ret(r) => d_ret(r),
         Stmt.If(f) => d_if(%IfE{cond: f.cond, then: f.then, has_else: f.has_else, els: f.els}),
         Stmt.While(w) => str.concat("(while ", str.concat(dump(w.cond), str.concat(" ", str.concat(d_block(w.body), ")")))),
         Stmt.Destr(d) => d_destr(d),
         Stmt.Expr(e) => str.concat("(expr ", str.concat(dump(e.expr), ")")),
+        Stmt.FAssign(f) => str.concat("(fassign ", str.concat(f.name, str.concat(".", str.concat(f.field, str.concat(" ", str.concat(dump(f.expr), ")")))))),
     };
+}
+
+pub fn d_var(v: VarS) Str {
+    if v.has_ty {
+        return str.concat("(var ", str.concat(v.name, str.concat(" ", str.concat(d_ty(v.ty), str.concat(" ", str.concat(dump(v.expr), ")"))))));
+    }
+    return str.concat("(var ", str.concat(v.name, str.concat(" ", str.concat(dump(v.expr), ")"))));
 }
 
 pub fn d_const(c: ConstS) Str {
