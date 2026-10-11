@@ -24,7 +24,8 @@ err() { echo "calque-check: $1" >&2; fail=1; }
 
 # 1. Required artifacts.
 for f in docs/calque/GOAL.md docs/calque/SPEC.md docs/calque/BOOTSTRAP.md \
-         docs/calque/ACCEPTANCE.md specimens/calque/MANIFEST.md \
+         docs/calque/ACCEPTANCE.md docs/calque/PERFORMANCE.md \
+         specimens/calque/MANIFEST.md \
          specimens/calque/examples/README.md book/src/specimens/calque.md; do
   [ -f "$f" ] || err "missing artifact: $f"
 done

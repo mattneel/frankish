@@ -180,13 +180,13 @@ performance), C5=M41 (developer experience + portability), C6=M42
 | AC-11.8 | Reification: deterministic frozen values; materialization via verified IR; sharing/cycles policy; refuse pointers/live resources/handles; closure reification only with complete representation; actionable diagnostics; no dangling arena pointers | C3 | reification corpus + negative tests | pending (M39) |
 | AC-11.9 | Compile-time-only functions absent from final artifacts | C4 | IR/object inspection evidence | pending (M40) |
 | AC-11.10 | Security/reproducibility: deny network/shell/env/clocks/random; file reads ONLY through declared named build inputs (`calque.toml` `[build.inputs]`, D-090) whose content participates in cache validity; boundary enforcement; foreign-effect rejection; step/memory/recursion/nesting budgets; deterministic cancellation + limit diagnostics; JIT-independent | C3 | sandbox tests; budget/cancellation tests; capability-denial test (playbook #10); default-path without JIT | pending (M39) |
-| AC-11.11 | Cache: complete semantic inputs (incl. compiler identity, target, capabilities, policy); input-hashing on the hot path; hash-validated artifacts; invalidation on transitive changes; no failed/partial results; counters | C3 | cache tests (hit/miss/invalidate); counters; AC-15.9 | pending (M39) |
+| AC-11.11 | Cache/query engine (D-093): resident live query DB (dependency revisions; validation ≠ deserialization) + persistent action index (input-derived keys; lazy restart validation) + content-addressed artifact store (action key ≠ output hash); validity contract = implementation identity (compiler/evaluator/intrinsics/foreign frontends) + program deps + target config + granted inputs + result interpretation; conservative complete-toolchain-identity namespacing first; no failed/partial results; counters | C3 | cache/query tests (hit/miss/invalidate/red-green); counters; AC-15.9 | pending (M39) |
 
 ## §12 Compiler-as-library + cross-specimen (GOAL §12)
 
 | ID | Requirement | Stage | Evidence | Status |
 |---|---|---|---|---|
-| AC-12.1 | Typed library interface for source→artifact; in-memory source; filesystem only via caller capabilities; structured diagnostics before rendering | C1/C2 | `crates/calque` lib API + tests | pending (M37) |
+| AC-12.1 | Typed library interface for source→artifact; in-memory source; filesystem only via caller capabilities; structured diagnostics before rendering; `compiler.compile` stays the convenient public interface with TRACKED QUERIES at the D-093 boundaries internally | C1/C2 | `crates/calque` lib API + tests; query-boundary tests | pending (M37) |
 | AC-12.2 | A Calque program invokes the compiler library under the interpreter | C3 | demo/test calling compile on a source value | pending (M39) |
 | AC-12.3 | `comptime` compiles a small program, evaluates its artifact, materializes the result (the playbook #2 inception shape: `compiler.compile` + `frankish.eval`, D-090/F31); same limits/target; no special-casing | C3 | demo test + mutant of the embedded program (live edit changes the constant) | pending (M39) |
 | AC-12.4 | Profile-based compile-and-evaluate for other specimens; registered frontend/interpreter path; portable value subset defined; per-specimen pure entry points; conformance case per profile; located rejections; deps tracked (embedded source/imports); pinned external frontends | C3 | `cross_specimen` suite (ml/scheme/lua profiles) | pending (M39) |
@@ -213,7 +213,7 @@ performance), C5=M41 (developer experience + portability), C6=M42
 | AC-14.3 | Language server: diagnostics, hover, completion, definition, references, rename (scope/shadowing aware); partial results for incomplete source; one frontend; cancellation/stale versions; protocol tests; editor integration docs | C5 | `calque lsp` + protocol tests | pending (M41) |
 | AC-14.4 | REPL: typed display, multiline, type queries, module load, diagnostics, IR inspection; declaration replacement + state lifetime defined; isolation after failed evals; transcript goldens | C5 | `calque repl` + transcript corpus | pending (M41) |
 | AC-14.5 | Diagnostics: original spans; cause + secondary locations; generic/comptime/generated origins; no raw IR-only diagnostics; source-mapped native debug info; one debugger smoke test; distinction documented | C1/C5 | SPEC §11 + rendered form at C5; debugger test | pending (M37→M41) |
-| AC-14.6 | Incremental: dependency tracking at declaration/function grain; content-addressed reuse; correct transitive invalidation; cold and warm times reported separately; counters proving hits + limited recomputation; diagnostics preserved; warm small-change path = hash + lookup + minimal emission (no full pipeline) | C5 | `make calque-bench` incremental section + counters; D-089 | pending (M41) |
+| AC-14.6 | Incremental (D-093): red-green — invalidation stops at unchanged observable results; resident live-query warm path with NO per-unchanged-function disk transactions; separate fingerprint classes (signature/body/derived summaries; frozen value vs diagnostic provenance); dynamic dependencies preserve read order; cold and warm times reported separately; counters proving hits + limited recomputation; diagnostics preserved; `calque build --explain-incremental` retrace with dependency classes | C5 | `make calque-bench` incremental section + counters; D-093 | pending (M41) |
 
 ## §15 Performance (GOAL §15)
 
@@ -227,7 +227,7 @@ performance), C5=M41 (developer experience + portability), C6=M42
 | AC-15.6 | Measurement procedure 1–10 (baseline first, env recorded, startup vs exec, cold vs warm, allocs+memory, repeats+variability, direct-impl comparison, budgets pre-recorded, inputs preserved, regressions investigated) | C4 | `make calque-bench` + PERFORMANCE.md | pending (M40) |
 | AC-15.7 | Evidence: alloc-free specialized loop; noncapturing fn without env; bounded-stack tail recursion; frontend reuse; cache hit + dependency-triggered miss; honest reporting | C4/C3 | demo tests + measured outputs | pending (M40) |
 | AC-15.8 | No invented targets or unsupported language comparisons | C4/C6 | audit | pending (M40) |
-| AC-15.9 | Incremental targets (recorded as budgets before C4, measured at C4/C5, honestly reported): warm body-local ≈ tens of ms; medium ≈ 50–200 ms; cold ≈ affected-subgraph compile; inception second-run ≈ cached constant | C4/C5 | `docs/calque/PERFORMANCE.md` budgets + measured report; D-089 | pending (M40) |
+| AC-15.9 | Incremental targets live in the BENCHMARK PLAN (`docs/calque/PERFORMANCE.md`, D-089/D-093): work counts + elapsed, warm and cold separate, the seven-edit matrix, counters (queries/deserialization/interpreter steps/partitions); planned targets (warm body-local tens-of-ms class; medium 50–200 ms; cold ≈ affected-subgraph compile; inception second-run reuse) become claims only after C4 measurement | C4/C5 | `docs/calque/PERFORMANCE.md` + measured report | pending (M40) |
 
 ## §16 Verification strategy (GOAL §16)
 
@@ -240,7 +240,7 @@ performance), C5=M41 (developer experience + portability), C6=M42
 | AC-16.5 | Property tests (collections, codecs, substitutions, pattern compilation); typed program generation + malformed input; metamorphic tests | C2/C4 | proptest-style suites in the corpus | pending (M38/M40) |
 | AC-16.6 | Independent subset oracles where a faithful transliteration exists | C1+ | `oracle_ml`/`oracle_scheme` transliteration cases | pending (M37) |
 | AC-16.7 | No second production interpreter built to satisfy this section | ongoing | review at M37/M39 | ongoing |
-| AC-16.8 | Adversarial cases: shadowing/captures; multi-instantiation + recursive generics; guard order + pipeline failures; escaped closures/persistent aliases; layout descriptors vs real fields; cleanup across errors/nested evals; comptime budgets/failed-cache isolation; target ints/serialization; path/symbol/module collisions; truncated artifacts; long-lived process memory; malformed editor requests | C1–C5 | named cases enter the corpus at the owning stage (`adv_*`) | pending |
+| AC-16.8 | Adversarial cases: shadowing/captures; multi-instantiation + recursive generics; guard order + pipeline failures; escaped closures/persistent aliases; layout descriptors vs real fields; cleanup across errors/nested evals; comptime budgets/failed-cache isolation; target ints/serialization; path/symbol/module collisions; truncated artifacts; long-lived process memory; malformed editor requests; red-green boundary edits (value-vs-provenance split; comptime branch read-order changes) | C1–C5 | named cases enter the corpus at the owning stage (`adv_*`) | pending |
 | AC-16.9 | Test discipline: verifier with/before each feature; narrow canon; never normalize away real errors; deliberate mutants fail; existing specimen tests preserved; golden changes explained; skipped checks recorded | ongoing | per-commit discipline; C6 audit; M36 baseline green | ongoing |
 
 ## §17 Portability and deployment (GOAL §17)
@@ -294,6 +294,7 @@ its console blocks are release targets, never captured-run substitutes.
 | AC-20.6 | Recording: real terminal sessions, `.cast` + scripts + fixtures + expected outputs, pinned MP4 toolchain, decode-verified, readable without audio, real timings, cuts disclosed, full logs outside clips, no fabrication, no publishing/social | C6 | `demos/verify.sh` (decode + content checks) | pending (M42) |
 | AC-20.7 | Playbook demos #6–#10 also ship: exhaustiveness catch + or-pattern repair; reflection codec round-trip with precise runtime error; persistent-map undo; million-tail-call with stack instrumentation; named build input with cache reuse/invalidation + capability denial | C6 | `demos/` (each with its executable proof) | pending (M42) |
 | AC-20.8 | Storyboard discipline: the playbook's opening order and captions honored; every terminal claim backed by its own executable test, not a decorative summary | C6 | review at C6 | pending (M42) |
+| AC-20.9 | Red-green incremental demo (D-093; the strongest public claim): the inception program edited 6*7→21*2 — nested queries/eval re-execute, the frozen result stays 42, downstream consumers stay valid ("I changed the program that runs during compilation. Its answer stayed the same. The application did not rebuild."); then 6*9→54 invalidates genuinely; `--explain-incremental` retrace recorded with dependency classes separated; real timings only | C6 | `demos/` records | pending (M42) |
 
 ## §21 Non-goals (GOAL §21) — audited to NOT be done
 
@@ -344,7 +345,7 @@ its console blocks are release targets, never captured-run substitutes.
 | Calque intrinsics (kernel IR seed) | `crates/calque/src/intrinsics.mlir` (crate-local, `include_str!` per the D-062 pattern) | M37 |
 | Host lib + CLI | `crates/calque/` (bin `calque`) | M37 |
 | Spec / route / matrix / goal | `docs/calque/{SPEC,BOOTSTRAP,ACCEPTANCE,GOAL}.md` | M36 (exist) |
-| Performance record | `docs/calque/PERFORMANCE.md` | M40 |
+| Performance and incrementality plan | `docs/calque/PERFORMANCE.md` | M37 (plan opened) → measured at C4 |
 | Demos | `docs/calque/DEMOS.md` + `demos/` | M42 |
 | Book chapter | `book/src/specimens/calque.md` | M36 (stub) → M42 |
 | Charter checker | `scripts/calque-check.sh` | M36 (exists) |

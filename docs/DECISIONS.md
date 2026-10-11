@@ -193,6 +193,88 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-093 [calque/incremental] THE INCREMENTAL COMPUTATION ENGINE (user
+  directive, 2026-10-11; extends and sharpens D-089). Calque needs a
+  demand-driven QUERY ENGINE with dependency tracking and
+  unchanged-result detection — not merely a content-addressed cache.
+  THE ARCHITECTURAL PROMISE, verbatim: "An edit invalidates the
+  computations that depend on it. If their observable results remain
+  unchanged, invalidation stops there." (red-green / backdating;
+  rustc- and Salsa-precedented). THREE COMPONENTS: (1) a LIVE QUERY
+  DATABASE, resident for the session — dependency edges + revisions;
+  validation is separate from value retrieval (valid ≠ deserialized);
+  unchanged values stay in memory; (2) a PERSISTENT QUERY/ACTION INDEX
+  — the input-derived key that justifies reuse, validated LAZILY
+  after restart — distinct from (3) a CONTENT-ADDRESSED ARTIFACT STORE
+  (immutable serialized results under content hashes; action key ≠
+  output hash — the Bazel separation). TIGHTENED WARM PATH: accept
+  edit → update the affected source representation → validate demanded
+  queries → recompute only invalid ones → STOP PROPAGATION AT
+  UNCHANGED RESULTS → emit/link only where required; unchanged
+  functions must NOT cost a disk-cache transaction. QUERY BOUNDARIES
+  (semantic, the compiler's own design): source(module) → parse →
+  declarations; signature(decl); body(decl) → resolveBody → checkBody;
+  specialize(decl, type/const args) → kernelFragment(instance) →
+  objectPartition(partition); comptime(expr, env, target) →
+  frozenValue; link(...) → executable. Mutually recursive declarations
+  and shared layouts form COHERENT GROUPS — the function-level view is
+  not absolute. `compiler.compile` REMAINS the convenient public
+  interface; internally it must invoke tracked queries at these
+  boundaries. THE VALIDITY CONTRACT extends beyond visible arguments:
+  executed implementation (compiler, evaluator, intrinsics, foreign
+  specimen frontends), program dependencies (bodies, imports, generic
+  arguments, captured constants), target configuration (data layout,
+  CPU features, arithmetic policy, optimization configuration), granted
+  inputs (declared file contents, resolution, capability policy), and
+  result interpretation (artifact schema, type representation,
+  resource-limit policy). SELF-HOSTING RULE: a compiler bug fix must
+  not reuse results from the buggy compiler — the conservative first
+  implementation namespaces persistent results by COMPLETE toolchain
+  identity; finer implementation fingerprints come only after
+  correctness tests establish their validity; identical foreign source
+  does not justify reuse across an untracked frontend change.
+  GRANULARITY: separate fingerprints for signatures, bodies, and
+  DERIVED SUMMARIES (effect/allocation summaries, specialization
+  traits) — an `@noalloc` consumer depends on the callee's allocation
+  behavior, so its dependencies cannot stop at argument/return types; a
+  body edit may leave signature consumers valid. DYNAMIC DEPENDENCIES
+  (a comptime condition selecting a different branch) preserve
+  dependency READ ORDER so branch changes invalidate correctly.
+  PURITY QUALIFICATION (amending D-089's framing): Frankish is not
+  exclusively pure (memory operations, control effects) — the
+  requirement is a DETERMINISTIC CONTRACT per cacheable request, local
+  mutation isolated, externally relevant dependencies explicit and
+  tracked; D-089's hash-inputs discipline applies WITHIN that contract.
+  BACKEND GRANULARITY: frontend granularity does not determine backend
+  granularity — stable NATIVE-CODE PARTITIONS are required (a
+  whole-program MLIR module must not be the only persistent native
+  boundary; Zig's 2026 incremental report — frontend work reduced,
+  LLVM object-emission time not — is the recorded evidence). ITERATION
+  PROFILES, preserving the priority order: editor analysis
+  (diagnostics, no native codegen) / interactive execution (frontend
+  reuse, demand-only executable work) / development executable (stable
+  partitions + necessary linkage) / release executable (broader
+  optimization when its runtime benefit justifies build cost).
+  THE DEMONSTRATION ("the strongest public demonstration"; trace
+  proposed, NOT measured): the inception program edited 6*7→21*2 —
+  nested queries re-execute, nested evaluation executes, the FROZEN
+  RESULT stays 42:i64, downstream semantic consumers remain valid —
+  "I changed the program that runs during compilation. Its answer
+  stayed the same. The application did not rebuild."; frozen VALUE and
+  diagnostic PROVENANCE are SEPARATE dependencies (source locations
+  refresh while the semantic result holds); a 6*9→54 edit then
+  invalidates genuinely. Surface: `calque build --explain-incremental`
+  reports the retrace with dependency classes reported separately;
+  backend-reuse claims are gated on debug-information/partition policy.
+  BENCHMARKS: work counts alongside elapsed time, warm and cold
+  reported separately; the seven-edit matrix (no change; comment-only;
+  private body; comptime implementation same-value; comptime value
+  change; declared-input change; compiler/evaluator change) with
+  counters (executed queries, deserialized bytes, interpreter steps,
+  regenerated object partitions) lands in docs/calque/PERFORMANCE.md —
+  which is where D-089's millisecond ranges now live: planned targets
+  for selected workflows, never performance claims. Revisit: fingerprint
+  refinement after the C3/C4 correctness tests; partition policy at C4.
 - D-092 [calque/convention] THE CALQUE CALL CONVENTION (settled at C1
   planning, before the first emission exists). Every Calque function
   compiles to the UNIFORM form (D-063) with TYPED parameters:

@@ -322,22 +322,30 @@ path-independent resolution, local package dependencies + lockable
 manifest. [C5] reproducible builds, clean-install/offline workflows.
 [Never in this goal: an online package registry.]
 
-### §7.3 Incrementality and the cache contract [design intent — D-089]
+### §7.3 Incrementality and the cache contract [design intent — D-089/D-093]
 
-Incrementality is architectural, not a late optimization: the compiler
-and the comptime evaluation service are PURE functions of their inputs,
-and their outputs are cached under fine-grained content-addressed keys
-(declaration/function/small-module grain; keys include source content,
-target, capabilities, resource policy, and compiler identity). The warm
-path for a small local edit is hash → cache lookup → dependency-graph
-reconstruction → minimal emission/linking; failed or partial work never
-enters the cache; every verification-path use re-validates cached
-artifacts (BOOTSTRAP §4). Language-visible consequence: declarations
-carry STABLE IDENTITIES across recompiles (compile-order and
-whole-program-blob independence are requirements of the module design,
-verified from C2 on) so that fine-grained invalidation is sound. The
-quantitative targets live in D-089 and are measured at C4/C5, never
-claimed before measurement.
+Incrementality is a query engine, not a late optimization: a
+demand-driven database of tracked queries over pure-in-contract
+requests (D-093) — an edit invalidates the computations that depend
+on it, and **invalidation stops where observable results remain
+unchanged** (red-green). The compiler and the comptime evaluation
+service expose tracked queries at semantic boundaries
+(signature/body/resolve/check/specialize/kernel-fragment/object-
+partition/comptime/link — mutually recursive declarations form
+coherent groups); `compiler.compile` stays the convenient public
+interface. Persistent reuse is keyed by the FULL validity contract —
+executed implementation (compiler/evaluator/intrinsics/foreign
+frontends), program dependencies, target configuration, granted
+inputs, and result interpretation — with the conservative first
+implementation namespacing persistent results by complete toolchain
+identity. Failed or partial work never enters the store; every
+verification-path use re-validates (BOOTSTRAP §4). Language-visible
+consequence: declarations carry STABLE IDENTITIES across recompiles
+so fine-grained invalidation is sound. Native reuse requires stable
+code partitions and is measured separately from frontend work. The
+quantitative targets and the seven-edit benchmark matrix live in
+`docs/calque/PERFORMANCE.md` — planned targets, measured at C4/C5,
+never claimed before measurement.
 
 ## §8 comptime (C3 — roadmap; design intent frozen here)
 
@@ -425,7 +433,7 @@ require a D-entry and a row here. "Frozen-by" records the decision.
 | F27 | if/while conditions paren-less; `for (x) \| v` at C2; dot-shorthand constructors/patterns AT C2 (b0 spells types) | D-090 |
 | F28 | the user's demo playbook (docs/calque-demo-playbook.md) is the surface-intent + C6 storyboard source; its console blocks are release targets | D-090 |
 | F29 | `calque.toml` build manifest + named `[build.inputs]`, enforced at the service boundary | D-090 (C3/C5) |
-| F30 | CLI surfaces: check/build/run/test/explain (+ `--explain-comptime`, `--runtime-artifact`, `--function`) | D-090 (C1/C5) |
+| F30 | CLI surfaces: check/build/run/test/explain (+ `--explain-comptime`, `--explain-incremental`, `--runtime-artifact`, `--function`) | D-090/D-093 (C1/C5) |
 | F31 | `compiler.compile`, `frankish.eval`, `frankish.evalSpecimen` are the host-service spellings | D-090 (C3) |
 | F32 | `@noalloc` spelling; allocation claims require executable tests, never terminal decoration | D-090 (C4) |
 | F33 | multiline `"""` strings, `_` numeric separators, `@intCast`, `usize`, `[N]T`, tuples, `[...]` literals, `..spread`, `test` blocks | D-090 (C2) |
