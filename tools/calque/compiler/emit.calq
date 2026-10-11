@@ -44,12 +44,12 @@ pub const InstN = struct {
 
 pub const InstE = struct {
     f: Fn,
-    sub: Vector(TV),
+    sub: [TV],
 };
 
 pub const GRes = struct {
     f: Fn,
-    args: Vector(Expr),
+    args: [Expr],
 };
 
 pub const Emitter = struct {
@@ -105,9 +105,9 @@ pub fn scope_push(mut e: Emitter) {
 pub fn scope_pop(mut e: Emitter) {
     // b0 vectors have no truncate; scopes are a vector CELL so the pop
     // rebuilds the outer vector minus its last entry.
-    const sc: Vector(Scope) = e.scopes;
+    const sc: [Scope] = e.scopes;
     const n: i64 = vector.len(sc);
-    var kept: Vector(Scope) = vector.new();
+    var kept: [Scope] = vector.new();
     var i: i64 = 0;
     while i < n - 1 {
         vector.push(kept, vector.get(sc, i));
@@ -165,7 +165,7 @@ pub fn emit_top(mut e: Emitter, s: Str) {
 }
 
 pub fn new_block(mut e: Emitter, label: Str) {
-    var lines: Vector(Str) = vector.new();
+    var lines: [Str] = vector.new();
     vector.push(e.blocks, %Blk{label: label, lines: lines});
     e.current_block = vector.len(e.blocks) - 1;
     e.terminated = false;
@@ -291,9 +291,9 @@ pub fn sym_of(f: Fn) Str {
 pub fn e_fn(mut e: Emitter, f: Fn) {
     e.next_value = 0;
     e.next_block = 0;
-    var fresh_vt: Vector(VTy) = vector.new();
+    var fresh_vt: [VTy] = vector.new();
     e.value_types = fresh_vt;
-    var fresh_sc: Vector(Scope) = vector.new();
+    var fresh_sc: [Scope] = vector.new();
     e.scopes = fresh_sc;
     e_ret_set(e, f.ret);
     e_file_set(e, f.file);
@@ -436,7 +436,7 @@ pub fn lift_snapshot(mut e: Emitter) LiftS {
 
 pub fn scope_truncate(mut e: Emitter, depth: i64) {
     if vector.len(e.scopes) > depth {
-        var kept: Vector(Scope) = vector.new();
+        var kept: [Scope] = vector.new();
         var i: i64 = 0;
         while i < depth {
             vector.push(kept, vector.get(e.scopes, i));
@@ -461,22 +461,22 @@ pub fn lift_restore(mut e: Emitter, s: LiftS) {
 }
 
 pub fn lift_prepare(mut e: Emitter, depth: i64) {
-    var fresh_out: Vector(Str) = vector.new();
+    var fresh_out: [Str] = vector.new();
     e.output = fresh_out;
     e.next_value = 0;
     e.next_block = 0;
     e.terminated = false;
-    var fresh_vt: Vector(VTy) = vector.new();
+    var fresh_vt: [VTy] = vector.new();
     e.value_types = fresh_vt;
     e.capbar = depth;
-    var fresh_caps: Vector(Binding) = vector.new();
+    var fresh_caps: [Binding] = vector.new();
     e.caps = fresh_caps;
-    var fresh_origs: Vector(Binding) = vector.new();
+    var fresh_origs: [Binding] = vector.new();
     e.cap_origs = fresh_origs;
 }
 
 pub fn lam_sig(l: LamE) FnSig {
-    var ts: Vector(Ty) = vector.new();
+    var ts: [Ty] = vector.new();
     const n: i64 = vector.len(l.params);
     var i: i64 = 0;
     while i < n {
@@ -745,9 +745,9 @@ pub fn emit_catch_e(mut e: Emitter, cx: CatchX) Str {
     return jarg;
 }
 
-pub fn emit_tuple_e(mut e: Emitter, items: Vector(Expr), expected: Ty) Str {
+pub fn emit_tuple_e(mut e: Emitter, items: [Expr], expected: Ty) Str {
     const a: Ast = e_ast(e);
-    var exp_tys: Vector(Ty) = vector.new();
+    var exp_tys: [Ty] = vector.new();
     var has_exp: bool = false;
     match expected {
         Ty.Tup(tys) => {
@@ -760,7 +760,7 @@ pub fn emit_tuple_e(mut e: Emitter, items: Vector(Expr), expected: Ty) Str {
     const e0a: Str = fresh(e);
     emit_line(e, str.concat(e0a, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
     var acc: Str = e0a;
-    var el_tys: Vector(Ty) = vector.new();
+    var el_tys: [Ty] = vector.new();
     var i: i64 = 0;
     while i < n {
         var v: Str = "";
@@ -842,7 +842,7 @@ pub fn emit_lambda_expr(mut e: Emitter, l: LamE) Str {
     const n: i64 = e.lams;
     e.lams = n + 1;
     const sym: Str = str.concat("__calque_lam_", str.fromI64(n));
-    var lps: Vector(Param) = vector.new();
+    var lps: [Param] = vector.new();
     const nlp: i64 = vector.len(l.params);
     var lpi: i64 = 0;
     while lpi < nlp {
@@ -997,14 +997,14 @@ pub fn emit_module(mut e: Emitter, a: Ast) {
                 vector.push(e.output, vector.get(e.lifted, li));
                 li = li + 1;
             }
-            var fresh_lift: Vector(Str) = vector.new();
+            var fresh_lift: [Str] = vector.new();
             e.lifted = fresh_lift;
             wave = true;
         }
         const ninst: i64 = vector.len(e.instq);
         if ninst > 0 {
-            const old_q: Vector(InstE) = e.instq;
-            var fresh_q: Vector(InstE) = vector.new();
+            const old_q: [InstE] = e.instq;
+            var fresh_q: [InstE] = vector.new();
             e.instq = fresh_q;
             var qi: i64 = 0;
             while qi < ninst {
@@ -1043,16 +1043,16 @@ pub const Binding = struct {
 };
 
 pub const Scope = struct {
-    entries: Vector(Binding),
+    entries: [Binding],
 };
 
 pub fn empty_scope() Scope {
-    var entries: Vector(Binding) = vector.new();
+    var entries: [Binding] = vector.new();
     return %Scope{entries: entries};
 }
 
 pub fn lookup(mut e: Emitter, name: Str) Binding {
-    const sc: Vector(Scope) = e.scopes;
+    const sc: [Scope] = e.scopes;
     var i: i64 = vector.len(sc);
     while i > 0 {
         const s: Scope = vector.get(sc, i - 1);
@@ -1073,7 +1073,7 @@ pub fn lookup(mut e: Emitter, name: Str) Binding {
 }
 
 pub fn record_capture(mut e: Emitter, name: Str, b: Binding) Binding {
-    const caps: Vector(Binding) = e.caps;
+    const caps: [Binding] = e.caps;
     const n: i64 = vector.len(caps);
     var i: i64 = 0;
     while i < n {
@@ -1095,7 +1095,7 @@ pub fn record_capture(mut e: Emitter, name: Str, b: Binding) Binding {
 }
 
 pub fn declare(mut e: Emitter, b: Binding) {
-    const sc: Vector(Scope) = e.scopes;
+    const sc: [Scope] = e.scopes;
     const s: Scope = vector.get(sc, vector.len(sc) - 1);
     vector.push(s.entries, b);
 }
@@ -1113,22 +1113,22 @@ pub fn synth_td(t: Ty) TypeDecl {
 }
 
 pub fn synth_empty_td() TypeDecl {
-    var fs: Vector(FieldDecl) = vector.new();
-    var vs: Vector(VariantDecl) = vector.new();
+    var fs: [FieldDecl] = vector.new();
+    var vs: [VariantDecl] = vector.new();
     return %TypeDecl{name: "", is_union: false, fields: fs, variants: vs};
 }
 
 pub fn synth_opt_td(inner: Ty) TypeDecl {
-    var fs: Vector(FieldDecl) = vector.new();
-    var vs: Vector(VariantDecl) = vector.new();
+    var fs: [FieldDecl] = vector.new();
+    var vs: [VariantDecl] = vector.new();
     vector.push(vs, %VariantDecl{name: "Some", has_payload: true, ty: inner});
     vector.push(vs, %VariantDecl{name: "None", has_payload: false, ty: Ty.UnitV});
     return %TypeDecl{name: "", is_union: true, fields: fs, variants: vs};
 }
 
 pub fn synth_res_td(rz: ResTT) TypeDecl {
-    var fs: Vector(FieldDecl) = vector.new();
-    var vs: Vector(VariantDecl) = vector.new();
+    var fs: [FieldDecl] = vector.new();
+    var vs: [VariantDecl] = vector.new();
     vector.push(vs, %VariantDecl{name: "Ok", has_payload: true, ty: rz.ok});
     vector.push(vs, %VariantDecl{name: "Err", has_payload: true, ty: rz.err});
     return %TypeDecl{name: "", is_union: true, fields: fs, variants: vs};
@@ -1154,13 +1154,13 @@ pub fn find_td(a: Ast, name: Str) TypeDecl {
     return %TypeDecl{name: "", is_union: false, fields: vector_new_fd(), variants: vector_new_vd()};
 }
 
-pub fn vector_new_fd() Vector(FieldDecl) {
-    var v: Vector(FieldDecl) = vector.new();
+pub fn vector_new_fd() [FieldDecl] {
+    var v: [FieldDecl] = vector.new();
     return v;
 }
 
-pub fn vector_new_vd() Vector(VariantDecl) {
-    var v: Vector(VariantDecl) = vector.new();
+pub fn vector_new_vd() [VariantDecl] {
+    var v: [VariantDecl] = vector.new();
     return v;
 }
 
@@ -1210,7 +1210,7 @@ pub fn storage_ir_t(a: Ast, t: Ty) Str {
 
 // The IR prefix of a product holding the first `upto` storage types
 // (the snoc-chain scaffold's one spelling).
-pub fn product_prefix(a: Ast, tys: Vector(Ty), upto: i64) Str {
+pub fn product_prefix(a: Ast, tys: [Ty], upto: i64) Str {
     var acc: Str = "!frk_adt.product<[";
     var j: i64 = 0;
     while j < upto {
@@ -1223,7 +1223,7 @@ pub fn product_prefix(a: Ast, tys: Vector(Ty), upto: i64) Str {
     return str.concat(acc, "]>");
 }
 
-pub fn tup_ir(a: Ast, tys: Vector(Ty)) Str {
+pub fn tup_ir(a: Ast, tys: [Ty]) Str {
     var acc: Str = "!frk_adt.product<[";
     const n: i64 = vector.len(tys);
     var i: i64 = 0;
@@ -1428,7 +1428,7 @@ pub fn poison_arr(mut e: Emitter, a2: ArrTT, arr_ty: Ty) Str {
     return av;
 }
 
-pub fn poison_tup(mut e: Emitter, tys: Vector(Ty), sum_ty: Ty) Str {
+pub fn poison_tup(mut e: Emitter, tys: [Ty], sum_ty: Ty) Str {
     const a: Ast = e_ast(e);
     const n: i64 = vector.len(tys);
     var acc: Str = "";
@@ -1944,7 +1944,7 @@ pub fn find_fn(a: Ast, sym: Str) Fn {
     return poison_fn();
 }
 
-pub fn emit_apply(mut e: Emitter, cb: Binding, args: Vector(Expr), line: i64, col: i64) Str {
+pub fn emit_apply(mut e: Emitter, cb: Binding, args: [Expr], line: i64, col: i64) Str {
     var sig: FnSig = %FnSig{params: empty_ty_vec(), ret: Ty.UnitV};
     var found: bool = false;
     const bty2: Ty = cb.ty;
@@ -2011,8 +2011,8 @@ pub fn emit_apply(mut e: Emitter, cb: Binding, args: Vector(Expr), line: i64, co
     return res;
 }
 
-pub fn empty_ty_vec() Vector(Ty) {
-    var v: Vector(Ty) = vector.new();
+pub fn empty_ty_vec() [Ty] {
+    var v: [Ty] = vector.new();
     return v;
 }
 
@@ -2258,7 +2258,7 @@ pub fn mangle_ty(t: Ty) Str {
     };
 }
 
-pub fn subst_ty_list(t: Ty, sub: Vector(TV)) Ty {
+pub fn subst_ty_list(t: Ty, sub: [TV]) Ty {
     const n: i64 = vector.len(sub);
     var i: i64 = 0;
     while i < n {
@@ -2270,7 +2270,7 @@ pub fn subst_ty_list(t: Ty, sub: Vector(TV)) Ty {
         Ty.Vec(inner) => Ty.Vec(subst_ty_list(inner, sub)),
         Ty.ArrT(a2) => Ty.ArrT(%ArrTT{n: a2.n, ty: subst_ty_list(a2.ty, sub)}),
         Ty.Tup(tys) => {
-            var ts: Vector(Ty) = vector.new();
+            var ts: [Ty] = vector.new();
             const n: i64 = vector.len(tys);
             var i: i64 = 0;
             while i < n {
@@ -2286,7 +2286,7 @@ pub fn subst_ty_list(t: Ty, sub: Vector(TV)) Ty {
     };
 }
 
-pub fn find_tv(nm: Str, sub: Vector(TV)) Ty {
+pub fn find_tv(nm: Str, sub: [TV]) Ty {
     const n: i64 = vector.len(sub);
     var i: i64 = 0;
     while i < n {
@@ -2299,8 +2299,8 @@ pub fn find_tv(nm: Str, sub: Vector(TV)) Ty {
     return Ty.Named(nm);
 }
 
-pub fn sig_subst(sig: FnSig, sub: Vector(TV)) FnSig {
-    var ps: Vector(Ty) = vector.new();
+pub fn sig_subst(sig: FnSig, sub: [TV]) FnSig {
+    var ps: [Ty] = vector.new();
     const n: i64 = vector.len(sig.params);
     var i: i64 = 0;
     while i < n {
@@ -2318,7 +2318,7 @@ pub fn tv_res(e: Emitter, t: Ty) Ty {
         Ty.Vec(inner) => Ty.Vec(tv_res(e, inner)),
         Ty.ArrT(a2) => Ty.ArrT(%ArrTT{n: a2.n, ty: tv_res(e, a2.ty)}),
         Ty.Tup(tys) => {
-            var ts: Vector(Ty) = vector.new();
+            var ts: [Ty] = vector.new();
             const n: i64 = vector.len(tys);
             var i: i64 = 0;
             while i < n {
@@ -2348,7 +2348,7 @@ pub fn tv_lookup(e: Emitter, nm: Str) Ty {
 }
 
 pub fn sig_res(e: Emitter, sig: FnSig) FnSig {
-    var ps: Vector(Ty) = vector.new();
+    var ps: [Ty] = vector.new();
     const n: i64 = vector.len(sig.params);
     var i: i64 = 0;
     while i < n {
@@ -2365,7 +2365,7 @@ pub fn ty_is_unknown(t: Ty) bool {
     };
 }
 
-pub fn name_bound(names: Vector(Str), nm: Str) bool {
+pub fn name_bound(names: [Str], nm: Str) bool {
     const n: i64 = vector.len(names);
     var i: i64 = 0;
     while i < n {
@@ -2377,7 +2377,7 @@ pub fn name_bound(names: Vector(Str), nm: Str) bool {
     return false;
 }
 
-pub fn tv_get(sub: Vector(TV), nm: Str) Ty {
+pub fn tv_get(sub: [TV], nm: Str) Ty {
     const n: i64 = vector.len(sub);
     var i: i64 = 0;
     while i < n {
@@ -2520,7 +2520,7 @@ pub fn infer_pipe_ty(mut e: Emitter, b0: Bin, line: i64, col: i64) Ty {
     const stage: Expr = b0.r;
     match stage {
         Expr.Call(c0) => {
-            var args: Vector(Expr) = vector.new();
+            var args: [Expr] = vector.new();
             vector.push(args, b0.l);
             const n: i64 = vector.len(c0.args);
             var i: i64 = 0;
@@ -2531,7 +2531,7 @@ pub fn infer_pipe_ty(mut e: Emitter, b0: Bin, line: i64, col: i64) Ty {
             return infer_call_ty(e, %Call{callee: c0.callee, args: args, line: line, col: col}, line, col);
         },
         Expr.Ref(r0) => {
-            var args2: Vector(Expr) = vector.new();
+            var args2: [Expr] = vector.new();
             vector.push(args2, b0.l);
             return infer_call_ty(e, %Call{callee: r0, args: args2, line: line, col: col}, line, col);
         },
@@ -2568,7 +2568,7 @@ pub fn infer_fn_value_ty(mut e: Emitter, nm: Str, line: i64, col: i64) Ty {
     if is_generic_fn(f2) {
         return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
     }
-    var ps: Vector(Ty) = vector.new();
+    var ps: [Ty] = vector.new();
     const n: i64 = vector.len(f2.params);
     var i: i64 = 0;
     while i < n {
@@ -2579,8 +2579,8 @@ pub fn infer_fn_value_ty(mut e: Emitter, nm: Str, line: i64, col: i64) Ty {
     return Ty.FnT(%FnSig{params: ps, ret: tv_res(e, f2.ret)});
 }
 
-pub fn infer_tup_lit(mut e: Emitter, es: Vector(Expr), line: i64, col: i64) Ty {
-    var tys: Vector(Ty) = vector.new();
+pub fn infer_tup_lit(mut e: Emitter, es: [Expr], line: i64, col: i64) Ty {
+    var tys: [Ty] = vector.new();
     const n: i64 = vector.len(es);
     var i: i64 = 0;
     while i < n {
@@ -2635,7 +2635,7 @@ pub fn infer_expr_ty(mut e: Emitter, ex: Expr, line: i64, col: i64) Ty {
     };
 }
 
-pub fn has_unbound(t: Ty, sub: Vector(TV), names: Vector(Str)) bool {
+pub fn has_unbound(t: Ty, sub: [TV], names: [Str]) bool {
     return match t {
         Ty.Named(nm) => {
             if name_bound(names, nm) {
@@ -2676,7 +2676,7 @@ pub fn has_unbound(t: Ty, sub: Vector(TV), names: Vector(Str)) bool {
     };
 }
 
-pub fn unify_ty(declared: Ty, actual: Ty, sub: Vector(TV), names: Vector(Str)) {
+pub fn unify_ty(declared: Ty, actual: Ty, sub: [TV], names: [Str]) {
     if ty_is_unknown(actual) {
         return;
     }
@@ -2750,8 +2750,8 @@ pub fn unify_ty(declared: Ty, actual: Ty, sub: Vector(TV), names: Vector(Str)) {
     };
 }
 
-pub fn probe_lam_unify(mut e: Emitter, l0: LamE, declared: Ty, sub: Vector(TV), names: Vector(Str), line: i64, col: i64) {
-    var dps: Vector(Ty) = vector.new();
+pub fn probe_lam_unify(mut e: Emitter, l0: LamE, declared: Ty, sub: [TV], names: [Str], line: i64, col: i64) {
+    var dps: [Ty] = vector.new();
     var dsig: FnSig = %FnSig{params: dps, ret: Ty.UnitV};
     var is_fn_t: bool = false;
     match declared {
@@ -2795,7 +2795,7 @@ pub fn probe_lam_unify(mut e: Emitter, l0: LamE, declared: Ty, sub: Vector(TV), 
         e_fail_at(e, line, col, "generic inference: the closure's body tail is not typeable");
         return;
     }
-    var ps2: Vector(Ty) = vector.new();
+    var ps2: [Ty] = vector.new();
     const nn: i64 = vector.len(dsig.params);
     var j: i64 = 0;
     while j < nn {
@@ -2805,8 +2805,8 @@ pub fn probe_lam_unify(mut e: Emitter, l0: LamE, declared: Ty, sub: Vector(TV), 
     unify_ty(declared, Ty.FnT(%FnSig{params: ps2, ret: pret}), sub, names);
 }
 
-pub fn resolve_generic(mut e: Emitter, f: Fn, args: Vector(Expr), line: i64, col: i64) GRes {
-    var names: Vector(Str) = vector.new();
+pub fn resolve_generic(mut e: Emitter, f: Fn, args: [Expr], line: i64, col: i64) GRes {
+    var names: [Str] = vector.new();
     const np: i64 = vector.len(f.params);
     var i: i64 = 0;
     while i < np {
@@ -2816,7 +2816,7 @@ pub fn resolve_generic(mut e: Emitter, f: Fn, args: Vector(Expr), line: i64, col
         }
         i = i + 1;
     }
-    var sub: Vector(TV) = vector.new();
+    var sub: [TV] = vector.new();
     var ai: i64 = 0;
     i = 0;
     while i < np {
@@ -2902,7 +2902,7 @@ pub fn resolve_generic(mut e: Emitter, f: Fn, args: Vector(Expr), line: i64, col
         ii = ii + 1;
     }
     if found2 == false {
-        var vps: Vector(Param) = vector.new();
+        var vps: [Param] = vector.new();
         var pi: i64 = 0;
         while pi < np {
             const prm3: Param = vector.get(f.params, pi);
@@ -2915,7 +2915,7 @@ pub fn resolve_generic(mut e: Emitter, f: Fn, args: Vector(Expr), line: i64, col
         vector.push(e.insts, %InstN{key: key, f: instf});
         vector.push(e.instq, %InstE{f: instf, sub: sub});
     }
-    var valargs: Vector(Expr) = vector.new();
+    var valargs: [Expr] = vector.new();
     const na3: i64 = vector.len(args);
     var vj: i64 = ai;
     while vj < na3 {
@@ -2925,7 +2925,7 @@ pub fn resolve_generic(mut e: Emitter, f: Fn, args: Vector(Expr), line: i64, col
     return %GRes{f: instf, args: valargs};
 }
 
-pub fn emit_fn_args(mut e: Emitter, f: Fn, sym: Str, args: Vector(Expr), line: i64, col: i64) Str {
+pub fn emit_fn_args(mut e: Emitter, f: Fn, sym: Str, args: [Expr], line: i64, col: i64) Str {
     if state_ok(e.state) == false {
         return "";
     }
@@ -3091,7 +3091,7 @@ pub fn emit_ref(mut e: Emitter, r: Ref, line: i64, col: i64) Str {
 }
 
 pub fn fn_sig_of(f: Fn) FnSig {
-    var ps: Vector(Ty) = vector.new();
+    var ps: [Ty] = vector.new();
     const n: i64 = vector.len(f.params);
     var i: i64 = 0;
     while i < n {
@@ -3262,7 +3262,7 @@ pub fn emit_ifx(mut e: Emitter, f: IfE) Str {
     // patch the then-branch: its br must land right after its arm lines
     const br_then: Str = br_for(e, jl, tv, ty, has_ty);
     const br_else: Str = br_for(e, jl, ev, ty, has_ty);
-    var patched: Vector(Str) = vector.new();
+    var patched: [Str] = vector.new();
     const no = vector.len(e.output);
     var i: i64 = 0;
     while i < no {
@@ -3271,7 +3271,7 @@ pub fn emit_ifx(mut e: Emitter, f: IfE) Str {
         i = i + 1;
     }
     // Simpler: rebuild out by walking and inserting.
-    var rebuilt: Vector(Str) = vector.new();
+    var rebuilt: [Str] = vector.new();
     var j: i64 = 0;
     while j < no {
         const line: Str = vector.get(e.output, j);
@@ -3462,7 +3462,7 @@ pub fn emit_tdestr_e(mut e: Emitter, td: TDestrS) {
     const a: Ast = e_ast(e);
     const v: Str = emit_expr(e, td.expr);
     const vty: Ty = vget(e, v);
-    var tys: Vector(Ty) = vector.new();
+    var tys: [Ty] = vector.new();
     var is_t: bool = false;
     match vty {
         Ty.Tup(t2) => {
@@ -3601,7 +3601,7 @@ pub fn same_arr(a2: ArrTT, b: Ty) bool {
     return res;
 }
 
-pub fn same_tup(tys: Vector(Ty), b: Ty) bool {
+pub fn same_tup(tys: [Ty], b: Ty) bool {
     var res: bool = false;
     match b {
         Ty.Tup(b2) => {
@@ -3783,8 +3783,8 @@ pub fn is_fn_t(t: Ty) bool {
     };
 }
 
-pub fn tup_of(t: Ty) Vector(Ty) {
-    var empty: Vector(Ty) = vector.new();
+pub fn tup_of(t: Ty) [Ty] {
+    var empty: [Ty] = vector.new();
     return match t {
         Ty.Tup(ts) => ts,
         _ => empty,
@@ -3813,7 +3813,7 @@ pub fn res_of(t: Ty) ResTT {
 }
 
 pub fn sig_of(t: Ty) FnSig {
-    var empty: Vector(Ty) = vector.new();
+    var empty: [Ty] = vector.new();
     return match t {
         Ty.FnT(s) => s,
         _ => %FnSig{params: empty, ret: Ty.UnitV},
@@ -3877,7 +3877,7 @@ pub fn unwrap_load(mut e: Emitter, stored: Str, t: Ty, line: i64, col: i64) Str 
 
 // %T{...} construction (the seed's emit_make: DECLARED field order,
 // defaults, base updates, per-field storage wrapping).
-pub fn mk_field_expr(fields: Vector(MakeField), name: Str) MakeField {
+pub fn mk_field_expr(fields: [MakeField], name: Str) MakeField {
     const n: i64 = vector.len(fields);
     var i: i64 = 0;
     while i < n {
@@ -4052,7 +4052,7 @@ pub fn emit_field_access(mut e: Emitter, recv: Str, rname: Str, field: Str, line
 
 // Payload variant construction: `T.Variant(expr)` (the seed's
 // emit_call head, mirrored).
-pub fn emit_variant_make(mut e: Emitter, td: TypeDecl, uty: Ty, vname: Str, args: Vector(Expr), line: i64, col: i64) Str {
+pub fn emit_variant_make(mut e: Emitter, td: TypeDecl, uty: Ty, vname: Str, args: [Expr], line: i64, col: i64) Str {
     const idx: i64 = variant_index(td, vname);
     if idx < 0 {
         return e_fail_at(e, line, col, str.concat("unknown variant `", str.concat(vname, "`")));
@@ -4158,7 +4158,7 @@ pub fn emit_destr_names(mut e: Emitter, d: DestrS, line: i64, col: i64) {
 
 // The vector prelude (vector.len/push/set/get), mirroring the seed's
 // type-driven resolution.
-pub fn emit_vector_call(mut e: Emitter, vname: Str, args: Vector(Expr), line: i64, col: i64) Str {
+pub fn emit_vector_call(mut e: Emitter, vname: Str, args: [Expr], line: i64, col: i64) Str {
     if vname == "new" {
         return e_fail_at(e, line, col, "vector.new() takes its instantiation from the declaration's annotation (seed v0)");
     }
@@ -4230,7 +4230,7 @@ pub fn vec_inner(t: Ty) Ty {
     };
 }
 
-pub fn emit_vec_push_set(mut e: Emitter, vname: Str, vid: Str, vty: Ty, inner: Ty, box: Str, slot: Str, prefix: Str, args: Vector(Expr), line: i64, col: i64) Str {
+pub fn emit_vec_push_set(mut e: Emitter, vname: Str, vid: Str, vty: Ty, inner: Ty, box: Str, slot: Str, prefix: Str, args: [Expr], line: i64, col: i64) Str {
     const na: i64 = vector.len(args);
     var want: i64 = 2;
     if vname == "set" {
@@ -4325,7 +4325,7 @@ pub const MBind = struct {
     col: i64,
 };
 
-pub fn collect_bindings(mut e: Emitter, bindings: Vector(MBind)) {
+pub fn collect_bindings(mut e: Emitter, bindings: [MBind]) {
     const n: i64 = vector.len(bindings);
     var i: i64 = 0;
     while i < n {
@@ -4390,7 +4390,7 @@ pub fn prec_is_catch_all(r: PRec) bool {
 }
 
 // Returns the i1 condition ssa ("" = none) and pushes bindings.
-pub fn pattern_conditions(mut e: Emitter, p: Pat, value: Str, lty: Ty, out_bindings: Vector(MBind), line: i64, col: i64) Str {
+pub fn pattern_conditions(mut e: Emitter, p: Pat, value: Str, lty: Ty, out_bindings: [MBind], line: i64, col: i64) Str {
     return match p {
         Pat.Wild => "",
         Pat.Bind(n) => pc_bind(e, n, value, lty, p, out_bindings),
@@ -4404,7 +4404,7 @@ pub fn pattern_conditions(mut e: Emitter, p: Pat, value: Str, lty: Ty, out_bindi
 }
 
 
-pub fn pc_bind(mut e: Emitter, n: Str, value: Str, lty: Ty, p: Pat, out_bindings: Vector(MBind)) Str {
+pub fn pc_bind(mut e: Emitter, n: Str, value: Str, lty: Ty, p: Pat, out_bindings: [MBind]) Str {
     vector.push(out_bindings, %MBind{name: n, ty: lty, id: value, line: 0, col: 0});
     return "";
 }
@@ -4441,7 +4441,7 @@ pub fn pc_lit(mut e: Emitter, l: PLit, value: Str, lty: Ty, p: Pat, line: i64, c
     return emit_equality(e, value, other, lty, 0, 0);
 }
 
-pub fn pc_rec(mut e: Emitter, r: PRec, value: Str, lty: Ty, p: Pat, out_bindings: Vector(MBind), line: i64, col: i64) Str {
+pub fn pc_rec(mut e: Emitter, r: PRec, value: Str, lty: Ty, p: Pat, out_bindings: [MBind], line: i64, col: i64) Str {
     if is_named_t(lty) == false {
         return e_fail_at(e, line, col, str.concat("pattern `%", str.concat(r.ty, "{...}` does not match the subject type")));
     }
@@ -4568,7 +4568,7 @@ pub fn emit_expr_typed(mut e: Emitter, ex: Expr, ty: Ty, line: i64, col: i64) St
                     if nps != nlp {
                         return e_fail_at(e, line, col, "the closure's parameter count does not match the expected fn type");
                     }
-                    var lps2: Vector(Param) = vector.new();
+                    var lps2: [Param] = vector.new();
                     var i2: i64 = 0;
                     while i2 < nlp {
                         const lp: Param = vector.get(l2.params, i2);
@@ -4606,7 +4606,7 @@ pub fn emit_expr_typed(mut e: Emitter, ex: Expr, ty: Ty, line: i64, col: i64) St
         _ => {},
     };
     var dot: Ref = %Ref{name: "", mod: ""};
-    var dot_args: Vector(Expr) = empty_expr_vec();
+    var dot_args: [Expr] = empty_expr_vec();
     var is_dot: bool = false;
     match ex {
         Expr.Call(c2) => {
@@ -4638,8 +4638,8 @@ pub fn emit_expr_typed(mut e: Emitter, ex: Expr, ty: Ty, line: i64, col: i64) St
     return emit_expr(e, ex);
 }
 
-pub fn empty_expr_vec() Vector(Expr) {
-    var v: Vector(Expr) = vector.new();
+pub fn empty_expr_vec() [Expr] {
+    var v: [Expr] = vector.new();
     return v;
 }
 
@@ -4650,7 +4650,7 @@ pub fn has_ty_annotation(ty: Ty) bool {
     };
 }
 
-pub fn emit_list_literal(mut e: Emitter, ty: Ty, items: Vector(Expr), line: i64, col: i64) Str {
+pub fn emit_list_literal(mut e: Emitter, ty: Ty, items: [Expr], line: i64, col: i64) Str {
     match ty {
         Ty.ArrT(a2) => {
             // `[N]T` (the vector steering): exactly N elements, inline.
@@ -4798,22 +4798,22 @@ pub fn emit_fassign(mut e: Emitter, f: FAssS) {
 pub const MTy = struct {
     label: Str,
     arg: Str,
-    has: Vector(i64),
-    ty: Vector(Ty),
-    brs: Vector(i64),
+    has: [i64],
+    ty: [Ty],
+    brs: [i64],
 };
 
 pub fn mt_new(label: Str, arg: Str) MTy {
-    var h: Vector(i64) = vector.new();
+    var h: [i64] = vector.new();
     vector.push(h, 0);
-    var t: Vector(Ty) = vector.new();
+    var t: [Ty] = vector.new();
     vector.push(t, Ty.UnitV);
-    var b: Vector(i64) = vector.new();
+    var b: [i64] = vector.new();
     vector.push(b, 0);
     return %MTy{label: label, arg: arg, has: h, ty: t, brs: b};
 }
 
-pub fn emit_arm(mut e: Emitter, c: MTy, conditions: Str, bindings: Vector(MBind), body: Expr, false_target: Str, m: MatchE) Str {
+pub fn emit_arm(mut e: Emitter, c: MTy, conditions: Str, bindings: [MBind], body: Expr, false_target: Str, m: MatchE) Str {
     if str.len(conditions) > 0 {
         const body_label: Str = fresh_label(e);
         var nlabel: Str = false_target;
@@ -4830,7 +4830,7 @@ pub fn emit_arm(mut e: Emitter, c: MTy, conditions: Str, bindings: Vector(MBind)
     return "inplace";
 }
 
-pub fn emit_arm_body(mut e: Emitter, c: MTy, bindings: Vector(MBind), body: Expr, m: MatchE) {
+pub fn emit_arm_body(mut e: Emitter, c: MTy, bindings: [MBind], body: Expr, m: MatchE) {
     scope_push(e);
     collect_bindings(e, bindings);
     var v: Str = "";
@@ -4959,14 +4959,14 @@ pub fn emit_match_union(mut e: Emitter, m: MatchE, d: TypeDecl, value: Str, sty:
     const a: Ast = e_ast(e);
     const n_arms: i64 = vector.len(m.arms);
     const nv: i64 = vector.len(d.variants);
-    var covered: Vector(i64) = vector.new();
+    var covered: [i64] = vector.new();
     var q: i64 = 0;
     while q < nv {
         vector.push(covered, 0);
         q = q + 1;
     }
-    var chain_idx: Vector(i64) = vector.new();
-    var chain_arm: Vector(i64) = vector.new();
+    var chain_idx: [i64] = vector.new();
+    var chain_arm: [i64] = vector.new();
     var default_arm: i64 = 0 - 1;
     var i: i64 = 0;
     while i < n_arms {
@@ -5090,7 +5090,7 @@ pub fn emit_match_union(mut e: Emitter, m: MatchE, d: TypeDecl, value: Str, sty:
         emit_line(e, str.concat("cf.cond_br ", str.concat(eq, str.concat(", ^", str.concat(arm_label, str.concat(", ^", next_label))))));
         new_label(e, arm_label);
         var conditions: Str = "";
-        var bindings: Vector(MBind) = vector.new();
+        var bindings: [MBind] = vector.new();
         if pa.has_payload {
             const vd2: VariantDecl = vector.get(d.variants, idx2);
             if vd2.has_payload == false {
@@ -5118,7 +5118,7 @@ pub fn emit_match_union(mut e: Emitter, m: MatchE, d: TypeDecl, value: Str, sty:
     }
     const fall_arm: Arm = vector.get(m.arms, fall_i);
     var conditions2: Str = "";
-    var bindings2: Vector(MBind) = vector.new();
+    var bindings2: [MBind] = vector.new();
     const fpat: Pat = fall_arm.pat;
     match fpat {
         Pat.Variant(v) => {
@@ -5204,7 +5204,7 @@ pub fn emit_match_struct(mut e: Emitter, m: MatchE, d: TypeDecl, value: Str, sty
     var j: i64 = 0;
     while j < n_arms {
         const arm: Arm = vector.get(m.arms, j);
-        var bindings: Vector(MBind) = vector.new();
+        var bindings: [MBind] = vector.new();
         if j == default_seen {
             const cond0: Str = pattern_conditions(e, arm.pat, value, sty, bindings, arm.line, arm.col);
             if str.len(cond0) > 0 {
@@ -5258,7 +5258,7 @@ pub fn emit_match_builtin(mut e: Emitter, m: MatchE, value: Str, sty: Ty, c: MTy
     var j: i64 = 0;
     while j < n_arms {
         const arm: Arm = vector.get(m.arms, j);
-        var bindings: Vector(MBind) = vector.new();
+        var bindings: [MBind] = vector.new();
         if j == default_seen {
             const p2: Pat = arm.pat;
             match p2 {

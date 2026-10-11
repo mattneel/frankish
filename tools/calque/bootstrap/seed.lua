@@ -87,7 +87,7 @@ end
 local KEYWORDS = {}
 for _, k in ipairs({
   "and", "bool", "break", "const", "continue", "else", "false", "fn",
-  "i64", "if", "match", "or", "pub", "return", "struct", "true",
+  "i64", "usize", "if", "match", "or", "pub", "return", "struct", "true",
   "comptime",
   "union", "var", "while", "not", "try", "catch", "defer", "for",
   "test", "import",
@@ -363,7 +363,7 @@ end
 
 local function parse_type_atom()
   local t = peek()
-  if t.k == "kw" and t.v == "i64" then
+  if t.k == "kw" and (t.v == "i64" or t.v == "usize") then
     next_tok()
     return "i64"
   end

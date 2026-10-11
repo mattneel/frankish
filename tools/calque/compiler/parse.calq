@@ -36,12 +36,12 @@ pub const Expr = union(enum) {
     Blk: Block,
     // A collection literal (D-112): typed ONLY by its target
     // annotation; the bare emitter rejects it.
-    List: Vector(Expr),
+    List: [Expr],
     // A closure literal (SPEC 6.4): lifted to a top-level function by
     // the emitter; the expression evaluates to the closure value.
     Lam: LamE,
     // `(a, b)` - a tuple literal (D-114); `(e)` stays grouping.
-    Tup: Vector(Expr),
+    Tup: [Expr],
     // `v[i]` (the vector steering): a fixed-array element read.
     IndexE: IdxE,
     // `try e` (SPEC 6.5): on Err the enclosing function returns Err(x).
@@ -64,7 +64,7 @@ pub const Ref = struct {
 
 pub const Call = struct {
     callee: Ref,
-    args: Vector(Expr),
+    args: [Expr],
     line: i64, // the `(` token's position (guard messages ride it)
     col: i64,
 };
@@ -78,12 +78,12 @@ pub const Bin = struct {
 };
 
 pub const P = struct {
-    toks: Vector(Tok),
+    toks: [Tok],
     pos: i64 = 0,
     state: State = State.Ok,
 };
 
-pub fn p_new(toks: Vector(Tok)) P {
+pub fn p_new(toks: [Tok]) P {
     return %P{toks: toks};
 }
 
@@ -382,7 +382,7 @@ pub fn parse_expr(mut p: P, level: i64) Expr {
 pub fn pipe_into(mut p: P, piped: Expr, stage: Expr, op_t: Tok) Expr {
     match stage {
         Expr.Call(c) => {
-            var args: Vector(Expr) = vector.new();
+            var args: [Expr] = vector.new();
             vector.push(args, piped);
             const n: i64 = vector.len(c.args);
             var i: i64 = 0;
@@ -393,7 +393,7 @@ pub fn pipe_into(mut p: P, piped: Expr, stage: Expr, op_t: Tok) Expr {
             return Expr.Call(%Call{callee: c.callee, args: args, line: op_t.line, col: op_t.col});
         },
         Expr.Ref(r) => {
-            var args2: Vector(Expr) = vector.new();
+            var args2: [Expr] = vector.new();
             vector.push(args2, piped);
             return Expr.Call(%Call{callee: r, args: args2, line: op_t.line, col: op_t.col});
         },
@@ -410,7 +410,7 @@ pub fn p_lambda(mut p: P) Expr {
     if expect_punct(p, "(") == false {
         return bad(p, kw.line, kw.col, "fn literal needs a parameter list");
     }
-    var lps: Vector(Param) = vector.new();
+    var lps: [Param] = vector.new();
     var lgo: bool = true;
     while lgo {
         if p_ok(p) == false {
@@ -487,7 +487,7 @@ pub fn do_call(mut p: P, e: Expr) Expr {
         return bad(p, t.line, t.col, "callee must be a name or module member (slice 2a)");
     }
     const _t: Tok = p_next(p);
-    var args: Vector(Expr) = vector.new();
+    var args: [Expr] = vector.new();
     if at_punct(p, ")") {
         const _c: Tok = p_next(p);
     } else {
@@ -610,7 +610,7 @@ pub fn parse_primary(mut p: P) Expr {
         const _t: Tok = p_next(p);
         const first: Expr = parse_expr(p, 1);
         if at_punct(p, ",") {
-            var items: Vector(Expr) = vector.new();
+            var items: [Expr] = vector.new();
             vector.push(items, first);
             var tgo: bool = true;
             while tgo {
@@ -643,7 +643,7 @@ pub fn parse_primary(mut p: P) Expr {
             return bad(p, vn.line, vn.col, "variant");
         }
         const _v: Tok = p_next(p);
-        var vargs: Vector(Expr) = vector.new();
+        var vargs: [Expr] = vector.new();
         if at_punct(p, "(") {
             const _lp: Tok = p_next(p);
             while p_ok(p) {
@@ -668,7 +668,7 @@ pub fn parse_primary(mut p: P) Expr {
     }
     if at_punct(p, "[") {
         const _lb: Tok = p_next(p);
-        var items: Vector(Expr) = vector.new();
+        var items: [Expr] = vector.new();
         while p_ok(p) {
             if at_punct(p, "]") {
                 const _rb: Tok = p_next(p);
@@ -777,7 +777,7 @@ pub fn d_lam(l: LamE) Str {
     return str.concat(acc, ")");
 }
 
-pub fn d_list(items: Vector(Expr)) Str {
+pub fn d_list(items: [Expr]) Str {
     var acc: Str = "(list";
     const n: i64 = vector.len(items);
     var i: i64 = 0;
@@ -806,7 +806,7 @@ pub fn d_bad(b: BadNode) Str {
 // (b0 has no Option), read only when the flag says present.
 
 pub const FnSig = struct {
-    params: Vector(Ty),
+    params: [Ty],
     ret: Ty,
 };
 
@@ -826,7 +826,7 @@ pub const Ty = union(enum) {
     ResT: ResTT,
     // `(T1, T2, ...)` - the tuple type (D-114): a structural product.
     // `()` is not a tuple type.
-    Tup: Vector(Ty),
+    Tup: [Ty],
     // `[N]T` - a fixed-length inline array (the vector steering).
     ArrT: ArrTT,
     // Explicit recovery (D-109): never a valid type; the State holds
@@ -867,18 +867,18 @@ pub const VariantDecl = struct {
 pub const TypeDecl = struct {
     name: Str,
     is_union: bool,
-    fields: Vector(FieldDecl),
-    variants: Vector(VariantDecl),
+    fields: [FieldDecl],
+    variants: [VariantDecl],
 };
 
 pub const Block = struct {
-    stmts: Vector(Stmt),
+    stmts: [Stmt],
     has_tail: bool,
     tail: Expr,
 };
 
 pub const TDestrS = struct {
-    names: Vector(Str),
+    names: [Str],
     expr: Expr,
     mutable: bool,
     line: i64,
@@ -938,7 +938,7 @@ pub const DName = struct {
 
 pub const DestrS = struct {
     mutable: bool,
-    names: Vector(DName),
+    names: [DName],
     expr: Expr,
 };
 
@@ -982,7 +982,7 @@ pub const CatchX = struct {
 };
 
 pub const LamE = struct {
-    params: Vector(Param),
+    params: [Param],
     ret: Ty,
     body: Block,
     line: i64,
@@ -1015,7 +1015,7 @@ pub const Arm = struct {
 
 pub const MatchE = struct {
     scrut: Expr,
-    arms: Vector(Arm),
+    arms: [Arm],
     line: i64,
     col: i64,
 };
@@ -1027,7 +1027,7 @@ pub const MakeField = struct {
 
 pub const MakeE = struct {
     ty: Str,
-    fields: Vector(MakeField),
+    fields: [MakeField],
     has_base: bool,
     base: Expr,
     line: i64, // the `%` token's position
@@ -1047,7 +1047,7 @@ pub const PField = struct {
 
 pub const PRec = struct {
     ty: Str,
-    fields: Vector(PField),
+    fields: [PField],
 };
 
 pub const PVar = struct {
@@ -1073,7 +1073,7 @@ pub const Pat = union(enum) {
 
 pub const Fn = struct {
     name: Str,
-    params: Vector(Param),
+    params: [Param],
     ret: Ty,
     body: Block,
     file: Str, // the unit it came from (the driver tags it; the seed's CURRENT_FILE)
@@ -1088,9 +1088,9 @@ pub const ImpDecl = struct {
 };
 
 pub const Ast = struct {
-    fns: Vector(Fn),
-    types: Vector(TypeDecl),
-    imports: Vector(ImpDecl),
+    fns: [Fn],
+    types: [TypeDecl],
+    imports: [ImpDecl],
 };
 
 pub fn ty_is_hole(t: Ty) bool {
@@ -1119,7 +1119,7 @@ pub fn poison_pat() Pat {
 }
 
 pub fn poison_block() Block {
-    var empty: Vector(Stmt) = vector.new();
+    var empty: [Stmt] = vector.new();
     return %Block{stmts: empty, has_tail: false, tail: poison()};
 }
 
@@ -1141,6 +1141,10 @@ pub fn p_type_atom(mut p: P) Ty {
             const _t: Tok = p_next(p);
             return Ty.I64;
         }
+        if t.text == "usize" {
+            const _t: Tok = p_next(p);
+            return Ty.I64;
+        }
         if t.text == "bool" {
             const _t: Tok = p_next(p);
             return Ty.BoolV;
@@ -1150,7 +1154,7 @@ pub fn p_type_atom(mut p: P) Ty {
             if expect_punct(p, "(") == false {
                 return bad_ty(p, t.line, t.col, "invalid type");
             }
-            var ps: Vector(Ty) = vector.new();
+            var ps: [Ty] = vector.new();
             var pgo: bool = true;
             while pgo {
                 if p_ok(p) == false {
@@ -1181,7 +1185,7 @@ pub fn p_type_atom(mut p: P) Ty {
     if is_punct_tok(t) {
         if t.text == "(" {
             const _p0: Tok = p_next(p);
-            var tys: Vector(Ty) = vector.new();
+            var tys: [Ty] = vector.new();
             vector.push(tys, p_type(p));
             var tgo: bool = true;
             while tgo {
@@ -1337,7 +1341,7 @@ pub fn p_pattern(mut p: P) Pat {
         if expect_punct(p, "{") == false {
             return bad_pat(p, t.line, t.col, "invalid pattern");
         }
-        var fields: Vector(PField) = vector.new();
+        var fields: [PField] = vector.new();
         while p_ok(p) {
             if at_punct(p, "}") {
                 const _c: Tok = p_next(p);
@@ -1406,7 +1410,7 @@ pub fn p_if(mut p: P) IfE {
             // else-if: a block whose tail is the nested if (the seed's
             // shape), so the emitter's tail-if rule carries through.
             const nested: IfE = p_if(p);
-            var empty: Vector(Stmt) = vector.new();
+            var empty: [Stmt] = vector.new();
             else_blk = %Block{stmts: empty, has_tail: true, tail: Expr.If(nested)};
         } else {
             else_blk = p_block(p);
@@ -1421,7 +1425,7 @@ pub fn p_match(mut p: P) Expr {
     if expect_punct(p, "{") == false {
         return bad_here(p);
     }
-    var arms: Vector(Arm) = vector.new();
+    var arms: [Arm] = vector.new();
     while p_ok(p) {
         if at_punct(p, "}") {
             const _c: Tok = p_next(p);
@@ -1458,7 +1462,7 @@ pub fn p_make(mut p: P) Expr {
     }
     if at_punct(p, "}") {
         const _c: Tok = p_next(p);
-        var no_fields: Vector(MakeField) = vector.new();
+        var no_fields: [MakeField] = vector.new();
         return Expr.Make(%MakeE{ty: name.text, fields: no_fields, has_base: false, base: poison(), line: pct.line, col: pct.col});
     }
     var has_base: bool = false;
@@ -1517,7 +1521,7 @@ pub fn p_make(mut p: P) Expr {
         }
     }
     }
-    var fields: Vector(MakeField) = vector.new();
+    var fields: [MakeField] = vector.new();
     while p_ok(p) {
         if at_punct(p, "}") {
             const _c: Tok = p_next(p);
@@ -1549,7 +1553,7 @@ pub fn p_make(mut p: P) Expr {
 
 pub fn p_tdestr(mut p: P, mutable: bool, kw_line: i64, kw_col: i64) TDestrS {
     const _lp: Tok = p_next(p); // (
-    var names: Vector(Str) = vector.new();
+    var names: [Str] = vector.new();
     var tgo: bool = true;
     while tgo {
         if p_ok(p) == false {
@@ -1583,7 +1587,7 @@ pub fn p_tdestr(mut p: P, mutable: bool, kw_line: i64, kw_col: i64) TDestrS {
 
 pub fn p_destr(mut p: P, mutable: bool, kw_line: i64, kw_col: i64) DestrS {
     const _c: Tok = p_next(p); // {
-    var names: Vector(DName) = vector.new();
+    var names: [DName] = vector.new();
     while p_ok(p) {
         const f: Tok = p_peek(p);
         if is_name_tok(f) == false {
@@ -1647,7 +1651,7 @@ pub const StmtOut = struct {
     tail: Expr,
 };
 
-pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
+pub fn p_stmt_into(mut p: P, stmts: [Stmt], t: Tok) StmtOut {
     // Parses one statement starting at the peeked t. added=false means
     // the tokens parsed were a TAIL expression (not `;`-terminated);
     // the caller consumes `}` and records the tail.
@@ -1813,7 +1817,7 @@ pub fn p_block(mut p: P) Block {
     if expect_punct(p, "{") == false {
         return poison_block();
     }
-    var stmts: Vector(Stmt) = vector.new();
+    var stmts: [Stmt] = vector.new();
     while p_ok(p) {
         if at_punct(p, "}") {
             const _c: Tok = p_next(p);
@@ -1832,7 +1836,7 @@ pub fn p_block(mut p: P) Block {
 }
 
 pub fn poison_fn() Fn {
-    var empty: Vector(Param) = vector.new();
+    var empty: [Param] = vector.new();
     return %Fn{name: "", params: empty, ret: poison_ty(), body: poison_block(), file: "", ns: "", test_name: ""};
 }
 
@@ -1852,7 +1856,7 @@ pub fn p_fn(mut p: P) Fn {
     if expect_punct(p, "(") == false {
         return poison_fn();
     }
-    var params: Vector(Param) = vector.new();
+    var params: [Param] = vector.new();
     while p_ok(p) {
         if at_punct(p, ")") {
             const _c: Tok = p_next(p);
@@ -1928,8 +1932,8 @@ pub fn p_fn(mut p: P) Fn {
 }
 
 pub fn poison_td() TypeDecl {
-    var ef: Vector(FieldDecl) = vector.new();
-    var ev: Vector(VariantDecl) = vector.new();
+    var ef: [FieldDecl] = vector.new();
+    var ev: [VariantDecl] = vector.new();
     return %TypeDecl{name: "", is_union: false, fields: ef, variants: ev};
 }
 
@@ -1954,12 +1958,12 @@ pub fn p_typedecl(mut p: P) TypeDecl {
         if expect_punct(p, "{") == false {
             return poison_td();
         }
-        var fields: Vector(FieldDecl) = vector.new();
+        var fields: [FieldDecl] = vector.new();
         while p_ok(p) {
             if at_punct(p, "}") {
                 const _c: Tok = p_next(p);
                 const _semi: bool = expect_semi(p);
-                var ev: Vector(VariantDecl) = vector.new();
+                var ev: [VariantDecl] = vector.new();
                 return %TypeDecl{name: name.text, is_union: false, fields: fields, variants: ev};
             }
             const f: Tok = p_peek(p);
@@ -2012,12 +2016,12 @@ pub fn p_typedecl(mut p: P) TypeDecl {
         if expect_punct(p, "{") == false {
             return poison_td();
         }
-        var variants: Vector(VariantDecl) = vector.new();
+        var variants: [VariantDecl] = vector.new();
         while p_ok(p) {
             if at_punct(p, "}") {
                 const _c: Tok = p_next(p);
                 const _semi: bool = expect_semi(p);
-                var ef: Vector(FieldDecl) = vector.new();
+                var ef: [FieldDecl] = vector.new();
                 return %TypeDecl{name: name.text, is_union: true, fields: ef, variants: variants};
             }
             const v: Tok = p_peek(p);
@@ -2116,14 +2120,14 @@ pub fn p_test(mut p: P, idx: i64) Fn {
     if body.has_tail == false {
         b2 = %Block{stmts: body.stmts, has_tail: true, tail: Expr.Int("0")};
     }
-    var eps: Vector(Param) = vector.new();
+    var eps: [Param] = vector.new();
     return %Fn{name: str.concat("__calque_test_", str.fromI64(idx)), params: eps, ret: Ty.I64, body: b2, file: "", ns: "", test_name: nm.text};
 }
 
 pub fn p_ast(mut p: P) Ast {
-    var fns: Vector(Fn) = vector.new();
-    var types: Vector(TypeDecl) = vector.new();
-    var imports: Vector(ImpDecl) = vector.new();
+    var fns: [Fn] = vector.new();
+    var types: [TypeDecl] = vector.new();
+    var imports: [ImpDecl] = vector.new();
     var n_tests: i64 = 0;
     while p_ok(p) {
         const t: Tok = p_peek(p);

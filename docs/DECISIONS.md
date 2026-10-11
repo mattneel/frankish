@@ -3532,3 +3532,20 @@ veto-ledger pattern and most deserve their review.
   on; ENFORCING visibility at call sites (a module's members reachable
   only where imported) is the next slice. Revisit: path-qualified
   imports, per-item imports, re-exports.
+
+- D-117 [calque/int-set] THE INTEGER-TYPE SET'S FIRST STEP, AND ITS
+  FENCE (F33): `usize` lands as a SURFACE ALIAS of i64 - the
+  index-sized name, no distinct type, because this grid is 64-bit
+  (revisit condition: a 32-bit ABI, which would want a real alias
+  mechanism). The rest of F33's integer clause (`@intCast`,
+  i8/i16/i32/u8...) stays FENCED on the kernel's i64-uniform
+  lowering: kernel_lower.rs builds every op via
+  IntegerType::new(context, 64) - boxes, guards, ABI, call
+  marshalling - so narrow surface ints need that slice first, and
+  `@intCast` with only i64 has nothing to cast between. EVIDENCE the
+  fence is not hiding a semantics hole: the hand-derived subwidth
+  probe (goldens/probe/subwidth: wrap + extsi/extui at i8/i16,
+  100+55 -> -101, 30000+10000 -> -25536) shows the runners' narrow
+  arith IS modular + correct - and the probe caught one real L3 gap
+  on the way (the reference interpreter had no Eval for
+  arith.extsi; JIT/AOT always handled it), fixed in the same step.

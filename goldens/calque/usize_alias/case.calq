@@ -1,0 +1,21 @@
+// `usize` (F33/D-117): the index-sized alias. On this grid it IS i64 -
+// the kernel lowers every integer op at i64 (kernel_lower builds ops
+// via IntegerType::new(context, 64) throughout), so the alias is
+// purely surface. The corpus case checks the parse + that usize flows
+// through signatures, lets, arithmetic, and builtins unchanged.
+fn tally(n: usize, k: usize) usize {
+    var acc: usize = 0;
+    var i: usize = 0;
+    while i < n {
+        acc = acc + k;
+        i = i + 1;
+    }
+    return acc;
+}
+
+pub fn main() i64 {
+    const r: usize = tally(6, 7);
+    io.print(str.fromI64(r));
+    io.print("\n");
+    return 0;
+}

@@ -26,7 +26,7 @@ pub fn is_reserved_ns(n: Str) bool {
 
 // The import-cycle DFS (D-116): 0 = unseen, 1 = on the stack, 2 = done.
 // Returns "" on success or the rendered error naming one back edge.
-pub fn dfs_imports(edge_from: Vector(i64), edge_to: Vector(i64), marks: Vector(i64), u: i64, ns_names: Vector(Str)) Str {
+pub fn dfs_imports(edge_from: [i64], edge_to: [i64], marks: [i64], u: i64, ns_names: [Str]) Str {
     vector.set(marks, u, 1);
     const ne: i64 = vector.len(edge_from);
     var i: i64 = 0;
@@ -59,11 +59,11 @@ pub fn main() i64 {
         io.print("error 1:1 no input unit\n");
         return 1;
     }
-    var fns: Vector(Fn) = vector.new();
-    var types: Vector(TypeDecl) = vector.new();
-    var import_decls: Vector(ImpDecl) = vector.new();
-    var ns_names: Vector(Str) = vector.new();
-    var edge_from: Vector(i64) = vector.new();
+    var fns: [Fn] = vector.new();
+    var types: [TypeDecl] = vector.new();
+    var import_decls: [ImpDecl] = vector.new();
+    var ns_names: [Str] = vector.new();
+    var edge_from: [i64] = vector.new();
     var i: i64 = 0;
     while i < count {
         const src: Str = __calque_input(i);
@@ -125,7 +125,7 @@ pub fn main() i64 {
         i = i + 1;
     }
     // the import checks: unknown names, then the cycle DFS.
-    var edge_to: Vector(i64) = vector.new();
+    var edge_to: [i64] = vector.new();
     var ei: i64 = 0;
     const ne: i64 = vector.len(import_decls);
     while ei < ne {
@@ -151,7 +151,7 @@ pub fn main() i64 {
         vector.push(edge_to, tidx);
         ei = ei + 1;
     }
-    var marks: Vector(i64) = vector.new();
+    var marks: [i64] = vector.new();
     var mi: i64 = 0;
     const nmk: i64 = vector.len(ns_names);
     while mi < nmk {
@@ -178,7 +178,7 @@ pub fn main() i64 {
         io.print("\n");
         return 1;
     }
-    const lines: Vector(Str) = e_render(e);
+    const lines: [Str] = e_render(e);
     const n: i64 = vector.len(lines);
     var m: i64 = 0;
     while m < n {

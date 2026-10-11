@@ -69,7 +69,7 @@ pub const Scan = struct {
 };
 
 pub const Lexed = struct {
-    toks: Vector(Tok),
+    toks: [Tok],
     state: State,
 };
 
@@ -155,6 +155,9 @@ pub fn is_kw(s: Str) bool {
         return true;
     }
     if s == "i64" {
+        return true;
+    }
+    if s == "usize" {
         return true;
     }
     if s == "if" {
@@ -271,7 +274,7 @@ pub fn err_at(st: Scan, n: i64, msg: Str, line: i64, col: i64) Scan {
 }
 
 // `"""..."""` (C2, D-115): verbatim between the delimiters.
-pub fn lex_multiline_str(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
+pub fn lex_multiline_str(src: Str, n: i64, toks: [Tok], st: Scan) Scan {
     const line: i64 = st.line;
     const col: i64 = st.col;
     var j: i64 = st.i + 3;
@@ -309,7 +312,7 @@ pub fn lex_multiline_str(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
     return move(st, j, ml, cl);
 }
 
-pub fn lex_str(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
+pub fn lex_str(src: Str, n: i64, toks: [Tok], st: Scan) Scan {
     var j: i64 = st.i + 1;
     var cl: i64 = st.col + 1;
     var acc: Str = "";
@@ -452,7 +455,7 @@ pub fn lex_block_comment(src: Str, n: i64, st: Scan) Scan {
     return move(st, j, ln, cl);
 }
 
-pub fn step(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
+pub fn step(src: Str, n: i64, toks: [Tok], st: Scan) Scan {
     const {i, line, col} = st;
     const c: Str = str.sub(src, i, 1);
     if c == "\n" {
@@ -582,7 +585,7 @@ pub fn step(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
 }
 
 pub fn lex(src: Str) Lexed {
-    var toks: Vector(Tok) = vector.new();
+    var toks: [Tok] = vector.new();
     const n: i64 = str.len(src);
     var st: Scan = %Scan{i: 0, line: 1, col: 1, state: State.Ok};
     while st.i < n {

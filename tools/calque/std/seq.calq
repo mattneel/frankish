@@ -5,7 +5,7 @@
 // parameters; each distinct type tuple instantiates its own chain.
 // Eager collection operations stay on `vector.*`.
 
-pub fn iter(comptime T: type, v: Vector(T)) fn () ?T {
+pub fn iter(comptime T: type, v: [T]) fn () ?T {
     var i: i64 = 0;
     return fn () ?T {
         if i < vector.len(v) {
@@ -71,8 +71,8 @@ pub fn fold(comptime T: type, comptime A: type, up: fn () ?T, init: A, f: fn (A,
     acc
 }
 
-pub fn collect(comptime T: type, up: fn () ?T) Vector(T) {
-    var out: Vector(T) = vector.new();
+pub fn collect(comptime T: type, up: fn () ?T) [T] {
+    var out: [T] = vector.new();
     var go: bool = true;
     while go {
         const x: ?T = up();
