@@ -971,6 +971,27 @@ local function parse_destr(kw_tok, mutable)
   return { mutable = mutable, names = names, expr = e, line = kw_tok.line, col = kw_tok.col }
 end
 
+-- `const (x, y) = t;` - tuple destructuring (D-114): names only, in
+-- order, no field specs.
+local function parse_tdestr(kw_tok, mutable)
+  next_tok() -- (
+  local names = {}
+  while true do
+    local nm = expect_name()
+    names[#names + 1] = { name = nm.v, line = nm.line, col = nm.col }
+    if at_punct(",") then
+      next_tok()
+    else
+      break
+    end
+  end
+  expect_punct(")")
+  expect_punct("=")
+  local e = parse_expr(1)
+  expect_punct(";")
+  return { mutable = mutable, names = names, expr = e, line = kw_tok.line, col = kw_tok.col }
+end
+
 -- Bounds-safe lookahead: reads past the eof sentinel as eof (the
 -- multi-token lookahead needs more than one slot).
 local function tok_ahead(off)
@@ -993,7 +1014,10 @@ function parse_block()
     local t = peek()
     if t.k == "kw" and t.v == "const" then
       next_tok()
-      if at_punct("{") then
+      if at_punct("(") then
+        local td = parse_tdestr(t, false)
+        stmts[#stmts + 1] = { tdestr = td }
+      elseif at_punct("{") then
         local d = parse_destr(t, false)
         stmts[#stmts + 1] = { destr = d }
       else
@@ -1010,7 +1034,10 @@ function parse_block()
       end
     elseif t.k == "kw" and t.v == "var" then
       next_tok()
-      if at_punct("{") then
+      if at_punct("(") then
+        local td2 = parse_tdestr(t, true)
+        stmts[#stmts + 1] = { tdestr = td2 }
+      elseif at_punct("{") then
         local d = parse_destr(t, true)
         stmts[#stmts + 1] = { destr = d }
       else
@@ -3903,6 +3930,43 @@ local function emit_stmt(node)
       end
     end
     declare(c.name, { kind = "ssa", ty = ty, id = v }, c.line, c.col)
+    return
+  end
+  if node.tdestr ~= nil then
+    local d = node.tdestr
+    local v = emit_expr(d.expr)
+    local vty = E.vtypes[v]
+    if not is_tup(vty) then
+      fail(d.line, d.col, "tuple destructuring needs a tuple-typed initializer")
+    end
+    if #d.names ~= #vty.tup then
+      fail(d.line, d.col, "tuple destructuring arity: " .. tostring(#d.names) .. " name(s) for a " .. tostring(#vty.tup) .. "-tuple")
+    end
+    local j = 1
+    while j < #d.names do
+      local k = j + 1
+      while k <= #d.names do
+        if d.names[j].name == d.names[k].name then
+          fail(d.names[k].line, d.names[k].col, "duplicate name `" .. d.names[k].name .. "` in destructuring")
+        end
+        k = k + 1
+      end
+      j = j + 1
+    end
+    for i = 1, #d.names do
+      local nm = d.names[i]
+      local slot_ty = vty.tup[i]
+      local stored = fresh()
+      emit(stored .. " = \"frk_adt.get\"(" .. v .. ") {field = " .. tostring(i - 1) .. " : i64} : (" .. value_ir(vty, d.line, d.col) .. ") -> " .. storage_ir(slot_ty, d.line, d.col))
+      local value = unwrap_load(stored, slot_ty, d.line, d.col)
+      if d.mutable then
+        local b = fresh()
+        emit(b .. " = \"frk_mem.box_new\"(" .. value .. ") : (" .. value_ir(slot_ty, d.line, d.col) .. ") -> " .. box_ir(slot_ty, d.line, d.col))
+        declare(nm.name, { kind = "box", ty = slot_ty, id = b, box = box_ir(slot_ty, nm.line, nm.col) }, nm.line, nm.col)
+      else
+        declare(nm.name, { kind = "ssa", ty = slot_ty, id = value }, nm.line, nm.col)
+      end
+    end
     return
   end
   if node.destr ~= nil then

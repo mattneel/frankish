@@ -2364,24 +2364,12 @@ fn seed_tuples() {
         unit(
             "tp.calq",
             None,
-            "pub fn swap(p: (i64, Str)) (Str, i64) {
-    (p.1, p.0)
-}
-pub fn main() i64 {
-    const t: (i64, Str) = (7, \"ab\");
-    const s = swap(t);
-    io.print(s.0);
-    io.print(\" \");
-    io.print(str.fromI64(s.1));
-    io.print(\"\\n\");
-    0
-}
-",
+            "pub fn swap(p: (i64, Str)) (Str, i64) {\n    (p.1, p.0)\n}\npub fn tdestr(p: (i64, Str)) i64 {\n    const (n, s) = p;\n    return n + str.len(s);\n}\npub fn tdestr2() i64 {\n    var (a, b) = (3, 4);\n    a = a + b;\n    a\n}\npub fn main() i64 {\n    const t: (i64, Str) = (7, \"ab\");\n    const s = swap(t);\n    io.print(s.0);\n    io.print(\" \");\n    io.print(str.fromI64(s.1));\n    io.print(\"\\n\");\n    io.print(str.fromI64(tdestr((5, \"xy\"))));\n    io.print(\" \");\n    io.print(str.fromI64(tdestr2()));\n    io.print(\"\\n\");\n    0\n}\n",
         ),
     ];
     let artifact = seed_translate(&files).expect("the seed emits the tuple probe");
     let outcome = run_artifact(&artifact).expect("the tuple probe runs");
-    assert_eq!(outcome.output, "ab 7\n");
+    assert_eq!(outcome.output, "ab 7\n7 7\n");
 }
 
 #[test]
