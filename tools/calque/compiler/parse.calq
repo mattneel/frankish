@@ -1117,6 +1117,15 @@ pub fn p_stmt_into(p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
             vector.push(stmts, Stmt.If(%IfS{cond: iff.cond, then: iff.then, has_else: iff.has_else, els: iff.els}));
             return %StmtOut{added: true, tail: poison()};
         }
+        if t.text == "match" {
+            const e: Expr = parse_expr(p, 4);
+            if at_punct(p, ";") {
+                const _c: Tok = p_next(p);
+                vector.push(stmts, Stmt.Expr(%ExprS{expr: e}));
+                return %StmtOut{added: true, tail: poison()};
+            }
+            return %StmtOut{added: false, tail: e};
+        }
         p_fail(p, t.line, t.col, str.concat("`", str.concat(t.text, "` is not a b0 statement")));
         return %StmtOut{added: true, tail: poison()};
     }

@@ -879,3 +879,88 @@ fn seed_reports_source_mapped_errors() {
     assert!(error.contains("bad.calq:2:"), "{error}");
     assert!(error.contains("`!` is not in seed v0"), "{error}");
 }
+
+#[test]
+fn calq0_matches_the_seed_on_match() {
+    // Slice 3b-beta-2: the match emission - tag chains with failing
+    // payload sub-conditions (the split path), struct record patterns,
+    // builtin literals and pins, Str subjects, and unit-valued joins.
+    // The first probe is the shape that found a REFERENCE BUG in the
+    // seed's emit_arm (dangling false target when a chain arm's
+    // payload pattern can fail); the fixed seed is the oracle.
+    let artifact = compile_artifact();
+
+    let m1 = "pub const P2 = struct { a: i64, b: i64 };\npub const Op2 = union(enum) { Add: P2, Neg };\npub fn classify(o: Op2) i64 {\n    const r = match o {\n        Op2.Add(%P2{a: 1, b: 2}) => 10,\n        Op2.Neg => 30,\n        _ => 40,\n    };\n    r\n}\npub fn main() i64 {\n    const hit = Op2.Add(%P2{a: 1, b: 2});\n    const mis = Op2.Add(%P2{a: 9, b: 9});\n    const neg = Op2.Neg;\n    classify(hit) * 10000 + classify(mis) * 100 + classify(neg)\n}\n";
+    let expected_m1 = seed_translate(&[unit("m.calq", None, m1)]).expect("the seed emits M1");
+    let got_m1 = run_artifact_with_input(artifact, &[unit("m.calq", None, m1)])
+        .expect("calq0 compiles M1");
+    assert_eq!(
+        got_m1.output,
+        expected_m1,
+        "calq0's emission must equal the seed's (M1 union chain): {}",
+        diff_hint(&got_m1.output, &expected_m1)
+    );
+    let emitted_m1 = run_artifact(&got_m1.output).expect("the emitted M1 runs");
+    assert_eq!(
+        emitted_m1.values[0].as_signed().expect("i64"),
+        10 * 10000 + 40 * 100 + 30
+    );
+
+    let m2 = "pub const P2 = struct { a: i64, b: i64 };\npub fn pick(p: P2) i64 {\n    const r = match p {\n        %P2{a: 1, b: _} => 10,\n        _ => 20,\n    };\n    r\n}\npub fn main() i64 {\n    const p = %P2{a: 1, b: 5};\n    const q = %P2{a: 3, b: 5};\n    pick(p) * 100 + pick(q)\n}\n";
+    let expected_m2 = seed_translate(&[unit("m.calq", None, m2)]).expect("the seed emits M2");
+    let got_m2 = run_artifact_with_input(artifact, &[unit("m.calq", None, m2)])
+        .expect("calq0 compiles M2");
+    assert_eq!(
+        got_m2.output,
+        expected_m2,
+        "calq0's emission must equal the seed's (M2 struct patterns): {}",
+        diff_hint(&got_m2.output, &expected_m2)
+    );
+    let emitted_m2 = run_artifact(&got_m2.output).expect("the emitted M2 runs");
+    assert_eq!(emitted_m2.values[0].as_signed().expect("i64"), 10 * 100 + 20);
+
+    let m3 = "pub fn tag(n: i64) i64 {\n    const k: i64 = 3;\n    const r = match n {\n        1 => 100,\n        2 => 200,\n        ^k => 300,\n        _ => 0,\n    };\n    r\n}\npub fn main() i64 {\n    tag(2) * 100000 + tag(3) * 100 + tag(9)\n}\n";
+    let expected_m3 = seed_translate(&[unit("m.calq", None, m3)]).expect("the seed emits M3");
+    let got_m3 = run_artifact_with_input(artifact, &[unit("m.calq", None, m3)])
+        .expect("calq0 compiles M3");
+    assert_eq!(
+        got_m3.output,
+        expected_m3,
+        "calq0's emission must equal the seed's (M3 builtin literals+pins): {}",
+        diff_hint(&got_m3.output, &expected_m3)
+    );
+    let emitted_m3 = run_artifact(&got_m3.output).expect("the emitted M3 runs");
+    assert_eq!(
+        emitted_m3.values[0].as_signed().expect("i64"),
+        200 * 100000 + 300 * 100 + 0
+    );
+
+    let m4 = "pub fn grade(g: Str) i64 {\n    const r = match g {\n        \"a\" => 1,\n        \"b\" => 2,\n        other => 3,\n    };\n    r\n}\npub fn main() i64 {\n    grade(\"a\") * 1000 + grade(\"b\") * 10 + grade(\"z\")\n}\n";
+    let expected_m4 = seed_translate(&[unit("m.calq", None, m4)]).expect("the seed emits M4");
+    let got_m4 = run_artifact_with_input(artifact, &[unit("m.calq", None, m4)])
+        .expect("calq0 compiles M4");
+    assert_eq!(
+        got_m4.output,
+        expected_m4,
+        "calq0's emission must equal the seed's (M4 Str subjects): {}",
+        diff_hint(&got_m4.output, &expected_m4)
+    );
+    let emitted_m4 = run_artifact(&got_m4.output).expect("the emitted M4 runs");
+    assert_eq!(
+        emitted_m4.values[0].as_signed().expect("i64"),
+        1 * 1000 + 2 * 10 + 3
+    );
+
+    let m5 = "pub fn say(n: i64) i64 {\n    var acc: i64 = 0;\n    match n {\n        1 => { acc = 1; },\n        _ => { acc = 2; },\n    };\n    acc\n}\npub fn main() i64 {\n    say(1) * 100 + say(0)\n}\n";
+    let expected_m5 = seed_translate(&[unit("m.calq", None, m5)]).expect("the seed emits M5");
+    let got_m5 = run_artifact_with_input(artifact, &[unit("m.calq", None, m5)])
+        .expect("calq0 compiles M5");
+    assert_eq!(
+        got_m5.output,
+        expected_m5,
+        "calq0's emission must equal the seed's (M5 unit join): {}",
+        diff_hint(&got_m5.output, &expected_m5)
+    );
+    let emitted_m5 = run_artifact(&got_m5.output).expect("the emitted M5 runs");
+    assert_eq!(emitted_m5.values[0].as_signed().expect("i64"), 1 * 100 + 2);
+}

@@ -1681,7 +1681,7 @@ local function emit_match(node)
   -- cond_br splits body vs continuation (the caller proceeds in the
   -- created next block). Without: the body runs IN PLACE — the arm
   -- was already selected by a test, or it is the fall arm.
-  local function emit_arm(conditions, bindings, body, pat)
+  local function emit_arm(conditions, bindings, body, pat, false_target)
     local function run_body()
       scope_push()
       collect_bindings(bindings)
@@ -1703,11 +1703,14 @@ local function emit_match(node)
     end
     if conditions ~= nil then
       local body_label = fresh_label()
-      local next_label = fresh_label()
-      emit("cf.cond_br " .. conditions .. ", ^" .. body_label .. ", ^" .. next_label)
+      local nlabel = false_target
+      if nlabel == nil then
+        nlabel = fresh_label()
+      end
+      emit("cf.cond_br " .. conditions .. ", ^" .. body_label .. ", ^" .. nlabel)
       new_block(body_label)
       run_body()
-      new_block(next_label)
+      new_block(nlabel)
       return "split"
     end
     run_body()
@@ -1790,7 +1793,7 @@ local function emit_match(node)
           local pv = unwrap_load(stored, vty, a.pat.line, a.pat.col)
           conditions = pattern_conditions(a.pat.sub, pv, vty, bindings)
         end
-        local step = emit_arm(conditions, bindings, a.body, a.pat)
+        local step = emit_arm(conditions, bindings, a.body, a.pat, next_label)
         if step == "inplace" then
           new_block(next_label)
         end

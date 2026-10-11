@@ -1121,7 +1121,7 @@ pub fn emit_expr(e: Emit, ex: Expr) Str {
         Expr.If(f) => emit_ifx(e, f),
         Expr.Blk(b) => emit_block_expr(e, b),
         Expr.Bad(b) => e_fail(e, b),
-        Expr.Match(m) => e_fail_at(e, 0, 0, "match lands in slice 3b-beta"),
+        Expr.Match(m) => emit_match(e, m),
         Expr.Make(m) => emit_make(e, m, m.line, m.col),
     };
 }
@@ -1847,11 +1847,11 @@ pub fn emit_variant_make(e: Emit, td: TypeDecl, vname: Str, args: Vector(Expr), 
     const payload: Str = emit_expr(e, vector.get(args, 0));
     const stored: Str = wrap_store(e, payload, v.ty, line, col);
     const sty: Str = storage_ir_t(a, v.ty);
+    const e0: Str = fresh(e);
+    emit_line(e, str.concat(e0, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
     const prod: Str = fresh(e);
     var l1: Str = " = \"frk_adt.product_snoc\"(";
     var l0: Str = "";
-    const e0: Str = fresh(e);
-    emit_line(e, str.concat(e0, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
     l0 = str.concat(e0, "");
     l1 = str.concat(l1, l0);
     l1 = str.concat(l1, ", ");
@@ -2080,4 +2080,636 @@ pub fn emit_vec_new(e: Emit, t: Ty, line: i64, col: i64) Str {
     emit_line(e, str.concat(res, l));
     vset(e, res, t);
     return res;
+}
+
+// ---------------------------------------------------------------- 3b-beta-2
+// The MATCH emission, mirroring the seed's block machinery linearly:
+// fresh-label order == the seed's block-creation order, so the
+// serialized text is identical.
+
+pub const MBind = struct {
+    name: Str,
+    ty: Ty,
+    id: Str,
+    line: i64,
+    col: i64,
+};
+
+pub fn collect_bindings(e: Emit, bindings: Vector(MBind)) {
+    const n: i64 = vector.len(bindings);
+    var i: i64 = 0;
+    while i < n {
+        const b: MBind = vector.get(bindings, i);
+        declare(e, %Binding{name: b.name, is_box: false, ty: b.ty, id: b.id, box: ""});
+        vset(e, b.id, b.ty);
+        i = i + 1;
+    }
+}
+
+pub fn emit_equality(e: Emit, a: Str, b: Str, t: Ty, line: i64, col: i64) Str {
+    if ty_is_i64(t) {
+        const r: Str = fresh(e);
+        emit_line(e, str.concat(r, str.concat(" = arith.cmpi eq, ", str.concat(a, str.concat(", ", str.concat(b, " : i64"))))));
+        vset(e, r, Ty.BoolV);
+        return r;
+    }
+    if ty_is_bool(t) {
+        const r2: Str = fresh(e);
+        emit_line(e, str.concat(r2, str.concat(" = arith.cmpi eq, ", str.concat(a, str.concat(", ", str.concat(b, " : i1"))))));
+        vset(e, r2, Ty.BoolV);
+        return r2;
+    }
+    if ty_is_str(t) {
+        const r3: Str = fresh(e);
+        var l: Str = " = \"frk_bstr.eq\"(";
+        l = str.concat(l, a);
+        l = str.concat(l, ", ");
+        l = str.concat(l, b);
+        l = str.concat(l, ") : (!frk_bstr.str, !frk_bstr.str) -> i1");
+        emit_line(e, str.concat(r3, l));
+        vset(e, r3, Ty.BoolV);
+        return r3;
+    }
+    return e_fail_at(e, line, col, "seed v0 compares only i64/bool/Str in patterns");
+}
+
+pub fn pattern_is_catch_all2(p: Pat) bool {
+    return match p {
+        Pat.Wild => true,
+        Pat.Bind(n) => true,
+        Pat.Rec(r) => prec_is_catch_all(r),
+        Pat.Lit(l) => false,
+        Pat.Pin(n) => false,
+        Pat.Variant(v) => false,
+        Pat.PatBad(b) => false,
+    };
+}
+
+pub fn prec_is_catch_all(r: PRec) bool {
+    const n: i64 = vector.len(r.fields);
+    var i: i64 = 0;
+    while i < n {
+        const f: PField = vector.get(r.fields, i);
+        if pattern_is_catch_all2(f.sub) == false {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// Returns the i1 condition ssa ("" = none) and pushes bindings.
+pub fn pattern_conditions(e: Emit, p: Pat, value: Str, lty: Ty, out_bindings: Vector(MBind)) Str {
+    return match p {
+        Pat.Wild => "",
+        Pat.Bind(n) => pc_bind(e, n, value, lty, p, out_bindings),
+        Pat.Pin(n) => pc_pin(e, n, value, lty, p),
+        Pat.Lit(l) => pc_lit(e, l, value, lty, p),
+        Pat.Rec(r) => pc_rec(e, r, value, lty, p, out_bindings),
+        Pat.Variant(v) => pc_variant(e, v, value, lty, p),
+        Pat.PatBad(b) => e_fail(e, b),
+    };
+}
+
+pub fn pat_line(p: Pat) i64 {
+    return match p {
+        Pat.Wild => 0,
+        Pat.Bind(n) => 0,
+        Pat.Lit(l) => 0,
+        Pat.Pin(n) => 0,
+        Pat.Rec(r) => 0,
+        Pat.Variant(v) => 0,
+        Pat.PatBad(b) => b.line,
+    };
+}
+
+pub fn pc_bind(e: Emit, n: Str, value: Str, lty: Ty, p: Pat, out_bindings: Vector(MBind)) Str {
+    vector.push(out_bindings, %MBind{name: n, ty: lty, id: value, line: 0, col: 0});
+    return "";
+}
+
+pub fn pc_pin(e: Emit, n: Str, value: Str, lty: Ty, p: Pat) Str {
+    const b: Binding = lookup(e, n);
+    if b.name == "" {
+        return e_fail_at(e, 0, 0, str.concat("unknown pinned name `", str.concat(n, "`")));
+    }
+    const other: Str = read_binding(e, b);
+    return emit_equality(e, value, other, lty, 0, 0);
+}
+
+pub fn pc_lit(e: Emit, l: PLit, value: Str, lty: Ty, p: Pat) Str {
+    var other: Str = "";
+    if l.litty == "i64" {
+        if ty_is_i64(lty) == false {
+            return e_fail_at(e, 0, 0, "integer patterns match only i64 subjects");
+        }
+        other = const_i64(e, l.text);
+    } else {
+        if l.litty == "bool" {
+            if ty_is_bool(lty) == false {
+                return e_fail_at(e, 0, 0, "boolean patterns match only bool subjects");
+            }
+            other = e_bool(e, l.text);
+        } else {
+            if ty_is_str(lty) == false {
+                return e_fail_at(e, 0, 0, "string patterns match only Str subjects");
+            }
+            other = e_str(e, l.text);
+        }
+    }
+    return emit_equality(e, value, other, lty, 0, 0);
+}
+
+pub fn pc_rec(e: Emit, r: PRec, value: Str, lty: Ty, p: Pat, out_bindings: Vector(MBind)) Str {
+    if is_named_t(lty) == false {
+        return e_fail_at(e, 0, 0, str.concat("pattern `%", str.concat(r.ty, "{...}` does not match the subject type")));
+    }
+    if named_of(lty) != r.ty {
+        return e_fail_at(e, 0, 0, str.concat("pattern `%", str.concat(r.ty, "{...}` does not match the subject type")));
+    }
+    const a: Ast = e_ast(e);
+    const td: TypeDecl = find_td(a, r.ty);
+    if td.is_union {
+        return e_fail_at(e, 0, 0, str.concat("`%", str.concat(r.ty, "{...}` is a struct pattern")));
+    }
+    var cond: Str = "";
+    const self_ty: Ty = Ty.Named(td.name);
+    const n: i64 = vector.len(r.fields);
+    var i: i64 = 0;
+    while i < n {
+        const fp: PField = vector.get(r.fields, i);
+        const idx: i64 = field_index(td, fp.name);
+        const fld: FieldDecl = vector.get(td.fields, idx);
+        const stored: Str = fresh(e);
+        var l: Str = " = \"frk_mem.field_get\"(";
+        l = str.concat(l, value);
+        l = str.concat(l, ") {field = ");
+        l = str.concat(l, str.fromI64(idx));
+        l = str.concat(l, " : i64} : (");
+        l = str.concat(l, value_ir_t(a, self_ty));
+        l = str.concat(l, ") -> ");
+        l = str.concat(l, storage_ir_t(a, fld.ty));
+        emit_line(e, str.concat(stored, l));
+        const fv: Str = unwrap_load(e, stored, fld.ty, 0, 0);
+        const c2: Str = pattern_conditions(e, fp.sub, fv, fld.ty, out_bindings);
+        if str.len(c2) > 0 {
+            if str.len(cond) == 0 {
+                cond = c2;
+            } else {
+                const both: Str = fresh(e);
+                emit_line(e, str.concat(both, str.concat(" = arith.andi ", str.concat(cond, str.concat(", ", str.concat(c2, " : i1"))))));
+                vset(e, both, Ty.BoolV);
+                cond = both;
+            }
+        }
+        i = i + 1;
+    }
+    return cond;
+}
+
+pub fn pc_variant(e: Emit, v: PVar, value: Str, lty: Ty, p: Pat) Str {
+    if is_named_t(lty) == false {
+        return e_fail_at(e, 0, 0, "variant patterns need a union subject");
+    }
+    const a: Ast = e_ast(e);
+    const td: TypeDecl = find_td(a, named_of(lty));
+    if td.is_union == false {
+        return e_fail_at(e, 0, 0, str.concat("pattern `", str.concat(v.ty, str.concat(".", str.concat(v.variant, "` does not match the subject type")))));
+    }
+    if td.name != v.ty {
+        return e_fail_at(e, 0, 0, str.concat("pattern `", str.concat(v.ty, str.concat(".", str.concat(v.variant, "` does not match the subject type")))));
+    }
+    const idx: i64 = variant_index(td, v.variant);
+    const tag: Str = fresh(e);
+    var l: Str = " = \"frk_adt.tag_of\"(";
+    l = str.concat(l, value);
+    l = str.concat(l, ") : (");
+    l = str.concat(l, value_ir_t(a, lty));
+    l = str.concat(l, ") -> i64");
+    emit_line(e, str.concat(tag, l));
+    const eq: Str = fresh(e);
+    emit_line(e, str.concat(eq, str.concat(" = arith.cmpi eq, ", str.concat(tag, str.concat(", ", str.concat(const_i64(e, str.fromI64(idx)), " : i64"))))));
+    vset(e, eq, Ty.BoolV);
+    return eq;
+}
+
+// ---------------------------------------------------------------- match
+pub const MTy = struct {
+    label: Str,
+    arg: Str,
+    has: Vector(i64),
+    ty: Vector(Ty),
+};
+
+pub fn mt_new(label: Str, arg: Str) MTy {
+    var h: Vector(i64) = vector.new();
+    vector.push(h, 0);
+    var t: Vector(Ty) = vector.new();
+    vector.push(t, Ty.UnitV);
+    return %MTy{label: label, arg: arg, has: h, ty: t};
+}
+
+pub fn emit_arm(e: Emit, c: MTy, conditions: Str, bindings: Vector(MBind), body: Expr, false_target: Str) Str {
+    if str.len(conditions) > 0 {
+        const body_label: Str = fresh_label(e);
+        var nlabel: Str = false_target;
+        if str.len(nlabel) == 0 {
+            nlabel = fresh_label(e);
+        }
+        emit_line(e, str.concat("cf.cond_br ", str.concat(conditions, str.concat(", ^", str.concat(body_label, str.concat(", ^", nlabel))))));
+        new_label(e, body_label);
+        emit_arm_body(e, c, bindings, body);
+        new_label(e, nlabel);
+        return "split";
+    }
+    emit_arm_body(e, c, bindings, body);
+    return "inplace";
+}
+
+pub fn emit_arm_body(e: Emit, c: MTy, bindings: Vector(MBind), body: Expr) {
+    scope_push(e);
+    collect_bindings(e, bindings);
+    const v: Str = emit_expr(e, body);
+    var vty: Ty = Ty.UnitV;
+    var has: bool = false;
+    if str.len(v) > 0 {
+        vty = vget(e, v);
+        has = true;
+    }
+    if is_terminated(e) == false {
+        if has == false {
+            terminate(e, str.concat("cf.br ^", c.label));
+        } else {
+            if ty_is_unit(vty) {
+                terminate(e, str.concat("cf.br ^", c.label));
+            } else {
+                if vector.get(c.has, 0) > 0 {
+                    const prev: Ty = vector.get(c.ty, 0);
+                    if same_ty(prev, vty) == false {
+                        e_fail_at(e, 0, 0, "match arms produce different types");
+                        return;
+                    }
+                } else {
+                    vector.set(c.has, 0, 1);
+                    vector.set(c.ty, 0, vty);
+                }
+                var l: Str = "cf.br ^";
+                l = str.concat(l, c.label);
+                l = str.concat(l, "(");
+                l = str.concat(l, v);
+                l = str.concat(l, " : ");
+                l = str.concat(l, value_ir_t(e_ast(e), vty));
+                l = str.concat(l, ")");
+                terminate(e, l);
+            }
+        }
+    }
+    scope_pop(e);
+}
+
+pub fn emit_join(e: Emit, c: MTy) Str {
+    const a: Ast = e_ast(e);
+    if vector.get(c.has, 0) > 0 {
+        const ty: Ty = vector.get(c.ty, 0);
+        var l: Str = "^";
+        l = str.concat(l, c.label);
+        l = str.concat(l, "(");
+        l = str.concat(l, c.arg);
+        l = str.concat(l, ": ");
+        l = str.concat(l, value_ir_t(a, ty));
+        l = str.concat(l, "):");
+        emit_top(e, l);
+        vector.set(e.terminated, 0, 0);
+        vset(e, c.arg, ty);
+        return c.arg;
+    }
+    new_label(e, c.label);
+    return "";
+}
+
+pub fn pv_of(p: Pat) PVar {
+    return match p {
+        Pat.Variant(v) => v,
+        _ => %PVar{ty: "", variant: "", has_payload: false, sub: Pat.Wild},
+    };
+}
+
+pub fn emit_match(e: Emit, m: MatchE) Str {
+    var sname: Str = "";
+    var smod: Str = "";
+    const scrut: Expr = m.scrut;
+    match scrut {
+        Expr.Ref(r) => { sname = r.name; smod = r.mod; },
+        _ => {},
+    };
+    if str.len(sname) == 0 {
+        return e_fail_at(e, 0, 0, "a match scrutinee must be a named value (seed v0)");
+    }
+    if str.len(smod) > 0 {
+        return e_fail_at(e, 0, 0, "a match scrutinee must be a named value (seed v0)");
+    }
+    const b: Binding = lookup(e, sname);
+    if b.name == "" {
+        return e_fail_at(e, 0, 0, str.concat("unknown name `", str.concat(sname, "`")));
+    }
+    const value: Str = read_binding(e, b);
+    const sty: Ty = b.ty;
+    const join_label: Str = fresh_label(e);
+    const join_arg: Str = str.concat("%j", str.fromI64(vector.get(e.blk, 0)));
+    const c: MTy = mt_new(join_label, join_arg);
+    if is_named_t(sty) {
+        const td: TypeDecl = find_td(e_ast(e), named_of(sty));
+        if td.is_union {
+            return emit_match_union(e, m, td, value, sty, c);
+        }
+        return emit_match_struct(e, m, td, value, sty, c);
+    }
+    return emit_match_builtin(e, m, value, sty, c);
+}
+
+
+pub fn emit_match_union(e: Emit, m: MatchE, d: TypeDecl, value: Str, sty: Ty, c: MTy) Str {
+    const a: Ast = e_ast(e);
+    const n_arms: i64 = vector.len(m.arms);
+    const nv: i64 = vector.len(d.variants);
+    var covered: Vector(i64) = vector.new();
+    var q: i64 = 0;
+    while q < nv {
+        vector.push(covered, 0);
+        q = q + 1;
+    }
+    var chain_idx: Vector(i64) = vector.new();
+    var chain_arm: Vector(i64) = vector.new();
+    var default_arm: i64 = 0 - 1;
+    var i: i64 = 0;
+    while i < n_arms {
+        const arm: Arm = vector.get(m.arms, i);
+        const p0: Pat = arm.pat;
+        match p0 {
+            Pat.Variant(v) => {
+                if v.ty != d.name {
+                    e_fail_at(e, 0, 0, str.concat("pattern `", str.concat(v.ty, str.concat("` does not match scrutinee type `", str.concat(d.name, "`")))));
+                    return "";
+                }
+                const idx: i64 = variant_index(d, v.variant);
+                if vector.get(covered, idx) > 0 {
+                    e_fail_at(e, 0, 0, str.concat("redundant arm: `", str.concat(v.variant, "` is already covered")));
+                    return "";
+                }
+                vector.set(covered, idx, 1);
+                vector.push(chain_idx, idx);
+                vector.push(chain_arm, i);
+            },
+            Pat.Wild => {
+                if default_arm >= 0 {
+                    e_fail_at(e, 0, 0, "unreachable arm: a previous arm already covers everything");
+                    return "";
+                }
+                default_arm = i;
+            },
+            Pat.Bind(n) => {
+                if default_arm >= 0 {
+                    e_fail_at(e, 0, 0, "unreachable arm: a previous arm already covers everything");
+                    return "";
+                }
+                default_arm = i;
+            },
+            _ => {
+                e_fail_at(e, 0, 0, "in a union match, arms are variant patterns or `_`/bindings (seed v0)");
+                return "";
+            },
+        };
+        i = i + 1;
+    }
+    if default_arm < 0 {
+        var missing: Str = "";
+        var cnt: i64 = 0;
+        var k: i64 = 0;
+        while k < nv {
+            if vector.get(covered, k) == 0 {
+                if cnt > 0 {
+                    missing = str.concat(missing, ", ");
+                }
+                const vd: VariantDecl = vector.get(d.variants, k);
+                missing = str.concat(missing, str.concat(d.name, str.concat(".", vd.name)));
+                cnt = cnt + 1;
+            }
+            k = k + 1;
+        }
+        if cnt > 0 {
+            e_fail_at(e, 0, 0, str.concat("match does not cover ", missing));
+            return "";
+        }
+    }
+    var chain_n: i64 = vector.len(chain_idx);
+    var fall_i: i64 = default_arm;
+    if default_arm < 0 {
+        fall_i = vector.get(chain_arm, chain_n - 1);
+        const fa: Arm = vector.get(m.arms, fall_i);
+        const fp: PVar = pv_of(fa.pat);
+        var sub_can_fail: bool = false;
+        if fp.has_payload {
+            const fsub: Pat = fp.sub;
+            match fsub {
+                Pat.Wild => {},
+                Pat.Bind(n) => {},
+                _ => {
+                    sub_can_fail = true;
+                },
+            };
+        }
+        if sub_can_fail {
+            e_fail_at(e, 0, 0, "this payload pattern can fail; add a following `_` arm (seed v0)");
+            return "";
+        }
+        chain_n = chain_n - 1;
+    }
+    var ci: i64 = 0;
+    while ci < chain_n {
+        const idx2: i64 = vector.get(chain_idx, ci);
+        const ai: i64 = vector.get(chain_arm, ci);
+        const arm: Arm = vector.get(m.arms, ai);
+        const pa: PVar = pv_of(arm.pat);
+        const arm_label: Str = fresh_label(e);
+        const next_label: Str = fresh_label(e);
+        const tag: Str = fresh(e);
+        var tl: Str = " = \"frk_adt.tag_of\"(";
+        tl = str.concat(tl, value);
+        tl = str.concat(tl, ") : (");
+        tl = str.concat(tl, value_ir_t(a, sty));
+        tl = str.concat(tl, ") -> i64");
+        emit_line(e, str.concat(tag, tl));
+        const eq: Str = fresh(e);
+        var el: Str = " = arith.cmpi eq, ";
+        el = str.concat(el, tag);
+        el = str.concat(el, ", ");
+        el = str.concat(el, const_i64(e, str.fromI64(idx2)));
+        el = str.concat(el, " : i64");
+        emit_line(e, str.concat(eq, el));
+        emit_line(e, str.concat("cf.cond_br ", str.concat(eq, str.concat(", ^", str.concat(arm_label, str.concat(", ^", next_label))))));
+        new_label(e, arm_label);
+        var conditions: Str = "";
+        var bindings: Vector(MBind) = vector.new();
+        if pa.has_payload {
+            const vd2: VariantDecl = vector.get(d.variants, idx2);
+            if vd2.has_payload == false {
+                e_fail_at(e, 0, 0, str.concat("variant `", str.concat(pa.variant, "` has no payload")));
+                return "";
+            }
+            const stored: Str = fresh(e);
+            var sl: Str = " = \"frk_adt.extract\"(";
+            sl = str.concat(sl, value);
+            sl = str.concat(sl, ") {variant = ");
+            sl = str.concat(sl, str.fromI64(idx2));
+            sl = str.concat(sl, " : i64, field = 0 : i64} : (");
+            sl = str.concat(sl, value_ir_t(a, sty));
+            sl = str.concat(sl, ") -> ");
+            sl = str.concat(sl, storage_ir_t(a, vd2.ty));
+            emit_line(e, str.concat(stored, sl));
+            const pv: Str = unwrap_load(e, stored, vd2.ty, 0, 0);
+            conditions = pattern_conditions(e, pa.sub, pv, vd2.ty, bindings);
+        }
+        const step: Str = emit_arm(e, c, conditions, bindings, arm.body, next_label);
+        if step == "inplace" {
+            new_label(e, next_label);
+        }
+        ci = ci + 1;
+    }
+    const fall_arm: Arm = vector.get(m.arms, fall_i);
+    var conditions2: Str = "";
+    var bindings2: Vector(MBind) = vector.new();
+    const fpat: Pat = fall_arm.pat;
+    match fpat {
+        Pat.Variant(v) => {
+            if v.has_payload {
+                const idx3: i64 = variant_index(d, v.variant);
+                const vd3: VariantDecl = vector.get(d.variants, idx3);
+                if vd3.has_payload == false {
+                    e_fail_at(e, 0, 0, str.concat("variant `", str.concat(v.variant, "` has no payload")));
+                    return "";
+                }
+                const stored2: Str = fresh(e);
+                var sl2: Str = " = \"frk_adt.extract\"(";
+                sl2 = str.concat(sl2, value);
+                sl2 = str.concat(sl2, ") {variant = ");
+                sl2 = str.concat(sl2, str.fromI64(idx3));
+                sl2 = str.concat(sl2, " : i64, field = 0 : i64} : (");
+                sl2 = str.concat(sl2, value_ir_t(a, sty));
+                sl2 = str.concat(sl2, ") -> ");
+                sl2 = str.concat(sl2, storage_ir_t(a, vd3.ty));
+                emit_line(e, str.concat(stored2, sl2));
+                const pv2: Str = unwrap_load(e, stored2, vd3.ty, 0, 0);
+                conditions2 = pattern_conditions(e, v.sub, pv2, vd3.ty, bindings2);
+                if str.len(conditions2) > 0 {
+                    e_fail_at(e, 0, 0, "internal: the fall arm's conditions can fail");
+                    return "";
+                }
+            }
+        },
+        Pat.Bind(n) => {
+            vector.push(bindings2, %MBind{name: n, ty: sty, id: value, line: 0, col: 0});
+        },
+        _ => {},
+    };
+    emit_arm(e, c, conditions2, bindings2, fall_arm.body, "");
+    return emit_join(e, c);
+}
+
+pub fn emit_match_struct(e: Emit, m: MatchE, d: TypeDecl, value: Str, sty: Ty, c: MTy) Str {
+    const n_arms: i64 = vector.len(m.arms);
+    var default_seen: i64 = 0 - 1;
+    var i: i64 = 0;
+    while i < n_arms {
+        const arm: Arm = vector.get(m.arms, i);
+        if default_seen >= 0 {
+            e_fail_at(e, 0, 0, "unreachable arm: a previous arm already covers everything");
+            return "";
+        }
+        if pattern_is_catch_all2(arm.pat) {
+            default_seen = i;
+        }
+        i = i + 1;
+    }
+    if default_seen < 0 {
+        e_fail_at(e, 0, 0, "a struct match needs a final catch-all arm (`_`, a binding, or an all-binding record pattern) (seed v0)");
+        return "";
+    }
+    var j: i64 = 0;
+    while j < n_arms {
+        const arm: Arm = vector.get(m.arms, j);
+        var bindings: Vector(MBind) = vector.new();
+        if j == default_seen {
+            const cond0: Str = pattern_conditions(e, arm.pat, value, sty, bindings);
+            if str.len(cond0) > 0 {
+                e_fail_at(e, 0, 0, "internal: a catch-all arm carries conditions");
+                return "";
+            }
+            emit_arm(e, c, "", bindings, arm.body, "");
+        } else {
+            const cond1: Str = pattern_conditions(e, arm.pat, value, sty, bindings);
+            if str.len(cond1) == 0 {
+                e_fail_at(e, 0, 0, "this pattern matches unconditionally; use `_` as the catch-all arm (seed v0)");
+                return "";
+            }
+            emit_arm(e, c, cond1, bindings, arm.body, "");
+        }
+        j = j + 1;
+    }
+    return emit_join(e, c);
+}
+
+pub fn emit_match_builtin(e: Emit, m: MatchE, value: Str, sty: Ty, c: MTy) Str {
+    const n_arms: i64 = vector.len(m.arms);
+    var default_seen: i64 = 0 - 1;
+    var i: i64 = 0;
+    while i < n_arms {
+        const arm: Arm = vector.get(m.arms, i);
+        const p1: Pat = arm.pat;
+        match p1 {
+            Pat.Wild => {
+                if default_seen >= 0 {
+                    e_fail_at(e, 0, 0, "unreachable arm: a previous arm already covers everything");
+                    return "";
+                }
+                default_seen = i;
+            },
+            Pat.Bind(n) => {
+                if default_seen >= 0 {
+                    e_fail_at(e, 0, 0, "unreachable arm: a previous arm already covers everything");
+                    return "";
+                }
+                default_seen = i;
+            },
+            _ => {},
+        };
+        i = i + 1;
+    }
+    if default_seen < 0 {
+        e_fail_at(e, 0, 0, "a builtin match needs a final `_` or binding arm (seed v0)");
+        return "";
+    }
+    var j: i64 = 0;
+    while j < n_arms {
+        const arm: Arm = vector.get(m.arms, j);
+        var bindings: Vector(MBind) = vector.new();
+        if j == default_seen {
+            const p2: Pat = arm.pat;
+            match p2 {
+                Pat.Bind(n) => {
+                    vector.push(bindings, %MBind{name: n, ty: sty, id: value, line: 0, col: 0});
+                },
+                _ => {},
+            };
+            emit_arm(e, c, "", bindings, arm.body, "");
+        } else {
+            const cond1: Str = pattern_conditions(e, arm.pat, value, sty, bindings);
+            if str.len(cond1) == 0 {
+                e_fail_at(e, 0, 0, "this pattern matches unconditionally; use `_` as the catch-all arm (seed v0)");
+                return "";
+            }
+            emit_arm(e, c, cond1, bindings, arm.body, "");
+        }
+        j = j + 1;
+    }
+    return emit_join(e, c);
 }

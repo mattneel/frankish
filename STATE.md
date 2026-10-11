@@ -1388,13 +1388,16 @@ rework flag, not a knob.
       case flows through. Emitter structure: `Emit.out` carries final
       lines (emit_line indents, emit_top does not), `sym_of` mangles
       main -> __calque_main, e_render returns `out`.
-    Next: calq0 slice 3b-beta-2 — the MATCH emission (tag dispatch,
-    field-test chains, the whole pattern set, join blocks) - the last
-    fenced construct; then slice 3c: calq0 compiling ITSELF.
-    (3b-beta-1 VERIFIED: records with defaults + immutable update +
-    destructuring + field access + the VECTOR surface all byte-equal
-    to the seed and executing - `calq0_matches_the_seed_on_records_
-    and_vectors`: probes A/B/C + R1 + V1.) (3b-alpha VERIFIED: calq0's
+    Next: calq0 slice 3c: the compiler core is COMPLETE (3b-beta-2
+    shipped the match emission - all five M-probes byte-equal to the
+    seed and executing). Slice 3c = the corpus (seed/calq0 agreement
+    on a wider program set, error messages, the compiler's own
+    sources) and the self-compilation gate: calq0 translating its own
+    emit.calq/parse.calq through the seed-vs-calq0 chain.
+    (3b-beta-2 also FIXED A SEED BUG: a non-last union chain arm with
+    a failing payload pattern left the tag test's false target
+    dangling - found by the new M1 probe, fixed in emit_arm, both
+    goldens and the corpus unaffected before the fix.) (3b-alpha VERIFIED: calq0's
     emission for the var/while/checked-arith program AND for fib.calq
     is BYTE-IDENTICAL to the seed's, and both emitted artifacts run -
     `calq0_matches_the_seed_on_statements_and_arithmetic`, the
