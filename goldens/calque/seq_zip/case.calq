@@ -1,0 +1,35 @@
+// seq.zip: pairs from two pull sequences, stopping at the shorter
+// (the missing tail of the longer side is never pulled).
+// Expected output (hand-derived): "3\n(1,10)(2,20)(3,30)|"
+const P = struct {
+    a: i64,
+    b: i64,
+};
+
+pub fn main() i64 {
+    var xs: Vector(i64) = vector.new();
+    vector.push(xs, 1);
+    vector.push(xs, 2);
+    vector.push(xs, 3);
+    var ys: Vector(i64) = vector.new();
+    vector.push(ys, 10);
+    vector.push(ys, 20);
+    vector.push(ys, 30);
+    vector.push(ys, 40);
+    const zs = xs
+        |> seq.iter()
+        |> seq.zip(ys |> seq.iter());
+    const n = zs |> seq.fold(0, fn (c, p) { c + 1 });
+    io.print(str.fromI64(n));
+    io.print("\n");
+    // sequences are single-shot: the second pass builds fresh pulls.
+    const back = xs
+        |> seq.iter()
+        |> seq.zip(ys |> seq.iter())
+        |> seq.map(fn (p) { str.concat("(", str.concat(str.fromI64(p.0), str.concat(",", str.concat(str.fromI64(p.1), ")")))) })
+        |> seq.fold("", fn (acc, s) { str.concat(acc, s) });
+    io.print(back);
+    io.print("|");
+    io.print("\n");
+    0
+}

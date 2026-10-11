@@ -139,3 +139,30 @@ pub fn flat_map(comptime T: type, comptime U: type, up: fn () ?T, f: fn (T) fn (
         result
     };
 }
+
+pub fn zip(comptime T: type, comptime U: type, a: fn () ?T, b: fn () ?U) fn () ?(T, U) {
+    return fn () ?(T, U) {
+        const x: ?T = a();
+        const y: ?U = b();
+        return match x {
+            .Some(vx) => {
+                const inner: ?(T, U) = match y {
+                    .Some(vy) => {
+                        const p: (T, U) = (vx, vy);
+                        const r: ?(T, U) = .Some(p);
+                        r
+                    },
+                    .None => {
+                        const r2: ?(T, U) = .None;
+                        r2
+                    },
+                };
+                inner
+            },
+            .None => {
+                const inner2: ?(T, U) = .None;
+                inner2
+            },
+        };
+    };
+}

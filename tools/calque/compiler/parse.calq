@@ -38,6 +38,8 @@ pub const Expr = union(enum) {
     // A closure literal (SPEC 6.4): lifted to a top-level function by
     // the emitter; the expression evaluates to the closure value.
     Lam: LamE,
+    // `(a, b)` - a tuple literal (D-114); `(e)` stays grouping.
+    Tup: Vector(Expr),
     // `try e` (SPEC 6.5): on Err the enclosing function returns Err(x).
     TryE: TryX,
     CatchE: CatchX,
@@ -525,8 +527,8 @@ pub fn do_dot(mut p: P, e: Expr) Expr {
     }
     const _t: Tok = p_next(p);
     const m: Tok = p_peek(p);
-    if is_name_tok(m) == false {
-        return bad(p, m.line, m.col, "expected an identifier after `.'");
+    if is_name_tok(m) == false and is_int_tok(m) == false {
+        return bad(p, m.line, m.col, "expected an identifier or a tuple index after `.'");
     }
     const _m: Tok = p_next(p);
     return Expr.Ref(%Ref{name: m.text, mod: r.name});
@@ -578,11 +580,28 @@ pub fn parse_primary(mut p: P) Expr {
     }
     if at_punct(p, "(") {
         const _t: Tok = p_next(p);
-        const e: Expr = parse_expr(p, 1);
+        const first: Expr = parse_expr(p, 1);
+        if at_punct(p, ",") {
+            var items: Vector(Expr) = vector.new();
+            vector.push(items, first);
+            var tgo: bool = true;
+            while tgo {
+                if at_punct(p, ",") {
+                    const _c: Tok = p_next(p);
+                    vector.push(items, parse_expr(p, 1));
+                } else {
+                    tgo = false;
+                }
+            }
+            if expect_punct(p, ")") == false {
+                return bad_here(p);
+            }
+            return Expr.Tup(items);
+        }
         if expect_punct(p, ")") == false {
             return bad_here(p);
         }
-        return e;
+        return first;
     }
     if at_punct(p, "{") {
         const b: Block = p_block(p);
@@ -684,6 +703,17 @@ pub fn dump(e: Expr) Str {
         Expr.TryE(tr) => str.concat("(try ", str.concat(dump(tr.expr), ")")),
         Expr.CatchE(cx2) => d_catch(cx2),
         Expr.TyV(tx) => str.concat("(tyv ", str.concat(d_ty(tx), ")")),
+        Expr.Tup(es) => {
+            var acc: Str = "(tup";
+            const n: i64 = vector.len(es);
+            var i: i64 = 0;
+            while i < n {
+                acc = str.concat(acc, " ");
+                acc = str.concat(acc, dump(vector.get(es, i)));
+                i = i + 1;
+            }
+            str.concat(acc, ")")
+        },
         Expr.Bad(b) => d_bad(b),
     };
 }
@@ -760,6 +790,9 @@ pub const Ty = union(enum) {
     // no per-instantiation decls needed.
     OptT: Ty,
     ResT: ResTT,
+    // `(T1, T2, ...)` - the tuple type (D-114): a structural product.
+    // `()` is not a tuple type.
+    Tup: Vector(Ty),
     // Explicit recovery (D-109): never a valid type; the State holds
     // the real message ("<absent>" marks flag-guarded placeholders).
     TyBad: BadNode,
@@ -801,6 +834,12 @@ pub const Block = struct {
     stmts: Vector(Stmt),
     has_tail: bool,
     tail: Expr,
+};
+
+pub const TDestrS = struct {
+    names: Vector(Str),
+    expr: Expr,
+    mutable: bool,
 };
 
 pub const ConstS = struct {
@@ -862,6 +901,8 @@ pub const Stmt = union(enum) {
     If: IfS,
     While: WhileS,
     Destr: DestrS,
+    // `const (x, y) = t;` / `var (x, y) = t;` - tuple destructuring.
+    TDestr: TDestrS,
     Expr: ExprS,
     FAssign: FAssS,
 };
@@ -1058,6 +1099,28 @@ pub fn p_type_atom(mut p: P) Ty {
         return bad_ty(p, t.line, t.col, "invalid type");
     }
     if is_punct_tok(t) {
+        if t.text == "(" {
+            const _p0: Tok = p_next(p);
+            var tys: Vector(Ty) = vector.new();
+            vector.push(tys, p_type(p));
+            var tgo: bool = true;
+            while tgo {
+                if at_punct(p, ",") {
+                    const _c0: Tok = p_next(p);
+                    vector.push(tys, p_type(p));
+                } else {
+                    tgo = false;
+                }
+            }
+            if expect_punct(p, ")") == false {
+                return bad_ty(p, t.line, t.col, "invalid type");
+            }
+            if vector.len(tys) < 2 {
+                p_fail(p, t.line, t.col, "a tuple type has two or more element types (D-114)");
+                return bad_ty(p, t.line, t.col, "invalid type");
+            }
+            return Ty.Tup(tys);
+        }
         if t.text == "[" {
             const _t: Tok = p_next(p);
             const inner: Ty = p_type(p);
@@ -1363,6 +1426,40 @@ pub fn p_make(mut p: P) Expr {
     return bad_here(p);
 }
 
+pub fn p_tdestr(mut p: P, mutable: bool, kw_line: i64, kw_col: i64) TDestrS {
+    const _lp: Tok = p_next(p); // (
+    var names: Vector(Str) = vector.new();
+    var tgo: bool = true;
+    while tgo {
+        if p_ok(p) == false {
+            tgo = false;
+        } else {
+            const nm: Tok = p_peek(p);
+            if is_name_tok(nm) == false {
+                p_fail(p, nm.line, nm.col, "expected a name in the tuple destructuring");
+                tgo = false;
+            } else {
+                const _n: Tok = p_next(p);
+                vector.push(names, nm.text);
+                if at_punct(p, ",") {
+                    const _c: Tok = p_next(p);
+                } else {
+                    tgo = false;
+                }
+            }
+        }
+    }
+    if expect_punct(p, ")") == false {
+        return %TDestrS{names: names, expr: poison(), mutable: mutable};
+    }
+    if expect_punct(p, "=") == false {
+        return %TDestrS{names: names, expr: poison(), mutable: mutable};
+    }
+    const e: Expr = parse_expr(p, 1);
+    const _s: bool = expect_semi(p);
+    return %TDestrS{names: names, expr: e, mutable: mutable};
+}
+
 pub fn p_destr(mut p: P, mutable: bool, kw_line: i64, kw_col: i64) DestrS {
     const _c: Tok = p_next(p); // {
     var names: Vector(DName) = vector.new();
@@ -1436,6 +1533,11 @@ pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
     if is_kw_tok(t) {
         if t.text == "const" {
             const _a: Tok = p_next(p);
+            if at_punct(p, "(") {
+                const td: TDestrS = p_tdestr(p, false, t.line, t.col);
+                vector.push(stmts, Stmt.TDestr(td));
+                return %StmtOut{added: true, tail: poison()};
+            }
             if at_punct(p, "{") {
                 const d: DestrS = p_destr(p, false, t.line, t.col);
                 vector.push(stmts, Stmt.Destr(d));
@@ -1464,6 +1566,11 @@ pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
         }
         if t.text == "var" {
             const _a: Tok = p_next(p);
+            if at_punct(p, "(") {
+                const td: TDestrS = p_tdestr(p, true, t.line, t.col);
+                vector.push(stmts, Stmt.TDestr(td));
+                return %StmtOut{added: true, tail: poison()};
+            }
             if at_punct(p, "{") {
                 const d: DestrS = p_destr(p, true, t.line, t.col);
                 vector.push(stmts, Stmt.Destr(d));
@@ -1920,6 +2027,17 @@ pub fn d_ty(t: Ty) Str {
         Ty.Named(n) => str.concat("(ty ", str.concat(n, ")")),
         Ty.Vec(inner) => str.concat("(ty vec ", str.concat(d_ty(inner), ")")),
         Ty.OptT(inner) => str.concat("(ty opt ", str.concat(d_ty(inner), ")")),
+        Ty.Tup(tys) => {
+            var acc: Str = "(ty tup";
+            const nt: i64 = vector.len(tys);
+            var ti: i64 = 0;
+            while ti < nt {
+                acc = str.concat(acc, " ");
+                acc = str.concat(acc, d_ty(vector.get(tys, ti)));
+                ti = ti + 1;
+            }
+            str.concat(acc, ")")
+        },
         Ty.ResT(rz) => str.concat("(ty res ", str.concat(d_ty(rz.err), str.concat(" ", str.concat(d_ty(rz.ok), ")")))),
         Ty.FnT(sig) => d_fnsig(sig),
         Ty.TyBad(b) => d_bad(b),
@@ -2089,6 +2207,19 @@ pub fn d_stmt(s: Stmt) Str {
         Stmt.If(f) => d_if(%IfE{cond: f.cond, then: f.then, has_else: f.has_else, els: f.els}),
         Stmt.While(w) => str.concat("(while ", str.concat(dump(w.cond), str.concat(" ", str.concat(d_block(w.body), ")")))),
         Stmt.Destr(d) => d_destr(d),
+        Stmt.TDestr(td) => {
+            var acc: Str = "(tdestr [";
+            const n: i64 = vector.len(td.names);
+            var i: i64 = 0;
+            while i < n {
+                if i > 0 {
+                    acc = str.concat(acc, " ");
+                }
+                acc = str.concat(acc, vector.get(td.names, i));
+                i = i + 1;
+            }
+            str.concat(acc, str.concat("] ", str.concat(dump(td.expr), ")")))
+        },
         Stmt.Expr(e) => str.concat("(expr ", str.concat(dump(e.expr), ")")),
         Stmt.FAssign(f) => str.concat("(fassign ", str.concat(f.name, str.concat(".", str.concat(f.field, str.concat(" ", str.concat(dump(f.expr), ")")))))),
     };

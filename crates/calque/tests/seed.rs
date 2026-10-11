@@ -2373,6 +2373,31 @@ fn seed_tuples() {
 }
 
 #[test]
+fn calq0_matches_the_seed_on_tuples() {
+    // D-114's differential: calq0's tuple types, literals, `t.0`
+    // access, and destructuring - byte-equal to the seed, executed.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "tp.calq",
+            None,
+            "pub fn swap(p: (i64, Str)) (Str, i64) {\n    (p.1, p.0)\n}\npub fn tdestr(p: (i64, Str)) i64 {\n    const (n, s) = p;\n    return n + str.len(s);\n}\npub fn tdestr2() i64 {\n    var (a, b) = (3, 4);\n    a = a + b;\n    a\n}\npub fn main() i64 {\n    const t: (i64, Str) = (7, \"ab\");\n    const s = swap(t);\n    io.print(s.0);\n    io.print(\" \");\n    io.print(str.fromI64(s.1));\n    io.print(\"\\n\");\n    io.print(str.fromI64(tdestr((5, \"xy\"))));\n    io.print(\" \");\n    io.print(str.fromI64(tdestr2()));\n    io.print(\"\\n\");\n    0\n}\n",
+        ),
+    ];
+    let artifact = compile_artifact();
+    let expected = seed_translate(&files).expect("the seed emits the tuple probe");
+    let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the tuple probe");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (tuples): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted tuple probe runs");
+    assert_eq!(emitted.output, "ab 7\n7 7\n");
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the

@@ -261,6 +261,7 @@ pub fn ty_ir(t: Ty) Str {
         Ty.Vec(inner) => "vec",
         Ty.OptT(inner) => "opt",
         Ty.ResT(rz) => "res",
+        Ty.Tup(tys) => "tup",
         Ty.FnT(sig) => "fn",
         Ty.TyBad(b) => "bad",
     };
@@ -733,6 +734,80 @@ pub fn emit_catch_e(mut e: Emitter, cx: CatchX) Str {
     return jarg;
 }
 
+pub fn emit_tuple_e(mut e: Emitter, items: Vector(Expr), expected: Ty) Str {
+    const a: Ast = e_ast(e);
+    var exp_tys: Vector(Ty) = vector.new();
+    var has_exp: bool = false;
+    match expected {
+        Ty.Tup(tys) => {
+            exp_tys = tys;
+            has_exp = true;
+        },
+        _ => {},
+    };
+    const n: i64 = vector.len(items);
+    const e0a: Str = fresh(e);
+    emit_line(e, str.concat(e0a, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
+    var acc: Str = e0a;
+    var el_tys: Vector(Ty) = vector.new();
+    var el_irs: Vector(Str) = vector.new();
+    var i: i64 = 0;
+    while i < n {
+        var v: Str = "";
+        var vt: Ty = Ty.UnitV;
+        if has_exp and i < vector.len(exp_tys) {
+            vt = vector.get(exp_tys, i);
+            v = emit_expr_typed(e, vector.get(items, i), vt);
+        } else {
+            v = emit_expr(e, vector.get(items, i));
+            vt = vget(e, v);
+        }
+        const stored: Str = wrap_store(e, v, vt, 0, 0);
+        vector.push(el_tys, vt);
+        vector.push(el_irs, storage_ir_t(a, vt));
+        var pt_new: Str = "!frk_adt.product<[";
+        var j: i64 = 0;
+        while j <= i {
+            if j > 0 {
+                pt_new = str.concat(pt_new, ", ");
+            }
+            pt_new = str.concat(pt_new, vector.get(el_irs, j));
+            j = j + 1;
+        }
+        pt_new = str.concat(pt_new, "]>");
+        const sn: Str = fresh(e);
+        var l: Str = " = \"frk_adt.product_snoc\"(";
+        l = str.concat(l, acc);
+        l = str.concat(l, ", ");
+        l = str.concat(l, stored);
+        l = str.concat(l, ") : (");
+        if i == 0 {
+            l = str.concat(l, "!frk_adt.product<[]>");
+        } else {
+            var pt_prev: Str = "!frk_adt.product<[";
+            var k: i64 = 0;
+            while k < i {
+                if k > 0 {
+                    pt_prev = str.concat(pt_prev, ", ");
+                }
+                pt_prev = str.concat(pt_prev, vector.get(el_irs, k));
+                k = k + 1;
+            }
+            pt_prev = str.concat(pt_prev, "]>");
+            l = str.concat(l, pt_prev);
+        }
+        l = str.concat(l, ", ");
+        l = str.concat(l, storage_ir_t(a, vt));
+        l = str.concat(l, ") -> ");
+        l = str.concat(l, pt_new);
+        emit_line(e, str.concat(sn, l));
+        acc = sn;
+        i = i + 1;
+    }
+    vset(e, acc, Ty.Tup(el_tys));
+    return acc;
+}
+
 pub fn emit_lambda_expr(mut e: Emitter, l: LamE) Str {
     const npg: i64 = vector.len(l.params);
     var pgi: i64 = 0;
@@ -1066,6 +1141,7 @@ pub fn ir_ty(t: Ty) Str {
         Ty.Vec(inner) => "vec",
         Ty.OptT(inner) => "opt",
         Ty.ResT(rz) => "res",
+        Ty.Tup(tys) => "tup",
         Ty.FnT(sig) => "fn",
         Ty.TyBad(b) => "bad",
     };
@@ -1079,9 +1155,79 @@ pub fn storage_ir_t(a: Ast, t: Ty) Str {
         Ty.Vec(inner) => value_ir_t(a, t),
         Ty.OptT(inner) => value_ir_t(a, t),
         Ty.ResT(rz) => value_ir_t(a, t),
+        Ty.Tup(tys) => value_ir_t(a, t),
         Ty.FnT(sig) => fn_ir_t(a, sig),
         _ => ir_ty(t),
     };
+}
+
+pub fn parse_slot_e(s: Str) i64 {
+    const n: i64 = str.len(s);
+    if n == 0 {
+        return 0 - 1;
+    }
+    var acc: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        const c: Str = str.sub(s, i, i + 1);
+        if c == "0" {
+            acc = acc * 10;
+        } else {
+            if c == "1" {
+                acc = acc * 10 + 1;
+            } else {
+                if c == "2" {
+                    acc = acc * 10 + 2;
+                } else {
+                    if c == "3" {
+                        acc = acc * 10 + 3;
+                    } else {
+                        if c == "4" {
+                            acc = acc * 10 + 4;
+                        } else {
+                            if c == "5" {
+                                acc = acc * 10 + 5;
+                            } else {
+                                if c == "6" {
+                                    acc = acc * 10 + 6;
+                                } else {
+                                    if c == "7" {
+                                        acc = acc * 10 + 7;
+                                    } else {
+                                        if c == "8" {
+                                            acc = acc * 10 + 8;
+                                        } else {
+                                            if c == "9" {
+                                                acc = acc * 10 + 9;
+                                            } else {
+                                                return 0 - 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return acc;
+}
+
+pub fn tup_ir(a: Ast, tys: Vector(Ty)) Str {
+    var acc: Str = "!frk_adt.product<[";
+    const n: i64 = vector.len(tys);
+    var i: i64 = 0;
+    while i < n {
+        if i > 0 {
+            acc = str.concat(acc, ", ");
+        }
+        acc = str.concat(acc, storage_ir_t(a, vector.get(tys, i)));
+        i = i + 1;
+    }
+    return str.concat(acc, "]>");
 }
 
 pub fn value_ir_t(a: Ast, t: Ty) Str {
@@ -1089,6 +1235,7 @@ pub fn value_ir_t(a: Ast, t: Ty) Str {
         Ty.Named(n) => named_value_ir(a, n),
         Ty.Vec(inner) => vec_box(a, inner),
         Ty.OptT(inner) => str.concat("!frk_adt.sum<[[", str.concat(storage_ir_t(a, inner), "], []]>")),
+        Ty.Tup(tys) => tup_ir(a, tys),
         Ty.ResT(rz) => str.concat("!frk_adt.sum<[[", str.concat(storage_ir_t(a, rz.ok), str.concat("], [", str.concat(storage_ir_t(a, rz.err), "]]>")))),
         Ty.FnT(sig) => fn_ir_t(a, sig),
         _ => ir_ty(t),
@@ -1255,8 +1402,57 @@ pub fn e_poison(mut e: Emitter, t: Ty) Str {
         Ty.StrV => e_str(e, ""),
         Ty.OptT(inner) => poison_variant(e, inner, t),
         Ty.ResT(rz) => poison_variant(e, rz.ok, t),
+        Ty.Tup(tys) => poison_tup(e, tys, t),
         _ => named_poison(e, t),
     };
+}
+
+pub fn poison_tup(mut e: Emitter, tys: Vector(Ty), sum_ty: Ty) Str {
+    const a: Ast = e_ast(e);
+    const n: i64 = vector.len(tys);
+    var acc: Str = "";
+    var pt_prev: Str = "";
+    var i: i64 = 0;
+    while i < n {
+        const sty: Ty = vector.get(tys, i);
+        const p: Str = e_poison(e, sty);
+        var from: Str = "";
+        if i == 0 {
+            from = fresh(e);
+            emit_line(e, str.concat(from, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
+            pt_prev = "!frk_adt.product<[]>";
+        } else {
+            from = acc;
+        }
+        const stored: Str = wrap_store(e, p, sty, 0, 0);
+        var pt_new: Str = "!frk_adt.product<[";
+        var j: i64 = 0;
+        while j <= i {
+            if j > 0 {
+                pt_new = str.concat(pt_new, ", ");
+            }
+            pt_new = str.concat(pt_new, storage_ir_t(a, vector.get(tys, j)));
+            j = j + 1;
+        }
+        pt_new = str.concat(pt_new, "]>");
+        const sn: Str = fresh(e);
+        var l: Str = " = \"frk_adt.product_snoc\"(";
+        l = str.concat(l, from);
+        l = str.concat(l, ", ");
+        l = str.concat(l, stored);
+        l = str.concat(l, ") : (");
+        l = str.concat(l, pt_prev);
+        l = str.concat(l, ", ");
+        l = str.concat(l, storage_ir_t(a, sty));
+        l = str.concat(l, ") -> ");
+        l = str.concat(l, pt_new);
+        emit_line(e, str.concat(sn, l));
+        acc = sn;
+        pt_prev = pt_new;
+        i = i + 1;
+    }
+    vset(e, acc, sum_ty);
+    return acc;
 }
 
 // Variant-0 (Some/Ok) carry with a poisoned payload, for a structural
@@ -1980,6 +2176,17 @@ pub fn mangle_ty(t: Ty) Str {
         Ty.UnitV => "unit",
         Ty.Named(mn) => mn,
         Ty.Vec(inner) => str.concat("vec_", mangle_ty(inner)),
+        Ty.Tup(tys) => {
+            var acc: Str = "tup";
+            const n: i64 = vector.len(tys);
+            var i: i64 = 0;
+            while i < n {
+                acc = str.concat(acc, "_");
+                acc = str.concat(acc, mangle_ty(vector.get(tys, i)));
+                i = i + 1;
+            }
+            acc
+        },
         Ty.OptT(inner) => str.concat("opt_", mangle_ty(inner)),
         Ty.ResT(rz) => str.concat("res_", str.concat(mangle_ty(rz.err), str.concat("_", mangle_ty(rz.ok)))),
         Ty.FnT(sig) => "fn",
@@ -1997,6 +2204,16 @@ pub fn subst_ty_list(t: Ty, sub: Vector(TV)) Ty {
     return match t {
         Ty.Named(nm) => find_tv(nm, sub),
         Ty.Vec(inner) => Ty.Vec(subst_ty_list(inner, sub)),
+        Ty.Tup(tys) => {
+            var ts: Vector(Ty) = vector.new();
+            const n: i64 = vector.len(tys);
+            var i: i64 = 0;
+            while i < n {
+                vector.push(ts, subst_ty_list(vector.get(tys, i), sub));
+                i = i + 1;
+            }
+            Ty.Tup(ts)
+        },
         Ty.OptT(inner) => Ty.OptT(subst_ty_list(inner, sub)),
         Ty.ResT(rz) => Ty.ResT(%ResTT{err: subst_ty_list(rz.err, sub), ok: subst_ty_list(rz.ok, sub)}),
         Ty.FnT(sig) => Ty.FnT(sig_subst(sig, sub)),
@@ -2034,6 +2251,16 @@ pub fn tv_res(e: Emitter, t: Ty) Ty {
     return match t {
         Ty.Named(nm) => tv_lookup(e, nm),
         Ty.Vec(inner) => Ty.Vec(tv_res(e, inner)),
+        Ty.Tup(tys) => {
+            var ts: Vector(Ty) = vector.new();
+            const n: i64 = vector.len(tys);
+            var i: i64 = 0;
+            while i < n {
+                vector.push(ts, tv_res(e, vector.get(tys, i)));
+                i = i + 1;
+            }
+            Ty.Tup(ts)
+        },
         Ty.OptT(inner) => Ty.OptT(tv_res(e, inner)),
         Ty.ResT(rz) => Ty.ResT(%ResTT{err: tv_res(e, rz.err), ok: tv_res(e, rz.ok)}),
         Ty.FnT(sig) => Ty.FnT(sig_res(e, sig)),
@@ -2132,6 +2359,18 @@ pub fn infer_field_ty(mut e: Emitter, recv: Str, field: Str, line: i64, col: i64
         return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
     }
     const bty: Ty = b0.ty;
+    match bty {
+        Ty.Tup(tys) => {
+            const nidx: i64 = parse_slot_e(field);
+            if nidx >= 0 {
+                if nidx < vector.len(tys) {
+                    return tv_res(e, vector.get(tys, nidx));
+                }
+            }
+            return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
+        },
+        _ => {},
+    };
     return match bty {
         Ty.Named(nm) => {
             const a: Ast = e_ast(e);
@@ -2172,9 +2411,30 @@ pub fn infer_field_ty(mut e: Emitter, recv: Str, field: Str, line: i64, col: i64
 
 pub fn infer_call_ty(mut e: Emitter, c0: Call, line: i64, col: i64) Ty {
     const r0: Ref = c0.callee;
+    // the builtin namespaces have no AST fns: their result types are
+    // known here (the emit_call builtin branches' mirror).
+    if r0.mod == "str" {
+        if r0.name == "len" {
+            return Ty.I64;
+        }
+        if r0.name == "eq" {
+            return Ty.BoolV;
+        }
+        return Ty.StrV;
+    }
+    if r0.mod == "io" {
+        return Ty.UnitV;
+    }
+    if r0.mod == "vector" {
+        if r0.name == "len" {
+            return Ty.I64;
+        }
+        return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
+    }
     const sym0: Str = call_sym(r0.name, r0.mod);
     const f2: Fn = find_fn(e_ast(e), sym0);
     if f2.name == "" {
+        return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
         return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
     }
     if is_generic_fn(f2) {
@@ -2185,8 +2445,38 @@ pub fn infer_call_ty(mut e: Emitter, c0: Call, line: i64, col: i64) Ty {
     return f2.ret;
 }
 
+pub fn infer_pipe_ty(mut e: Emitter, b0: Bin, line: i64, col: i64) Ty {
+    // `x |> stage(args)` types as the STAGE's result over the piped
+    // value leading the arguments (the parse-time desugar's mirror).
+    const stage: Expr = b0.r;
+    match stage {
+        Expr.Call(c0) => {
+            var args: Vector(Expr) = vector.new();
+            vector.push(args, b0.l);
+            const n: i64 = vector.len(c0.args);
+            var i: i64 = 0;
+            while i < n {
+                vector.push(args, vector.get(c0.args, i));
+                i = i + 1;
+            }
+            return infer_call_ty(e, %Call{callee: c0.callee, args: args, line: line, col: col}, line, col);
+        },
+        Expr.Ref(r0) => {
+            var args2: Vector(Expr) = vector.new();
+            vector.push(args2, b0.l);
+            return infer_call_ty(e, %Call{callee: r0, args: args2, line: line, col: col}, line, col);
+        },
+        _ => {
+            return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
+        },
+    };
+}
+
 pub fn infer_bin_ty(mut e: Emitter, b0: Bin, line: i64, col: i64) Ty {
     const op: Str = b0.op;
+    if op == "|>" {
+        return infer_pipe_ty(e, b0, line, col);
+    }
     if op == "==" or op == "!=" or op == "<" or op == "<=" or op == ">" or op == ">=" {
         return Ty.BoolV;
     }
@@ -2220,6 +2510,21 @@ pub fn infer_fn_value_ty(mut e: Emitter, nm: Str, line: i64, col: i64) Ty {
     return Ty.FnT(%FnSig{params: ps, ret: tv_res(e, f2.ret)});
 }
 
+pub fn infer_tup_lit(mut e: Emitter, es: Vector(Expr), line: i64, col: i64) Ty {
+    var tys: Vector(Ty) = vector.new();
+    const n: i64 = vector.len(es);
+    var i: i64 = 0;
+    while i < n {
+        const et: Ty = infer_expr_ty(e, vector.get(es, i), line, col);
+        if ty_is_unknown(et) {
+            return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
+        }
+        vector.push(tys, tv_res(e, et));
+        i = i + 1;
+    }
+    return Ty.Tup(tys);
+}
+
 pub fn infer_expr_ty(mut e: Emitter, ex: Expr, line: i64, col: i64) Ty {
     return match ex {
         Expr.Int(t0) => Ty.I64,
@@ -2239,6 +2544,7 @@ pub fn infer_expr_ty(mut e: Emitter, ex: Expr, line: i64, col: i64) Ty {
         },
         Expr.Call(c0) => infer_call_ty(e, c0, line, col),
         Expr.Bin(b0) => infer_bin_ty(e, b0, line, col),
+        Expr.Tup(es) => infer_tup_lit(e, es, line, col),
         _ => Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col}),
     };
 }
@@ -2254,6 +2560,18 @@ pub fn has_unbound(t: Ty, sub: Vector(TV), names: Vector(Str)) bool {
         },
         Ty.Vec(inner) => has_unbound(inner, sub, names),
         Ty.OptT(inner) => has_unbound(inner, sub, names),
+        Ty.Tup(tys) => {
+            var found: bool = false;
+            const n: i64 = vector.len(tys);
+            var i: i64 = 0;
+            while i < n {
+                if has_unbound(vector.get(tys, i), sub, names) {
+                    found = true;
+                }
+                i = i + 1;
+            }
+            found
+        },
         Ty.ResT(rz) => has_unbound(rz.err, sub, names) or has_unbound(rz.ok, sub, names),
         Ty.FnT(sig) => {
             var found: bool = false;
@@ -2292,6 +2610,21 @@ pub fn unify_ty(declared: Ty, actual: Ty, sub: Vector(TV), names: Vector(Str)) {
         Ty.OptT(inner) => {
             match actual {
                 Ty.OptT(a2) => unify_ty(inner, a2, sub, names),
+                _ => {},
+            };
+        },
+        Ty.Tup(tys) => {
+            match actual {
+                Ty.Tup(a2) => {
+                    if vector.len(tys) == vector.len(a2) {
+                        const n: i64 = vector.len(tys);
+                        var i: i64 = 0;
+                        while i < n {
+                            unify_ty(vector.get(tys, i), vector.get(a2, i), sub, names);
+                            i = i + 1;
+                        }
+                    }
+                },
                 _ => {},
             };
         },
@@ -2581,6 +2914,7 @@ pub fn emit_expr(mut e: Emitter, ex: Expr) Str {
         Expr.TryE(tr) => emit_try_e(e, tr),
         Expr.CatchE(cx) => emit_catch_e(e, cx),
         Expr.TyV(tx) => emit_tyv(e, tx),
+        Expr.Tup(es) => emit_tuple_e(e, es, Ty.UnitV),
         Expr.Bad(b) => e_fail(e, b),
         Expr.Match(m) => emit_match(e, m),
         Expr.Make(m) => emit_make(e, m, m.line, m.col),
@@ -2613,6 +2947,33 @@ pub fn emit_ref(mut e: Emitter, r: Ref, line: i64, col: i64) Str {
         if owner.name == "" {
             return e_fail_at(e, line, col, str.concat("unknown name `", str.concat(r.mod, "`")));
         }
+        const oty2: Ty = owner.ty;
+        match oty2 {
+            Ty.Tup(tys) => {
+                const nidx: i64 = parse_slot_e(r.name);
+                if nidx < 0 {
+                    return e_fail_at(e, line, col, str.concat("a tuple's members are numeric (`t.0`); `", str.concat(r.name, "` is not")));
+                }
+                if nidx >= vector.len(tys) {
+                    return e_fail_at(e, line, col, str.concat("tuple index out of range: ", r.name));
+                }
+                const slot_ty: Ty = vector.get(tys, nidx);
+                const value: Str = read_binding(e, owner);
+                const a2: Ast = e_ast(e);
+                const got: Str = fresh(e);
+                var lg: Str = " = \"frk_adt.get\"(";
+                lg = str.concat(lg, value);
+                lg = str.concat(lg, ") {field = ");
+                lg = str.concat(lg, str.fromI64(nidx));
+                lg = str.concat(lg, " : i64} : (");
+                lg = str.concat(lg, value_ir_t(a2, owner.ty));
+                lg = str.concat(lg, ") -> ");
+                lg = str.concat(lg, storage_ir_t(a2, slot_ty));
+                emit_line(e, str.concat(got, lg));
+                return unwrap_load(e, got, slot_ty, line, col);
+            },
+            _ => {},
+        };
         if is_named_t(owner.ty) == false {
             return e_fail_at(e, line, col, str.concat("`", str.concat(r.mod, "` has no fields")));
         }
@@ -2866,6 +3227,7 @@ pub fn emit_stmt(mut e: Emitter, s: Stmt) {
         Stmt.If(f) => emit_ifs(e, %IfE{cond: f.cond, then: f.then, has_else: f.has_else, els: f.els}),
         Stmt.Expr(x) => emit_expr_stmt(e, x),
         Stmt.Destr(d) => emit_destr(e, d),
+        Stmt.TDestr(td) => emit_tdestr_e(e, td),
     };
 }
 
@@ -3002,6 +3364,54 @@ pub fn emit_expr_stmt(mut e: Emitter, x: ExprS) {
     return;
 }
 
+pub fn emit_tdestr_e(mut e: Emitter, td: TDestrS) {
+    const a: Ast = e_ast(e);
+    const v: Str = emit_expr(e, td.expr);
+    const vty: Ty = vget(e, v);
+    var tys: Vector(Ty) = vector.new();
+    var is_t: bool = false;
+    match vty {
+        Ty.Tup(t2) => {
+            tys = t2;
+            is_t = true;
+        },
+        _ => {},
+    };
+    if is_t == false {
+        e_fail_at(e, 0, 0, "tuple destructuring needs a tuple-typed initializer");
+        return;
+    }
+    const n: i64 = vector.len(td.names);
+    if n != vector.len(tys) {
+        e_fail_at(e, 0, 0, "tuple destructuring arity does not match");
+        return;
+    }
+    var i: i64 = 0;
+    while i < n {
+        const nm: Str = vector.get(td.names, i);
+        const slot_ty: Ty = vector.get(tys, i);
+        const got: Str = fresh(e);
+        var lg: Str = " = \"frk_adt.get\"(";
+        lg = str.concat(lg, v);
+        lg = str.concat(lg, ") {field = ");
+        lg = str.concat(lg, str.fromI64(i));
+        lg = str.concat(lg, " : i64} : (");
+        lg = str.concat(lg, value_ir_t(a, vty));
+        lg = str.concat(lg, ") -> ");
+        lg = str.concat(lg, storage_ir_t(a, slot_ty));
+        emit_line(e, str.concat(got, lg));
+        const value: Str = unwrap_load(e, got, slot_ty, 0, 0);
+        if td.mutable {
+            const b: Str = fresh(e);
+            emit_line(e, str.concat(b, str.concat(" = \"frk_mem.box_new\"(", str.concat(value, str.concat(") : (", str.concat(value_ir_t(a, slot_ty), str.concat(") -> ", box_ir_t(a, slot_ty))))))));
+            declare(e, %Binding{name: nm, is_box: true, ty: slot_ty, id: b, box: box_ir_t(a, slot_ty)});
+        } else {
+            declare(e, %Binding{name: nm, is_box: false, ty: slot_ty, id: value, box: ""});
+        }
+        i = i + 1;
+    }
+}
+
 pub fn emit_destr(mut e: Emitter, d: DestrS) {
     emit_destr_names(e, d, 0, 0);
 }
@@ -3077,9 +3487,32 @@ pub fn same_ty(a: Ty, b: Ty) bool {
         Ty.Vec(inner) => same_vec(inner, b),
         Ty.OptT(inner) => same_opt(inner, b),
         Ty.ResT(rz) => same_res(rz, b),
+        Ty.Tup(tys) => same_tup(tys, b),
         Ty.FnT(sig) => same_fnsig(sig, b),
         Ty.TyBad(x) => ty_is_unit(b),
     };
+}
+
+pub fn same_tup(tys: Vector(Ty), b: Ty) bool {
+    var res: bool = false;
+    match b {
+        Ty.Tup(b2) => {
+            const n: i64 = vector.len(tys);
+            if n == vector.len(b2) {
+                var ok: bool = true;
+                var i: i64 = 0;
+                while i < n {
+                    if same_ty(vector.get(tys, i), vector.get(b2, i)) == false {
+                        ok = false;
+                    }
+                    i = i + 1;
+                }
+                res = ok;
+            }
+        },
+        _ => {},
+    };
+    return res;
 }
 
 pub fn same_opt(inner: Ty, b: Ty) bool {
@@ -3951,6 +4384,9 @@ pub fn ref_of_expr(ex: Expr) Ref {
 
 pub fn emit_expr_typed(mut e: Emitter, ex: Expr, ty: Ty) Str {
     match ex {
+        Expr.Tup(es) => {
+            return emit_tuple_e(e, es, ty);
+        },
         Expr.Lam(l2) => {
             // Inferred closure parameters (D-086): a bare/partial
             // literal at a fn-typed position takes its signature from

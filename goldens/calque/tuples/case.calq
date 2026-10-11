@@ -1,0 +1,28 @@
+// D-114: tuples - (T1, T2) types, (a, b) literals, t.0/t.1
+// access, const/var (x, y) = t destructuring.
+// Expected output (hand-derived): "ab 7\n7 7\n"
+pub fn swap(p: (i64, Str)) (Str, i64) {
+    (p.1, p.0)
+}
+pub fn tdestr(p: (i64, Str)) i64 {
+    const (n, s) = p;
+    return n + str.len(s);
+}
+pub fn tdestr2() i64 {
+    var (a, b) = (3, 4);
+    a = a + b;
+    a
+}
+pub fn main() i64 {
+    const t: (i64, Str) = (7, "ab");
+    const s = swap(t);
+    io.print(s.0);
+    io.print(" ");
+    io.print(str.fromI64(s.1));
+    io.print("\n");
+    io.print(str.fromI64(tdestr((5, "xy"))));
+    io.print(" ");
+    io.print(str.fromI64(tdestr2()));
+    io.print("\n");
+    0
+}

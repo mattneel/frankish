@@ -3174,6 +3174,28 @@ function infer_expr_ty(expr, line, col)
     return fd.ty
   end
   if expr.call ~= nil then
+    if expr.call.mod ~= nil then
+      -- the builtin namespaces have no AST fns (the emit_call
+      -- builtin branches' mirror)
+      if expr.call.mod == "str" then
+        if expr.call.name == "len" then
+          return "i64"
+        end
+        if expr.call.name == "eq" then
+          return "bool"
+        end
+        return "Str"
+      end
+      if expr.call.mod == "io" then
+        return "unit"
+      end
+      if expr.call.mod == "vector" then
+        if expr.call.name == "len" then
+          return "i64"
+        end
+        return nil
+      end
+    end
     local fn2 = nil
     if expr.call.mod ~= nil then
       fn2 = E.fns_by_sym[expr.call.mod .. "__" .. expr.call.name]
