@@ -1573,8 +1573,19 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
-    REMAINING in F33: `@intCast`, `usize` (the full integer-type set).
-    Grid GREEN; corpus 26 cases 0 red.
+    IMPORT SYSTEM LANDED (D-116, the C2 module half's first piece):
+    `import NAME;` parses in both compilers; the drivers resolve the
+    names against the unit set (+ reserved modules), refuse unknown
+    names with positions, and detect cycles (mark-DFS naming one back
+    edge). Gates: seed_imports + a byte-equal differential. OPEN from
+    D-116: visibility enforcement at call sites, path-qualified/
+    per-item imports, re-exports.
+    REMAINING in F33: `@intCast`, `usize` - NOTE: the kernel's
+    sub-width integer path is unverified through the runners (the
+    kernel_lower comment "U8 -> i8 unused today"), so that slice
+    starts with a probe (i8/i16 arithmetic through interp/jit/jit-rc/
+    AOT) before any surface.
+    Grid GREEN; corpus 26 cases 0 red. Suite 65.
     `calque` CLI SLICE 1 LANDED (F30/D-111): crates/calque/src/bin/
     calque.rs - `run FILE.calq` (main + prints) and `test FILE.calq`
     (PASS/FAIL <name> per the playbook, non-zero exit on failure);
