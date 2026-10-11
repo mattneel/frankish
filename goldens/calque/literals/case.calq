@@ -1,0 +1,17 @@
+// D-115: `_` digit separators (between digits, stripped) and
+// verbatim `"""` multiline strings.
+// Expected output (hand-derived): "1000|\nline one\nline two\n|26\n"
+pub fn main() i64 {
+    const big = 1_000_000;
+    const doc = """
+line one
+line two
+""";
+    io.print(str.fromI64(big / 1_000));
+    io.print("|");
+    io.print(doc);
+    io.print("|");
+    io.print(str.fromI64(2_5 + 1));
+    io.print("\n");
+    0
+}

@@ -208,6 +208,45 @@ pub fn err_at(st: Scan, n: i64, msg: Str, line: i64, col: i64) Scan {
     return %Scan{i: n, line: st.line, col: st.col, state: State.Failed(%Fail{msg: msg, line: line, col: col})};
 }
 
+// `"""..."""` (C2, D-115): verbatim between the delimiters.
+pub fn lex_multiline_str(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
+    const line: i64 = st.line;
+    const col: i64 = st.col;
+    var j: i64 = st.i + 3;
+    var cl: i64 = col + 3;
+    var ml: i64 = line;
+    var acc: Str = "";
+    var closed: bool = false;
+    var go: bool = true;
+    while go {
+        if j >= n {
+            go = false;
+        } else {
+            if str.sub(src, j, 3) == "\"\"\"" {
+                closed = true;
+                j = j + 3;
+                cl = cl + 3;
+                go = false;
+            } else {
+                const ch: Str = str.sub(src, j, 1);
+                acc = str.concat(acc, ch);
+                if ch == "\n" {
+                    ml = ml + 1;
+                    cl = 1;
+                } else {
+                    cl = cl + 1;
+                }
+                j = j + 1;
+            }
+        }
+    }
+    if closed == false {
+        return err_at(st, n, "unterminated multiline string literal", line, col);
+    }
+    vector.push(toks, mk_tok(Kind.Str, acc, line, col));
+    return move(st, j, ml, cl);
+}
+
 pub fn lex_str(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
     var j: i64 = st.i + 1;
     var cl: i64 = st.col + 1;
@@ -378,6 +417,9 @@ pub fn step(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
         }
     }
     if c == "\"" {
+        if str.sub(src, i, 3) == "\"\"\"" {
+            return lex_multiline_str(src, n, toks, st);
+        }
         return lex_str(src, n, toks, st);
     }
     if is_start(c) {
@@ -409,20 +451,37 @@ pub fn step(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
         const start_col2: i64 = col;
         var j2: i64 = i;
         var cl2: i64 = col;
+        var digits: Str = "";
         var go2: bool = true;
         while go2 {
             if j2 >= n {
                 go2 = false;
             } else {
-                if is_digit(str.sub(src, j2, 1)) {
+                const d2: Str = str.sub(src, j2, 1);
+                if is_digit(d2) {
+                    digits = str.concat(digits, d2);
                     j2 = j2 + 1;
                     cl2 = cl2 + 1;
                 } else {
-                    go2 = false;
+                    if d2 == "_" {
+                        // C2 digit separator (D-115): between digits
+                        // only, stripped from the value.
+                        var nxt: Str = "";
+                        if j2 + 1 < n {
+                            nxt = str.sub(src, j2 + 1, 1);
+                        }
+                        if str.len(digits) == 0 or is_digit(nxt) == false {
+                            return err_at(st, n, "a digit separator `_` needs digits on both sides", line, cl2);
+                        }
+                        j2 = j2 + 1;
+                        cl2 = cl2 + 1;
+                    } else {
+                        go2 = false;
+                    }
                 }
             }
         }
-        vector.push(toks, mk_tok(Kind.Int, str.sub(src, i, j2 - i), line, start_col2));
+        vector.push(toks, mk_tok(Kind.Int, digits, line, start_col2));
         return move(st, j2, line, cl2);
     }
     var two: Str = c;

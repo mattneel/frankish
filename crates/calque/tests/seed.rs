@@ -2398,6 +2398,42 @@ fn calq0_matches_the_seed_on_tuples() {
 }
 
 #[test]
+fn seed_literal_forms() {
+    // D-115: `_` digit separators (stripped) and verbatim `"""`
+    // multiline strings.
+    let files = vec![
+        stdlib_str(),
+        unit("lit.calq", None, LIT_SRC),
+    ];
+    let artifact = seed_translate(&files).expect("the seed emits the literal probe");
+    let outcome = run_artifact(&artifact).expect("the literal probe runs");
+    assert_eq!(outcome.output, "1000|\nline one\nline two\n|26\n");
+}
+
+const LIT_SRC: &str = "pub fn main() i64 {\n    const big = 1_000_000;\n    const doc = \"\"\"\nline one\nline two\n\"\"\";\n    io.print(str.fromI64(big / 1_000));\n    io.print(\"|\");\n    io.print(doc);\n    io.print(\"|\");\n    io.print(str.fromI64(2_5 + 1));\n    io.print(\"\\n\");\n    0\n}\n";
+
+#[test]
+fn calq0_matches_the_seed_on_literal_forms() {
+    // D-115's differential: `_` separators and `"""` multiline
+    // strings - byte-equal to the seed, executed.
+    let files = vec![
+        stdlib_str(),
+        unit("lit.calq", None, LIT_SRC),
+    ];
+    let artifact = compile_artifact();
+    let expected = seed_translate(&files).expect("the seed emits the literal probe");
+    let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the literal probe");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (literal forms): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted literal probe runs");
+    assert_eq!(emitted.output, "1000|\nline one\nline two\n|26\n");
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the

@@ -175,14 +175,58 @@ local function lex(source, file)
         push("name", word, line, start_col)
       end
     elseif is_digit(c) then
-      local start = i
       local start_col = col
-      while i <= n and is_digit(string.sub(source, i, i)) do
-        i = i + 1
-        col = col + 1
+      local digits = ""
+      while i <= n do
+        local ch = string.sub(source, i, i)
+        if is_digit(ch) then
+          digits = digits .. ch
+          i = i + 1
+          col = col + 1
+        elseif ch == "_" then
+          -- C2 digit separator (D-115): between digits only, stripped
+          -- from the value.
+          local nx = string.sub(source, i + 1, i + 1)
+          if #digits == 0 or not is_digit(nx) then
+            fail(line, start_col, "a digit separator `_` needs digits on both sides")
+          end
+          i = i + 1
+          col = col + 1
+        else
+          break
+        end
       end
-      push("int", string.sub(source, start, i - 1), line, start_col)
+      push("int", digits, line, start_col)
     elseif c == "\"" then
+      if string.sub(source, i, i + 2) == "\"\"\"" then
+        -- multiline string (C2, D-115): verbatim between the `"""`.
+        local mstart_col = col
+        i = i + 3
+        col = col + 3
+        local macc = ""
+        local mclosed = false
+        while i <= n do
+          if string.sub(source, i, i + 2) == "\"\"\"" then
+            i = i + 3
+            col = col + 3
+            mclosed = true
+            break
+          end
+          local mch = string.sub(source, i, i)
+          macc = macc .. mch
+          i = i + 1
+          if mch == "\n" then
+            line = line + 1
+            col = 1
+          else
+            col = col + 1
+          end
+        end
+        if not mclosed then
+          fail(line, mstart_col, "unterminated multiline string literal")
+        end
+        push("str", macc, line, mstart_col)
+      else
       local start_col = col
       i = i + 1
       col = col + 1
@@ -234,6 +278,7 @@ local function lex(source, file)
       end
       if not closed then fail(line, start_col, "unterminated string literal") end
       push("str", bytes, line, start_col)
+      end
     else
       local two = string.sub(source, i, i + 1)
       if two == "==" or two == "!=" or two == "<=" or two == ">=" or two == "|>" or two == "=>" then

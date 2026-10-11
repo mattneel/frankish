@@ -3511,3 +3511,12 @@ veto-ledger pattern and most deserve their review.
   allocation; tuples unify like the other structural types (Vector/
   Option/Result) in comptime inference. Revisit: named-tuple spreads
   and `..` rest patterns (the spread row).
+
+- D-115 [calque/literals] F33's LITERAL SEMANTICS: `_` digit
+  separators are accepted between digits only (leading/trailing/
+  doubled ones are lexer errors) and are STRIPPED from the literal's
+  value; multiline strings `"""..."""` are VERBATIM between the
+  delimiters (no escape processing, no dedent or leading-newline
+  trimming) - the nested-source demos are whitespace-insensitive, so
+  the raw text serves them directly. Revisit: an indentation-
+  normalizing form if a demo's expected bytes demand it.
