@@ -1484,6 +1484,15 @@ pub fn p_lit_expr(p: P) Expr {
             // field's declared element type at emission.
             return parse_expr(p, 4);
         }
+        if d.text == "%" {
+            // Constructor defaults (D-112): %T{...} takes the field's
+            // declared type at emission.
+            return parse_expr(p, 4);
+        }
+    }
+    if is_name_tok(d) {
+        // Qualified defaults (D-112): enum variants like State.Ok.
+        return parse_expr(p, 4);
     }
     return bad(p, d.line, d.col, "seed v0 supports literal field defaults only (D-095)");
 }

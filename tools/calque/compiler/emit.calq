@@ -1,10 +1,13 @@
 // calq0 slice 3a - the EMITTER core: AST -> kernel-IR artifact text,
 // mirroring the seed's emission rules (D-092 closure convention, the
-// artifact header, the entry wrapper). State is vector cells (the
-// recorded D-109 exception: b0 has no reference parameters). The
-// emitter REJECTS recovery nodes (Expr.Bad, D-109): e_bad records the
-// failure in State and yields "" - the driver bails before printing,
-// so nothing shaped like a valid expression ever reaches execution.
+// artifact header, the entry wrapper). STATE (D-112): one Emitter
+// value, initialized by %Emitter{} defaults; mutating helpers take
+// `mut e: Emitter` (the scoped exclusive interface), read-only helpers
+// take plain `e: Emitter`, and the counters are real scalar fields -
+// no singleton-vector cells. The emitter REJECTS recovery nodes
+// (Expr.Bad, D-109): e_bad records the failure in State and yields "";
+// the driver bails before printing, so nothing shaped like a valid
+// expression ever reaches execution.
 //
 // Slice 3a covers: the module header + main wrapper, integer/bool/Str
 // literals, and function bodies whose only content is the return
@@ -13,84 +16,55 @@
 // differential against the SEED's emission for the same program).
 
 pub const Blk = struct {
-    label: Str,
-    lines: Vector(Str),
+    label: Str = "",
+    lines: [Str] = [],
 };
 
-pub const Emit = struct {
-    out: Vector(OutCell),
-    tmp: Vector(i64),
-    blk: Vector(i64),
-    blocks: Vector(Blk),
-    cur: Vector(i64),
-    terminated: Vector(i64), // the cell exception: 0/1 flag (no Vector(bool) slot)
-    state: Vector(State),
-    scopes: Vector(XCell),
-    vtypes: Vector(VtCell),
-    rets: Vector(Ty),
-    files: Vector(Str),
-    asts: Vector(Ast),
+pub const Emitter = struct {
+    output: [Str] = ["// calque-artifact v0"],
+
+    next_value: i64 = 0,
+    next_block: i64 = 0,
+    current_block: i64 = 0,
+    terminated: bool = false,
+    state: State = State.Ok,
+
+    blocks: [Blk] = [%Blk{}],
+    scopes: [Scope] = [],
+    value_types: [VTy] = [],
+    return_types: [Ty] = [Ty.UnitV],
+    files: [Str] = ["?"],
+    asts: [Ast] = [%Ast{fns: [], types: []}],
 };
 
-pub fn e_init() Emit {
-    var tmp: Vector(i64) = vector.new();
-    vector.push(tmp, 0);
-    var blk: Vector(i64) = vector.new();
-    vector.push(blk, 0);
-    var blocks: Vector(Blk) = vector.new();
-    var lines: Vector(Str) = vector.new();
-    vector.push(blocks, %Blk{label: "", lines: lines});
-    var cur: Vector(i64) = vector.new();
-    vector.push(cur, 0);
-    var term: Vector(i64) = vector.new();
-    vector.push(term, 0);
-    var st: Vector(State) = vector.new();
-    vector.push(st, State.Ok);
-    var out_items: Vector(Str) = vector.new();
-    vector.push(out_items, "// calque-artifact v0");
-    var out: Vector(OutCell) = vector.new();
-    vector.push(out, %OutCell{items: out_items});
-    var scopes: Vector(XCell) = vector.new();
-    var inner_scopes: Vector(Scope) = vector.new();
-    vector.push(scopes, %XCell{items: inner_scopes});
-    var vt_items: Vector(VTy) = vector.new();
-    var vtypes: Vector(VtCell) = vector.new();
-    vector.push(vtypes, %VtCell{items: vt_items});
-    var rets: Vector(Ty) = vector.new();
-    vector.push(rets, Ty.UnitV);
-    var files: Vector(Str) = vector.new();
-    vector.push(files, "?");
-    var asts: Vector(Ast) = vector.new();
-    var no_fns: Vector(Fn) = vector.new();
-    var no_types: Vector(TypeDecl) = vector.new();
-    vector.push(asts, %Ast{fns: no_fns, types: no_types});
-    return %Emit{out: out, tmp: tmp, blk: blk, blocks: blocks, cur: cur, terminated: term, state: st, scopes: scopes, vtypes: vtypes, rets: rets, files: files, asts: asts};
+pub fn e_init() Emitter {
+    return %Emitter{};
 }
 
-pub fn e_ast(e: Emit) Ast {
+pub fn e_ast(mut e: Emitter) Ast {
     return vector.get(e.asts, 0);
 }
 
-pub fn e_ast_set(e: Emit, a: Ast) {
+pub fn e_ast_set(mut e: Emitter, a: Ast) {
     vector.set(e.asts, 0, a);
 }
 
-pub fn e_ret_set(e: Emit, t: Ty) {
-    vector.set(e.rets, 0, t);
+pub fn e_ret_set(mut e: Emitter, t: Ty) {
+    vector.set(e.return_types, 0, t);
 }
 
-pub fn e_file_set(e: Emit, f: Str) {
+pub fn e_file_set(mut e: Emitter, f: Str) {
     vector.set(e.files, 0, f);
 }
 
-pub fn scope_push(e: Emit) {
-    vector.push(e_scopes(e), empty_scope());
+pub fn scope_push(mut e: Emitter) {
+    vector.push(e.scopes, empty_scope());
 }
 
-pub fn scope_pop(e: Emit) {
+pub fn scope_pop(mut e: Emitter) {
     // b0 vectors have no truncate; scopes are a vector CELL so the pop
     // rebuilds the outer vector minus its last entry.
-    const sc: Vector(Scope) = e_scopes(e);
+    const sc: Vector(Scope) = e.scopes;
     const n: i64 = vector.len(sc);
     var kept: Vector(Scope) = vector.new();
     var i: i64 = 0;
@@ -98,75 +72,72 @@ pub fn scope_pop(e: Emit) {
         vector.push(kept, vector.get(sc, i));
         i = i + 1;
     }
-    vector.set(e.scopes, 0, %XCell{items: kept});
+    e.scopes = kept;
 }
 
-pub fn e_ok(e: Emit) bool {
-    return state_ok(vector.get(e.state, 0));
+pub fn e_ok(mut e: Emitter) bool {
+    return state_ok(e.state);
 }
 
-pub fn e_state(e: Emit) State {
-    return vector.get(e.state, 0);
+pub fn e_state(mut e: Emitter) State {
+    return e.state;
 }
 
-pub fn e_fail(e: Emit, b: BadNode) Str {
-    vector.set(e.state, 0, State.Failed(%Fail{msg: b.msg, line: b.line, col: b.col}));
+pub fn e_fail(mut e: Emitter, b: BadNode) Str {
+    e.state = State.Failed(%Fail{msg: b.msg, line: b.line, col: b.col});
     return "";
 }
 
-pub fn e_fail_at(e: Emit, line: i64, col: i64, msg: Str) Str {
-    vector.set(e.state, 0, State.Failed(%Fail{msg: msg, line: line, col: col}));
+pub fn e_fail_at(mut e: Emitter, line: i64, col: i64, msg: Str) Str {
+    e.state = State.Failed(%Fail{msg: msg, line: line, col: col});
     return "";
 }
 
-pub fn fresh(e: Emit) Str {
-    const n: i64 = vector.get(e.tmp, 0) + 1;
-    vector.set(e.tmp, 0, n);
-    return str.concat("%t", str.fromI64(n));
+pub fn fresh(mut e: Emitter) Str {
+    e.next_value = e.next_value + 1;
+    return str.concat("%t", str.fromI64(e.next_value));
 }
 
-pub fn fresh_label(e: Emit) Str {
-    const n: i64 = vector.get(e.blk, 0) + 1;
-    vector.set(e.blk, 0, n);
-    return str.concat("b", str.fromI64(n));
+pub fn fresh_label(mut e: Emitter) Str {
+    e.next_block = e.next_block + 1;
+    return str.concat("b", str.fromI64(e.next_block));
 }
 
-pub fn cur_block(e: Emit) Vector(Str) {
-    const i: i64 = vector.get(e.cur, 0);
-    const b: Blk = vector.get(e.blocks, i);
+pub fn cur_block(mut e: Emitter) [Str] {
+    const b: Blk = vector.get(e.blocks, e.current_block);
     return b.lines;
 }
 
 // Indented line (inside a function body / block).
-pub fn emit_line(e: Emit, s: Str) {
-    vector.push(e_out(e), str.concat("  ", s));
+pub fn emit_line(mut e: Emitter, s: Str) {
+    vector.push(e.output, str.concat("  ", s));
 }
 
 // Top-level line (function headers, closing braces, wrapper lines).
-pub fn emit_top(e: Emit, s: Str) {
-    vector.push(e_out(e), s);
+pub fn emit_top(mut e: Emitter, s: Str) {
+    vector.push(e.output, s);
 }
 
-pub fn new_block(e: Emit, label: Str) {
+pub fn new_block(mut e: Emitter, label: Str) {
     var lines: Vector(Str) = vector.new();
     vector.push(e.blocks, %Blk{label: label, lines: lines});
-    vector.set(e.cur, 0, vector.len(e.blocks) - 1);
-    vector.set(e.terminated, 0, 0);
+    e.current_block = vector.len(e.blocks) - 1;
+    e.terminated = false;
 }
 
-pub fn terminate(e: Emit, s: Str) {
+pub fn terminate(mut e: Emitter, s: Str) {
     emit_line(e, s);
-    vector.set(e.terminated, 0, 1);
+    e.terminated = true;
 }
 
-pub fn is_terminated(e: Emit) bool {
-    return vector.get(e.terminated, 0) == 1;
+pub fn is_terminated(mut e: Emitter) bool {
+    return e.terminated;
 }
 
-// Emits a block label (col 0) and opens a fresh unterminated block.
-pub fn new_label(e: Emit, label: Str) {
+// Emitters a block label (col 0) and opens a fresh unterminated block.
+pub fn new_label(mut e: Emitter, label: Str) {
     emit_top(e, str.concat("^", str.concat(label, ":")));
-    vector.set(e.terminated, 0, 0);
+    e.terminated = false;
 }
 
 // The seed's closed MLIR string-escape set: \" \\ then \0A \09 \0D \00.
@@ -206,21 +177,21 @@ pub fn e_esc(s: Str) Str {
     return out;
 }
 
-pub fn e_int(e: Emit, text: Str) Str {
+pub fn e_int(mut e: Emitter, text: Str) Str {
     const v: Str = fresh(e);
     emit_line(e, str.concat(v, str.concat(" = arith.constant ", str.concat(text, " : i64"))));
     vset(e, v, Ty.I64);
     return v;
 }
 
-pub fn e_bool(e: Emit, text: Str) Str {
+pub fn e_bool(mut e: Emitter, text: Str) Str {
     const v: Str = fresh(e);
     emit_line(e, str.concat(v, str.concat(" = arith.constant ", text)));
     vset(e, v, Ty.BoolV);
     return v;
 }
 
-pub fn e_str(e: Emit, text: Str) Str {
+pub fn e_str(mut e: Emitter, text: Str) Str {
     const v: Str = fresh(e);
     var acc: Str = " = \"frk_bstr.lit\"() {text = \"";
     acc = str.concat(acc, e_esc(text));
@@ -266,16 +237,16 @@ pub fn sym_of(f: Fn) Str {
     return f.name;
 }
 
-pub fn e_fn(e: Emit, f: Fn) {
-    vector.set(e.tmp, 0, 0);
-    vector.set(e.blk, 0, 0);
+pub fn e_fn(mut e: Emitter, f: Fn) {
+    e.next_value = 0;
+    e.next_block = 0;
     var fresh_vt: Vector(VTy) = vector.new();
-    vector.set(e.vtypes, 0, %VtCell{items: fresh_vt});
+    e.value_types = fresh_vt;
     var fresh_sc: Vector(Scope) = vector.new();
-    vector.set(e.scopes, 0, %XCell{items: fresh_sc});
+    e.scopes = fresh_sc;
     e_ret_set(e, f.ret);
     e_file_set(e, f.file);
-    vector.set(e.terminated, 0, 0);
+    e.terminated = false;
     scope_push(e);
     var head: Str = str.concat("func.func @", sym_of(f));
     var args: Str = "%env: !frk_closure.envref";
@@ -355,7 +326,7 @@ pub fn tail_if_of(s: Stmt) IfE {
     };
 }
 
-pub fn e_entry(e: Emit, sym: Str) {
+pub fn e_entry(mut e: Emitter, sym: Str) {
     emit_top(e, "func.func @main() -> i64 attributes {llvm.emit_c_interface} {");
     emit_top(e, "  %env = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>");
     emit_top(e, str.concat("  %cl = \"frk_closure.make\"(%env) {callee = @", str.concat(sym, "} : (!frk_adt.product<[]>) -> !frk_closure.fn<[], [i64]>")));
@@ -368,13 +339,13 @@ pub fn e_entry(e: Emit, sym: Str) {
 // Serializes the artifact: header, every block (label line when
 // non-empty, lines indented two spaces), newline per line - the
 // driver prints each with io.print.
-pub fn e_render(e: Emit) Vector(Str) {
-    return e_out(e);
+pub fn e_render(mut e: Emitter) [Str] {
+    return e.output;
 }
 
-// Emits a whole module: every function, then the entry wrapper when a
+// Emitters a whole module: every function, then the entry wrapper when a
 // `main` exists (the seed's shape).
-pub fn emit_module(e: Emit, a: Ast) {
+pub fn emit_module(mut e: Emitter, a: Ast) {
     e_ast_set(e, a);
     var has_main: bool = false;
     var main_ok: bool = true;
@@ -419,42 +390,13 @@ pub const Scope = struct {
     entries: Vector(Binding),
 };
 
-// CELL elements (a vector cannot hold a vector directly; the named
-// wrappers make replacement values legal).
-pub const XCell = struct {
-    items: Vector(Scope),
-};
-
-pub const OutCell = struct {
-    items: Vector(Str),
-};
-
-pub const VtCell = struct {
-    items: Vector(VTy),
-};
-
-pub fn e_out(e: Emit) Vector(Str) {
-    const c: OutCell = vector.get(e.out, 0);
-    return c.items;
-}
-
-pub fn e_vtypes(e: Emit) Vector(VTy) {
-    const c: VtCell = vector.get(e.vtypes, 0);
-    return c.items;
-}
-
-pub fn e_scopes(e: Emit) Vector(Scope) {
-    const c: XCell = vector.get(e.scopes, 0);
-    return c.items;
-}
-
 pub fn empty_scope() Scope {
     var entries: Vector(Binding) = vector.new();
     return %Scope{entries: entries};
 }
 
-pub fn lookup(e: Emit, name: Str) Binding {
-    const sc: Vector(Scope) = e_scopes(e);
+pub fn lookup(mut e: Emitter, name: Str) Binding {
+    const sc: Vector(Scope) = e.scopes;
     var i: i64 = vector.len(sc);
     while i > 0 {
         const s: Scope = vector.get(sc, i - 1);
@@ -471,8 +413,8 @@ pub fn lookup(e: Emit, name: Str) Binding {
     return %Binding{name: "", is_box: false, ty: Ty.UnitV, id: "", box: ""};
 }
 
-pub fn declare(e: Emit, b: Binding) {
-    const sc: Vector(Scope) = e_scopes(e);
+pub fn declare(mut e: Emitter, b: Binding) {
+    const sc: Vector(Scope) = e.scopes;
     const s: Scope = vector.get(sc, vector.len(sc) - 1);
     vector.push(s.entries, b);
 }
@@ -637,15 +579,15 @@ pub const VTy = struct {
     ty: Ty,
 };
 
-pub fn vset(e: Emit, id: Str, ty: Ty) {
-    vector.push(e_vtypes(e), %VTy{id: id, ty: ty});
+pub fn vset(mut e: Emitter, id: Str, ty: Ty) {
+    vector.push(e.value_types, %VTy{id: id, ty: ty});
 }
 
-pub fn vget(e: Emit, id: Str) Ty {
-    const n: i64 = vector.len(e_vtypes(e));
+pub fn vget(mut e: Emitter, id: Str) Ty {
+    const n: i64 = vector.len(e.value_types);
     var i: i64 = n;
     while i > 0 {
-        const vt: VTy = vector.get(e_vtypes(e), i - 1);
+        const vt: VTy = vector.get(e.value_types, i - 1);
         if vt.id == id {
             return vt.ty;
         }
@@ -654,15 +596,15 @@ pub fn vget(e: Emit, id: Str) Ty {
     return Ty.UnitV;
 }
 
-pub fn e_ret(e: Emit) Ty {
-    return vector.get(e.rets, 0);
+pub fn e_ret(mut e: Emitter) Ty {
+    return vector.get(e.return_types, 0);
 }
 
-pub fn e_file(e: Emit) Str {
+pub fn e_file(mut e: Emitter) Str {
     return vector.get(e.files, 0);
 }
 
-pub fn loc_msg(e: Emit, line: i64, col: i64, code: Str, what: Str) Str {
+pub fn loc_msg(mut e: Emitter, line: i64, col: i64, code: Str, what: Str) Str {
     var acc: Str = str.concat(e_file(e), ":");
     acc = str.concat(acc, str.fromI64(line));
     acc = str.concat(acc, ":");
@@ -677,7 +619,7 @@ pub fn loc_msg(e: Emit, line: i64, col: i64, code: Str, what: Str) Str {
 // A terminating poison value for the unreachable arms of emitted traps
 // (mirrors the seed's poison(): builtins as constants, named types as
 // empty boxes, vectors as the mirrored intrinsic's terminator).
-pub fn e_poison(e: Emit, t: Ty) Str {
+pub fn e_poison(mut e: Emitter, t: Ty) Str {
     const unit_t: Ty = t;
     return match unit_t {
         Ty.I64 => e_int(e, "0"),
@@ -687,7 +629,7 @@ pub fn e_poison(e: Emit, t: Ty) Str {
     };
 }
 
-pub fn named_poison(e: Emit, t: Ty) Str {
+pub fn named_poison(mut e: Emitter, t: Ty) Str {
     return match t {
         Ty.Named(n) => named_poison_box(e, n),
         Ty.Vec(inner) => named_poison_vec(e, inner),
@@ -695,13 +637,13 @@ pub fn named_poison(e: Emit, t: Ty) Str {
     };
 }
 
-pub fn named_poison_vec(e: Emit, inner: Ty) Str {
+pub fn named_poison_vec(mut e: Emitter, inner: Ty) Str {
     const v: Str = fresh(e);
     emit_line(e, str.concat(v, str.concat(" = func.call @", str.concat(vec_prefix(inner), str.concat("_new() : () -> ", vec_box(e_ast(e), inner))))));
     return v;
 }
 
-pub fn named_poison_box(e: Emit, n: Str) Str {
+pub fn named_poison_box(mut e: Emitter, n: Str) Str {
     // The seed's poison(), mirrored: a struct poison is a box of a
     // product of STORAGE poisons (named fields = recref_null, others
     // recurse through e_poison); a union poison is variant 0's
@@ -801,7 +743,7 @@ pub fn named_poison_box(e: Emit, n: Str) Str {
 
 // The seed's guard: cond_br cond ^trap ^ok; ^trap: message + rt trap +
 // poison return; ^ok: continue. Byte-mirrored.
-pub fn guard(e: Emit, cond: Str, msg: Str, line: i64, col: i64) {
+pub fn guard(mut e: Emitter, cond: Str, msg: Str, line: i64, col: i64) {
     const trap: Str = fresh_label(e);
     const ok: Str = fresh_label(e);
     emit_line(e, str.concat("cf.cond_br ", str.concat(cond, str.concat(", ^", str.concat(trap, str.concat(", ^", ok))))));
@@ -817,13 +759,13 @@ pub fn guard(e: Emit, cond: Str, msg: Str, line: i64, col: i64) {
     new_label(e, ok);
 }
 
-pub fn const_i64(e: Emit, text: Str) Str {
+pub fn const_i64(mut e: Emitter, text: Str) Str {
     return e_int(e, text);
 }
 
 // Checked arithmetic, mirroring the seed's emit_checked op for op
 // (codes, messages, and the exact sequence shapes).
-pub fn emit_checked(e: Emit, op: Str, a: Str, b: Str, line: i64, col: i64) Str {
+pub fn emit_checked(mut e: Emitter, op: Str, a: Str, b: Str, line: i64, col: i64) Str {
     const res: Str = fresh(e);
     const zero: Str = const_i64(e, "0");
     if op == "+" {
@@ -904,7 +846,7 @@ pub fn emit_checked(e: Emit, op: Str, a: Str, b: Str, line: i64, col: i64) Str {
 
 // division/remainder: zero divisor and MIN/-1 overflow checks (the
 // seed's CQ0004/CQ0005 recipe, mirrored).
-pub fn emit_div(e: Emit, op: Str, a: Str, b: Str, res: Str, line: i64, col: i64) Str {
+pub fn emit_div(mut e: Emitter, op: Str, a: Str, b: Str, res: Str, line: i64, col: i64) Str {
     const zero2: Str = const_i64(e, "0");
     const is_zero: Str = fresh(e);
     emit_line(e, str.concat(is_zero, str.concat(" = arith.cmpi eq, ", str.concat(b, str.concat(", ", str.concat(zero2, " : i64"))))));
@@ -960,7 +902,7 @@ pub fn cmp_pred(op: Str) Str {
     return "sge";
 }
 
-pub fn emit_cmp(e: Emit, op: Str, a: Str, b: Str, line: i64, col: i64) Str {
+pub fn emit_cmp(mut e: Emitter, op: Str, a: Str, b: Str, line: i64, col: i64) Str {
     const ta: Ty = vget(e, a);
     const tb: Ty = vget(e, b);
     var t: Ty = ta;
@@ -1010,7 +952,7 @@ pub fn emit_cmp(e: Emit, op: Str, a: Str, b: Str, line: i64, col: i64) Str {
 }
 
 // ---------------------------------------------------------------- reads
-pub fn read_binding(e: Emit, b: Binding) Str {
+pub fn read_binding(mut e: Emitter, b: Binding) Str {
     if b.is_box == false {
         vset(e, b.id, b.ty);
         return b.id;
@@ -1022,7 +964,7 @@ pub fn read_binding(e: Emit, b: Binding) Str {
     return v;
 }
 
-pub fn vty_of(e: Emit, a: Str) Ty {
+pub fn vty_of(mut e: Emitter, a: Str) Ty {
     return vget(e, a);
 }
 
@@ -1054,7 +996,7 @@ pub fn find_fn(a: Ast, sym: Str) Fn {
     return poison_fn();
 }
 
-pub fn emit_call(e: Emit, c: Call, line: i64, col: i64) Str {
+pub fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
     const r: Ref = c.callee;
     if str.len(r.mod) == 0 {
         if r.name == "__calque_input_count" {
@@ -1246,7 +1188,7 @@ pub fn emit_call(e: Emit, c: Call, line: i64, col: i64) Str {
 }
 
 // ---------------------------------------------------------------- expressions
-pub fn emit_expr(e: Emit, ex: Expr) Str {
+pub fn emit_expr(mut e: Emitter, ex: Expr) Str {
     return match ex {
         Expr.Int(t) => e_int(e, t),
         Expr.Bool(t) => e_bool(e, t),
@@ -1263,7 +1205,7 @@ pub fn emit_expr(e: Emit, ex: Expr) Str {
     };
 }
 
-pub fn emit_ref(e: Emit, r: Ref, line: i64, col: i64) Str {
+pub fn emit_ref(mut e: Emitter, r: Ref, line: i64, col: i64) Str {
     if str.len(r.mod) > 0 {
         const td: TypeDecl = find_td(e_ast(e), r.mod);
         if td.name != "" {
@@ -1302,7 +1244,7 @@ pub fn emit_ref(e: Emit, r: Ref, line: i64, col: i64) Str {
     return read_binding(e, b);
 }
 
-pub fn emit_bin(e: Emit, b: Bin) Str {
+pub fn emit_bin(mut e: Emitter, b: Bin) Str {
     const a: Str = emit_expr(e, b.l);
     const c: Str = emit_expr(e, b.r);
     if b.op == "+" {
@@ -1342,7 +1284,7 @@ pub fn emit_bin(e: Emit, b: Bin) Str {
 }
 
 // Block expression: statements with scopes, optional tail value.
-pub fn emit_block_expr(e: Emit, b: Block) Str {
+pub fn emit_block_expr(mut e: Emitter, b: Block) Str {
     scope_push(e);
     var value: Str = "";
     const n: i64 = vector.len(b.stmts);
@@ -1364,7 +1306,7 @@ pub fn emit_block_expr(e: Emit, b: Block) Str {
 
 // `if` expression (else required): then/else arms branch to a join
 // with the value; mirrors the seed's block reordering linearly.
-pub fn emit_ifx(e: Emit, f: IfE) Str {
+pub fn emit_ifx(mut e: Emitter, f: IfE) Str {
     if f.has_else == false {
         return e_fail_at(e, 0, 0, "an `if` in expression position requires `else` (SPEC 5)");
     }
@@ -1381,7 +1323,7 @@ pub fn emit_ifx(e: Emit, f: IfE) Str {
         ty = vget(e, tv);
         has_ty = true;
     }
-    const then_end_len: i64 = vector.len(e_out(e));
+    const then_end_len: i64 = vector.len(e.output);
     new_label(e, el);
     const ev: Str = emit_block_expr(e, f.els);
     if has_ty == false {
@@ -1394,9 +1336,9 @@ pub fn emit_ifx(e: Emit, f: IfE) Str {
     // join arg name mirrors the seed: %j<label-counter>
     var join_arg: Str = "";
     if has_ty {
-        join_arg = str.concat("%j", str.fromI64(vector.get(e.blk, 0)));
+        join_arg = str.concat("%j", str.fromI64(e.next_block));
         emit_top(e, str.concat("^", str.concat(jl, str.concat("(", str.concat(join_arg, str.concat(": ", str.concat(value_ir_t(a, ty), "):")))))));
-        vector.set(e.terminated, 0, 0);
+        e.terminated = false;
     } else {
         new_label(e, jl);
     }
@@ -1404,7 +1346,7 @@ pub fn emit_ifx(e: Emit, f: IfE) Str {
     const br_then: Str = br_for(e, jl, tv, ty, has_ty);
     const br_else: Str = br_for(e, jl, ev, ty, has_ty);
     var patched: Vector(Str) = vector.new();
-    const no = vector.len(e_out(e));
+    const no = vector.len(e.output);
     var i: i64 = 0;
     while i < no {
         // splice br_then after the then arm (before the else label) and
@@ -1415,7 +1357,7 @@ pub fn emit_ifx(e: Emit, f: IfE) Str {
     var rebuilt: Vector(Str) = vector.new();
     var j: i64 = 0;
     while j < no {
-        const line: Str = vector.get(e_out(e), j);
+        const line: Str = vector.get(e.output, j);
         if j == then_end_len {
             vector.push(rebuilt, br_then);
         }
@@ -1425,7 +1367,7 @@ pub fn emit_ifx(e: Emit, f: IfE) Str {
         vector.push(rebuilt, line);
         j = j + 1;
     }
-    vector.set(e.out, 0, %OutCell{items: rebuilt});
+    e.output = rebuilt;
     if has_ty {
         vset(e, join_arg, ty);
         return join_arg;
@@ -1433,7 +1375,7 @@ pub fn emit_ifx(e: Emit, f: IfE) Str {
     return "";
 }
 
-pub fn br_for(e: Emit, jl: Str, v: Str, ty: Ty, has_ty: bool) Str {
+pub fn br_for(mut e: Emitter, jl: Str, v: Str, ty: Ty, has_ty: bool) Str {
     const a: Ast = e_ast(e);
     if has_ty {
         if str.len(v) > 0 {
@@ -1451,7 +1393,7 @@ pub fn br_for(e: Emit, jl: Str, v: Str, ty: Ty, has_ty: bool) Str {
 }
 
 // ---------------------------------------------------------------- statements
-pub fn emit_stmt(e: Emit, s: Stmt) {
+pub fn emit_stmt(mut e: Emitter, s: Stmt) {
     match s {
         Stmt.Const(c) => emit_const(e, c),
         Stmt.Var(v) => emit_var(e, v),
@@ -1465,7 +1407,7 @@ pub fn emit_stmt(e: Emit, s: Stmt) {
     };
 }
 
-pub fn emit_const(e: Emit, c: ConstS) {
+pub fn emit_const(mut e: Emitter, c: ConstS) {
     var v: Str = "";
     if is_vec_new(c.expr) {
         v = emit_vec_new(e, c.ty, 0, 0);
@@ -1483,7 +1425,7 @@ pub fn emit_const(e: Emit, c: ConstS) {
     declare(e, %Binding{name: c.name, is_box: false, ty: ty, id: v, box: ""});
 }
 
-pub fn emit_var(e: Emit, d: VarS) {
+pub fn emit_var(mut e: Emitter, d: VarS) {
     var v: Str = "";
     if is_vec_new(d.expr) {
         v = emit_vec_new(e, d.ty, 0, 0);
@@ -1504,7 +1446,7 @@ pub fn emit_var(e: Emit, d: VarS) {
     declare(e, %Binding{name: d.name, is_box: true, ty: dty, id: b, box: box_ir_t(a, dty)});
 }
 
-pub fn emit_assign(e: Emit, x: AssignS) {
+pub fn emit_assign(mut e: Emitter, x: AssignS) {
     const b: Binding = lookup(e, x.name);
     if b.name == "" {
         const _e: Str = e_fail_at(e, 0, 0, str.concat("unknown name `", str.concat(x.name, "` in assignment")));
@@ -1519,7 +1461,7 @@ pub fn emit_assign(e: Emit, x: AssignS) {
     emit_line(e, str.concat("\"frk_mem.box_set\"(", str.concat(b.id, str.concat(", ", str.concat(v, str.concat(") : (", str.concat(b.box, str.concat(", ", str.concat(value_ir_t(a, b.ty), ") -> ()")))))))));
 }
 
-pub fn emit_ret(e: Emit, r: RetS) {
+pub fn emit_ret(mut e: Emitter, r: RetS) {
     if r.has_expr == false {
         terminate(e, "func.return");
         return;
@@ -1533,7 +1475,7 @@ pub fn emit_ret(e: Emit, r: RetS) {
     terminate(e, acc);
 }
 
-pub fn emit_while(e: Emit, w: WhileS) {
+pub fn emit_while(mut e: Emitter, w: WhileS) {
     const head: Str = fresh_label(e);
     const body: Str = fresh_label(e);
     const done: Str = fresh_label(e);
@@ -1549,7 +1491,7 @@ pub fn emit_while(e: Emit, w: WhileS) {
     new_label(e, done);
 }
 
-pub fn emit_ifs(e: Emit, f: IfE) {
+pub fn emit_ifs(mut e: Emitter, f: IfE) {
     const cond: Str = emit_expr(e, f.cond);
     const tl: Str = fresh_label(e);
     const cont: Str = fresh_label(e);
@@ -1575,16 +1517,16 @@ pub fn emit_ifs(e: Emit, f: IfE) {
     new_label(e, cont);
 }
 
-pub fn emit_expr_stmt(e: Emit, x: ExprS) {
+pub fn emit_expr_stmt(mut e: Emitter, x: ExprS) {
     const v: Str = emit_expr(e, x.expr);
     return;
 }
 
-pub fn emit_destr(e: Emit, d: DestrS) {
+pub fn emit_destr(mut e: Emitter, d: DestrS) {
     emit_destr_names(e, d, 0, 0);
 }
 
-pub fn emit_tail_if(e: Emit, f: IfE) {
+pub fn emit_tail_if(mut e: Emitter, f: IfE) {
     const cond: Str = emit_expr(e, f.cond);
     const tl: Str = fresh_label(e);
     const el: Str = fresh_label(e);
@@ -1673,7 +1615,7 @@ pub fn same_vec(inner: Ty, b: Ty) bool {
 
 // The D-074 erasure, mirrored (incl. the union nesting: rec_ref erases
 // a box of a PRODUCT, so unions ride box<product<[box<sum>]>>).
-pub fn wrap_store(e: Emit, value: Str, t: Ty, line: i64, col: i64) Str {
+pub fn wrap_store(mut e: Emitter, value: Str, t: Ty, line: i64, col: i64) Str {
     if is_named_t(t) == false {
         return value;
     }
@@ -1738,7 +1680,7 @@ pub fn named_of(t: Ty) Str {
     };
 }
 
-pub fn unwrap_load(e: Emit, stored: Str, t: Ty, line: i64, col: i64) Str {
+pub fn unwrap_load(mut e: Emitter, stored: Str, t: Ty, line: i64, col: i64) Str {
     if is_named_t(t) == false {
         return stored;
     }
@@ -1808,7 +1750,7 @@ pub fn mk_field_expr(fields: Vector(MakeField), name: Str) MakeField {
     return %MakeField{name: "", expr: poison()};
 }
 
-pub fn emit_make(e: Emit, m: MakeE, line: i64, col: i64) Str {
+pub fn emit_make(mut e: Emitter, m: MakeE, line: i64, col: i64) Str {
     const a: Ast = e_ast(e);
     const td: TypeDecl = find_td(a, m.ty);
     if td.name == "" {
@@ -1846,7 +1788,7 @@ pub fn emit_make(e: Emit, m: MakeE, line: i64, col: i64) Str {
         const pf: MakeField = mk_field_expr(m.fields, fld.name);
         var value: Str = "";
         if pf.name != "" {
-            value = emit_expr(e, pf.expr);
+            value = emit_expr_typed(e, pf.expr, fld.ty);
         } else {
             if m.has_base {
                 const stored: Str = fresh(e);
@@ -1906,7 +1848,7 @@ pub fn emit_make(e: Emit, m: MakeE, line: i64, col: i64) Str {
 
 // The unit-variant value (`Token.Plus`) and payload construction
 // (`Token.Ident("a")`), mirroring the seed's shapes.
-pub fn emit_unit_variant(e: Emit, td: TypeDecl, vname: Str, line: i64, col: i64) Str {
+pub fn emit_unit_variant(mut e: Emitter, td: TypeDecl, vname: Str, line: i64, col: i64) Str {
     const idx: i64 = variant_index(td, vname);
     if idx < 0 {
         return e_fail_at(e, line, col, str.concat("unknown variant `", str.concat(vname, "`")));
@@ -1943,7 +1885,7 @@ pub fn variant_index(td: TypeDecl, vname: Str) i64 {
 
 // Field access on a struct-typed receiver: `user.name` arrives as
 // Ref{name = field, mod = receiver}.
-pub fn emit_field_access(e: Emit, recv: Str, rname: Str, field: Str, line: i64, col: i64) Str {
+pub fn emit_field_access(mut e: Emitter, recv: Str, rname: Str, field: Str, line: i64, col: i64) Str {
     const a: Ast = e_ast(e);
     const td: TypeDecl = find_td(a, rname);
     if td.name == "" {
@@ -1971,7 +1913,7 @@ pub fn emit_field_access(e: Emit, recv: Str, rname: Str, field: Str, line: i64, 
 
 // Payload variant construction: `T.Variant(expr)` (the seed's
 // emit_call head, mirrored).
-pub fn emit_variant_make(e: Emit, td: TypeDecl, vname: Str, args: Vector(Expr), line: i64, col: i64) Str {
+pub fn emit_variant_make(mut e: Emitter, td: TypeDecl, vname: Str, args: Vector(Expr), line: i64, col: i64) Str {
     const idx: i64 = variant_index(td, vname);
     if idx < 0 {
         return e_fail_at(e, line, col, str.concat("unknown variant `", str.concat(vname, "`")));
@@ -2027,7 +1969,7 @@ pub fn emit_variant_make(e: Emit, td: TypeDecl, vname: Str, args: Vector(Expr), 
 }
 
 // Destructuring bindings (D-107), mirroring the seed's destr branch.
-pub fn emit_destr_names(e: Emit, d: DestrS, line: i64, col: i64) {
+pub fn emit_destr_names(mut e: Emitter, d: DestrS, line: i64, col: i64) {
     const a: Ast = e_ast(e);
     const v: Str = emit_expr(e, d.expr);
     const bty: Ty = vget(e, v);
@@ -2078,7 +2020,7 @@ pub fn emit_destr_names(e: Emit, d: DestrS, line: i64, col: i64) {
 
 // The vector prelude (vector.len/push/set/get), mirroring the seed's
 // type-driven resolution.
-pub fn emit_vector_call(e: Emit, vname: Str, args: Vector(Expr), line: i64, col: i64) Str {
+pub fn emit_vector_call(mut e: Emitter, vname: Str, args: Vector(Expr), line: i64, col: i64) Str {
     if vname == "new" {
         return e_fail_at(e, line, col, "vector.new() takes its instantiation from the declaration's annotation (seed v0)");
     }
@@ -2150,7 +2092,7 @@ pub fn vec_inner(t: Ty) Ty {
     };
 }
 
-pub fn emit_vec_push_set(e: Emit, vname: Str, vid: Str, vty: Ty, inner: Ty, box: Str, slot: Str, prefix: Str, args: Vector(Expr), line: i64, col: i64) Str {
+pub fn emit_vec_push_set(mut e: Emitter, vname: Str, vid: Str, vty: Ty, inner: Ty, box: Str, slot: Str, prefix: Str, args: Vector(Expr), line: i64, col: i64) Str {
     const na: i64 = vector.len(args);
     var want: i64 = 2;
     if vname == "set" {
@@ -2216,7 +2158,7 @@ pub fn is_vec_new_call(c: Call) bool {
     return vector.len(c.args) == 0;
 }
 
-pub fn emit_vec_new(e: Emit, t: Ty, line: i64, col: i64) Str {
+pub fn emit_vec_new(mut e: Emitter, t: Ty, line: i64, col: i64) Str {
     if is_vec_t(t) == false {
         return e_fail_at(e, line, col, "vector.new() needs an annotated Vector binding (seed v0)");
     }
@@ -2245,7 +2187,7 @@ pub const MBind = struct {
     col: i64,
 };
 
-pub fn collect_bindings(e: Emit, bindings: Vector(MBind)) {
+pub fn collect_bindings(mut e: Emitter, bindings: Vector(MBind)) {
     const n: i64 = vector.len(bindings);
     var i: i64 = 0;
     while i < n {
@@ -2256,7 +2198,7 @@ pub fn collect_bindings(e: Emit, bindings: Vector(MBind)) {
     }
 }
 
-pub fn emit_equality(e: Emit, a: Str, b: Str, t: Ty, line: i64, col: i64) Str {
+pub fn emit_equality(mut e: Emitter, a: Str, b: Str, t: Ty, line: i64, col: i64) Str {
     if ty_is_i64(t) {
         const r: Str = fresh(e);
         emit_line(e, str.concat(r, str.concat(" = arith.cmpi eq, ", str.concat(a, str.concat(", ", str.concat(b, " : i64"))))));
@@ -2309,7 +2251,7 @@ pub fn prec_is_catch_all(r: PRec) bool {
 }
 
 // Returns the i1 condition ssa ("" = none) and pushes bindings.
-pub fn pattern_conditions(e: Emit, p: Pat, value: Str, lty: Ty, out_bindings: Vector(MBind)) Str {
+pub fn pattern_conditions(mut e: Emitter, p: Pat, value: Str, lty: Ty, out_bindings: Vector(MBind)) Str {
     return match p {
         Pat.Wild => "",
         Pat.Bind(n) => pc_bind(e, n, value, lty, p, out_bindings),
@@ -2333,12 +2275,12 @@ pub fn pat_line(p: Pat) i64 {
     };
 }
 
-pub fn pc_bind(e: Emit, n: Str, value: Str, lty: Ty, p: Pat, out_bindings: Vector(MBind)) Str {
+pub fn pc_bind(mut e: Emitter, n: Str, value: Str, lty: Ty, p: Pat, out_bindings: Vector(MBind)) Str {
     vector.push(out_bindings, %MBind{name: n, ty: lty, id: value, line: 0, col: 0});
     return "";
 }
 
-pub fn pc_pin(e: Emit, n: Str, value: Str, lty: Ty, p: Pat) Str {
+pub fn pc_pin(mut e: Emitter, n: Str, value: Str, lty: Ty, p: Pat) Str {
     const b: Binding = lookup(e, n);
     if b.name == "" {
         return e_fail_at(e, 0, 0, str.concat("unknown pinned name `", str.concat(n, "`")));
@@ -2347,7 +2289,7 @@ pub fn pc_pin(e: Emit, n: Str, value: Str, lty: Ty, p: Pat) Str {
     return emit_equality(e, value, other, lty, 0, 0);
 }
 
-pub fn pc_lit(e: Emit, l: PLit, value: Str, lty: Ty, p: Pat) Str {
+pub fn pc_lit(mut e: Emitter, l: PLit, value: Str, lty: Ty, p: Pat) Str {
     var other: Str = "";
     if l.litty == "i64" {
         if ty_is_i64(lty) == false {
@@ -2370,7 +2312,7 @@ pub fn pc_lit(e: Emit, l: PLit, value: Str, lty: Ty, p: Pat) Str {
     return emit_equality(e, value, other, lty, 0, 0);
 }
 
-pub fn pc_rec(e: Emit, r: PRec, value: Str, lty: Ty, p: Pat, out_bindings: Vector(MBind)) Str {
+pub fn pc_rec(mut e: Emitter, r: PRec, value: Str, lty: Ty, p: Pat, out_bindings: Vector(MBind)) Str {
     if is_named_t(lty) == false {
         return e_fail_at(e, 0, 0, str.concat("pattern `%", str.concat(r.ty, "{...}` does not match the subject type")));
     }
@@ -2417,7 +2359,7 @@ pub fn pc_rec(e: Emit, r: PRec, value: Str, lty: Ty, p: Pat, out_bindings: Vecto
     return cond;
 }
 
-pub fn pc_variant(e: Emit, v: PVar, value: Str, lty: Ty, p: Pat) Str {
+pub fn pc_variant(mut e: Emitter, v: PVar, value: Str, lty: Ty, p: Pat) Str {
     if is_named_t(lty) == false {
         return e_fail_at(e, 0, 0, "variant patterns need a union subject");
     }
@@ -2455,7 +2397,7 @@ pub fn ref_of_expr(ex: Expr) Ref {
     };
 }
 
-pub fn emit_expr_typed(e: Emit, ex: Expr, ty: Ty) Str {
+pub fn emit_expr_typed(mut e: Emitter, ex: Expr, ty: Ty) Str {
     if has_ty_annotation(ty) {
         return match ex {
             Expr.List(l) => emit_list_literal(e, ty, l),
@@ -2472,7 +2414,7 @@ pub fn has_ty_annotation(ty: Ty) bool {
     };
 }
 
-pub fn emit_list_literal(e: Emit, ty: Ty, items: Vector(Expr)) Str {
+pub fn emit_list_literal(mut e: Emitter, ty: Ty, items: Vector(Expr)) Str {
     if is_vec_t(ty) == false {
         return e_fail_at(e, 0, 0, "a collection literal needs a [T]/Vector annotation (seed v0)");
     }
@@ -2516,7 +2458,7 @@ pub fn emit_list_literal(e: Emit, ty: Ty, items: Vector(Expr)) Str {
 // Field assignment (D-112): legal only through a mutable binding (a
 // var local or a mut parameter); the write is frk_mem.field_set on the
 // record's box.
-pub fn emit_fassign(e: Emit, f: FAssS) {
+pub fn emit_fassign(mut e: Emitter, f: FAssS) {
     const b: Binding = lookup(e, f.name);
     if b.name == "" {
         e_fail_at(e, 0, 0, str.concat("unknown name `", str.concat(f.name, "` in field assignment")));
@@ -2587,7 +2529,7 @@ pub fn mt_new(label: Str, arg: Str) MTy {
     return %MTy{label: label, arg: arg, has: h, ty: t};
 }
 
-pub fn emit_arm(e: Emit, c: MTy, conditions: Str, bindings: Vector(MBind), body: Expr, false_target: Str) Str {
+pub fn emit_arm(mut e: Emitter, c: MTy, conditions: Str, bindings: Vector(MBind), body: Expr, false_target: Str) Str {
     if str.len(conditions) > 0 {
         const body_label: Str = fresh_label(e);
         var nlabel: Str = false_target;
@@ -2604,7 +2546,7 @@ pub fn emit_arm(e: Emit, c: MTy, conditions: Str, bindings: Vector(MBind), body:
     return "inplace";
 }
 
-pub fn emit_arm_body(e: Emit, c: MTy, bindings: Vector(MBind), body: Expr) {
+pub fn emit_arm_body(mut e: Emitter, c: MTy, bindings: Vector(MBind), body: Expr) {
     scope_push(e);
     collect_bindings(e, bindings);
     const v: Str = emit_expr(e, body);
@@ -2645,7 +2587,7 @@ pub fn emit_arm_body(e: Emit, c: MTy, bindings: Vector(MBind), body: Expr) {
     scope_pop(e);
 }
 
-pub fn emit_join(e: Emit, c: MTy) Str {
+pub fn emit_join(mut e: Emitter, c: MTy) Str {
     const a: Ast = e_ast(e);
     if vector.get(c.has, 0) > 0 {
         const ty: Ty = vector.get(c.ty, 0);
@@ -2657,7 +2599,7 @@ pub fn emit_join(e: Emit, c: MTy) Str {
         l = str.concat(l, value_ir_t(a, ty));
         l = str.concat(l, "):");
         emit_top(e, l);
-        vector.set(e.terminated, 0, 0);
+        e.terminated = false;
         vset(e, c.arg, ty);
         return c.arg;
     }
@@ -2672,7 +2614,7 @@ pub fn pv_of(p: Pat) PVar {
     };
 }
 
-pub fn emit_match(e: Emit, m: MatchE) Str {
+pub fn emit_match(mut e: Emitter, m: MatchE) Str {
     var sname: Str = "";
     var smod: Str = "";
     const scrut: Expr = m.scrut;
@@ -2693,7 +2635,7 @@ pub fn emit_match(e: Emit, m: MatchE) Str {
     const value: Str = read_binding(e, b);
     const sty: Ty = b.ty;
     const join_label: Str = fresh_label(e);
-    const join_arg: Str = str.concat("%j", str.fromI64(vector.get(e.blk, 0)));
+    const join_arg: Str = str.concat("%j", str.fromI64(e.next_block));
     const c: MTy = mt_new(join_label, join_arg);
     if is_named_t(sty) {
         const td: TypeDecl = find_td(e_ast(e), named_of(sty));
@@ -2706,7 +2648,7 @@ pub fn emit_match(e: Emit, m: MatchE) Str {
 }
 
 
-pub fn emit_match_union(e: Emit, m: MatchE, d: TypeDecl, value: Str, sty: Ty, c: MTy) Str {
+pub fn emit_match_union(mut e: Emitter, m: MatchE, d: TypeDecl, value: Str, sty: Ty, c: MTy) Str {
     const a: Ast = e_ast(e);
     const n_arms: i64 = vector.len(m.arms);
     const nv: i64 = vector.len(d.variants);
@@ -2893,7 +2835,7 @@ pub fn emit_match_union(e: Emit, m: MatchE, d: TypeDecl, value: Str, sty: Ty, c:
     return emit_join(e, c);
 }
 
-pub fn emit_match_struct(e: Emit, m: MatchE, d: TypeDecl, value: Str, sty: Ty, c: MTy) Str {
+pub fn emit_match_struct(mut e: Emitter, m: MatchE, d: TypeDecl, value: Str, sty: Ty, c: MTy) Str {
     const n_arms: i64 = vector.len(m.arms);
     var default_seen: i64 = 0 - 1;
     var i: i64 = 0;
@@ -2936,7 +2878,7 @@ pub fn emit_match_struct(e: Emit, m: MatchE, d: TypeDecl, value: Str, sty: Ty, c
     return emit_join(e, c);
 }
 
-pub fn emit_match_builtin(e: Emit, m: MatchE, value: Str, sty: Ty, c: MTy) Str {
+pub fn emit_match_builtin(mut e: Emitter, m: MatchE, value: Str, sty: Ty, c: MTy) Str {
     const n_arms: i64 = vector.len(m.arms);
     var default_seen: i64 = 0 - 1;
     var i: i64 = 0;

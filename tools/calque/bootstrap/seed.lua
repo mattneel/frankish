@@ -858,6 +858,13 @@ local function parse_type_decl()
           -- Collection-typed defaults (D-112): the literal takes the
           -- field's declared element type at emission.
           default = parse_expr(4)
+        elseif d.k == "punct" and d.v == "%" then
+          -- Constructor defaults (D-112): %T{...} takes the field's
+          -- declared type at emission.
+          default = parse_expr(4)
+        elseif d.k == "name" then
+          -- Qualified defaults (D-112): enum variants like State.Ok.
+          default = parse_expr(4)
         else
           fail(d.line, d.col, "seed v0 supports literal field defaults only (D-095)")
         end
@@ -1641,7 +1648,7 @@ local function emit_make(node)
   local prod = emit_product(d.fields, function(field, index)
     local value = nil
     if provided[field.name] ~= nil then
-      value = emit_expr(provided[field.name].expr)
+      value = emit_expr_typed(provided[field.name].expr, field.ty)
     elseif base_value ~= nil then
       local stored = fresh()
       emit(stored .. " = \"frk_mem.field_get\"(" .. base_value .. ") {field = " .. tostring(index - 1) .. " : i64} : (" .. value_ir(named_ty(m.ty), line, col) .. ") -> " .. storage_ir(field.ty, field.line, field.col))

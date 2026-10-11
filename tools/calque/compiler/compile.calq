@@ -44,7 +44,7 @@ pub fn main() i64 {
         i = i + 1;
     }
     const merged: Ast = %Ast{fns: fns, types: types};
-    const e: Emit = e_init();
+    var e: Emitter = e_init();
     emit_module(e, merged);
     if e_ok(e) == false {
         io.print(fail_text(state_fail(e_state(e))));
