@@ -33,6 +33,21 @@ fn main() -> ExitCode {
         }
     };
     match cmd {
+        "check" => ExitCode::SUCCESS,
+        "build" => {
+            let stem = std::path::Path::new(path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "unit".to_string());
+            let out_path = std::path::Path::new(path).with_file_name(format!("{stem}.mlir"));
+            match std::fs::write(&out_path, &artifact) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("calque: cannot write {}: {e}", out_path.display());
+                    ExitCode::from(1)
+                }
+            }
+        }
         "run" => match calque::run_artifact(&artifact) {
             Ok(outcome) => {
                 print!("{}", outcome.output);

@@ -34,6 +34,42 @@ fn cli_runs_the_test_blocks_and_main() {
 }
 
 #[test]
+fn cli_check_and_build() {
+    let case = "../../goldens/calque/test_blocks/case.calq";
+    let out = Command::new(bin())
+        .args(["check", case])
+        .output()
+        .expect("spawn calque check");
+    assert!(out.status.success(), "a valid unit checks quietly");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+
+    // a build beside the source (file_stem.mlir), then check the
+    // error path exits non-zero for a broken unit.
+    let src = std::env::temp_dir().join("calque_cli_build.calq");
+    std::fs::write(
+        &src,
+        "pub fn main() i64 {\n    io.print(str.fromI64(7));\n    io.print(\"\\n\");\n    0\n}\n",
+    )
+    .unwrap();
+    let out2 = Command::new(bin())
+        .args(["build", src.to_str().unwrap()])
+        .output()
+        .expect("spawn calque build");
+    assert!(out2.status.success());
+    let artifact = std::env::temp_dir().join("calque_cli_build.mlir");
+    let text = std::fs::read_to_string(&artifact).expect("the artifact lands beside the source");
+    assert!(text.starts_with("// calque-artifact v0"), "{}", &text[..80.min(text.len())]);
+
+    let bad = std::env::temp_dir().join("calque_cli_bad.calq");
+    std::fs::write(&bad, "pub fn main() i64 {\n    no_such_fn();\n    0\n}\n").unwrap();
+    let out3 = Command::new(bin())
+        .args(["check", bad.to_str().unwrap()])
+        .output()
+        .expect("spawn calque check (bad)");
+    assert!(!out3.status.success(), "a broken unit exits non-zero");
+}
+
+#[test]
 fn cli_test_failure_exits_nonzero() {
     let path = std::env::temp_dir().join("calque_cli_fail.calq");
     std::fs::write(
