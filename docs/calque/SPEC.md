@@ -520,13 +520,17 @@ require a D-entry and a row here. "Frozen-by" records the decision.
 | F36 | `calque test` is the project test entry point: discovery, selection/flags, ExUnit-style declarations/fixtures, source-captured assertions, isolated supervised execution, stable identities, machine-readable events, run-every-selection incrementality (`--stale` is explicit) | D-096 (steering §§3–5) |
 | F37 | CON (`.con`) and CTF (`.ctf`) + JSON over ONE reflection-derived codec contract (typed direct paths, optional dynamic Term, shared validation); CTF versioned self-describing wire with fast vs canonical profiles; safe decoders by default; ETF-class performance as a benchmarked objective; loanword/artifact format untouched without explicit migration | D-097 (steering §§6–13) |
 | F38 | destructuring `const {a, b} = e` / `var {a, b} = e` — entries `field` or `field: local`, mixable; struct initializers only (D-106/D-107) | user directive, M37 |
+| F39 | ergonomics slice (D-112, landed during M37 as a recorded extension ahead of C2): `[T]` as Vector-compatible collection syntax; annotation-typed `[]`/`[a, b]` literals (element type from the binding annotation or field type, never inference); struct field defaults may be `[`-literals, `%T`-constructors, or qualified variants (`State.Ok`); `var x = e` inference; `mut` is CONTEXTUAL (the name token, not a keyword) and takes a record type | D-112, user directive |
+| F40 | state ownership (D-112): `mut` parameters are the scoped exclusive mutation interface; field assignment is legal only through a mutable binding (var local or mut parameter); a mut argument must be a var-bound local or another mut parameter and one binding cannot occupy two mut positions in a call; ordinary parameters keep immutable value semantics; lowering is box-by-handle with `frk_mem.field_get`/`field_set` | D-112, user directive |
 
 Rows cite the entry that froze them; revisions cite the revising
 entry (D-090 revised F5/F7/F9 after the user's demo playbook).
 
 ## §13 Version plan
 
-v0.1 = b0 (this file). v0.2 = C2 language (inference, generics,
+v0.1 = b0 (this file), extended during M37 by the D-112 ergonomics/state
+slice (F39/F40: `[T]`, annotation-typed literals, defaults widening,
+var inference, `mut` + field assignment). v0.2 = C2 language (inference, generics,
 floats, tuples, modules, immutable collections, defer, seq, async
 tasks/scopes with the frozen concurrency contracts). v0.3 =
 C3 (comptime, types-as-values, reflection). v1.0 = C6 release

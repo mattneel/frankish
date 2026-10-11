@@ -1388,19 +1388,26 @@ rework flag, not a knob.
       case flows through. Emitter structure: `Emit.out` carries final
       lines (emit_line indents, emit_top does not), `sym_of` mangles
       main -> __calque_main, e_render returns `out`.
-    Next: THE USER-DIRECTED DX-EMITTER MILESTONE (priority correction,
-    2026-10-11): retire the emitter's bootstrap-shaped state. After
-    this slice's green point the plan is: (1) seed v0.2 gains [T]
-    types + annotation-typed collection literals + var inference +
-    `mut` parameters and field assignment (the scoped exclusive
-    state interface; frk_mem.field_set already exists) + the
-    exclusivity rules; (2) calq0 mirrors them; (3) emit.calq's cells
-    become real Emitter fields initialized by %Emitter defaults;
-    (4) tests: caller-visible state updates, independent emitter
-    instances, retained collection values; (5) unchanged artifacts +
-    failure behavior + the interpreter/native/bootstrap/self gates.
-    Design call to be ledgered (D-112). C2 feature expansion PAUSES
-    behind this (user directive).
+    Next: C2 resumes - with the DX-EMITTER milestone COMPLETE
+    (2026-10-11, D-112). Delivered in order: (1) the seed's
+    constructor-scope surface (ac1cbb0): [T], annotation-typed
+    collection literals, widened field defaults ([-literals, %T
+    constructors, qualified variants), var inference, contextual mut
+    parameters, field assignment + the exclusivity rules; (2) calq0's
+    mirror (de13c91) with the new-surface differential; (3) THE
+    EMITTER MIGRATION (49dd1ac): one Emitter value inited by
+    %Emitter{}, 75 mutating helpers on `mut e: Emitter`, read-only
+    helpers plain, scalar counters/flags real fields, the cell
+    wrappers deleted; (4) the parser's P migration (5e7de7b) - pos
+    and the error cell became fields. EVIDENCE: every seed-vs-calq0
+    differential BYTE-IDENTICAL (34 tests), the self-compilation gate
+    green on the migrated sources, make calque-test green (charter;
+    11 goldens under interp/jit/jit-rc; AOT native grid both
+    strategies); the bootstrap transition is recorded in BOOTSTRAP.md
+    §5 and SPEC §12 (F39/F40). Caller-visible state updates and
+    independent instances are covered by the seed-side mut probe and
+    the corpus's per-run re-initinalization. NEXT: C2 planning (the
+    language grown through the chain, stdlib + modules).
     Slice 3c COMPLETE (same session): the self-compilation fixed point
     (calq0 - built by the seed - compiles its own sources
     byte-identically; the self-produced compiler compiles fib equal

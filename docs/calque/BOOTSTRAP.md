@@ -76,6 +76,18 @@ of the compiler it translates are preserved under
 `tools/calque/bootstrap/` (+ `snapshots/b0/`). Later language growth
 never requires the seed to parse new syntax (goal §5).
 
+**The M37 bootstrap transition (D-112, recorded before the freeze)**:
+the user-directed ergonomics/state slice (`[T]`, annotation-typed
+collection literals, widened field defaults, `var x = e` inference,
+contextual `mut`, field assignment) had to be understood by the
+compiler that compiles the migrated compiler, so the seed gained
+exactly that surface. Its b0 behavior is UNCHANGED - every
+pre-transition b0 source still compiles byte-identically (the frozen
+corpus and the differential suite are the proof); the pre-transition
+seed revision is preserved in git (the parent of the v0.2 commit
+ac1cbb0). After the M37 gate the freeze stands unconditionally:
+further growth rides the calq0 chain.
+
 ## §2 The artifact
 
 An **artifact** is one kernel-IR module in MLIR textual form
