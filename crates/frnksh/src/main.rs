@@ -202,6 +202,7 @@ fn run(command: Command) -> ExitCode {
                 }
             };
             frk_dialects::register_eval(&mut interp);
+            frk_harness::runner::register_protocol_builtins(&mut interp);
             match interp.eval_function("main", &[]) {
                 Ok(values) => match values[0].as_signed() {
                     Ok(value) => {
