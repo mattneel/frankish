@@ -161,6 +161,16 @@ Locals (inside blocks):
   make construction syntax ambiguous). Same-scope redeclaration =
   error.
 - `return expr;` early exit; `return;` for unit.
+- [b0, D-107] DESTRUCTURING SHORTHAND: `const {a, b} = e;` /
+  `var {a, b} = e;` binds each named FIELD of the STRUCT-typed
+  initializer to a local of the same name — the exact mirror of the
+  `%T{a, b}` literal/pattern shorthand (D-106). `var` makes each
+  bound name mutable, `const` immutable; unknown fields, duplicate
+  names, non-struct (union) initializers, and missing/extra syntax
+  are errors. Entries are `field` (shorthand) or `field: local`
+  (rename) and MIX freely (`{a, b: q}`), exactly like the literal and
+  pattern sides (D-106); nested sub-patterns in braces remain C2's
+  pattern machinery.
 
 ## §5 Expressions [b0]
 
@@ -191,7 +201,11 @@ per-field defaults; missing required fields are errors), the immutable
 update `%Type{base | field: value}`, `%Type{field: pat}` / `%Type{}` /
 `^name` patterns, variant patterns with nested sub-patterns, and
 `match` (union tag dispatch, record field tests, builtin literal
-chains). The type-elided constructor forms remain C2.
+chains). THE SHORTHAND `%Type{f}` means `f: f` — the field takes the
+local/parameter named `f` (D-106) — in CONSTRUCTION AND IN PATTERNS
+alike (a pattern `%Type{f}` binds the name `f`), mixable per field:
+`%Type{a, b: expr}` / `%Type{a, b: pat}`. The type-elided constructor
+forms remain C2.
 
 ### §5.1 Operators and precedence
 Loosest to tightest; all binaries left-associative:
@@ -490,9 +504,10 @@ require a D-entry and a row here. "Frozen-by" records the decision.
 | F32 | `@noalloc` spelling; allocation claims require executable tests, never terminal decoration | D-090 (C4) |
 | F33 | multiline `"""` strings, `_` numeric separators, `@intCast`, `usize`, `[N]T`, tuples, `[...]` literals, `..spread`, `test` blocks | D-090 (C2) |
 | F34 | b0 `Vector(T)` = managed box of `[arr<slot>, len, cap]`; `vector.*` resolves to per-slot-kind intrinsic functions with growth in the intrinsics module | D-091 |
-| F35 | struct surface: `%Type{f: v}` construction, `%Type{base &#124; f: v}` update, `%Type{f: pat}`/`%Type{}`/`^name` patterns, pure comptime per-field defaults, required fields, nominal-vs-map separation | D-095 (steering §2) |
+| F35 | struct surface: `%Type{f: v}` construction (incl. the `%Type{f}` ≡ `f: f` shorthand in construction AND patterns, D-106), `%Type{base &#124; f: v}` update, `%Type{f: pat}`/`%Type{}`/`^name` patterns, pure comptime per-field defaults, required fields, nominal-vs-map separation | D-095 (steering §2) |
 | F36 | `calque test` is the project test entry point: discovery, selection/flags, ExUnit-style declarations/fixtures, source-captured assertions, isolated supervised execution, stable identities, machine-readable events, run-every-selection incrementality (`--stale` is explicit) | D-096 (steering §§3–5) |
 | F37 | CON (`.con`) and CTF (`.ctf`) + JSON over ONE reflection-derived codec contract (typed direct paths, optional dynamic Term, shared validation); CTF versioned self-describing wire with fast vs canonical profiles; safe decoders by default; ETF-class performance as a benchmarked objective; loanword/artifact format untouched without explicit migration | D-097 (steering §§6–13) |
+| F38 | destructuring `const {a, b} = e` / `var {a, b} = e` — entries `field` or `field: local`, mixable; struct initializers only (D-106/D-107) | user directive, M37 |
 
 Rows cite the entry that froze them; revisions cite the revising
 entry (D-090 revised F5/F7/F9 after the user's demo playbook).

@@ -28,13 +28,14 @@ pub fn main() i64 {
     var i: i64 = 0;
     while i < m {
         const t: Tok = vector.get(out.toks, i);
-        io.print(kind_name(t.kind));
+        const {kind, text, line, col} = t;
+        io.print(kind_name(kind));
         io.print(" ");
-        io.print(t.text);
+        io.print(text);
         io.print(" ");
-        io.print(str.fromI64(t.line));
+        io.print(str.fromI64(line));
         io.print(":");
-        io.print(str.fromI64(t.col));
+        io.print(str.fromI64(col));
         io.print("\n");
         i = i + 1;
     }

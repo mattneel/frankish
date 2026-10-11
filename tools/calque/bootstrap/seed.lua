@@ -15,7 +15,8 @@
 -- Scope (seed v0, frozen at the M37 self-host gate): functions with
 -- explicit types (i64/bool/Str/unit/declared), const/var/assignment,
 -- if (statement and expression), while, return, calls (unqualified and
--- the str/io preludes), the checked-arithmetic subset + - * / %,
+-- the str/io preludes), destructuring (`const {a, b} = e;` /
+-- `var {a, b} = e;`, D-107), the checked-arithmetic subset + - * / %,
 -- comparisons, string/int/bool literals, `pub`, comments, AND the
 -- records/unions growth (D-095): `const T = struct {...}` /
 -- `union(enum) {...}`, `%T{field: value}` construction with literal
@@ -640,6 +641,37 @@ function parse_pattern()
   fail(t.line, t.col, "unsupported pattern (seed v0)")
 end
 
+-- `const {a, b} = e;` / `var {a, b} = e;` destructuring shorthand
+-- (D-107): each NAME is a field of the struct-typed initializer bound
+-- to a local of the same name. Braces hold field names only; renames
+-- and nested patterns arrive with C2's pattern machinery.
+local function parse_destr(kw_tok, mutable)
+  next_tok() -- {
+  local names = {}
+  while true do
+    local field = expect_name()
+    local local_name = field
+    if at_punct(":") then
+      next_tok()
+      local_name = expect_name()
+    end
+    names[#names + 1] = { field = field.v, name = local_name.v, line = field.line, col = field.col }
+    if at_punct(",") then
+      next_tok()
+      if at_punct("}") then
+        break
+      end
+    else
+      break
+    end
+  end
+  expect_punct("}")
+  expect_punct("=")
+  local e = parse_expr(4)
+  expect_punct(";")
+  return { mutable = mutable, names = names, expr = e, line = kw_tok.line, col = kw_tok.col }
+end
+
 function parse_block()
   expect_punct("{")
   local stmts = {}
@@ -652,25 +684,35 @@ function parse_block()
     local t = peek()
     if t.k == "kw" and t.v == "const" then
       next_tok()
-      local name = expect_name()
-      local ty = nil
-      if at_punct(":") then
-        next_tok()
-        ty = parse_type()
+      if at_punct("{") then
+        local d = parse_destr(t, false)
+        stmts[#stmts + 1] = { destr = d }
+      else
+        local name = expect_name()
+        local ty = nil
+        if at_punct(":") then
+          next_tok()
+          ty = parse_type()
+        end
+        expect_punct("=")
+        local e = parse_expr(4)
+        expect_punct(";")
+        stmts[#stmts + 1] = { const = { name = name.v, ty = ty, expr = e, line = name.line, col = name.col } }
       end
-      expect_punct("=")
-      local e = parse_expr(4)
-      expect_punct(";")
-      stmts[#stmts + 1] = { const = { name = name.v, ty = ty, expr = e, line = name.line, col = name.col } }
     elseif t.k == "kw" and t.v == "var" then
       next_tok()
-      local name = expect_name()
-      expect_punct(":")
-      local ty = parse_type()
-      expect_punct("=")
-      local e = parse_expr(4)
-      expect_punct(";")
-      stmts[#stmts + 1] = { var = { name = name.v, ty = ty, expr = e, line = name.line, col = name.col } }
+      if at_punct("{") then
+        local d = parse_destr(t, true)
+        stmts[#stmts + 1] = { destr = d }
+      else
+        local name = expect_name()
+        expect_punct(":")
+        local ty = parse_type()
+        expect_punct("=")
+        local e = parse_expr(4)
+        expect_punct(";")
+        stmts[#stmts + 1] = { var = { name = name.v, ty = ty, expr = e, line = name.line, col = name.col } }
+      end
     elseif t.k == "kw" and t.v == "return" then
       next_tok()
       if at_punct(";") then
@@ -2302,6 +2344,42 @@ local function emit_stmt(node)
       end
     end
     declare(c.name, { kind = "ssa", ty = ty, id = v }, c.line, c.col)
+    return
+  end
+  if node.destr ~= nil then
+    local d = node.destr
+    local v = emit_expr(d.expr)
+    local bty = E.vtypes[v]
+    if bty == nil or is_named(bty) == false then
+      fail(d.line, d.col, "destructuring needs a struct-typed initializer (seed v0)")
+    end
+    local decl = find_type(bty.named, d.line, d.col)
+    if decl.kind ~= "struct" then
+      fail(d.line, d.col, "`" .. bty.named .. "` is a union; destructure with `match`")
+    end
+    for i = 1, #d.names do
+      local nm = d.names[i]
+      local j = 1
+      while j < i do
+        if d.names[j].name == nm.name then
+          fail(nm.line, nm.col, "duplicate name `" .. nm.name .. "` in destructuring")
+        end
+        j = j + 1
+      end
+      local idx = find_field(decl, nm.field, nm.line, nm.col)
+      local fld = decl.fields[idx]
+      local stored = fresh()
+      emit(stored .. " = \"frk_mem.field_get\"(" .. v .. ") {field = " .. tostring(idx - 1) .. " : i64} : (" .. value_ir(bty, d.line, d.col) .. ") -> " .. storage_ir(fld.ty, fld.line, fld.col))
+      local value = unwrap_load(stored, fld.ty, fld.line, fld.col)
+      if d.mutable then
+        local b = fresh()
+        emit(b .. " = \"frk_mem.box_new\"(" .. value .. ") : (" .. value_ir(fld.ty, fld.line, fld.col) .. ") -> " .. box_ir(fld.ty, fld.line, fld.col))
+        declare(nm.name, { kind = "box", ty = fld.ty, id = b, box = box_ir(fld.ty, fld.line, fld.col) }, nm.line, nm.col)
+      else
+        E.vtypes[value] = fld.ty
+        declare(nm.name, { kind = "ssa", ty = fld.ty, id = value }, nm.line, nm.col)
+      end
+    end
     return
   end
   if node.var ~= nil then

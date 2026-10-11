@@ -17,7 +17,8 @@ pub fn badge(user: User) Str {
 }
 
 pub fn main() i64 {
-    const original = %User{name: "Matt"};
+    const name: Str = "Matt";
+    const original = %User{name, score: 0};
     const edited = %User{original | score: 42};
     io.print(badge(original));
     io.print("\n");

@@ -24,7 +24,9 @@ fn describe(s: Shape) Str {
 }
 
 pub fn main() i64 {
-    const a = %Point{x: 3, y: 4};
+    const x: i64 = 3;
+    const y: i64 = 4;
+    const a = %Point{x, y};
     const b = %Point{a | y: 10};
     io.print(str.concat(a.label, str.concat(" ", str.fromI64(a.x))));
     io.print(" ");

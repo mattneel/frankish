@@ -175,12 +175,12 @@ pub fn is_kw(s: Str) bool {
 }
 
 pub fn mk_tok(kind: Kind, text: Str, line: i64, col: i64) Tok {
-    return %Tok{kind: kind, text: text, line: line, col: col};
+    return %Tok{kind, text, line, col};
 }
 
 // Moves the scan to (i, line, col), preserving error state.
 pub fn move(st: Scan, i: i64, line: i64, col: i64) Scan {
-    return %Scan{i: i, line: line, col: col, ok: st.ok, msg: st.msg, err_line: st.err_line, err_col: st.err_col};
+    return %Scan{i, line, col, ok: st.ok, msg: st.msg, err_line: st.err_line, err_col: st.err_col};
 }
 
 // Ends the scan at position n with an error (the driver loop stops
@@ -333,22 +333,23 @@ pub fn lex_block_comment(src: Str, n: i64, st: Scan) Scan {
 }
 
 pub fn step(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
-    const c: Str = str.sub(src, st.i, 1);
+    const {i, line, col} = st;
+    const c: Str = str.sub(src, i, 1);
     if c == "\n" {
-        return move(st, st.i + 1, st.line + 1, 1);
+        return move(st, i + 1, line + 1, 1);
     }
     if c == " " {
-        return move(st, st.i + 1, st.line, st.col + 1);
+        return move(st, i + 1, line, col + 1);
     }
     if c == "\t" {
-        return move(st, st.i + 1, st.line, st.col + 1);
+        return move(st, i + 1, line, col + 1);
     }
     if c == "\r" {
-        return move(st, st.i + 1, st.line, st.col + 1);
+        return move(st, i + 1, line, col + 1);
     }
     if c == "/" {
-        if st.i + 1 < n {
-            const d: Str = str.sub(src, st.i + 1, 1);
+        if i + 1 < n {
+            const d: Str = str.sub(src, i + 1, 1);
             if d == "/" {
                 return lex_line_comment(src, n, st);
             }
@@ -361,9 +362,9 @@ pub fn step(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
         return lex_str(src, n, toks, st);
     }
     if is_start(c) {
-        const start_col: i64 = st.col;
-        var j: i64 = st.i;
-        var cl: i64 = st.col;
+        const start_col: i64 = col;
+        var j: i64 = i;
+        var cl: i64 = col;
         var go: bool = true;
         while go {
             if j >= n {
@@ -377,18 +378,18 @@ pub fn step(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
                 }
             }
         }
-        const word: Str = str.sub(src, st.i, j - st.i);
+        const word: Str = str.sub(src, i, j - i);
         if is_kw(word) {
-            vector.push(toks, mk_tok(Kind.Kw, word, st.line, start_col));
+            vector.push(toks, mk_tok(Kind.Kw, word, line, start_col));
         } else {
-            vector.push(toks, mk_tok(Kind.Name, word, st.line, start_col));
+            vector.push(toks, mk_tok(Kind.Name, word, line, start_col));
         }
-        return move(st, j, st.line, cl);
+        return move(st, j, line, cl);
     }
     if is_digit(c) {
-        const start_col2: i64 = st.col;
-        var j2: i64 = st.i;
-        var cl2: i64 = st.col;
+        const start_col2: i64 = col;
+        var j2: i64 = i;
+        var cl2: i64 = col;
         var go2: bool = true;
         while go2 {
             if j2 >= n {
@@ -402,42 +403,42 @@ pub fn step(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
                 }
             }
         }
-        vector.push(toks, mk_tok(Kind.Int, str.sub(src, st.i, j2 - st.i), st.line, start_col2));
-        return move(st, j2, st.line, cl2);
+        vector.push(toks, mk_tok(Kind.Int, str.sub(src, i, j2 - i), line, start_col2));
+        return move(st, j2, line, cl2);
     }
     var two: Str = c;
-    if st.i + 1 < n {
-        two = str.concat(c, str.sub(src, st.i + 1, 1));
+    if i + 1 < n {
+        two = str.concat(c, str.sub(src, i + 1, 1));
     }
     if two == "==" {
-        vector.push(toks, mk_tok(Kind.Punct, two, st.line, st.col));
-        return move(st, st.i + 2, st.line, st.col + 2);
+        vector.push(toks, mk_tok(Kind.Punct, two, line, col));
+        return move(st, i + 2, line, col + 2);
     }
     if two == "!=" {
-        vector.push(toks, mk_tok(Kind.Punct, two, st.line, st.col));
-        return move(st, st.i + 2, st.line, st.col + 2);
+        vector.push(toks, mk_tok(Kind.Punct, two, line, col));
+        return move(st, i + 2, line, col + 2);
     }
     if two == "<=" {
-        vector.push(toks, mk_tok(Kind.Punct, two, st.line, st.col));
-        return move(st, st.i + 2, st.line, st.col + 2);
+        vector.push(toks, mk_tok(Kind.Punct, two, line, col));
+        return move(st, i + 2, line, col + 2);
     }
     if two == ">=" {
-        vector.push(toks, mk_tok(Kind.Punct, two, st.line, st.col));
-        return move(st, st.i + 2, st.line, st.col + 2);
+        vector.push(toks, mk_tok(Kind.Punct, two, line, col));
+        return move(st, i + 2, line, col + 2);
     }
     if two == "|>" {
-        vector.push(toks, mk_tok(Kind.Punct, two, st.line, st.col));
-        return move(st, st.i + 2, st.line, st.col + 2);
+        vector.push(toks, mk_tok(Kind.Punct, two, line, col));
+        return move(st, i + 2, line, col + 2);
     }
     if two == "=>" {
-        vector.push(toks, mk_tok(Kind.Punct, two, st.line, st.col));
-        return move(st, st.i + 2, st.line, st.col + 2);
+        vector.push(toks, mk_tok(Kind.Punct, two, line, col));
+        return move(st, i + 2, line, col + 2);
     }
     if in_set("(){}[],;:.=<>+-*/%!^|", c) {
-        vector.push(toks, mk_tok(Kind.Punct, c, st.line, st.col));
-        return move(st, st.i + 1, st.line, st.col + 1);
+        vector.push(toks, mk_tok(Kind.Punct, c, line, col));
+        return move(st, i + 1, line, col + 1);
     }
-    return err_at(st, n, str.concat("unexpected character ", c), st.line, st.col);
+    return err_at(st, n, str.concat("unexpected character ", c), line, col);
 }
 
 pub fn lex(src: Str) Lexed {

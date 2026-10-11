@@ -437,6 +437,23 @@ fn calq0_reports_parse_errors() {
 }
 
 #[test]
+fn seed_compiles_destructuring_shorthand() {
+    // D-107: `const {a, b} = e` / `var {a, b: q} = e` — plain and
+    // rename entries, mixable. Hand-derived: 3+4=7; 3*4=12; 3+10=13.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "destr.calq",
+            None,
+            "pub const P2 = struct {\n    a: i64,\n    b: i64,\n};\n\npub fn sum(p: P2) i64 {\n    const {a, b} = p;\n    return a + b;\n}\n\npub fn main() i64 {\n    const p = %P2{a: 3, b: 4};\n    io.print(str.fromI64(sum(p)));\n    io.print(\"\\n\");\n    const {a: x, b: y} = p;\n    io.print(str.fromI64(x * y));\n    io.print(\"\\n\");\n    var {a, b: q} = p;\n    q = 10;\n    io.print(str.fromI64(a + q));\n    io.print(\"\\n\");\n    0\n}\n",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed translates the destructuring probe");
+    let outcome = run_artifact(&artifact).expect("the artifact runs");
+    assert_eq!(outcome.output, "7\n12\n13\n");
+}
+
+#[test]
 fn seed_refuses_non_ascii_input_loudly() {
     let files = vec![unit("bad.calq", None, "pub fn main() i64 { 0 } // héllo")];
     let error = seed_translate(&files).expect_err("bytes >= 0x80 are refused (SPEC F18)");

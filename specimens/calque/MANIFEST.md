@@ -177,7 +177,9 @@ i64/Str/declared types and `vector.new()` is instantiated by the
 binding's annotation — b0 spells types); `fn` with explicit types
 everywhere; closures; recursion (direct/mutual) with the tail-call
 guarantee; records (`const T = struct {...}` with literal per-field
-defaults; `%T{field: value}` construction, `%T{base | field: value}`
+defaults; destructuring `const {a, b} = e` / `var {a, b} = e`
+(field-name/rename bindings, mixable, D-107); `%T{field: value}` construction with the `%T{f}` ≡ `f: f`
+shorthand (mixable per field, D-106), `%T{base | field: value}`
 immutable update); tagged unions (`union(enum)`, single payload per
 variant; `T.Variant` / `T.Variant(payload)` construction); `match`
 (variant patterns with nested sub-patterns, record patterns

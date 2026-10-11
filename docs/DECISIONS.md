@@ -3182,3 +3182,43 @@ veto-ledger pattern and most deserve their review.
   escaped scopes, lock-across-await, unsupported CPU features, blocking
   calls on cooperative workers, abandoned cold operations); lint NEVER
   suggests detach/unchecked sharing/weaker atomics/global fast-math.
+
+- D-106 [calque/surface] THE STRUCT-LITERAL SHORTHAND `%Type{f}` ≡
+  `f: f` IS CANONICAL SURFACE, IN CONSTRUCTION AND IN PATTERNS (user
+  directive, M37 session): a bare field name means the field takes
+  the local/parameter named `f` (construction) or binds the name `f`
+  (patterns) — mixable per field (`%Type{a, b: expr}` /
+  `%Type{a, b: pat}`). Both sides were implemented in the M37 seed
+  growth (emit_make's shorthand branch; parse_pattern's rec branch);
+  codified now across the live docs: SPEC §5/§5.2 + freeze row F35,
+  the specimen MANIFEST's scope grammar, and calq0's own sources —
+  the directive's point is that the compiler EATS ITS OWN SUGAR
+  (`%Tok{kind, text, line, col}`, `%Call{callee: r, args}`). The
+  type-elided constructor forms (`.Variant`, `.{...}`) remain C2
+  (D-091's stage split). Verifiers: the calq0 lexer/parser tests
+  compile the shorthand through the whole chain (lex.calq/parse.calq
+  are its heaviest users), plus the example corpus. Revisit: if the
+  C2 attribute work changes field syntax.
+
+- D-107 [calque/surface] THE SHORTHAND IS BIDIRECTIONAL: `const {a, b}
+  = e;` / `var {a, b} = e;` IS VALID SURFACE (user directive, M37
+  session) — destructuring binds each named FIELD of a struct-typed
+  initializer to a local of the same name, the exact mirror of the
+  `%T{a, b}` literal/pattern shorthand (D-106). SEAMANTICS: the
+  initializer must be a declared STRUCT (unions direct to `match`);
+  ENTRY FORMS: `field` (shorthand: binds the local of the same name)
+  or `field: local` (rename), MIXABLE per entry exactly like the
+  literal/pattern sides (`{a, b: q}` — user clarification, same
+  session); unknown field = error, duplicate LOCAL name = error;
+  `var` binds each name mutable, `const` immutable; each binding's
+  type is the field's declared type; reading a `var` then
+  destructuring works like any value; NESTED sub-patterns in braces
+  stay C2 (the pattern machinery's realm — the pinned struct
+  amendment already listed "destructuring" among the shared pattern
+  consumers, this entry fixes the b0 spelling).
+  Implemented in the seed (parser parse_destr + emit_stmt's destr
+  branch) and codified: SPEC §4 + freeze row F38, the specimen
+  MANIFEST, and calq0's own sources (lexdump's token dump
+  destructures `%Tok` — the directive's second half: the compiler
+  eats its own sugar BOTH ways). Verifiers: the dedicated seed test
+  (const + var forms, hand-derived) and the calq0 suites.

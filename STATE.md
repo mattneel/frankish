@@ -1266,6 +1266,14 @@ rework flag, not a knob.
       erasure now nests recref -> box<product<[box<sum>]>>), and
       `frnksh run` skipped the protocol builtins (0ea1d77, the fast
       calq0 dev loop)
+    - the struct shorthand BOTH WAYS (D-106/D-107, user directives):
+      `%T{f}` ≡ `f: f` (literals + patterns, mixable) and
+      `const {a, b} = e` / `var {a, b: q} = e` destructuring (plain +
+      rename entries, mixable; struct initializers only); codified in
+      SPEC §4/§5/F35/F38 + the MANIFEST; calq0's sources rewritten to
+      eat the sugar (`%Tok{kind, text, line, col}`, `const {i, line,
+      col} = st`, `%Call{callee: r, args}`); landmine paid again:
+      `local` is a Lua keyword - never a table key
     - calq0 slice 2a: tools/calque/compiler/parse.calq (expressions +
       AST) + parsedump.calq; lex.calq became a pure library (its
       slice-1 driver moved to lexdump.calq — ONE main per

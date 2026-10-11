@@ -179,7 +179,7 @@ pub fn parse_expr(p: P, level: i64) Expr {
             } else {
                 const _t: Tok = p_next(p);
                 const right: Expr = parse_expr(p, level + 1);
-                left = Expr.Bin(%Bin{op: op, l: left, r: right});
+                left = Expr.Bin(%Bin{op, l: left, r: right});
                 if level == 4 {
                     const o2: Str = op_at(p, 4);
                     if str.len(o2) != 0 {
@@ -246,7 +246,7 @@ pub fn do_call(p: P, e: Expr) Expr {
             return poison();
         }
     }
-    return Expr.Call(%Call{callee: r, args: args});
+    return Expr.Call(%Call{callee: r, args});
 }
 
 pub fn do_dot(p: P, e: Expr) Expr {
