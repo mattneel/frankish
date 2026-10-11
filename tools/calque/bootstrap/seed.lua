@@ -88,6 +88,7 @@ local KEYWORDS = {}
 for _, k in ipairs({
   "and", "bool", "break", "const", "continue", "else", "false", "fn",
   "i64", "if", "match", "or", "pub", "return", "struct", "true",
+  "comptime",
   "union", "var", "while", "not", "try", "catch", "defer", "for",
 }) do
   KEYWORDS[k] = true
@@ -534,7 +535,13 @@ function parse_postfix()
       next_tok()
       if not at_punct(")") then
         while true do
-          args[#args + 1] = parse_expr(1)
+          local at = peek()
+          if at.k == "kw" and (at.v == "i64" or at.v == "bool") then
+            next_tok()
+            args[#args + 1] = { tyval = at.v, line = at.line, col = at.col }
+          else
+            args[#args + 1] = parse_expr(1)
+          end
           if at_punct(",") then
             next_tok()
           else
@@ -1131,18 +1138,31 @@ local function parse_fn()
   if not at_punct(")") then
     while true do
       local is_mut = false
+      local is_ct = false
       local mt = peek()
-      if mt.k == "name" and mt.v == "mut" then
+      if mt.k == "kw" and mt.v == "comptime" then
+        next_tok()
+        is_ct = true
+      end
+      if not is_ct and mt.k == "name" and mt.v == "mut" then
         next_tok()
         is_mut = true
       end
       local p = expect_name()
       expect_punct(":")
       local ty = parse_type()
+      if is_ct then
+        if not (is_named(ty) and ty.named == "type") then
+          fail(p.line, p.col, "a comptime parameter is declared `comptime NAME: type` (seed v0, D-113)")
+        end
+        if is_mut then
+          fail(p.line, p.col, "a comptime parameter cannot be mut")
+        end
+      end
       if is_mut and not is_named(ty) then
         fail(p.line, p.col, "mut parameters take a record type (seed v0, D-112)")
       end
-      params[#params + 1] = { name = p.v, ty = ty, mut = is_mut, line = p.line, col = p.col }
+      params[#params + 1] = { name = p.v, ty = ty, mut = is_mut, is_comptime = is_ct, line = p.line, col = p.col }
       if at_punct(",") then
         next_tok()
       else
@@ -2728,6 +2748,137 @@ local function emit_call(node)
   if fn == nil then
     fail(line, col, "unknown function `" .. (callee.mod and (callee.mod .. ".") or "") .. callee.name .. "`")
   end
+  if is_generic_fn(fn) then
+    local inst, val_args = resolve_generic(fn, args, line, col)
+    return emit_fn_call(inst, inst.sym, val_args, line, col)
+  end
+  return emit_fn_call(fn, sym, args, line, col)
+end
+
+-- Monomorphized generic calls (D-113): type arguments are consumed
+-- per the fn's comptime parameters; each type tuple emits one
+-- specialized function, memoized per compile.
+function is_generic_fn(fn)
+  for i = 1, #fn.params do
+    if fn.params[i].is_comptime then
+      return true
+    end
+  end
+  return false
+end
+
+function mangle_ty(ty)
+  if ty == "i64" then
+    return "i64"
+  end
+  if ty == "bool" then
+    return "bool"
+  end
+  if ty == "Str" then
+    return "str"
+  end
+  if ty == "unit" then
+    return "unit"
+  end
+  if is_named(ty) then
+    return ty.named
+  end
+  if is_vec(ty) then
+    return "vec_" .. mangle_ty(ty.vec)
+  end
+  if is_opt(ty) then
+    return "opt_" .. mangle_ty(ty.opt)
+  end
+  if is_res(ty) then
+    return "res_" .. mangle_ty(ty.reserr) .. "_" .. mangle_ty(ty.resok)
+  end
+  if is_fn(ty) then
+    return "fn"
+  end
+  return "t"
+end
+
+-- The only rewrite a monomorphization performs: type-position tables
+-- ({named = "T"}) standing for a comptime parameter become the
+-- concrete type; expressions are copied verbatim.
+function subst_ast(node, sub)
+  if type(node) ~= "table" then
+    return node
+  end
+  if node.named ~= nil and sub[node.named] ~= nil then
+    return sub[node.named]
+  end
+  local out = {}
+  for k, v in pairs(node) do
+    out[k] = subst_ast(v, sub)
+  end
+  return out
+end
+
+function resolve_generic(fn, args, line, col)
+  local sub = {}
+  local ai = 1
+  for i = 1, #fn.params do
+    local p = fn.params[i]
+    if p.is_comptime then
+      if ai > #args then
+        fail(line, col, "`" .. fn.name .. "` needs an explicit type argument for `" .. p.name .. "` (D-113)")
+      end
+      local a = args[ai]
+      local ty = nil
+      if a.tyval ~= nil then
+        ty = a.tyval
+      elseif a.ref ~= nil and a.ref.mod == nil then
+        if a.ref.name == "Str" then
+          ty = "Str"
+        else
+          ty = { named = a.ref.name }
+        end
+      end
+      if ty == nil then
+        fail(a.line or line, a.col or col, "a comptime type argument must be a type name or type keyword")
+      end
+      if E.tvars ~= nil then
+        ty = subst_ast(ty, E.tvars)
+      end
+      sub[p.name] = ty
+      ai = ai + 1
+    end
+  end
+  local key = fn.name
+  for i = 1, #fn.params do
+    if fn.params[i].is_comptime then
+      key = key .. "__" .. mangle_ty(sub[fn.params[i].name])
+    end
+  end
+  E.insts = E.insts or {}
+  if E.insts[key] == nil then
+    local copy = subst_ast(fn, sub)
+    copy.sym = key
+    copy.file = fn.file
+    copy.is_entry = false
+    local vps = {}
+    for i = 1, #copy.params do
+      if not copy.params[i].is_comptime then
+        vps[#vps + 1] = copy.params[i]
+      end
+    end
+    copy.params = vps
+    copy.tvars = sub
+    E.insts[key] = copy
+    E.fns_by_sym[key] = copy
+    E.pending_fns = E.pending_fns or {}
+    E.pending_fns[#E.pending_fns + 1] = copy
+  end
+  local inst = E.insts[key]
+  local val_args = {}
+  for j = ai, #args do
+    val_args[#val_args + 1] = args[j]
+  end
+  return inst, val_args
+end
+
+function emit_fn_call(fn, sym, args, line, col)
   if #args ~= #fn.params then
     fail(line, col, "`" .. sym .. "` expects " .. tostring(#fn.params) .. " argument(s), got " .. tostring(#args))
   end
@@ -3647,7 +3798,7 @@ function run(files)
       local fn = p.fns[j]
       if fn.is_entry then
         entry = fn
-      else
+      elseif not is_generic_fn(fn) then
         emit_fn(fn)
       end
     end
@@ -3661,11 +3812,28 @@ function run(files)
   emit_fn(entry)
   emit_entry_wrapper(entry)
   local pi = 1
-  while E.pending ~= nil and pi <= #E.pending do
-    local q = E.pending[pi]
-    pi = pi + 1
-    for i = 1, #q do
-      E.out[#E.out + 1] = q[i]
+  local fi = 1
+  while true do
+    local moved = false
+    while E.pending ~= nil and pi <= #E.pending do
+      local q = E.pending[pi]
+      pi = pi + 1
+      for i = 1, #q do
+        E.out[#E.out + 1] = q[i]
+      end
+      moved = true
+    end
+    while E.pending_fns ~= nil and fi <= #E.pending_fns do
+      local q2 = E.pending_fns[fi]
+      fi = fi + 1
+      local saved = E.tvars
+      E.tvars = q2.tvars
+      emit_fn(q2)
+      E.tvars = saved
+      moved = true
+    end
+    if not moved then
+      break
     end
   end
   for i = 1, #E.out do

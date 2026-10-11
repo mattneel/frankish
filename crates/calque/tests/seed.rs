@@ -1874,6 +1874,42 @@ pub fn main() i64 {
 }
 
 #[test]
+fn seed_monomorphized_generics() {
+    // D-113: `comptime T: type` parameters, explicit instantiation -
+    // one specialized function per type tuple, memoized (identity at
+    // i64 AND Str; pick at i64).
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "ge.calq",
+            None,
+            "pub fn identity(comptime T: type, value: T) T {
+    value
+}
+pub fn pick(comptime T: type, a: T, b: T, take_first: bool) T {
+    if take_first { return a; }
+    b
+}
+pub fn main() i64 {
+    const a = identity(i64, 41);
+    const s = identity(Str, \"abc\");
+    const c = pick(i64, 1, 2, false);
+    io.print(str.fromI64(a + 1));
+    io.print(\" \");
+    io.print(s);
+    io.print(\" \");
+    io.print(str.fromI64(c));
+    io.print(\"\\n\");
+    0
+}",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed emits the generics probe");
+    let outcome = run_artifact(&artifact).expect("the generics probe runs");
+    assert_eq!(outcome.output, "42 abc 2\n");
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the
