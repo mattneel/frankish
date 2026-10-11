@@ -803,23 +803,13 @@ pub fn emit_index_e(mut e: Emitter, ix: IdxE) Str {
     if b.name == "" {
         return e_fail_at(e, ix.line, ix.col, str.concat("unknown name `", str.concat(br.name, "`")));
     }
-    var aty: Ty = poison_ty();
-    var n2: i64 = 0;
-    var ety: Ty = poison_ty();
-    var is_arr2: bool = false;
     const bty2: Ty = b.ty;
-    match bty2 {
-        Ty.ArrT(a2) => {
-            aty = bty2;
-            n2 = a2.n;
-            ety = a2.ty;
-            is_arr2 = true;
-        },
-        _ => {},
-    };
-    if is_arr2 == false {
+    if is_arr_t(bty2) == false {
         return e_fail_at(e, ix.line, ix.col, "indexing needs a fixed array ([N]T) base");
     }
+    const a2: ArrTT = arr_of(bty2);
+    const ety: Ty = a2.ty;
+    const aty: Ty = bty2;
     const a: Ast = e_ast(e);
     const val: Str = read_binding(e, b);
     const iv: Str = emit_expr(e, ix.idx);
@@ -3765,6 +3755,68 @@ pub fn named_of(t: Ty) Str {
     return match t {
         Ty.Named(n) => n,
         _ => "",
+    };
+}
+
+// The structural kind row: predicates + part extractors, so guard
+// sites read "if it is an array, take its parts" instead of open
+// destructuring matches. Misuse (the wrong kind) yields the poison
+// shape, mirroring named_of.
+pub fn is_tup_t(t: Ty) bool {
+    return match t {
+        Ty.Tup(tys) => true,
+        _ => false,
+    };
+}
+
+pub fn is_arr_t(t: Ty) bool {
+    return match t {
+        Ty.ArrT(a2) => true,
+        _ => false,
+    };
+}
+
+pub fn is_fn_t(t: Ty) bool {
+    return match t {
+        Ty.FnT(sig) => true,
+        _ => false,
+    };
+}
+
+pub fn tup_of(t: Ty) Vector(Ty) {
+    var empty: Vector(Ty) = vector.new();
+    return match t {
+        Ty.Tup(ts) => ts,
+        _ => empty,
+    };
+}
+
+pub fn arr_of(t: Ty) ArrTT {
+    return match t {
+        Ty.ArrT(a2) => a2,
+        _ => %ArrTT{n: 0, ty: Ty.UnitV},
+    };
+}
+
+pub fn opt_of(t: Ty) Ty {
+    return match t {
+        Ty.OptT(inner) => inner,
+        _ => Ty.UnitV,
+    };
+}
+
+pub fn res_of(t: Ty) ResTT {
+    return match t {
+        Ty.ResT(rz) => rz,
+        _ => %ResTT{err: Ty.UnitV, ok: Ty.UnitV},
+    };
+}
+
+pub fn sig_of(t: Ty) FnSig {
+    var empty: Vector(Ty) = vector.new();
+    return match t {
+        Ty.FnT(s) => s,
+        _ => %FnSig{params: empty, ret: Ty.UnitV},
     };
 }
 
