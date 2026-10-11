@@ -4,7 +4,7 @@
 //! (L2's no-blessing rule; there is no upstream oracle, MANIFEST
 //! "Conformance").
 
-use calque::{run_artifact, run_artifact_with_input, seed_translate, seed_translate_jit, UnitFile};
+use calque::{compose_unit_with_input, run_artifact, run_artifact_with_input, seed_translate, seed_translate_jit, UnitFile};
 
 fn unit(name: &str, ns: Option<&str>, text: &str) -> UnitFile {
     UnitFile {
@@ -1907,6 +1907,50 @@ pub fn main() i64 {
     let artifact = seed_translate(&files).expect("the seed emits the generics probe");
     let outcome = run_artifact(&artifact).expect("the generics probe runs");
     assert_eq!(outcome.output, "42 abc 2\n");
+}
+
+#[test]
+fn calq0_matches_the_seed_on_generics() {
+    // The D-113 differential: calq0's monomorphization (comptime
+    // params, explicit instantiation, the tvars funnels, the instance
+    // queue) - byte-equal to the seed's artifact, then executed.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "ge.calq",
+            None,
+            "pub fn identity(comptime T: type, value: T) T {
+    value
+}
+pub fn pick(comptime T: type, a: T, b: T, take_first: bool) T {
+    if take_first { return a; }
+    b
+}
+pub fn main() i64 {
+    const a = identity(i64, 41);
+    const s = identity(Str, \"abc\");
+    const c = pick(i64, 1, 2, false);
+    io.print(str.fromI64(a + 1));
+    io.print(\" \");
+    io.print(s);
+    io.print(\" \");
+    io.print(str.fromI64(c));
+    io.print(\"\\n\");
+    0
+}",
+        ),
+    ];
+    let artifact = compile_artifact();
+    let expected = seed_translate(&files).expect("the seed emits the generics probe");
+    let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the generics probe");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (generics): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted probe runs");
+    assert_eq!(emitted.output, "42 abc 2\n");
 }
 
 #[test]

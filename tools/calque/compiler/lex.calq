@@ -178,6 +178,9 @@ pub fn is_kw(s: Str) bool {
     if s == "try" {
         return true;
     }
+    if s == "comptime" {
+        return true;
+    }
     if s == "union" {
         return true;
     }

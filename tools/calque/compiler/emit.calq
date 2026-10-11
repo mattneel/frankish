@@ -20,6 +20,28 @@ pub const Blk = struct {
     lines: [Str] = [],
 };
 
+// The active comptime substitution (D-113): a comptime parameter's
+// name mapped to the instantiation's concrete type.
+pub const TV = struct {
+    name: Str,
+    ty: Ty,
+};
+
+pub const InstN = struct {
+    key: Str,
+    f: Fn,
+};
+
+pub const InstE = struct {
+    f: Fn,
+    sub: Vector(TV),
+};
+
+pub const GRes = struct {
+    f: Fn,
+    args: Vector(Expr),
+};
+
 pub const Emitter = struct {
     output: [Str] = ["// calque-artifact v0"],
 
@@ -36,6 +58,9 @@ pub const Emitter = struct {
     files: [Str] = ["?"],
     asts: [Ast] = [%Ast{fns: [], types: []}],
     lifted: [Str] = [],
+    instq: [InstE] = [],
+    insts: [InstN] = [],
+    tvars: [TV] = [],
     lams: i64 = 0,
     capbar: i64 = 0,
     caps: [Binding] = [],
@@ -705,7 +730,15 @@ pub fn emit_lambda_expr(mut e: Emitter, l: LamE) Str {
     const n: i64 = e.lams;
     e.lams = n + 1;
     const sym: Str = str.concat("__calque_lam_", str.fromI64(n));
-    const fake: Fn = %Fn{name: sym, params: l.params, ret: l.ret, body: l.body, file: e_file(e), ns: ""};
+    var lps: Vector(Param) = vector.new();
+    const nlp: i64 = vector.len(l.params);
+    var lpi: i64 = 0;
+    while lpi < nlp {
+        const lp: Param = vector.get(l.params, lpi);
+        vector.push(lps, %Param{name: lp.name, ty: tv_res(e, lp.ty), mut: lp.mut, is_comptime: false});
+        lpi = lpi + 1;
+    }
+    const fake: Fn = %Fn{name: sym, params: lps, ret: tv_res(e, l.ret), body: l.body, file: e_file(e), ns: ""};
     const s1: LiftS = lift_snapshot(e);
     lift_prepare(e, s1.depth);
     e.capenv_ty = "!frk_adt.product<[]>";
@@ -781,7 +814,11 @@ pub fn emit_module(mut e: Emitter, a: Ast) {
     var i: i64 = 0;
     while i < nf {
         const f: Fn = vector.get(a.fns, i);
-        e_fn(e, f);
+        if is_generic_fn(f) {
+            // D-113: instances are emitted by the flush below.
+        } else {
+            e_fn(e, f);
+        }
         if f.name == "main" {
             has_main = true;
             if ty_is_i64(f.ret) == false {
@@ -799,15 +836,45 @@ pub fn emit_module(mut e: Emitter, a: Ast) {
             e_entry(e, "__calque_main");
         }
     }
-    // the lifted closures follow the entry (order is free in MLIR).
-    const nlift: i64 = vector.len(e.lifted);
-    var li: i64 = 0;
-    while li < nlift {
-        vector.push(e.output, vector.get(e.lifted, li));
-        li = li + 1;
+    // The lifted closures and the generic instances follow the entry,
+    // in waves (lams first, then instances; repeat while either queue
+    // grows) - mirroring the seed's flush order byte for byte.
+    var wave: bool = true;
+    while wave {
+        wave = false;
+        const nlift: i64 = vector.len(e.lifted);
+        if nlift > 0 {
+            var li: i64 = 0;
+            while li < nlift {
+                vector.push(e.output, vector.get(e.lifted, li));
+                li = li + 1;
+            }
+            var fresh_lift: Vector(Str) = vector.new();
+            e.lifted = fresh_lift;
+            wave = true;
+        }
+        const ninst: i64 = vector.len(e.instq);
+        if ninst > 0 {
+            const old_q: Vector(InstE) = e.instq;
+            var fresh_q: Vector(InstE) = vector.new();
+            e.instq = fresh_q;
+            var qi: i64 = 0;
+            while qi < ninst {
+                const qe: InstE = vector.get(old_q, qi);
+                const saved: [TV] = e.tvars;
+                e.tvars = qe.sub;
+                e_fn(e, qe.f);
+                e.tvars = saved;
+                qi = qi + 1;
+            }
+            wave = true;
+        }
     }
-    var fresh_lift: Vector(Str) = vector.new();
-    e.lifted = fresh_lift;
+}
+
+pub fn emit_tyv(mut e: Emitter, tx: Ty) Str {
+    const _x: Str = e_fail_at(e, 0, 0, "a type value is only valid as an instantiation argument (D-113)");
+    return "";
 }
 
 // ---------------------------------------------------------------- 3b core
@@ -1493,7 +1560,7 @@ pub fn emit_shortcircuit(mut e: Emitter, op: Str, lnode: Expr, rnode: Expr, line
     terminate(e, str.concat("cf.br ^", str.concat(join_label, str.concat("(", str.concat(b, " : i1)")))));
     new_label(e, dec_label);
     terminate(e, str.concat("cf.br ^", str.concat(join_label, str.concat("(", str.concat(a, " : i1)")))));
-    const jarg: Str = str.concat("%j", str.fromI64(e.next_block));
+    const jarg: Str = str.concat("%j", str.sub(join_label, 1, str.len(join_label) - 1));
     var l: Str = "^";
     l = str.concat(l, join_label);
     l = str.concat(l, "(");
@@ -1855,10 +1922,209 @@ pub fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
     if f.name == "" {
         return e_fail_at(e, line, col, str.concat("unknown function `", str.concat(sym, "`")));
     }
+    if is_generic_fn(f) {
+        const g: GRes = resolve_generic(e, f, c.args, line, col);
+        return emit_fn_args(e, g.f, sym_of(g.f), g.args, line, col);
+    }
+    return emit_fn_args(e, f, sym, c.args, line, col);
+}
+
+// ---------------------------------------------------------------- D-113
+
+pub fn is_generic_fn(f: Fn) bool {
+    const n: i64 = vector.len(f.params);
+    var i: i64 = 0;
+    while i < n {
+        const prm: Param = vector.get(f.params, i);
+        if prm.is_comptime {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+pub fn mangle_ty(t: Ty) Str {
+    return match t {
+        Ty.I64 => "i64",
+        Ty.BoolV => "bool",
+        Ty.StrV => "str",
+        Ty.UnitV => "unit",
+        Ty.Named(mn) => mn,
+        Ty.Vec(inner) => str.concat("vec_", mangle_ty(inner)),
+        Ty.OptT(inner) => str.concat("opt_", mangle_ty(inner)),
+        Ty.ResT(rz) => str.concat("res_", str.concat(mangle_ty(rz.err), str.concat("_", mangle_ty(rz.ok)))),
+        Ty.FnT(sig) => "fn",
+        Ty.TyBad(x) => "t",
+    };
+}
+
+pub fn subst_ty_list(t: Ty, sub: Vector(TV)) Ty {
+    const n: i64 = vector.len(sub);
+    var i: i64 = 0;
+    while i < n {
+        const tv: TV = vector.get(sub, i);
+        i = i + 1;
+    }
+    return match t {
+        Ty.Named(nm) => find_tv(nm, sub),
+        Ty.Vec(inner) => Ty.Vec(subst_ty_list(inner, sub)),
+        Ty.OptT(inner) => Ty.OptT(subst_ty_list(inner, sub)),
+        Ty.ResT(rz) => Ty.ResT(%ResTT{err: subst_ty_list(rz.err, sub), ok: subst_ty_list(rz.ok, sub)}),
+        Ty.FnT(sig) => Ty.FnT(sig_subst(sig, sub)),
+        _ => t,
+    };
+}
+
+pub fn find_tv(nm: Str, sub: Vector(TV)) Ty {
+    const n: i64 = vector.len(sub);
+    var i: i64 = 0;
+    while i < n {
+        const tv: TV = vector.get(sub, i);
+        if tv.name == nm {
+            return tv.ty;
+        }
+        i = i + 1;
+    }
+    return Ty.Named(nm);
+}
+
+pub fn sig_subst(sig: FnSig, sub: Vector(TV)) FnSig {
+    var ps: Vector(Ty) = vector.new();
+    const n: i64 = vector.len(sig.params);
+    var i: i64 = 0;
+    while i < n {
+        vector.push(ps, subst_ty_list(vector.get(sig.params, i), sub));
+        i = i + 1;
+    }
+    return %FnSig{params: ps, ret: subst_ty_list(sig.ret, sub)};
+}
+
+// The funnels: AST types read during emission resolve through the
+// ACTIVE substitution (an instance's tvars).
+pub fn tv_res(e: Emitter, t: Ty) Ty {
+    return match t {
+        Ty.Named(nm) => tv_lookup(e, nm),
+        Ty.Vec(inner) => Ty.Vec(tv_res(e, inner)),
+        Ty.OptT(inner) => Ty.OptT(tv_res(e, inner)),
+        Ty.ResT(rz) => Ty.ResT(%ResTT{err: tv_res(e, rz.err), ok: tv_res(e, rz.ok)}),
+        Ty.FnT(sig) => Ty.FnT(sig_res(e, sig)),
+        _ => t,
+    };
+}
+
+pub fn tv_lookup(e: Emitter, nm: Str) Ty {
+    const n: i64 = vector.len(e.tvars);
+    var i: i64 = 0;
+    while i < n {
+        const tv: TV = vector.get(e.tvars, i);
+        if tv.name == nm {
+            return tv.ty;
+        }
+        i = i + 1;
+    }
+    return Ty.Named(nm);
+}
+
+pub fn sig_res(e: Emitter, sig: FnSig) FnSig {
+    var ps: Vector(Ty) = vector.new();
+    const n: i64 = vector.len(sig.params);
+    var i: i64 = 0;
+    while i < n {
+        vector.push(ps, tv_res(e, vector.get(sig.params, i)));
+        i = i + 1;
+    }
+    return %FnSig{params: ps, ret: tv_res(e, sig.ret)};
+}
+
+pub fn resolve_generic(mut e: Emitter, f: Fn, args: Vector(Expr), line: i64, col: i64) GRes {
+    var sub: Vector(TV) = vector.new();
+    const np: i64 = vector.len(f.params);
+    var ai: i64 = 0;
+    var i: i64 = 0;
+    while i < np {
+        const prm: Param = vector.get(f.params, i);
+        if prm.is_comptime {
+            const na: i64 = vector.len(args);
+            if ai >= na {
+                e_fail_at(e, line, col, str.concat("`", str.concat(f.name, str.concat("` needs an explicit type argument for `", str.concat(prm.name, "` (D-113)")))));
+                return %GRes{f: f, args: args};
+            }
+            const arg: Expr = vector.get(args, ai);
+            var got: bool = false;
+            var targ: Ty = Ty.UnitV;
+            match arg {
+                Expr.TyV(tv0) => { got = true; targ = tv0; },
+                Expr.Ref(r0) => {
+                    if str.len(r0.mod) == 0 {
+                        got = true;
+                        if r0.name == "Str" {
+                            targ = Ty.StrV;
+                        } else {
+                            targ = Ty.Named(r0.name);
+                        }
+                    }
+                },
+                _ => {},
+            };
+            if got == false {
+                e_fail_at(e, line, col, "a comptime type argument must be a type name or type keyword");
+                return %GRes{f: f, args: args};
+            }
+            vector.push(sub, %TV{name: prm.name, ty: tv_res(e, targ)});
+            ai = ai + 1;
+        }
+        i = i + 1;
+    }
+    var key: Str = f.name;
+    var si: i64 = 0;
+    const ns_: i64 = vector.len(sub);
+    while si < ns_ {
+        const sv: TV = vector.get(sub, si);
+        key = str.concat(key, str.concat("__", mangle_ty(sv.ty)));
+        si = si + 1;
+    }
+    var found: bool = false;
+    var instf: Fn = f;
+    const ni: i64 = vector.len(e.insts);
+    var ii: i64 = 0;
+    while ii < ni {
+        const ie: InstN = vector.get(e.insts, ii);
+        if ie.key == key {
+            found = true;
+            instf = ie.f;
+        }
+        ii = ii + 1;
+    }
+    if found == false {
+        var vps: Vector(Param) = vector.new();
+        var pi: i64 = 0;
+        while pi < np {
+            const prm2: Param = vector.get(f.params, pi);
+            if prm2.is_comptime == false {
+                vector.push(vps, %Param{name: prm2.name, ty: subst_ty_list(prm2.ty, sub), mut: prm2.mut, is_comptime: false});
+            }
+            pi = pi + 1;
+        }
+        instf = %Fn{name: key, params: vps, ret: subst_ty_list(f.ret, sub), body: f.body, file: f.file, ns: ""};
+        vector.push(e.insts, %InstN{key: key, f: instf});
+        vector.push(e.instq, %InstE{f: instf, sub: sub});
+    }
+    var valargs: Vector(Expr) = vector.new();
+    const na2: i64 = vector.len(args);
+    var vi: i64 = ai;
+    while vi < na2 {
+        vector.push(valargs, vector.get(args, vi));
+        vi = vi + 1;
+    }
+    return %GRes{f: instf, args: valargs};
+}
+
+pub fn emit_fn_args(mut e: Emitter, f: Fn, sym: Str, args: Vector(Expr), line: i64, col: i64) Str {
     const a: Ast = e_ast(e);
     var parts: Str = "%env";
     var types: Str = "!frk_closure.envref";
-    const na: i64 = vector.len(c.args);
+    const na: i64 = vector.len(args);
     const np: i64 = vector.len(f.params);
     if na != np {
         return e_fail_at(e, line, col, str.concat("`", str.concat(sym, "` arity mismatch")));
@@ -1867,7 +2133,7 @@ pub fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
     while i < na {
         const prm: Param = vector.get(f.params, i);
         if prm.mut {
-            const agr: Expr = vector.get(c.args, i);
+            const agr: Expr = vector.get(args, i);
             const ar: Ref = ref_of_expr(agr);
             if str.len(ar.name) == 0 {
                 e_fail_at(e, line, col, "mut arguments must be names (a variable or a mut parameter)");
@@ -1890,7 +2156,7 @@ pub fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
             while k < i {
                 const pk: Param = vector.get(f.params, k);
                 if pk.mut {
-                    const ak: Ref = ref_of_expr(vector.get(c.args, k));
+                    const ak: Ref = ref_of_expr(vector.get(args, k));
                     if ak.name == ar.name {
                         e_fail_at(e, line, col, str.concat("`", str.concat(ar.name, "` cannot occupy two mut positions in one call")));
                         return "";
@@ -1901,7 +2167,7 @@ pub fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
             parts = str.concat(parts, str.concat(", ", ab.id));
             types = str.concat(types, str.concat(", ", box_ir_t(a, prm.ty)));
         } else {
-            const v: Str = emit_expr(e, vector.get(c.args, i));
+            const v: Str = emit_expr(e, vector.get(args, i));
             parts = str.concat(parts, str.concat(", ", v));
             types = str.concat(types, str.concat(", ", value_ir_t(a, prm.ty)));
         }
@@ -1932,6 +2198,7 @@ pub fn emit_expr(mut e: Emitter, ex: Expr) Str {
         Expr.Lam(l) => emit_lambda_expr(e, l),
         Expr.TryE(tr) => emit_try_e(e, tr),
         Expr.CatchE(cx) => emit_catch_e(e, cx),
+        Expr.TyV(tx) => emit_tyv(e, tx),
         Expr.Bad(b) => e_fail(e, b),
         Expr.Match(m) => emit_match(e, m),
         Expr.Make(m) => emit_make(e, m, m.line, m.col),
@@ -2075,7 +2342,9 @@ pub fn emit_ifx(mut e: Emitter, f: IfE) Str {
     // join arg name mirrors the seed: %j<label-counter>
     var join_arg: Str = "";
     if has_ty {
-        join_arg = str.concat("%j", str.fromI64(e.next_block));
+        // named from the join block itself (nested constructs advance
+        // the counter; reading it here would alias an inner join).
+        join_arg = str.concat("%j", str.sub(jl, 1, str.len(jl) - 1));
         emit_top(e, str.concat("^", str.concat(jl, str.concat("(", str.concat(join_arg, str.concat(": ", str.concat(value_ir_t(a, ty), "):")))))));
         e.terminated = false;
     } else {
@@ -2147,17 +2416,18 @@ pub fn emit_stmt(mut e: Emitter, s: Stmt) {
 }
 
 pub fn emit_const(mut e: Emitter, c: ConstS) {
+    const cty: Ty = tv_res(e, c.ty);
     var v: Str = "";
     if is_vec_new(c.expr) {
-        v = emit_vec_new(e, c.ty, 0, 0);
+        v = emit_vec_new(e, cty, 0, 0);
     } else {
         if c.has_ty {
-            v = emit_expr_typed(e, c.expr, c.ty);
+            v = emit_expr_typed(e, c.expr, cty);
         } else {
             v = emit_expr(e, c.expr);
         }
     }
-    var ty: Ty = c.ty;
+    var ty: Ty = cty;
     if c.has_ty == false {
         ty = vget(e, v);
     }
@@ -2165,17 +2435,18 @@ pub fn emit_const(mut e: Emitter, c: ConstS) {
 }
 
 pub fn emit_var(mut e: Emitter, d: VarS) {
+    const dty0: Ty = tv_res(e, d.ty);
     var v: Str = "";
     if is_vec_new(d.expr) {
-        v = emit_vec_new(e, d.ty, 0, 0);
+        v = emit_vec_new(e, dty0, 0, 0);
     } else {
         if d.has_ty {
-            v = emit_expr_typed(e, d.expr, d.ty);
+            v = emit_expr_typed(e, d.expr, dty0);
         } else {
             v = emit_expr(e, d.expr);
         }
     }
-    var dty: Ty = d.ty;
+    var dty: Ty = dty0;
     if d.has_ty == false {
         dty = vget(e, v);
     }

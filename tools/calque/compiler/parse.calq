@@ -41,6 +41,9 @@ pub const Expr = union(enum) {
     // `try e` (SPEC 6.5): on Err the enclosing function returns Err(x).
     TryE: TryX,
     CatchE: CatchX,
+    // A bare type value in argument position (D-113): an explicit
+    // instantiation argument (`identity(i64, 5)`).
+    TyV: Ty,
     // Explicit recovery node (D-109): the emitter MUST reject it before
     // execution can treat it as a valid expression. Also carries the
     // "<absent>" marker for optional fields that are read only when
@@ -420,7 +423,7 @@ pub fn p_lambda(mut p: P) Expr {
                     return bad(p, pn.line, pn.col, "lambda");
                 }
                 const pty: Ty = p_type(p);
-                vector.push(lps, %Param{name: pn.text, ty: pty, mut: false});
+                vector.push(lps, %Param{name: pn.text, ty: pty, mut: false, is_comptime: false});
                 if at_punct(p, ",") {
                     const _c: Tok = p_next(p);
                 } else {
@@ -480,7 +483,17 @@ pub fn do_call(mut p: P, e: Expr) Expr {
             if p_ok(p) == false {
                 more = false;
             } else {
-                vector.push(args, parse_expr(p, 1));
+                const at2: Tok = p_peek(p);
+                if is_kw_tok(at2) and (at2.text == "i64" or at2.text == "bool") {
+                    const _k: Tok = p_next(p);
+                    if at2.text == "bool" {
+                        vector.push(args, Expr.TyV(Ty.BoolV));
+                    } else {
+                        vector.push(args, Expr.TyV(Ty.I64));
+                    }
+                } else {
+                    vector.push(args, parse_expr(p, 1));
+                }
                 if at_punct(p, ",") {
                     const _c2: Tok = p_next(p);
                 } else {
@@ -667,6 +680,7 @@ pub fn dump(e: Expr) Str {
         Expr.Lam(l) => d_lam(l),
         Expr.TryE(tr) => str.concat("(try ", str.concat(dump(tr.expr), ")")),
         Expr.CatchE(cx2) => d_catch(cx2),
+        Expr.TyV(tx) => str.concat("(tyv ", str.concat(d_ty(tx), ")")),
         Expr.Bad(b) => d_bad(b),
     };
 }
@@ -757,6 +771,7 @@ pub const Param = struct {
     name: Str,
     ty: Ty,
     mut: bool,
+    is_comptime: bool,
 };
 
 pub const FieldDecl = struct {
@@ -1600,11 +1615,20 @@ pub fn p_fn(mut p: P) Fn {
             return %Fn{name: name.text, params: params, ret: ret, body: body, file: "", ns: ""};
         }
         var is_mut: bool = false;
+        var is_ct: bool = false;
         const mt: Tok = p_peek(p);
-        if is_name_tok(mt) {
-            if mt.text == "mut" {
-                const _m: Tok = p_next(p);
-                is_mut = true;
+        if is_kw_tok(mt) {
+            if mt.text == "comptime" {
+                const _ct: Tok = p_next(p);
+                is_ct = true;
+            }
+        }
+        if is_ct == false {
+            if is_name_tok(mt) {
+                if mt.text == "mut" {
+                    const _m: Tok = p_next(p);
+                    is_mut = true;
+                }
             }
         }
         const pn: Tok = p_peek(p);
@@ -1617,6 +1641,17 @@ pub fn p_fn(mut p: P) Fn {
             return poison_fn();
         }
         const ty: Ty = p_type(p);
+        if is_ct {
+            var is_type_marker: bool = false;
+            match ty {
+                Ty.Named(nm3) => { if nm3 == "type" { is_type_marker = true; } },
+                _ => {},
+            };
+            if is_type_marker == false {
+                p_fail(p, pn.line, pn.col, "a comptime parameter is declared `comptime NAME: type` (seed v0, D-113)");
+                return poison_fn();
+            }
+        }
         if is_mut {
             // Parse-side only: this file may not call emitter helpers
             // (the dump driver compiles without emit.calq).
@@ -1630,7 +1665,7 @@ pub fn p_fn(mut p: P) Fn {
                 return poison_fn();
             }
         }
-        vector.push(params, %Param{name: pn.text, ty: ty, mut: is_mut});
+        vector.push(params, %Param{name: pn.text, ty: ty, mut: is_mut, is_comptime: is_ct});
         if at_punct(p, ",") {
             const _c2: Tok = p_next(p);
         } else {

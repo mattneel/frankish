@@ -2978,7 +2978,10 @@ local function emit_if_expr(node)
   new_block(join_label)
   local join_arg = nil
   if ty ~= nil then
-    join_arg = "%j" .. tostring(E.label)
+    -- the join arg is named from the join BLOCK itself: nested
+    -- constructs advance the label counter, so reading it here would
+    -- alias an inner join's arg.
+    join_arg = "%j" .. string.sub(join_label, 2)
     -- patch the join header once the arg is known
     E.blocks[#E.blocks].label = join_label .. "(" .. join_arg .. ": " .. value_ir(ty, line, col) .. ")"
   end
@@ -3028,7 +3031,7 @@ local function emit_shortcircuit(op, lnode, rnode, line, col)
   new_block(dec_label)
   terminate("cf.br ^" .. join_label .. "(" .. a .. " : i1)")
   new_block(join_label)
-  local jarg = "%j" .. tostring(E.label)
+  local jarg = "%j" .. string.sub(join_label, 2)
   E.blocks[#E.blocks].label = join_label .. "(" .. jarg .. ": i1)"
   E.vtypes[jarg] = "bool"
   return jarg
