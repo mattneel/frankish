@@ -418,7 +418,7 @@ function parse_type()
   return lhs
 end
 
-function parse_expr(level)
+function parse_expr_ops(level)
   -- levels 1..6 (pipeline, or, and, comparisons, +-, */%), unary,
   -- postfix (SPEC 5.1's precedence table, loosest first).
   if level > 6 then
@@ -474,6 +474,38 @@ function parse_expr(level)
         fail(nxt.line, nxt.col, "comparisons do not chain (SPEC 5.1)")
       end
     end
+  end
+end
+
+function parse_expr(level)
+  -- `catch` binds at the LOWEST precedence (level 0, loosest): the
+  -- replacement block runs on Err and yields the unwrapped type
+  -- (SPEC 6.5's recovery form).
+  local e = parse_expr_ops(level)
+  if level ~= 1 then
+    return e
+  end
+  while true do
+    local t = peek()
+    if not (t.k == "kw" and t.v == "catch") then
+      return e
+    end
+    next_tok()
+    local bind = nil
+    local t2 = peek()
+    if t2.k == "punct" and t2.v == "|" then
+      next_tok()
+      local nm = next_tok()
+      if nm.k ~= "name" then
+        fail(nm.line, nm.col, "expected a binding name in `catch |name|`")
+      end
+      if expect_punct("|") == false then
+        fail(t2.line, t2.col, "expected `|` after the catch binding")
+      end
+      bind = nm.v
+    end
+    local blk = parse_block()
+    e = { catchx = e, bind = bind, block = blk, line = t.line, col = t.col }
   end
 end
 
@@ -2917,6 +2949,68 @@ local function emit_try(node)
   return jarg
 end
 
+-- `expr catch |e| { ... }` (SPEC 6.5, level 0): the Ok path unwraps;
+-- the Err path runs the replacement block (the error bound as an
+-- ordinary local), whose value joins as the unwrapped type; a
+-- diverging block (the playbook's `catch { return .Err(...) }`) needs
+-- no join arm.
+function emit_catch(node)
+  local line = node.line or 1
+  local col = node.col or 1
+  local v = emit_expr(node.catchx)
+  local oty = E.vtypes[v]
+  if not (is_named(oty) or is_res(oty)) then
+    fail(line, col, "`catch` needs an error-union operand")
+  end
+  local od = decl_of(oty, line, col)
+  if od.kind ~= "union" or #od.variants ~= 2 then
+    fail(line, col, "`catch` needs an error union (Ok + Err variants)")
+  end
+  local v0 = od.variants[1]
+  local v1 = od.variants[2]
+  if v0.name ~= "Ok" or v1.name ~= "Err" or v0.ty == nil or v1.ty == nil then
+    fail(line, col, "`catch` needs an error union (Ok + Err variants)")
+  end
+  local tag = fresh()
+  emit(tag .. " = \"frk_adt.tag_of\"(" .. v .. ") : (" .. value_ir(oty, line, col) .. ") -> i64")
+  local is_ok = fresh()
+  emit(is_ok .. " = arith.cmpi eq, " .. tag .. ", " .. const_i64("0") .. " : i64")
+  local okb = fresh_label()
+  local errb = fresh_label()
+  emit("cf.cond_br " .. is_ok .. ", ^" .. okb .. ", ^" .. errb)
+  new_block(okb)
+  local stored = fresh()
+  emit(stored .. " = \"frk_adt.extract\"(" .. v .. ") {variant = 0 : i64, field = 0 : i64} : (" .. value_ir(oty, line, col) .. ") -> " .. storage_ir(v0.ty, line, col))
+  local pv = unwrap_load(stored, v0.ty, line, col)
+  local join = fresh_label()
+  local jarg = "%j" .. tostring(E.label)
+  terminate("cf.br ^" .. join .. "(" .. pv .. " : " .. value_ir(v0.ty, line, col) .. ")")
+  new_block(errb)
+  local estored = fresh()
+  emit(estored .. " = \"frk_adt.extract\"(" .. v .. ") {variant = 1 : i64, field = 0 : i64} : (" .. value_ir(oty, line, col) .. ") -> " .. storage_ir(v1.ty, line, col))
+  local ev = unwrap_load(estored, v1.ty, line, col)
+  scope_push()
+  if node.bind ~= nil then
+    declare(node.bind, { kind = "ssa", ty = v1.ty, id = ev }, line, col)
+    E.vtypes[ev] = v1.ty
+  end
+  local bv = emit_block_expr(node.block)
+  scope_pop()
+  if not E.terminated then
+    if bv == nil then
+      fail(line, col, "the catch block must produce a value or diverge")
+    end
+    if not same_type(E.vtypes[bv], v0.ty) then
+      fail(line, col, "the catch block yields a different type than the union's Ok payload")
+    end
+    terminate("cf.br ^" .. join .. "(" .. bv .. " : " .. value_ir(v0.ty, line, col) .. ")")
+  end
+  new_block(join)
+  E.blocks[#E.blocks].label = join .. "(" .. jarg .. ": " .. value_ir(v0.ty, line, col) .. ")"
+  E.vtypes[jarg] = v0.ty
+  return jarg
+end
+
 emit_expr = function(node)
   local line = node.line or 1
   local col = node.col or 1
@@ -3006,6 +3100,9 @@ emit_expr = function(node)
   end
   if node.tryex ~= nil then
     return emit_try(node)
+  end
+  if node.catchx ~= nil then
+    return emit_catch(node)
   end
   if node.call ~= nil then
     local v, ty = emit_call(node)

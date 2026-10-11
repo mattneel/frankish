@@ -40,6 +40,7 @@ pub const Expr = union(enum) {
     Lam: LamE,
     // `try e` (SPEC 6.5): on Err the enclosing function returns Err(x).
     TryE: TryX,
+    CatchE: CatchX,
     // Explicit recovery node (D-109): the emitter MUST reject it before
     // execution can treat it as a valid expression. Also carries the
     // "<absent>" marker for optional fields that are read only when
@@ -287,7 +288,7 @@ pub fn op_at(mut p: P, level: i64) Str {
     return "";
 }
 
-pub fn parse_expr(mut p: P, level: i64) Expr {
+pub fn parse_expr_ops(mut p: P, level: i64) Expr {
     if level > 6 {
         const tk: Tok = p_peek(p);
         if is_kw_tok(tk) {
@@ -327,6 +328,44 @@ pub fn parse_expr(mut p: P, level: i64) Expr {
         }
     }
     return left;
+}
+
+pub fn parse_expr(mut p: P, level: i64) Expr {
+    // `catch` binds at the LOOSEST precedence (SPEC 6.5): the operand
+    // chain first, then zero or more `catch |e| { ... }` clauses.
+    var e: Expr = parse_expr_ops(p, level);
+    if level != 1 {
+        return e;
+    }
+    var go: bool = true;
+    while go {
+        if p_ok(p) == false {
+            go = false;
+        } else {
+            const t: Tok = p_peek(p);
+            if is_kw_tok(t) and t.text == "catch" {
+                const ct: Tok = p_next(p);
+                var bind: Str = "";
+                const t2: Tok = p_peek(p);
+                if is_punct_tok(t2) and t2.text == "|" {
+                    const _b0: Tok = p_next(p);
+                    const nm: Tok = p_next(p);
+                    if is_name_tok(nm) == false {
+                        p_fail(p, nm.line, nm.col, "expected a binding name in `catch |name|`");
+                    }
+                    bind = nm.text;
+                    if expect_punct(p, "|") == false {
+                        p_fail(p, t2.line, t2.col, "expected `|` after the catch binding");
+                    }
+                }
+                const blk: Block = p_block(p);
+                e = Expr.CatchE(%CatchX{expr: e, bind: bind, block: blk, line: ct.line, col: ct.col});
+            } else {
+                go = false;
+            }
+        }
+    }
+    return e;
 }
 
 // x |> f(a, b) = f(x, a, b); x |> f = f(x) (SPEC 6.3): the piped
@@ -627,8 +666,15 @@ pub fn dump(e: Expr) Str {
         Expr.List(l) => d_list(l),
         Expr.Lam(l) => d_lam(l),
         Expr.TryE(tr) => str.concat("(try ", str.concat(dump(tr.expr), ")")),
+        Expr.CatchE(cx2) => d_catch(cx2),
         Expr.Bad(b) => d_bad(b),
     };
+}
+
+pub fn d_catch(cx: CatchX) Str {
+    const blk: Block = cx.block;
+    const bt: Expr = blk.tail;
+    return str.concat("(catch ", str.concat(dump(cx.expr), str.concat(" ", str.concat(dump(bt), ")"))));
 }
 
 pub fn d_lam(l: LamE) Str {
@@ -804,6 +850,14 @@ pub const Stmt = union(enum) {
 
 pub const TryX = struct {
     expr: Expr,
+    line: i64,
+    col: i64,
+};
+
+pub const CatchX = struct {
+    expr: Expr,
+    bind: Str,
+    block: Block,
     line: i64,
     col: i64,
 };

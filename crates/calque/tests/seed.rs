@@ -1783,6 +1783,97 @@ pub fn main() i64 {
 }
 
 #[test]
+fn seed_catch_recovery() {
+    // SPEC 6.5's `catch` (precedence level 0): the Ok path unwraps,
+    // the Err path runs the replacement block - both the diverging
+    // playbook shape (`catch { return .Err(...) }`) and the binding
+    // form (`catch |e| { ... }`).
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "ca.calq",
+            None,
+            "pub const Er = union(enum) { TooSmall };
+pub fn chk(x: i64) Er!i64 {
+    if x > 0 { return .Ok(x); }
+    return .Err(.TooSmall);
+}
+pub fn f(x: i64) Er!i64 {
+    const v = chk(x) catch { return .Err(.TooSmall); };
+    return .Ok(v + 100);
+}
+pub fn g(x: i64) i64 {
+    const v = chk(x) catch |e| { 7 };
+    v
+}
+pub fn main() i64 {
+    const fa = f(5);
+    const a = match fa { .Ok(v) => v, .Err(e) => 0 };
+    const fb = f(0);
+    const b = match fb { .Ok(v) => v, .Err(e) => 1 };
+    const c = g(5);
+    const d = g(0);
+    io.print(str.fromI64(a * 1000 + b * 100 + c * 10 + d));
+    io.print(\"\\n\");
+    0
+}",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed emits the catch probe");
+    let outcome = run_artifact(&artifact).expect("the catch probe runs");
+    assert_eq!(outcome.output, "105157\n");
+}
+
+#[test]
+fn calq0_matches_the_seed_on_catch() {
+    // The differential for `catch` (SPEC 6.5, level 0): calq0's parse
+    // (the loosest-precedence clause), the Err-path block with its
+    // binding, and the join - byte-equal to the seed's artifact.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "ca.calq",
+            None,
+            "pub const Er = union(enum) { TooSmall };
+pub fn chk(x: i64) Er!i64 {
+    if x > 0 { return .Ok(x); }
+    return .Err(.TooSmall);
+}
+pub fn f(x: i64) Er!i64 {
+    const v = chk(x) catch { return .Err(.TooSmall); };
+    return .Ok(v + 100);
+}
+pub fn g(x: i64) i64 {
+    const v = chk(x) catch |e| { 7 };
+    v
+}
+pub fn main() i64 {
+    const fa = f(5);
+    const a = match fa { .Ok(v) => v, .Err(e) => 0 };
+    const fb = f(0);
+    const b = match fb { .Ok(v) => v, .Err(e) => 1 };
+    const c = g(5);
+    const d = g(0);
+    io.print(str.fromI64(a * 1000 + b * 100 + c * 10 + d));
+    io.print(\"\\n\");
+    0
+}",
+        ),
+    ];
+    let artifact = compile_artifact();
+    let expected = seed_translate(&files).expect("the seed emits the catch probe");
+    let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the catch probe");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (catch): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted probe runs");
+    assert_eq!(emitted.output, "105157\n");
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the
