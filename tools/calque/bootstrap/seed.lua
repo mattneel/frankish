@@ -592,6 +592,33 @@ function parse_primary()
     local rty = parse_type()
     return { fnp = ps, fnr = rty }
   end
+  if t.k == "punct" and t.v == "." then
+    -- `.Variant` / `.Variant(args)` - the type-elided constructor
+    -- (SPEC 6.5's `.Err(...)` shape; the target type comes from the
+    -- expected-type context).
+    next_tok()
+    local vn = peek()
+    if vn.k ~= "name" then
+      fail(vn.line, vn.col, "expected a variant name after `.`")
+    end
+    next_tok()
+    local varcon_args = {}
+    if at_punct("(") then
+      next_tok()
+      if not at_punct(")") then
+        while true do
+          varcon_args[#varcon_args + 1] = parse_expr(1)
+          if at_punct(",") then
+            next_tok()
+          else
+            break
+          end
+        end
+      end
+      expect_punct(")")
+    end
+    return { varcon = { name = vn.v, args = varcon_args }, line = t.line, col = t.col }
+  end
   if t.k == "punct" and t.v == "[" then
     -- `[e1, e2]` / `[]` (D-112): the element type comes from the
     -- TARGET annotation (a binding or a field's declared type), never
@@ -1510,10 +1537,23 @@ function emit_list_literal(ty, node, line, col)
 end
 
 -- Typed expression emission: literals take their element type from
--- `ty`; everything else is the ordinary path (no inference).
+-- `ty`; `.Variant` constructors synthesize the qualified callee the
+-- ordinary variant path resolves; everything else is the ordinary
+-- path (no inference).
 function emit_expr_typed(node, ty)
   if node.list ~= nil then
     return emit_list_literal(ty, node, node.line, node.col)
+  end
+  if node.varcon ~= nil then
+    if not is_named(ty) then
+      fail(node.line, node.col, "`.Variant` needs a union-typed context (annotate the binding or return a union)")
+    end
+    local synth = { call = { name = node.varcon.name, mod = ty.named }, args = node.varcon.args, line = node.line, col = node.col }
+    local v = emit_expr(synth)
+    if v == nil then
+      fail(node.line, node.col, "`.Variant` produced no value")
+    end
+    return v
   end
   return emit_expr(node)
 end
@@ -2676,6 +2716,9 @@ emit_expr = function(node)
   if node.list ~= nil then
     fail(node.line, node.col, "a collection literal needs a [T]/Vector annotation (bind it: `const v: [i64] = [...]`)")
   end
+  if node.varcon ~= nil then
+    fail(node.line, node.col, "`.Variant` needs a union-typed context (annotate the binding or return a union)")
+  end
   if node.lit == "int" then
     local v = fresh()
     emit(v .. " = arith.constant " .. node.text .. " : i64")
@@ -2931,7 +2974,7 @@ local function emit_stmt(node)
   end
   if node.ret ~= nil then
     if node.ret.expr ~= nil then
-      local v = emit_expr(node.ret.expr)
+      local v = emit_expr_typed(node.ret.expr, E.ret)
       terminate("func.return " .. v .. " : " .. value_ir(E.ret, node.ret.line, node.ret.col))
     else
       terminate("func.return")

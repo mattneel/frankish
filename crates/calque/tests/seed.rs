@@ -1428,6 +1428,81 @@ pub fn main() i64 {
 }
 
 #[test]
+fn seed_dot_variant_constructors() {
+    // SPEC 6.5's `.Err(...)` shape (D-090's type-elided dot forms): the
+    // target union comes from the expected-type context (here, the
+    // enclosing function's return type).
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "dv.calq",
+            None,
+            "pub const R = union(enum) { Ok: i64, Err: Str };
+pub fn f(x: i64) R {
+    if x > 0 { return .Ok(x); }
+    return .Err(\"neg\");
+}
+pub fn main() i64 {
+    const a = f(5);
+    const b = f(0 - 1);
+    const r = match a {
+        R.Ok(v) => v,
+        R.Err(e) => 0,
+    };
+    const r2 = match b {
+        R.Ok(v) => v,
+        R.Err(e) => 7,
+    };
+    io.print(str.fromI64(r * 10 + r2));
+    io.print(\"\\n\");
+    0
+}",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed emits the dot probe");
+    let outcome = run_artifact(&artifact).expect("the dot probe runs");
+    assert_eq!(outcome.output, "57\n");
+}
+
+#[test]
+fn calq0_matches_the_seed_on_dot_variants() {
+    // The `.Variant` synthesis through the canonical compiler:
+    // byte-equal to the seed, then executed.
+    let artifact = compile_artifact();
+    let src = "pub const R = union(enum) { Ok: i64, Err: Str };
+pub fn f(x: i64) R {
+    if x > 0 { return .Ok(x); }
+    return .Err(\"neg\");
+}
+pub fn main() i64 {
+    const a = f(5);
+    const b = f(0 - 1);
+    const r = match a {
+        R.Ok(v) => v,
+        R.Err(e) => 0,
+    };
+    const r2 = match b {
+        R.Ok(v) => v,
+        R.Err(e) => 7,
+    };
+    io.print(str.fromI64(r * 10 + r2));
+    io.print(\"\\n\");
+    0
+}";
+    let files = vec![stdlib_str(), unit("dv.calq", None, src)];
+    let expected = seed_translate(&files).expect("the seed emits the dot probe");
+    let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the dot probe");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (dot variants): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted probe runs");
+    assert_eq!(emitted.output, "57\n");
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the

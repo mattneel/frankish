@@ -313,7 +313,7 @@ pub fn e_fn_core(mut e: Emitter, f: Fn) {
         terminate(e, acc);
     } else {
         if b.has_tail {
-            const v2: Str = emit_expr(e, b.tail);
+            const v2: Str = emit_expr_typed(e, b.tail, f.ret);
             if is_terminated(e) == false {
                 if ty_is_unit(f.ret) {
                     // A unit fn's tail ran for its effects: bare return.
@@ -1908,7 +1908,10 @@ pub fn emit_ret(mut e: Emitter, r: RetS) {
         terminate(e, "func.return");
         return;
     }
-    const v: Str = emit_expr(e, r.expr);
+    var ret_ty: Ty = Ty.UnitV;
+    const rr: Ty = e_ret(e);
+    ret_ty = rr;
+    const v: Str = emit_expr_typed(e, r.expr, ret_ty);
     const a: Ast = e_ast(e);
     var acc: Str = "func.return ";
     acc = str.concat(acc, v);
@@ -2867,6 +2870,27 @@ pub fn ref_of_expr(ex: Expr) Ref {
 }
 
 pub fn emit_expr_typed(mut e: Emitter, ex: Expr, ty: Ty) Str {
+    var dot: Ref = %Ref{name: "", mod: ""};
+    var dot_args: Vector(Expr) = empty_expr_vec();
+    var is_dot: bool = false;
+    match ex {
+        Expr.Call(c2) => {
+            const cr: Ref = c2.callee;
+            if cr.mod == "@dot" {
+                dot = cr;
+                dot_args = c2.args;
+                is_dot = true;
+            }
+        },
+        _ => {},
+    };
+    if is_dot {
+        if is_named_t(ty) == false {
+            return e_fail_at(e, 0, 0, "`.Variant` needs a union-typed context (annotate the binding or return a union)");
+        }
+        const synth: Call = %Call{callee: %Ref{name: dot.name, mod: named_of(ty)}, args: dot_args, line: 0, col: 0};
+        return emit_call(e, synth, 0, 0);
+    }
     if has_ty_annotation(ty) {
         return match ex {
             Expr.List(l) => emit_list_literal(e, ty, l),
@@ -2874,6 +2898,11 @@ pub fn emit_expr_typed(mut e: Emitter, ex: Expr, ty: Ty) Str {
         };
     }
     return emit_expr(e, ex);
+}
+
+pub fn empty_expr_vec() Vector(Expr) {
+    var v: Vector(Expr) = vector.new();
+    return v;
 }
 
 pub fn has_ty_annotation(ty: Ty) bool {

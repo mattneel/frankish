@@ -523,6 +523,37 @@ pub fn parse_primary(mut p: P) Expr {
         const b: Block = p_block(p);
         return Expr.Blk(b);
     }
+    if at_punct(p, ".") {
+        const _dot: Tok = p_next(p);
+        const vn: Tok = p_peek(p);
+        if is_name_tok(vn) == false {
+            p_fail(p, vn.line, vn.col, "expected a variant name after `.`");
+            return bad(p, vn.line, vn.col, "variant");
+        }
+        const _v: Tok = p_next(p);
+        var vargs: Vector(Expr) = vector.new();
+        if at_punct(p, "(") {
+            const _lp: Tok = p_next(p);
+            while p_ok(p) {
+                if at_punct(p, ")") {
+                    const _rp: Tok = p_next(p);
+                    return Expr.Call(%Call{callee: %Ref{name: vn.text, mod: "@dot"}, args: vargs, line: vn.line, col: vn.col});
+                }
+                const va: Expr = parse_expr(p, 1);
+                vector.push(vargs, va);
+                if at_punct(p, ",") {
+                    const _c: Tok = p_next(p);
+                } else {
+                    if expect_punct(p, ")") == false {
+                        return bad(p, vn.line, vn.col, "variant");
+                    }
+                    return Expr.Call(%Call{callee: %Ref{name: vn.text, mod: "@dot"}, args: vargs, line: vn.line, col: vn.col});
+                }
+            }
+            return bad(p, vn.line, vn.col, "variant");
+        }
+        return Expr.Call(%Call{callee: %Ref{name: vn.text, mod: "@dot"}, args: vargs, line: vn.line, col: vn.col});
+    }
     if at_punct(p, "[") {
         const _lb: Tok = p_next(p);
         var items: Vector(Expr) = vector.new();
