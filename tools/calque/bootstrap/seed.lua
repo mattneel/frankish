@@ -462,6 +462,10 @@ end
 
 function parse_unary()
   local t = peek()
+  if t.k == "kw" and t.v == "try" then
+    next_tok()
+    return { tryex = parse_unary(), line = t.line, col = t.col }
+  end
   if t.k == "punct" and t.v == "-" then
     fail(t.line, t.col, "unary minus is not in seed v0 (write `0 - x`)")
   end
@@ -2710,6 +2714,72 @@ local function emit_shortcircuit(op, lnode, rnode, line, col)
   return jarg
 end
 
+-- `try e` (SPEC 6.5): e must be an error union (variant 0 Ok with a
+-- payload, variant 1 Err with a payload); on Err the ENCLOSING
+-- function returns Err(x) (the same E: the return type must be an
+-- error union whose Err payload matches structurally); on Ok the
+-- expression yields the payload.
+local function emit_try(node)
+  local line = node.line or 1
+  local col = node.col or 1
+  local v = emit_expr(node.tryex)
+  local oty = E.vtypes[v]
+  if not is_named(oty) then
+    fail(line, col, "`try` needs an error-union operand")
+  end
+  local od = find_type(oty.named, line, col)
+  if od.kind ~= "union" or #od.variants ~= 2 then
+    fail(line, col, "`try` needs an error union (Ok + Err variants)")
+  end
+  local v0 = od.variants[1]
+  local v1 = od.variants[2]
+  if v0.name ~= "Ok" or v1.name ~= "Err" or v0.ty == nil or v1.ty == nil then
+    fail(line, col, "`try` needs an error union (Ok + Err variants)")
+  end
+  local rty = E.ret
+  if not is_named(rty) then
+    fail(line, col, "the enclosing function must return an error union for `try`")
+  end
+  local rd = find_type(rty.named, line, col)
+  if rd.kind ~= "union" or #rd.variants ~= 2 or rd.variants[2].name ~= "Err" or rd.variants[2].ty == nil then
+    fail(line, col, "the enclosing function must return an error union for `try`")
+  end
+  if not same_type(rd.variants[2].ty, v1.ty) then
+    fail(line, col, "`try` propagates a different error type (use result.mapError)")
+  end
+  local tag = fresh()
+  emit(tag .. " = \"frk_adt.tag_of\"(" .. v .. ") : (" .. value_ir(oty, line, col) .. ") -> i64")
+  local zero_t = const_i64("0")
+  local is_ok = fresh()
+  emit(is_ok .. " = arith.cmpi eq, " .. tag .. ", " .. zero_t .. " : i64")
+  local okb = fresh_label()
+  local errb = fresh_label()
+  emit("cf.cond_br " .. is_ok .. ", ^" .. okb .. ", ^" .. errb)
+  new_block(okb)
+  local stored = fresh()
+  emit(stored .. " = \"frk_adt.extract\"(" .. v .. ") {variant = 0 : i64, field = 0 : i64} : (" .. value_ir(oty, line, col) .. ") -> " .. storage_ir(v0.ty, line, col))
+  local pv = unwrap_load(stored, v0.ty, line, col)
+  local join = fresh_label()
+  local jarg = "%j" .. tostring(E.label)
+  terminate("cf.br ^" .. join .. "(" .. pv .. " : " .. value_ir(v0.ty, line, col) .. ")")
+  new_block(errb)
+  local estored = fresh()
+  emit(estored .. " = \"frk_adt.extract\"(" .. v .. ") {variant = 1 : i64, field = 0 : i64} : (" .. value_ir(oty, line, col) .. ") -> " .. storage_ir(v1.ty, line, col))
+  local ev = unwrap_load(estored, v1.ty, line, col)
+  local rw = wrap_store(ev, v1.ty, line, col)
+  local e0 = fresh()
+  emit(e0 .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
+  local sn = fresh()
+  emit(sn .. " = \"frk_adt.product_snoc\"(" .. e0 .. ", " .. rw .. ") : (!frk_adt.product<[]>, " .. storage_ir(v1.ty, line, col) .. ") -> !frk_adt.product<[" .. storage_ir(v1.ty, line, col) .. "]>")
+  local sm = fresh()
+  emit(sm .. " = \"frk_adt.make_sum\"(" .. sn .. ") {variant = 1 : i64} : (!frk_adt.product<[" .. storage_ir(v1.ty, line, col) .. "]>) -> " .. value_ir(rty, line, col))
+  terminate("func.return " .. sm .. " : " .. value_ir(rty, line, col))
+  new_block(join)
+  E.blocks[#E.blocks].label = join .. "(" .. jarg .. ": " .. value_ir(v0.ty, line, col) .. ")"
+  E.vtypes[jarg] = v0.ty
+  return jarg
+end
+
 emit_expr = function(node)
   local line = node.line or 1
   local col = node.col or 1
@@ -2796,6 +2866,9 @@ emit_expr = function(node)
     local v, ty = emit_lambda(node)
     E.vtypes[v] = ty
     return v
+  end
+  if node.tryex ~= nil then
+    return emit_try(node)
   end
   if node.call ~= nil then
     local v, ty = emit_call(node)

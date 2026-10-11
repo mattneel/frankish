@@ -38,6 +38,8 @@ pub const Expr = union(enum) {
     // A closure literal (SPEC 6.4): lifted to a top-level function by
     // the emitter; the expression evaluates to the closure value.
     Lam: LamE,
+    // `try e` (SPEC 6.5): on Err the enclosing function returns Err(x).
+    TryE: TryX,
     // Explicit recovery node (D-109): the emitter MUST reject it before
     // execution can treat it as a valid expression. Also carries the
     // "<absent>" marker for optional fields that are read only when
@@ -287,6 +289,14 @@ pub fn op_at(mut p: P, level: i64) Str {
 
 pub fn parse_expr(mut p: P, level: i64) Expr {
     if level > 6 {
+        const tk: Tok = p_peek(p);
+        if is_kw_tok(tk) {
+            if tk.text == "try" {
+                const _t: Tok = p_next(p);
+                const inner: Expr = parse_expr(p, 7);
+                return Expr.TryE(%TryX{expr: inner, line: tk.line, col: tk.col});
+            }
+        }
         return parse_postfix(p);
     }
     var left: Expr = parse_expr(p, level + 1);
@@ -616,6 +626,7 @@ pub fn dump(e: Expr) Str {
         Expr.Blk(b) => d_block(b),
         Expr.List(l) => d_list(l),
         Expr.Lam(l) => d_lam(l),
+        Expr.TryE(tr) => str.concat("(try ", str.concat(dump(tr.expr), ")")),
         Expr.Bad(b) => d_bad(b),
     };
 }
@@ -780,6 +791,12 @@ pub const Stmt = union(enum) {
     Destr: DestrS,
     Expr: ExprS,
     FAssign: FAssS,
+};
+
+pub const TryX = struct {
+    expr: Expr,
+    line: i64,
+    col: i64,
 };
 
 pub const LamE = struct {

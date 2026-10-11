@@ -473,6 +473,131 @@ pub fn emit_lifted_lines(mut e: Emitter, lines: [Str]) {
     }
 }
 
+// `try e` (SPEC 6.5): an Ok/Err union operand; the Err edge returns
+// Err(x) from the enclosing function (the same E), the Ok edge yields
+// the payload through block arguments.
+pub fn emit_try_e(mut e: Emitter, tr: TryX) Str {
+    const v: Str = emit_expr(e, tr.expr);
+    const oty: Ty = vget(e, v);
+    if is_named_t(oty) == false {
+        return e_fail_at(e, tr.line, tr.col, "`try` needs an error-union operand");
+    }
+    const a: Ast = e_ast(e);
+    const od: TypeDecl = find_td(a, named_of(oty));
+    if od.is_union == false {
+        return e_fail_at(e, tr.line, tr.col, "`try` needs an error union (Ok + Err variants)");
+    }
+    if vector.len(od.variants) != 2 {
+        return e_fail_at(e, tr.line, tr.col, "`try` needs an error union (Ok + Err variants)");
+    }
+    const v0: VariantDecl = vector.get(od.variants, 0);
+    const v1: VariantDecl = vector.get(od.variants, 1);
+    if v0.name != "Ok" {
+        return e_fail_at(e, tr.line, tr.col, "`try` needs an error union (Ok + Err variants)");
+    }
+    if v1.name != "Err" {
+        return e_fail_at(e, tr.line, tr.col, "`try` needs an error union (Ok + Err variants)");
+    }
+    if v0.has_payload == false {
+        return e_fail_at(e, tr.line, tr.col, "`try` needs an error union (Ok + Err variants)");
+    }
+    if v1.has_payload == false {
+        return e_fail_at(e, tr.line, tr.col, "`try` needs an error union (Ok + Err variants)");
+    }
+    const rty: Ty = e_ret(e);
+    if is_named_t(rty) == false {
+        return e_fail_at(e, tr.line, tr.col, "the enclosing function must return an error union for `try`");
+    }
+    const rd: TypeDecl = find_td(a, named_of(rty));
+    if rd.is_union == false {
+        return e_fail_at(e, tr.line, tr.col, "the enclosing function must return an error union for `try`");
+    }
+    if vector.len(rd.variants) != 2 {
+        return e_fail_at(e, tr.line, tr.col, "the enclosing function must return an error union for `try`");
+    }
+    const r1: VariantDecl = vector.get(rd.variants, 1);
+    if r1.name != "Err" {
+        return e_fail_at(e, tr.line, tr.col, "the enclosing function must return an error union for `try`");
+    }
+    if r1.has_payload == false {
+        return e_fail_at(e, tr.line, tr.col, "the enclosing function must return an error union for `try`");
+    }
+    if same_ty(r1.ty, v1.ty) == false {
+        return e_fail_at(e, tr.line, tr.col, "`try` propagates a different error type (use result.mapError)");
+    }
+    const tag: Str = fresh(e);
+    var lt: Str = " = \"frk_adt.tag_of\"(";
+    lt = str.concat(lt, v);
+    lt = str.concat(lt, ") : (");
+    lt = str.concat(lt, value_ir_t(a, oty));
+    lt = str.concat(lt, ") -> i64");
+    emit_line(e, str.concat(tag, lt));
+    const zt: Str = const_i64(e, "0");
+    const is_ok: Str = fresh(e);
+    emit_line(e, str.concat(is_ok, str.concat(" = arith.cmpi eq, ", str.concat(tag, str.concat(", ", str.concat(zt, " : i64"))))));
+    const okb: Str = fresh_label(e);
+    const errb: Str = fresh_label(e);
+    emit_line(e, str.concat("cf.cond_br ", str.concat(is_ok, str.concat(", ^", str.concat(okb, str.concat(", ^", errb))))));
+    new_label(e, okb);
+    const stored: Str = fresh(e);
+    var l1: Str = " = \"frk_adt.extract\"(";
+    l1 = str.concat(l1, v);
+    l1 = str.concat(l1, ") {variant = 0 : i64, field = 0 : i64} : (");
+    l1 = str.concat(l1, value_ir_t(a, oty));
+    l1 = str.concat(l1, ") -> ");
+    l1 = str.concat(l1, storage_ir_t(a, v0.ty));
+    emit_line(e, str.concat(stored, l1));
+    const pv: Str = unwrap_load(e, stored, v0.ty, tr.line, tr.col);
+    const join: Str = fresh_label(e);
+    const jarg: Str = str.concat("%j", str.fromI64(e.next_block));
+    var l2: Str = "cf.br ^";
+    l2 = str.concat(l2, join);
+    l2 = str.concat(l2, "(");
+    l2 = str.concat(l2, pv);
+    l2 = str.concat(l2, " : ");
+    l2 = str.concat(l2, value_ir_t(a, v0.ty));
+    l2 = str.concat(l2, ")");
+    terminate(e, l2);
+    new_label(e, errb);
+    const estored: Str = fresh(e);
+    var l3: Str = " = \"frk_adt.extract\"(";
+    l3 = str.concat(l3, v);
+    l3 = str.concat(l3, ") {variant = 1 : i64, field = 0 : i64} : (");
+    l3 = str.concat(l3, value_ir_t(a, oty));
+    l3 = str.concat(l3, ") -> ");
+    l3 = str.concat(l3, storage_ir_t(a, v1.ty));
+    emit_line(e, str.concat(estored, l3));
+    const ev: Str = unwrap_load(e, estored, v1.ty, tr.line, tr.col);
+    const rw: Str = wrap_store(e, ev, v1.ty, tr.line, tr.col);
+    const e0: Str = fresh(e);
+    emit_line(e, str.concat(e0, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
+    const sn: Str = fresh(e);
+    var l4: Str = " = \"frk_adt.product_snoc\"(";
+    l4 = str.concat(l4, e0);
+    l4 = str.concat(l4, ", ");
+    l4 = str.concat(l4, rw);
+    l4 = str.concat(l4, ") : (!frk_adt.product<[]>, ");
+    l4 = str.concat(l4, storage_ir_t(a, v1.ty));
+    l4 = str.concat(l4, ") -> !frk_adt.product<[");
+    l4 = str.concat(l4, storage_ir_t(a, v1.ty));
+    l4 = str.concat(l4, "]>");
+    emit_line(e, str.concat(sn, l4));
+    const sm: Str = fresh(e);
+    var l5: Str = " = \"frk_adt.make_sum\"(";
+    l5 = str.concat(l5, sn);
+    l5 = str.concat(l5, ") {variant = 1 : i64} : (!frk_adt.product<[");
+    l5 = str.concat(l5, storage_ir_t(a, v1.ty));
+    l5 = str.concat(l5, "]>) -> ");
+    l5 = str.concat(l5, value_ir_t(a, rty));
+    emit_line(e, str.concat(sm, l5));
+    terminate(e, str.concat("func.return ", str.concat(sm, str.concat(" : ", value_ir_t(a, rty)))));
+    const jfull: Str = str.concat(join, str.concat("(", str.concat(jarg, str.concat(": ", str.concat(value_ir_t(a, v0.ty), ")")))));
+    emit_top(e, str.concat("^", str.concat(jfull, ":")));
+    e.terminated = false;
+    vset(e, jarg, v0.ty);
+    return jarg;
+}
+
 pub fn emit_lambda_expr(mut e: Emitter, l: LamE) Str {
     const n: i64 = e.lams;
     e.lams = n + 1;
@@ -1623,6 +1748,7 @@ pub fn emit_expr(mut e: Emitter, ex: Expr) Str {
         Expr.Blk(b) => emit_block_expr(e, b),
         Expr.List(l) => e_fail_at(e, 0, 0, "a collection literal needs a [T]/Vector annotation (bind it: `const v: [i64] = [...]`)"),
         Expr.Lam(l) => emit_lambda_expr(e, l),
+        Expr.TryE(tr) => emit_try_e(e, tr),
         Expr.Bad(b) => e_fail(e, b),
         Expr.Match(m) => emit_match(e, m),
         Expr.Make(m) => emit_make(e, m, m.line, m.col),

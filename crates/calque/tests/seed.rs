@@ -1503,6 +1503,88 @@ pub fn main() i64 {
 }
 
 #[test]
+fn seed_try_propagates_the_same_error() {
+    // SPEC 6.5: `try e` on an Ok/Err union; on Err the enclosing
+    // function returns Err(x) (the same E), on Ok the payload flows.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "tr.calq",
+            None,
+            "pub const Res = union(enum) { Ok: i64, Err: i64 };
+pub fn parse1(x: i64) Res {
+    if x > 0 { return .Ok(x); }
+    return .Err(7);
+}
+pub fn twice(x: i64) Res {
+    const v = try parse1(x);
+    return .Ok(v * 2);
+}
+pub fn main() i64 {
+    const a = twice(5);
+    const b = twice(0);
+    const r = match a {
+        Res.Ok(v) => v,
+        Res.Err(e) => 0,
+    };
+    const r2 = match b {
+        Res.Ok(v) => v,
+        Res.Err(e) => e,
+    };
+    io.print(str.fromI64(r * 100 + r2));
+    io.print(\"\\n\");
+    0
+}",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed emits the try probe");
+    let outcome = run_artifact(&artifact).expect("the try probe runs");
+    assert_eq!(outcome.output, "1007\n");
+}
+
+#[test]
+fn calq0_matches_the_seed_on_try() {
+    // SPEC 6.5's `try` through the canonical compiler: byte-equal to
+    // the seed, then executed (Ok flows, Err returns from the fn).
+    let artifact = compile_artifact();
+    let src = "pub const Res = union(enum) { Ok: i64, Err: i64 };
+pub fn parse1(x: i64) Res {
+    if x > 0 { return .Ok(x); }
+    return .Err(7);
+}
+pub fn twice(x: i64) Res {
+    const v = try parse1(x);
+    return .Ok(v * 2);
+}
+pub fn main() i64 {
+    const a = twice(5);
+    const b = twice(0);
+    const r = match a {
+        Res.Ok(v) => v,
+        Res.Err(e) => 0,
+    };
+    const r2 = match b {
+        Res.Ok(v) => v,
+        Res.Err(e) => e,
+    };
+    io.print(str.fromI64(r * 100 + r2));
+    io.print(\"\\n\");
+    0
+}";
+    let files = vec![stdlib_str(), unit("tr.calq", None, src)];
+    let expected = seed_translate(&files).expect("the seed emits the try probe");
+    let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the try probe");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (try): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted probe runs");
+    assert_eq!(emitted.output, "1007\n");
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the
