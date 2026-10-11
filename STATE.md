@@ -1374,6 +1374,13 @@ rework flag, not a knob.
       Bench evidence: translation is LINEAR in input bytes (~3.5 ms/B
       under the interp; no quadratic table idioms - the `#`-counter
       refactor hypothesis died on the data).
+    - D-110 recorded (comptime may execute through any CONFORMING
+      runner; the interpreter is the semantic reference, not the only
+      path): measured trigger = the seed at 15+ min (interp) vs ~11 s
+      (JIT); equivalence is L3-enforced (verify_seed_translation_runners
+      + every differential suite); capability policy and cache keys
+      apply to every runner (D-105/D-093). SPEC §8 + AC-1.1 note
+      threaded; the pinned GOAL is untouched.
     - calq0 slice 3a VERIFIED: calq0's emission for `pub fn main()
       i64 { 0 }` is BYTE-IDENTICAL to the seed's (the differential
       from day one: `calq0_emits_the_seed_shape`), the emitted

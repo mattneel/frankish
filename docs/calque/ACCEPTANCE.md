@@ -27,7 +27,7 @@ performance), C5=M41 (developer experience + portability), C6=M42
 
 | ID | Requirement | Stage | Evidence | Status |
 |---|---|---|---|---|
-| AC-1.1 | Canonical compiler written in Calque from the first substantial implementation; Frankish interprets it before native compilation; same interpreter supplies comptime | C1/C3/C4 | `make calque-selfhost` (chain + fixed point, BOOTSTRAP §3); sources under `tools/calque/compiler/` | pending (M37) |
+| AC-1.1 | Canonical compiler written in Calque from the first substantial implementation; Frankish interprets it before native compilation; the same interpreter DEFINES comptime semantics (execution may use any conforming runner — JIT default — with byte-exact equivalence, D-110) | C1/C3/C4 | `make calque-selfhost` (chain + fixed point, BOOTSTRAP §3); sources under `tools/calque/compiler/` | pending (M37) |
 | AC-1.2 | Calque stays inside the specimen architecture (not a separate platform) | C0 | MANIFEST; SPEC §8 entry; specimen table row in frk-harness at M37 | done |
 | AC-1.3 | Priority order honored: DX > runtime perf > compile/iteration speed; correctness+safety non-negotiable | ongoing | Stage exit bars; C6 audit row AC-23.1; safety fenced in SPEC §6.7/§10 | ongoing |
 | AC-1.4 | No claim that Calque is the "first self-hosted language" anywhere | C6 | repo-wide doc audit in the C6 sweep (grep for the claim class) | pending (M42) |

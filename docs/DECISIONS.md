@@ -3377,3 +3377,39 @@ veto-ledger pattern and most deserve their review.
   services (D-099/D-101/D-104); every style rule gets preferred
   example + counterexample + applicability; auto-fixes must preserve
   evaluation count/order/errors/aliasing; suppressions need reasons.
+
+- D-110 [calque/comptime] COMPTIME MAY EXECUTE THROUGH ANY CONFORMING
+  RUNNER - THE INTERPRETER IS THE SEMANTIC REFERENCE, NOT THE ONLY
+  EXECUTION PATH (user direction, M37 session; measured trigger: the
+  seed translating its own 50 KB parser takes 15+ MINUTES under the
+  reference interpreter and ~11 SECONDS under the JIT runners - the
+  same module, same semantics, L3-verified). THE RULING: (1) the
+  reference interpreter still DEFINES the semantics of every admitted
+  operation (D-008); any other runner's results must equal the
+  interpreter's BYTE-EXACTLY (L3), enforced by the differential suites
+  and by per-slab equality checks (the seed pipeline's own check is
+  the ignored verify_seed_translation_runners test); (2) comptime
+  evaluation MAY execute through the fastest conforming runner (JIT
+  default where the target supports it), because runner choice is an
+  internal optimization under D-105's equivalence clause - the GOAL's
+  "same interpreter supplies comptime" (AC-1.1) is read as the
+  SEMANTIC requirement (the interpreter defines comptime semantics;
+  the same Frankish pipeline executes it), not as a mandate for the
+  slowest path; (3) DETERMINISM (SPEC F17, BOOTSTRAP §4's
+  zero-exclusion comparator) is unaffected: artifacts and diagnostics
+  stay byte-identical regardless of the executing runner - a
+  divergence on any verified case is a FIRST-RANK L3 finding (halt
+  the feature, fence it, fix the divergent runner); (4) comptime's
+  capability policy (D-105: no OS threads, live sockets, wall clocks,
+  thread identity by default) applies to EVERY runner - the rt rows
+  the JIT binds are the same authority as the interpreter's builtins
+  (D-062), so a policy denial holds on both; (5) CACHE VALIDITY
+  (D-093) extends: cached comptime/translation results key on the
+  runner + engine identity and target features (already the case for
+  the calque translation cache: the artifact-producing pipeline is
+  part of the key's provenance; D-105's artifact-key clause governs
+  the general case); (6) the BOOTSTRAP §3 CHAIN's recorded legs stay
+  as written (the interpreted legs are evidence steps); the JIT is
+  admissible wherever the contract requires equivalence, not a
+  specific engine. The pinned GOAL text is untouched; this entry
+  records the execution-path ruling + its evidence obligations.

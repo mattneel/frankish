@@ -422,6 +422,11 @@ never claimed before measurement.
 
 ## §8 comptime (C3 — roadmap; design intent frozen here)
 
+EXECUTION PATH (D-110): comptime evaluates under the reference
+interpreter's SEMANTICS (D-008/L3) but MAY execute through any
+conforming runner (JIT default), with byte-exact equivalence enforced
+differentially; capability denials and cache keys follow D-105/D-093.
+
 `comptime` expressions and blocks run in Frankish's existing derived
 interpreter (goal §11) — the same per-op semantics as runtime code,
 never a second evaluator. [C3] Freezes: comptime syntax; which

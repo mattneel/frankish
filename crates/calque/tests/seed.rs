@@ -344,6 +344,7 @@ fn verify_seed_translation_runners() {
         ("lexdump", vec![
             stdlib_str(),
             unit("tools/calque/compiler/lex.calq", None, include_str!("../../../tools/calque/compiler/lex.calq")),
+            unit("tools/calque/compiler/report.calq", None, include_str!("../../../tools/calque/compiler/report.calq")),
             unit("tools/calque/compiler/lexdump.calq", None, include_str!("../../../tools/calque/compiler/lexdump.calq")),
         ]),
         ("compile", vec![
@@ -356,6 +357,7 @@ fn verify_seed_translation_runners() {
         ]),
     ];
     for (tag, files) in sets {
+        println!("[verify] {tag}: jit leg...");
         let f2 = files.clone();
         let jit = std::thread::Builder::new()
             .stack_size(frk_interp::STACK_SIZE)
@@ -363,6 +365,7 @@ fn verify_seed_translation_runners() {
             .expect("spawn")
             .join()
             .expect("join");
+        println!("[verify] {tag}: interp leg...");
         let interp = std::thread::Builder::new()
             .stack_size(frk_interp::STACK_SIZE)
             .spawn(move || seed_translate(&files).expect("interp translates"))
