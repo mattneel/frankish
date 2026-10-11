@@ -1388,10 +1388,13 @@ rework flag, not a knob.
       case flows through. Emitter structure: `Emit.out` carries final
       lines (emit_line indents, emit_top does not), `sym_of` mangles
       main -> __calque_main, e_render returns `out`.
-    Next: calq0 slice 3b-beta — records/unions/match/destructuring and
-    the vector prelude in emit.calq (the remaining fenced constructs),
-    each with its live differential test; then slice 3c: calq0
-    compiling ITSELF through the chain. (3b-alpha VERIFIED: calq0's
+    Next: calq0 slice 3b-beta-2 — the MATCH emission (tag dispatch,
+    field-test chains, the whole pattern set, join blocks) - the last
+    fenced construct; then slice 3c: calq0 compiling ITSELF.
+    (3b-beta-1 VERIFIED: records with defaults + immutable update +
+    destructuring + field access + the VECTOR surface all byte-equal
+    to the seed and executing - `calq0_matches_the_seed_on_records_
+    and_vectors`: probes A/B/C + R1 + V1.) (3b-alpha VERIFIED: calq0's
     emission for the var/while/checked-arith program AND for fib.calq
     is BYTE-IDENTICAL to the seed's, and both emitted artifacts run -
     `calq0_matches_the_seed_on_statements_and_arithmetic`, the

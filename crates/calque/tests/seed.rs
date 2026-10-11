@@ -804,6 +804,60 @@ fn calq0_matches_the_seed_on_statements_and_arithmetic() {
 }
 
 #[test]
+fn calq0_matches_the_seed_on_records_and_vectors() {
+    // Slice 3b-beta-1: records (defaults, immutable update), the
+    // destructuring statement, field access, and the vector prelude -
+    // all live-differential against the seed, then executed.
+    let artifact = compile_artifact();
+
+    let head = "pub const P2 = struct { a: i64, b: i64 = 7 };\n";
+    let probes = [
+        ("A make+default+field", "pub fn main() i64 {\n    const p = %P2{a: 3};\n    const c: i64 = p.b;\n    c\n}\n", 7),
+        ("B update", "pub fn main() i64 {\n    const p = %P2{a: 3};\n    const q = %P2{p | b: 9};\n    const c: i64 = q.b;\n    c\n}\n", 9),
+        ("C destr", "pub fn main() i64 {\n    const p = %P2{a: 3};\n    const {a, b} = p;\n    a + b\n}\n", 10),
+    ];
+    for (pname, body, want) in probes {
+        let src = format!("{head}{body}");
+        let expected_p = seed_translate(&[unit("probe.calq", None, &src)]).expect("the seed emits the probe");
+        let got_p = run_artifact_with_input(artifact, &[unit("probe.calq", None, &src)])
+            .expect("calq0 compiles the probe");
+        assert_eq!(
+            got_p.output,
+            expected_p,
+            "calq0's emission must equal the seed's ({pname}): {}",
+            diff_hint(&got_p.output, &expected_p)
+        );
+        let emitted_p = run_artifact(&got_p.output).expect("the emitted probe runs");
+        assert_eq!(emitted_p.values[0].as_signed().expect("i64"), want, "{pname}");
+    }
+    let r1 = "pub const P2 = struct { a: i64, b: i64 = 7 };\n\npub fn main() i64 {\n    const p = %P2{a: 3};\n    const q = %P2{p | b: 9};\n    const {a, b} = q;\n    a + b\n}\n";
+    let expected = seed_translate(&[unit("probe.calq", None, r1)]).expect("the seed emits R1");
+    let got = run_artifact_with_input(artifact, &[unit("probe.calq", None, r1)])
+        .expect("calq0 compiles R1");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (R1): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted R1 runs");
+    assert_eq!(emitted.values[0].as_signed().expect("i64"), 12);
+
+    let v1 = "pub fn main() i64 {\n    var v: Vector(i64) = vector.new();\n    vector.push(v, 5);\n    vector.push(v, 6);\n    vector.get(v, 1)\n}\n";
+    let expected_v = seed_translate(&[unit("probe.calq", None, v1)]).expect("the seed emits V1");
+    let got_v = run_artifact_with_input(artifact, &[unit("probe.calq", None, v1)])
+        .expect("calq0 compiles V1");
+    assert_eq!(
+        got_v.output,
+        expected_v,
+        "calq0's emission must equal the seed's (V1): {}",
+        diff_hint(&got_v.output, &expected_v)
+    );
+    let emitted_v = run_artifact(&got_v.output).expect("the emitted V1 runs");
+    assert_eq!(emitted_v.values[0].as_signed().expect("i64"), 6);
+}
+
+#[test]
 fn seed_refuses_non_ascii_input_loudly() {
     let files = vec![unit("bad.calq", None, "pub fn main() i64 { 0 } // héllo")];
     let error = seed_translate(&files).expect_err("bytes >= 0x80 are refused (SPEC F18)");

@@ -614,6 +614,8 @@ pub const MakeE = struct {
     fields: Vector(MakeField),
     has_base: bool,
     base: Expr,
+    line: i64, // the `%` token's position
+    col: i64,
 };
 
 pub const PLit = struct {
@@ -913,7 +915,7 @@ pub fn p_make(p: P) Expr {
     if at_punct(p, "}") {
         const _c: Tok = p_next(p);
         var no_fields: Vector(MakeField) = vector.new();
-        return Expr.Make(%MakeE{ty: name.text, fields: no_fields, has_base: false, base: poison()});
+        return Expr.Make(%MakeE{ty: name.text, fields: no_fields, has_base: false, base: poison(), line: pct.line, col: pct.col});
     }
     // Field list iff NAME followed by `:`/`,`/`}`; otherwise an update
     // base expression followed by `|` (the seed's disambiguation).
@@ -946,7 +948,7 @@ pub fn p_make(p: P) Expr {
     while p_ok(p) {
         if at_punct(p, "}") {
             const _c: Tok = p_next(p);
-            return Expr.Make(%MakeE{ty: name.text, fields: fields, has_base: has_base, base: base});
+            return Expr.Make(%MakeE{ty: name.text, fields: fields, has_base: has_base, base: base, line: pct.line, col: pct.col});
         }
         const f: Tok = p_peek(p);
         if is_name_tok(f) == false {
