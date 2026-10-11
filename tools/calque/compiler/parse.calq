@@ -216,8 +216,26 @@ pub fn poison() Expr {
 
 pub fn op_at(mut p: P, level: i64) Str {
     const t: Tok = p_peek(p);
+    if is_kw_tok(t) {
+        if level == 2 {
+            if t.text == "or" {
+                return "or";
+            }
+        }
+        if level == 3 {
+            if t.text == "and" {
+                return "and";
+            }
+        }
+        return "";
+    }
     if is_punct_tok(t) == false {
         return "";
+    }
+    if level == 1 {
+        if t.text == "|>" {
+            return "|>";
+        }
     }
     if level == 4 {
         if t.text == "==" {
@@ -280,7 +298,11 @@ pub fn parse_expr(mut p: P, level: i64) Expr {
             } else {
                 const op_t: Tok = p_next(p);
                 const right: Expr = parse_expr(p, level + 1);
-                left = Expr.Bin(%Bin{op, l: left, r: right, line: op_t.line, col: op_t.col});
+                if op == "|>" {
+                    left = pipe_into(p, left, right, op_t);
+                } else {
+                    left = Expr.Bin(%Bin{op, l: left, r: right, line: op_t.line, col: op_t.col});
+                }
                 if level == 4 {
                     const o2: Str = op_at(p, 4);
                     if str.len(o2) != 0 {
@@ -292,6 +314,33 @@ pub fn parse_expr(mut p: P, level: i64) Expr {
         }
     }
     return left;
+}
+
+// x |> f(a, b) = f(x, a, b); x |> f = f(x) (SPEC 6.3): the piped
+// value leads the argument list, evaluated first and exactly once.
+pub fn pipe_into(mut p: P, piped: Expr, stage: Expr, op_t: Tok) Expr {
+    match stage {
+        Expr.Call(c) => {
+            var args: Vector(Expr) = vector.new();
+            vector.push(args, piped);
+            const n: i64 = vector.len(c.args);
+            var i: i64 = 0;
+            while i < n {
+                vector.push(args, vector.get(c.args, i));
+                i = i + 1;
+            }
+            return Expr.Call(%Call{callee: c.callee, args: args, line: op_t.line, col: op_t.col});
+        },
+        Expr.Ref(r) => {
+            var args2: Vector(Expr) = vector.new();
+            vector.push(args2, piped);
+            return Expr.Call(%Call{callee: r, args: args2, line: op_t.line, col: op_t.col});
+        },
+        _ => {
+            p_fail(p, op_t.line, op_t.col, "a pipeline stage must be a callable path (SPEC 6.3)");
+            return bad(p, op_t.line, op_t.col, "pipeline");
+        },
+    }
 }
 
 pub fn parse_postfix(mut p: P) Expr {
@@ -334,7 +383,7 @@ pub fn do_call(mut p: P, e: Expr) Expr {
             if p_ok(p) == false {
                 more = false;
             } else {
-                vector.push(args, parse_expr(p, 4));
+                vector.push(args, parse_expr(p, 1));
                 if at_punct(p, ",") {
                     const _c2: Tok = p_next(p);
                 } else {
@@ -413,7 +462,7 @@ pub fn parse_primary(mut p: P) Expr {
     }
     if at_punct(p, "(") {
         const _t: Tok = p_next(p);
-        const e: Expr = parse_expr(p, 4);
+        const e: Expr = parse_expr(p, 1);
         if expect_punct(p, ")") == false {
             return bad_here(p);
         }
@@ -431,7 +480,7 @@ pub fn parse_primary(mut p: P) Expr {
                 const _rb: Tok = p_next(p);
                 return Expr.List(items);
             }
-            const item: Expr = parse_expr(p, 4);
+            const item: Expr = parse_expr(p, 1);
             vector.push(items, item);
             if at_punct(p, ",") {
                 const _c: Tok = p_next(p);
@@ -904,7 +953,7 @@ pub fn p_pattern(mut p: P) Pat {
 
 pub fn p_if(mut p: P) IfE {
     const _kw: Tok = p_next(p);
-    const cond: Expr = parse_expr(p, 4);
+    const cond: Expr = parse_expr(p, 1);
     const then_blk: Block = p_block(p);
     var has_else: bool = false;
     var else_blk: Block = poison_block();
@@ -926,7 +975,7 @@ pub fn p_if(mut p: P) IfE {
 
 pub fn p_match(mut p: P) Expr {
     const _kw: Tok = p_next(p);
-    const scrut: Expr = parse_expr(p, 4);
+    const scrut: Expr = parse_expr(p, 1);
     if expect_punct(p, "{") == false {
         return bad_here(p);
     }
@@ -940,7 +989,7 @@ pub fn p_match(mut p: P) Expr {
         if expect_punct(p, "=>") == false {
             return bad_here(p);
         }
-        const body: Expr = parse_expr(p, 4);
+        const body: Expr = parse_expr(p, 1);
         vector.push(arms, %Arm{pat: pat, body: body});
         if at_punct(p, ",") {
             const _c2: Tok = p_next(p);
@@ -990,7 +1039,7 @@ pub fn p_make(mut p: P) Expr {
     var has_base: bool = false;
     var base: Expr = poison();
     if is_field_list == false {
-        base = parse_expr(p, 4);
+        base = parse_expr(p, 1);
         has_base = true;
         if expect_punct(p, "|") == false {
             return bad_here(p);
@@ -1009,7 +1058,7 @@ pub fn p_make(mut p: P) Expr {
         const _f: Tok = p_next(p);
         if at_punct(p, ":") {
             const _c2: Tok = p_next(p);
-            const e: Expr = parse_expr(p, 4);
+            const e: Expr = parse_expr(p, 1);
             vector.push(fields, %MakeField{name: f.text, expr: e});
         } else {
             // shorthand: `%T{f}` means `f: f` (D-106)
@@ -1055,7 +1104,7 @@ pub fn p_destr(mut p: P, mutable: bool, kw_line: i64, kw_col: i64) DestrS {
                 if expect_punct(p, "=") == false {
                     return %DestrS{mutable: mutable, names: names, expr: poison()};
                 }
-                const e: Expr = parse_expr(p, 4);
+                const e: Expr = parse_expr(p, 1);
                 const _s: bool = expect_semi(p);
                 return %DestrS{mutable: mutable, names: names, expr: e};
             }
@@ -1066,7 +1115,7 @@ pub fn p_destr(mut p: P, mutable: bool, kw_line: i64, kw_col: i64) DestrS {
             if expect_punct(p, "=") == false {
                 return %DestrS{mutable: mutable, names: names, expr: poison()};
             }
-            const e: Expr = parse_expr(p, 4);
+            const e: Expr = parse_expr(p, 1);
             const _s: bool = expect_semi(p);
             return %DestrS{mutable: mutable, names: names, expr: e};
         }
@@ -1120,7 +1169,7 @@ pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
             if expect_punct(p, "=") == false {
                 return %StmtOut{added: true, tail: poison()};
             }
-            const e: Expr = parse_expr(p, 4);
+            const e: Expr = parse_expr(p, 1);
             const _s: bool = expect_semi(p);
             vector.push(stmts, Stmt.Const(%ConstS{name: name.text, has_ty: has_ty, ty: ty, expr: e}));
             return %StmtOut{added: true, tail: poison()};
@@ -1148,7 +1197,7 @@ pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
             if expect_punct(p, "=") == false {
                 return %StmtOut{added: true, tail: poison()};
             }
-            const e: Expr = parse_expr(p, 4);
+            const e: Expr = parse_expr(p, 1);
             const _s: bool = expect_semi(p);
             vector.push(stmts, Stmt.Var(%VarS{name: name.text, has_ty: has_ty, ty: ty, expr: e}));
             return %StmtOut{added: true, tail: poison()};
@@ -1160,14 +1209,14 @@ pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
                 vector.push(stmts, Stmt.Ret(%RetS{has_expr: false, expr: poison()}));
                 return %StmtOut{added: true, tail: poison()};
             }
-            const e: Expr = parse_expr(p, 4);
+            const e: Expr = parse_expr(p, 1);
             const _s: bool = expect_semi(p);
             vector.push(stmts, Stmt.Ret(%RetS{has_expr: true, expr: e}));
             return %StmtOut{added: true, tail: poison()};
         }
         if t.text == "while" {
             const _a: Tok = p_next(p);
-            const cond: Expr = parse_expr(p, 4);
+            const cond: Expr = parse_expr(p, 1);
             const body: Block = p_block(p);
             vector.push(stmts, Stmt.While(%WhileS{cond: cond, body: body}));
             return %StmtOut{added: true, tail: poison()};
@@ -1178,7 +1227,7 @@ pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
             return %StmtOut{added: true, tail: poison()};
         }
         if t.text == "match" {
-            const e: Expr = parse_expr(p, 4);
+            const e: Expr = parse_expr(p, 1);
             if at_punct(p, ";") {
                 const _c: Tok = p_next(p);
                 vector.push(stmts, Stmt.Expr(%ExprS{expr: e}));
@@ -1195,7 +1244,7 @@ pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
             if nx.text == "=" {
                 const _a: Tok = p_next(p);
                 const _b: Tok = p_next(p);
-                const e: Expr = parse_expr(p, 4);
+                const e: Expr = parse_expr(p, 1);
                 const _s: bool = expect_semi(p);
                 vector.push(stmts, Stmt.Assign(%AssignS{name: t.text, expr: e}));
                 return %StmtOut{added: true, tail: poison()};
@@ -1216,7 +1265,7 @@ pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
                     const _d2: Tok = p_next(p);
                     const _f2: Tok = p_next(p);
                     const _e2: Tok = p_next(p);
-                    const e2: Expr = parse_expr(p, 4);
+                    const e2: Expr = parse_expr(p, 1);
                     const _s2: bool = expect_semi(p);
                     vector.push(stmts, Stmt.FAssign(%FAssS{name: t.text, field: fld.text, expr: e2}));
                     return %StmtOut{added: true, tail: poison()};
@@ -1224,7 +1273,7 @@ pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
             }
         }
     }
-    const e2: Expr = parse_expr(p, 4);
+    const e2: Expr = parse_expr(p, 1);
     if at_punct(p, ";") {
         const _c: Tok = p_next(p);
         vector.push(stmts, Stmt.Expr(%ExprS{expr: e2}));
@@ -1478,17 +1527,17 @@ pub fn p_lit_expr(mut p: P) Expr {
         if d.text == "[" {
             // Collection-typed defaults (D-112): the literal takes the
             // field's declared element type at emission.
-            return parse_expr(p, 4);
+            return parse_expr(p, 1);
         }
         if d.text == "%" {
             // Constructor defaults (D-112): %T{...} takes the field's
             // declared type at emission.
-            return parse_expr(p, 4);
+            return parse_expr(p, 1);
         }
     }
     if is_name_tok(d) {
         // Qualified defaults (D-112): enum variants like State.Ok.
-        return parse_expr(p, 4);
+        return parse_expr(p, 1);
     }
     return bad(p, d.line, d.col, "seed v0 supports literal field defaults only (D-095)");
 }

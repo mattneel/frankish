@@ -302,11 +302,24 @@ pub fn e_fn(mut e: Emitter, f: Fn) {
     } else {
         if b.has_tail {
             const v2: Str = emit_expr(e, b.tail);
-            var acc2: Str = "func.return ";
-            acc2 = str.concat(acc2, v2);
-            acc2 = str.concat(acc2, " : ");
-            acc2 = str.concat(acc2, value_ir_t(a, f.ret));
-            terminate(e, acc2);
+            if is_terminated(e) == false {
+                if ty_is_unit(f.ret) {
+                    // A unit fn's tail ran for its effects: bare return.
+                    terminate(e, "func.return");
+                } else {
+                    if str.len(v2) == 0 {
+                        if e_ok(e) {
+                            e_fail_at(e, 1, 1, "internal: valueless tail in a value-returning function");
+                        }
+                    } else {
+                        var acc2: Str = "func.return ";
+                        acc2 = str.concat(acc2, v2);
+                        acc2 = str.concat(acc2, " : ");
+                        acc2 = str.concat(acc2, value_ir_t(a, f.ret));
+                        terminate(e, acc2);
+                    }
+                }
+            }
         } else {
             terminate(e, "func.return");
         }
@@ -902,6 +915,42 @@ pub fn cmp_pred(op: Str) Str {
     return "sge";
 }
 
+// Short-circuiting and/or (SPEC 5.1), mirroring the seed's block
+// shapes byte for byte: the deciding value rides the false (and) /
+// true (or) edge through block arguments.
+pub fn emit_shortcircuit(mut e: Emitter, op: Str, lnode: Expr, rnode: Expr, line: i64, col: i64) Str {
+    const a: Str = emit_expr(e, lnode);
+    if ty_is_bool(vget(e, a)) == false {
+        return e_fail_at(e, line, col, str.concat("`", str.concat(op, "` takes bool operands (SPEC 5.1)")));
+    }
+    const rhs_label: Str = fresh_label(e);
+    const dec_label: Str = fresh_label(e);
+    const join_label: Str = fresh_label(e);
+    if op == "and" {
+        emit_line(e, str.concat("cf.cond_br ", str.concat(a, str.concat(", ^", str.concat(rhs_label, str.concat(", ^", dec_label))))));
+    } else {
+        emit_line(e, str.concat("cf.cond_br ", str.concat(a, str.concat(", ^", str.concat(dec_label, str.concat(", ^", rhs_label))))));
+    }
+    new_label(e, rhs_label);
+    const b: Str = emit_expr(e, rnode);
+    if ty_is_bool(vget(e, b)) == false {
+        return e_fail_at(e, line, col, str.concat("`", str.concat(op, "` takes bool operands (SPEC 5.1)")));
+    }
+    terminate(e, str.concat("cf.br ^", str.concat(join_label, str.concat("(", str.concat(b, " : i1)")))));
+    new_label(e, dec_label);
+    terminate(e, str.concat("cf.br ^", str.concat(join_label, str.concat("(", str.concat(a, " : i1)")))));
+    const jarg: Str = str.concat("%j", str.fromI64(e.next_block));
+    var l: Str = "^";
+    l = str.concat(l, join_label);
+    l = str.concat(l, "(");
+    l = str.concat(l, jarg);
+    l = str.concat(l, ": i1):");
+    emit_top(e, l);
+    e.terminated = false;
+    vset(e, jarg, Ty.BoolV);
+    return jarg;
+}
+
 pub fn emit_cmp(mut e: Emitter, op: Str, a: Str, b: Str, line: i64, col: i64) Str {
     const ta: Ty = vget(e, a);
     const tb: Ty = vget(e, b);
@@ -1245,6 +1294,12 @@ pub fn emit_ref(mut e: Emitter, r: Ref, line: i64, col: i64) Str {
 }
 
 pub fn emit_bin(mut e: Emitter, b: Bin) Str {
+    if b.op == "and" {
+        return emit_shortcircuit(e, "and", b.l, b.r, b.line, b.col);
+    }
+    if b.op == "or" {
+        return emit_shortcircuit(e, "or", b.l, b.r, b.line, b.col);
+    }
     const a: Str = emit_expr(e, b.l);
     const c: Str = emit_expr(e, b.r);
     if b.op == "+" {
@@ -2519,6 +2574,7 @@ pub const MTy = struct {
     arg: Str,
     has: Vector(i64),
     ty: Vector(Ty),
+    brs: Vector(i64),
 };
 
 pub fn mt_new(label: Str, arg: Str) MTy {
@@ -2526,7 +2582,9 @@ pub fn mt_new(label: Str, arg: Str) MTy {
     vector.push(h, 0);
     var t: Vector(Ty) = vector.new();
     vector.push(t, Ty.UnitV);
-    return %MTy{label: label, arg: arg, has: h, ty: t};
+    var b: Vector(i64) = vector.new();
+    vector.push(b, 0);
+    return %MTy{label: label, arg: arg, has: h, ty: t, brs: b};
 }
 
 pub fn emit_arm(mut e: Emitter, c: MTy, conditions: Str, bindings: Vector(MBind), body: Expr, false_target: Str) Str {
@@ -2557,6 +2615,7 @@ pub fn emit_arm_body(mut e: Emitter, c: MTy, bindings: Vector(MBind), body: Expr
         has = true;
     }
     if is_terminated(e) == false {
+        vector.set(c.brs, 0, vector.get(c.brs, 0) + 1);
         if has == false {
             terminate(e, str.concat("cf.br ^", c.label));
         } else {
@@ -2589,6 +2648,13 @@ pub fn emit_arm_body(mut e: Emitter, c: MTy, bindings: Vector(MBind), body: Expr
 
 pub fn emit_join(mut e: Emitter, c: MTy) Str {
     const a: Ast = e_ast(e);
+    if vector.get(c.brs, 0) == 0 {
+        // Every arm returned: the join was never targeted; do not
+        // create a predecessor-less block (its dead terminator would
+        // survive lowering unconverted).
+        e.terminated = true;
+        return "";
+    }
     if vector.get(c.has, 0) > 0 {
         const ty: Ty = vector.get(c.ty, 0);
         var l: Str = "^";

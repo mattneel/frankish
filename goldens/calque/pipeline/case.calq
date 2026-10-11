@@ -1,0 +1,15 @@
+// SPEC 5.1/6.3: short-circuit and (the rhs runs on the deciding edge)
+// and the pipeline desugar; chains associate left.
+// Expected output (hand-derived): "ok-a\n8\n13\n"
+pub fn add(a: i64, b: i64) i64 {
+    a + b
+}
+pub fn main() i64 {
+    const ok: bool = true and (1 < 2);
+    if ok { io.print("ok-a\n"); } else { io.print("bad\n"); }
+    io.print(str.fromI64(5 |> add(3)));
+    io.print("\n");
+    io.print(str.fromI64(1 |> add(2) |> add(10)));
+    io.print("\n");
+    0
+}

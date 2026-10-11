@@ -1278,6 +1278,78 @@ pub fn main() i64 {
 }
 
 #[test]
+fn seed_shortcircuit_and_pipelines() {
+    // SPEC 5.1/6.3: `and`/`or` short-circuit on bool operands (the
+    // right side runs only on the deciding edge); `x |> f(a, b)` is
+    // `f(x, a, b)`, x first and exactly once; chains associate left.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "sc.calq",
+            None,
+            "pub fn noisy(x: i64) bool {
+    io.print(str.fromI64(x));
+    io.print(\"\\n\");
+    return x > 0;
+}
+pub fn add(a: i64, b: i64) i64 {
+    a + b
+}
+pub fn main() i64 {
+    if false and noisy(1) { io.print(\"bad\\n\"); } else { io.print(\"ok-a\\n\"); }
+    if true or noisy(2) { io.print(\"ok-b\\n\"); } else { io.print(\"bad\\n\"); }
+    if true and noisy(3) { io.print(\"ran\\n\"); } else { io.print(\"bad\\n\"); }
+    io.print(str.fromI64(5 |> add(3)));
+    io.print(\"\\n\");
+    io.print(str.fromI64(1 |> add(2) |> add(10)));
+    io.print(\"\\n\");
+    0
+}",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed emits the probe");
+    let outcome = run_artifact(&artifact).expect("the probe runs");
+    assert_eq!(outcome.output, "ok-a\nok-b\n3\nran\n8\n13\n");
+}
+
+#[test]
+fn calq0_matches_the_seed_on_shortcircuit_and_pipelines() {
+    // SPEC 5.1/6.3 through the canonical compiler: short-circuiting
+    // and/or (the deciding value rides the false/true edge) and the
+    // pipeline desugar, byte-equal to the seed, then executed.
+    let artifact = compile_artifact();
+    let src = "pub fn noisy(x: i64) bool {
+    io.print(str.fromI64(x));
+    io.print(\"\\n\");
+    return x > 0;
+}
+pub fn add(a: i64, b: i64) i64 {
+    a + b
+}
+pub fn main() i64 {
+    if false and noisy(1) { io.print(\"bad\\n\"); } else { io.print(\"ok-a\\n\"); }
+    if true or noisy(2) { io.print(\"ok-b\\n\"); } else { io.print(\"bad\\n\"); }
+    if true and noisy(3) { io.print(\"ran\\n\"); } else { io.print(\"bad\\n\"); }
+    io.print(str.fromI64(5 |> add(3)));
+    io.print(\"\\n\");
+    io.print(str.fromI64(1 |> add(2) |> add(10)));
+    io.print(\"\\n\");
+    0
+}";
+    let files = vec![stdlib_str(), unit("sc.calq", None, src)];
+    let expected = seed_translate(&files).expect("the seed emits the probe");
+    let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the probe");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (sc): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted probe runs");
+    assert_eq!(emitted.output, "ok-a\nok-b\n3\nran\n8\n13\n");
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the
@@ -1400,3 +1472,4 @@ fn seed_translates_the_compiler_set() {
         Err(e) => println!("SET ERR: {e}"),
     }
 }
+

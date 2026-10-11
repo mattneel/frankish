@@ -374,7 +374,8 @@ local function parse_type()
 end
 
 function parse_expr(level)
-  -- v0 subset: levels 4..6 (comparisons, +-, */%), unary, postfix.
+  -- levels 1..6 (pipeline, or, and, comparisons, +-, */%), unary,
+  -- postfix (SPEC 5.1's precedence table, loosest first).
   if level > 6 then
     return parse_unary()
   end
@@ -383,12 +384,20 @@ function parse_expr(level)
     local t = peek()
     local op = nil
     if t.k == "punct" then
-      if level == 4 and (t.v == "==" or t.v == "!=" or t.v == "<" or t.v == "<=" or t.v == ">" or t.v == ">=") then
+      if level == 1 and t.v == "|>" then
+        op = "|>"
+      elseif level == 4 and (t.v == "==" or t.v == "!=" or t.v == "<" or t.v == "<=" or t.v == ">" or t.v == ">=") then
         op = t.v
       elseif level == 5 and (t.v == "+" or t.v == "-") then
         op = t.v
       elseif level == 6 and (t.v == "*" or t.v == "/" or t.v == "%") then
         op = t.v
+      end
+    elseif t.k == "kw" then
+      if level == 2 and t.v == "or" then
+        op = "or"
+      elseif level == 3 and t.v == "and" then
+        op = "and"
       end
     end
     if op == nil then
@@ -396,7 +405,24 @@ function parse_expr(level)
     end
     next_tok()
     local r = parse_expr(level + 1)
-    l = { bin = op, l = l, r = r, line = t.line, col = t.col }
+    if op == "|>" then
+      -- x |> f(a, b) = f(x, a, b); x |> f = f(x) (SPEC 6.3).
+      if r.call ~= nil and r.args ~= nil then
+        local args = { l }
+        local i = 1
+        while i <= #r.args do
+          args[#args + 1] = r.args[i]
+          i = i + 1
+        end
+        l = { call = r.call, args = args, line = t.line, col = t.col }
+      elseif r.ref ~= nil then
+        l = { call = r.ref, args = { l }, line = t.line, col = t.col }
+      else
+        fail(t.line, t.col, "a pipeline stage must be a callable path (SPEC 6.3)")
+      end
+    else
+      l = { bin = op, l = l, r = r, line = t.line, col = t.col }
+    end
     if level == 4 then
       local nxt = peek()
       if nxt.k == "punct" and (nxt.v == "==" or nxt.v == "!=" or nxt.v == "<" or nxt.v == "<=" or nxt.v == ">" or nxt.v == ">=") then
@@ -427,7 +453,7 @@ function parse_postfix()
       next_tok()
       if not at_punct(")") then
         while true do
-          args[#args + 1] = parse_expr(4)
+          args[#args + 1] = parse_expr(1)
           if at_punct(",") then
             next_tok()
           else
@@ -483,7 +509,7 @@ function parse_primary()
     next_tok()
     local items = {}
     while not at_punct("]") do
-      items[#items + 1] = parse_expr(4)
+      items[#items + 1] = parse_expr(1)
       if at_punct(",") then
         next_tok()
       else
@@ -503,7 +529,7 @@ function parse_primary()
   end
   if t.k == "punct" and t.v == "(" then
     next_tok()
-    local e = parse_expr(4)
+    local e = parse_expr(1)
     expect_punct(")")
     return e
   end
@@ -518,7 +544,7 @@ end
 
 function parse_if()
   local kw = expect_kw("if")
-  local cond = parse_expr(4)
+  local cond = parse_expr(1)
   local then_blk = parse_block()
   local else_blk = nil
   if at_kw("else") then
@@ -554,14 +580,14 @@ function parse_struct_literal_or_map()
     is_field_list = true
   end
   if not is_field_list then
-    base = parse_expr(4)
+    base = parse_expr(1)
     expect_punct("|")
   end
   while not at_punct("}") do
     local f = expect_name()
     if at_punct(":") then
       next_tok()
-      local e = parse_expr(4)
+      local e = parse_expr(1)
       fields[#fields + 1] = { name = f.v, expr = e, line = f.line, col = f.col }
     else
       -- Elixir shorthand: `%T{x}` binds field x from the local x.
@@ -584,7 +610,7 @@ end
 
 function parse_match()
   local kw = next_tok() -- match
-  local scrut = parse_expr(4)
+  local scrut = parse_expr(1)
   expect_punct("{")
   local arms = {}
   if at_punct("}") then
@@ -596,7 +622,7 @@ function parse_match()
     end
     local pat = parse_pattern()
     expect_punct("=>")
-    local body = parse_expr(4)
+    local body = parse_expr(1)
     arms[#arms + 1] = { pat = pat, body = body, line = pat.line, col = pat.col }
     if at_punct(",") then
       next_tok()
@@ -704,7 +730,7 @@ local function parse_destr(kw_tok, mutable)
   end
   expect_punct("}")
   expect_punct("=")
-  local e = parse_expr(4)
+  local e = parse_expr(1)
   expect_punct(";")
   return { mutable = mutable, names = names, expr = e, line = kw_tok.line, col = kw_tok.col }
 end
@@ -742,7 +768,7 @@ function parse_block()
           ty = parse_type()
         end
         expect_punct("=")
-        local e = parse_expr(4)
+        local e = parse_expr(1)
         expect_punct(";")
         stmts[#stmts + 1] = { const = { name = name.v, ty = ty, expr = e, line = name.line, col = name.col } }
       end
@@ -759,7 +785,7 @@ function parse_block()
           ty = parse_type()
         end
         expect_punct("=")
-        local e = parse_expr(4)
+        local e = parse_expr(1)
         expect_punct(";")
         stmts[#stmts + 1] = { var = { name = name.v, ty = ty, expr = e, line = name.line, col = name.col } }
       end
@@ -769,13 +795,13 @@ function parse_block()
         next_tok()
         stmts[#stmts + 1] = { ret = { expr = nil, line = t.line, col = t.col } }
       else
-        local e = parse_expr(4)
+        local e = parse_expr(1)
         expect_punct(";")
         stmts[#stmts + 1] = { ret = { expr = e, line = t.line, col = t.col } }
       end
     elseif t.k == "kw" and t.v == "while" then
       next_tok()
-      local cond = parse_expr(4)
+      local cond = parse_expr(1)
       local body = parse_block()
       stmts[#stmts + 1] = { loop = { cond = cond, body = body, line = t.line, col = t.col } }
     elseif t.k == "kw" and t.v == "if" then
@@ -789,17 +815,17 @@ function parse_block()
       next_tok() -- `.`
       local fld = next_tok()
       next_tok() -- `=`
-      local e = parse_expr(4)
+      local e = parse_expr(1)
       expect_punct(";")
       stmts[#stmts + 1] = { fassign = { name = base.v, field = fld.v, expr = e, line = base.line, col = base.col } }
     elseif t.k == "name" and P.toks[P.pos + 1].k == "punct" and P.toks[P.pos + 1].v == "=" then
       local name = next_tok()
       next_tok() -- `=`
-      local e = parse_expr(4)
+      local e = parse_expr(1)
       expect_punct(";")
       stmts[#stmts + 1] = { assign = { name = name.v, expr = e, line = name.line, col = name.col } }
     elseif t.k == "kw" and t.v == "match" then
-      local e = parse_expr(4)
+      local e = parse_expr(1)
       if at_punct(";") then
         next_tok()
         stmts[#stmts + 1] = { expr = e }
@@ -811,7 +837,7 @@ function parse_block()
     elseif t.k == "kw" then
       fail(t.line, t.col, "`" .. t.v .. "` is not in seed v0")
     else
-      local e = parse_expr(4)
+      local e = parse_expr(1)
       if at_punct(";") then
         next_tok()
         stmts[#stmts + 1] = { expr = e }
@@ -857,14 +883,14 @@ local function parse_type_decl()
         elseif d.k == "punct" and d.v == "[" then
           -- Collection-typed defaults (D-112): the literal takes the
           -- field's declared element type at emission.
-          default = parse_expr(4)
+          default = parse_expr(1)
         elseif d.k == "punct" and d.v == "%" then
           -- Constructor defaults (D-112): %T{...} takes the field's
           -- declared type at emission.
-          default = parse_expr(4)
+          default = parse_expr(1)
         elseif d.k == "name" then
           -- Qualified defaults (D-112): enum variants like State.Ok.
-          default = parse_expr(4)
+          default = parse_expr(1)
         else
           fail(d.line, d.col, "seed v0 supports literal field defaults only (D-095)")
         end
@@ -1792,6 +1818,7 @@ local function emit_match(node)
   local join_label = fresh_label()
   local join_arg = "%j" .. tostring(E.label)
   local join_ty = nil
+  local brs = 0
 
   -- Emits one arm into the CURRENT block. With conditions: a
   -- cond_br splits body vs continuation (the caller proceeds in the
@@ -1805,6 +1832,7 @@ local function emit_match(node)
       local vty = v ~= nil and E.vtypes[v] or "unit"
       if not E.terminated then
         if vty == "unit" then
+          brs = brs + 1
           terminate("cf.br ^" .. join_label)
         else
           if join_ty == nil then
@@ -1812,6 +1840,7 @@ local function emit_match(node)
           elseif join_ty ~= vty then
             fail(pat.line, pat.col, "match arms produce different types (`" .. tostring(join_ty) .. "` vs `" .. tostring(vty) .. "`)")
           end
+          brs = brs + 1
           terminate("cf.br ^" .. join_label .. "(" .. v .. " : " .. value_ir(vty, pat.line, pat.col) .. ")")
         end
       end
@@ -1938,6 +1967,10 @@ local function emit_match(node)
         bindings[#bindings + 1] = { name = a.pat.name, ty = sty, id = value, line = a.pat.line, col = a.pat.col }
       end
       local _ = emit_arm(conditions, bindings, a.body, a.pat)
+      if brs == 0 then
+        E.terminated = true
+        return nil
+      end
       new_block(join_label)
       if join_ty ~= nil then
         E.blocks[#E.blocks].label = join_label .. "(" .. join_arg .. ": " .. value_ir(join_ty, line, col) .. ")"
@@ -1981,6 +2014,10 @@ local function emit_match(node)
         local _ = emit_arm(conditions, bindings, a.body, a.pat)
       end
     end
+    if brs == 0 then
+      E.terminated = true
+      return nil
+    end
     new_block(join_label)
     if join_ty ~= nil then
       E.blocks[#E.blocks].label = join_label .. "(" .. join_arg .. ": " .. value_ir(join_ty, line, col) .. ")"
@@ -2018,6 +2055,10 @@ local function emit_match(node)
       end
       local _ = emit_arm(conditions, bindings, a.body, a.pat)
     end
+  end
+  if brs == 0 then
+    E.terminated = true
+    return nil
   end
   new_block(join_label)
   if join_ty ~= nil then
@@ -2381,6 +2422,36 @@ local function emit_if_expr(node)
   return join_arg
 end
 
+-- Short-circuiting and/or (SPEC 5.1): the right operand runs only on
+-- the deciding edge; the join carries the deciding value (block args).
+local function emit_shortcircuit(op, lnode, rnode, line, col)
+  local a = emit_expr(lnode)
+  if E.vtypes[a] ~= "bool" then
+    fail(line, col, "`" .. op .. "` takes bool operands (SPEC 5.1)")
+  end
+  local rhs_label = fresh_label()
+  local dec_label = fresh_label()
+  local join_label = fresh_label()
+  if op == "and" then
+    emit("cf.cond_br " .. a .. ", ^" .. rhs_label .. ", ^" .. dec_label)
+  else
+    emit("cf.cond_br " .. a .. ", ^" .. dec_label .. ", ^" .. rhs_label)
+  end
+  new_block(rhs_label)
+  local b = emit_expr(rnode)
+  if E.vtypes[b] ~= "bool" then
+    fail(line, col, "`" .. op .. "` takes bool operands (SPEC 5.1)")
+  end
+  terminate("cf.br ^" .. join_label .. "(" .. b .. " : i1)")
+  new_block(dec_label)
+  terminate("cf.br ^" .. join_label .. "(" .. a .. " : i1)")
+  new_block(join_label)
+  local jarg = "%j" .. tostring(E.label)
+  E.blocks[#E.blocks].label = join_label .. "(" .. jarg .. ": i1)"
+  E.vtypes[jarg] = "bool"
+  return jarg
+end
+
 emit_expr = function(node)
   local line = node.line or 1
   local col = node.col or 1
@@ -2482,6 +2553,9 @@ emit_expr = function(node)
   end
   if node.bin ~= nil then
     local op = node.bin
+    if op == "and" or op == "or" then
+      return emit_shortcircuit(op, node.l, node.r, node.line, node.col)
+    end
     local a = emit_expr(node.l)
     local b = emit_expr(node.r)
     if op == "==" or op == "!=" or op == "<" or op == "<=" or op == ">" or op == ">=" then
@@ -2773,7 +2847,16 @@ local function emit_fn(fn)
       terminate("func.return " .. v .. " : " .. value_ir(fn.ret, fn.line, fn.col))
     elseif body.tail ~= nil then
       local v = emit_expr(body.tail)
-      terminate("func.return " .. v .. " : " .. value_ir(fn.ret, fn.line, fn.col))
+      if not E.terminated then
+        if fn.ret == "unit" then
+          -- A unit fn's tail ran for its effects; the return is bare.
+          terminate("func.return")
+        elseif v == nil then
+          fail(body.tail.line or 1, body.tail.col or 1, "internal: valueless tail in a value-returning function")
+        else
+          terminate("func.return " .. v .. " : " .. value_ir(fn.ret, fn.line, fn.col))
+        end
+      end
     else
       terminate("func.return")
     end
