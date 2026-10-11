@@ -1978,6 +1978,24 @@ local function emit_call(node)
     emit(res .. " = func.call @__calque_input(" .. a .. ") : (i64) -> !frk_bstr.str")
     return res, "Str"
   end
+  if callee.mod == nil and callee.name == "__calque_input_name" then
+    if #args ~= 1 then
+      fail(line, col, "__calque_input_name takes exactly one i64")
+    end
+    local a = emit_expr(args[1])
+    local res = fresh()
+    emit(res .. " = func.call @__calque_input_name(" .. a .. ") : (i64) -> !frk_bstr.str")
+    return res, "Str"
+  end
+  if callee.mod == nil and callee.name == "__calque_input_ns" then
+    if #args ~= 1 then
+      fail(line, col, "__calque_input_ns takes exactly one i64")
+    end
+    local a = emit_expr(args[1])
+    local res = fresh()
+    emit(res .. " = func.call @__calque_input_ns(" .. a .. ") : (i64) -> !frk_bstr.str")
+    return res, "Str"
+  end
   if callee.mod == "vector" then
     -- Vector(T) surface (F34/D-091): monomorphic intrinsics. `new`
     -- spells the slot; push/get/set/len resolve it from the receiver's

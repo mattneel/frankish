@@ -444,6 +444,28 @@ fn warm_compile() {
 // parser under the reference interpreter), and libtest runs tests in
 // parallel - so each DRIVER SET is translated ONCE and shared
 // (std::sync::OnceLock): tests only run the artifact.
+// On a differential mismatch, report the FIRST differing byte with
+// context (ASCII everywhere, so byte indexing is safe).
+fn diff_hint(a: &str, b: &str) -> String {
+    let ab = a.as_bytes();
+    let bb = b.as_bytes();
+    let n = ab.len().min(bb.len());
+    let mut i = 0;
+    while i < n && ab[i] == bb[i] {
+        i += 1;
+    }
+    let lo = i.saturating_sub(40);
+    let hi_a = (i + 80).min(a.len());
+    let hi_b = (i + 80).min(b.len());
+    format!(
+        "first difference at byte {i} (got len {}, expected len {})\n  got: {:?}\n  exp: {:?}",
+        a.len(),
+        b.len(),
+        &a[lo..hi_a],
+        &b[lo..hi_b]
+    )
+}
+
 fn lexer_dump_artifact() -> &'static str {
     static A: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     A.get_or_init(|| {
@@ -737,6 +759,48 @@ fn calq0_emits_the_seed_shape() {
     );
     let emitted2 = run_artifact(&o2.output).expect("the emitted artifact runs");
     assert_eq!(emitted2.values[0].as_signed().expect("i64"), 42);
+}
+
+#[test]
+fn calq0_matches_the_seed_on_statements_and_arithmetic() {
+    // Slice 3b-alpha: the differential computed LIVE - the seed's
+    // emission for the same unit is the expected artifact, and calq0's
+    // compiled compiler must produce it byte-for-byte; the emitted
+    // artifact then RUNS.
+    let p1 = "pub fn main() i64 {\n    var acc: i64 = 0;\n    var i: i64 = 0;\n    while i < 5 {\n        acc = acc + i * 2;\n        i = i + 1;\n    }\n    acc\n}\n";
+    let expected = seed_translate(&[unit("probe.calq", None, p1)]).expect("the seed emits P1");
+    let got = run_artifact_with_input(compile_artifact(), &[unit("probe.calq", None, p1)])
+        .expect("calq0 compiles P1");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (P1): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted artifact runs");
+    assert_eq!(emitted.values[0].as_signed().expect("i64"), 20);
+
+    // fib: recursion, comparisons, subtraction, the tail-if special
+    // case, and the namespaced stdlib call (str.fromI64) - both sides
+    // take the stdlib unit, exactly like the seed corpus does.
+    let fib = include_str!("../../../specimens/calque/examples/fib.calq");
+    let fib_units = |src: &str| {
+        vec![
+            stdlib_str(),
+            unit("specimens/calque/examples/fib.calq", None, src),
+        ]
+    };
+    let expected_fib = seed_translate(&fib_units(fib)).expect("the seed emits fib");
+    let got_fib = run_artifact_with_input(compile_artifact(), &fib_units(fib))
+        .expect("calq0 compiles fib");
+    assert_eq!(
+        got_fib.output,
+        expected_fib,
+        "calq0's emission must equal the seed's (fib): {}",
+        diff_hint(&got_fib.output, &expected_fib)
+    );
+    let emitted_fib = run_artifact(&got_fib.output).expect("the emitted fib runs");
+    assert_eq!(emitted_fib.values[0].as_signed().expect("i64"), 0);
 }
 
 #[test]

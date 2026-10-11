@@ -1388,9 +1388,14 @@ rework flag, not a knob.
       case flows through. Emitter structure: `Emit.out` carries final
       lines (emit_line indents, emit_top does not), `sym_of` mangles
       main -> __calque_main, e_render returns `out`.
-    Next: calq0 slice 3b — statement/call/operator/if/match/record
-    emission (one differential test per construct against the seed),
-    then slice 3c: calq0 compiling ITSELF through the chain. The full
+    Next: calq0 slice 3b-beta — records/unions/match/destructuring and
+    the vector prelude in emit.calq (the remaining fenced constructs),
+    each with its live differential test; then slice 3c: calq0
+    compiling ITSELF through the chain. (3b-alpha VERIFIED: calq0's
+    emission for the var/while/checked-arith program AND for fib.calq
+    is BYTE-IDENTICAL to the seed's, and both emitted artifacts run -
+    `calq0_matches_the_seed_on_statements_and_arithmetic`, the
+    differential computed live in the test.) The full
     EMITTER (AST -> kernel IR) in
     tools/calque/compiler/emit.calq, mirroring the seed's emission
     rules (checked arithmetic with CQ traps, the D-092 closure

@@ -18,13 +18,18 @@ pub const Blk = struct {
 };
 
 pub const Emit = struct {
-    out: Vector(Str),
+    out: Vector(OutCell),
     tmp: Vector(i64),
     blk: Vector(i64),
     blocks: Vector(Blk),
     cur: Vector(i64),
     terminated: Vector(i64), // the cell exception: 0/1 flag (no Vector(bool) slot)
     state: Vector(State),
+    scopes: Vector(XCell),
+    vtypes: Vector(VtCell),
+    rets: Vector(Ty),
+    files: Vector(Str),
+    asts: Vector(Ast),
 };
 
 pub fn e_init() Emit {
@@ -41,9 +46,59 @@ pub fn e_init() Emit {
     vector.push(term, 0);
     var st: Vector(State) = vector.new();
     vector.push(st, State.Ok);
-    var out: Vector(Str) = vector.new();
-    vector.push(out, "// calque-artifact v0");
-    return %Emit{out: out, tmp: tmp, blk: blk, blocks: blocks, cur: cur, terminated: term, state: st};
+    var out_items: Vector(Str) = vector.new();
+    vector.push(out_items, "// calque-artifact v0");
+    var out: Vector(OutCell) = vector.new();
+    vector.push(out, %OutCell{items: out_items});
+    var scopes: Vector(XCell) = vector.new();
+    var inner_scopes: Vector(Scope) = vector.new();
+    vector.push(scopes, %XCell{items: inner_scopes});
+    var vt_items: Vector(VTy) = vector.new();
+    var vtypes: Vector(VtCell) = vector.new();
+    vector.push(vtypes, %VtCell{items: vt_items});
+    var rets: Vector(Ty) = vector.new();
+    vector.push(rets, Ty.UnitV);
+    var files: Vector(Str) = vector.new();
+    vector.push(files, "?");
+    var asts: Vector(Ast) = vector.new();
+    var no_fns: Vector(Fn) = vector.new();
+    var no_types: Vector(TypeDecl) = vector.new();
+    vector.push(asts, %Ast{fns: no_fns, types: no_types});
+    return %Emit{out: out, tmp: tmp, blk: blk, blocks: blocks, cur: cur, terminated: term, state: st, scopes: scopes, vtypes: vtypes, rets: rets, files: files, asts: asts};
+}
+
+pub fn e_ast(e: Emit) Ast {
+    return vector.get(e.asts, 0);
+}
+
+pub fn e_ast_set(e: Emit, a: Ast) {
+    vector.set(e.asts, 0, a);
+}
+
+pub fn e_ret_set(e: Emit, t: Ty) {
+    vector.set(e.rets, 0, t);
+}
+
+pub fn e_file_set(e: Emit, f: Str) {
+    vector.set(e.files, 0, f);
+}
+
+pub fn scope_push(e: Emit) {
+    vector.push(e_scopes(e), empty_scope());
+}
+
+pub fn scope_pop(e: Emit) {
+    // b0 vectors have no truncate; scopes are a vector CELL so the pop
+    // rebuilds the outer vector minus its last entry.
+    const sc: Vector(Scope) = e_scopes(e);
+    const n: i64 = vector.len(sc);
+    var kept: Vector(Scope) = vector.new();
+    var i: i64 = 0;
+    while i < n - 1 {
+        vector.push(kept, vector.get(sc, i));
+        i = i + 1;
+    }
+    vector.set(e.scopes, 0, %XCell{items: kept});
 }
 
 pub fn e_ok(e: Emit) bool {
@@ -84,12 +139,12 @@ pub fn cur_block(e: Emit) Vector(Str) {
 
 // Indented line (inside a function body / block).
 pub fn emit_line(e: Emit, s: Str) {
-    vector.push(e.out, str.concat("  ", s));
+    vector.push(e_out(e), str.concat("  ", s));
 }
 
 // Top-level line (function headers, closing braces, wrapper lines).
 pub fn emit_top(e: Emit, s: Str) {
-    vector.push(e.out, s);
+    vector.push(e_out(e), s);
 }
 
 pub fn new_block(e: Emit, label: Str) {
@@ -102,6 +157,16 @@ pub fn new_block(e: Emit, label: Str) {
 pub fn terminate(e: Emit, s: Str) {
     emit_line(e, s);
     vector.set(e.terminated, 0, 1);
+}
+
+pub fn is_terminated(e: Emit) bool {
+    return vector.get(e.terminated, 0) == 1;
+}
+
+// Emits a block label (col 0) and opens a fresh unterminated block.
+pub fn new_label(e: Emit, label: Str) {
+    emit_top(e, str.concat("^", str.concat(label, ":")));
+    vector.set(e.terminated, 0, 0);
 }
 
 // The seed's closed MLIR string-escape set: \" \\ then \0A \09 \0D \00.
@@ -144,12 +209,14 @@ pub fn e_esc(s: Str) Str {
 pub fn e_int(e: Emit, text: Str) Str {
     const v: Str = fresh(e);
     emit_line(e, str.concat(v, str.concat(" = arith.constant ", str.concat(text, " : i64"))));
+    vset(e, v, Ty.I64);
     return v;
 }
 
 pub fn e_bool(e: Emit, text: Str) Str {
     const v: Str = fresh(e);
     emit_line(e, str.concat(v, str.concat(" = arith.constant ", text)));
+    vset(e, v, Ty.BoolV);
     return v;
 }
 
@@ -159,23 +226,8 @@ pub fn e_str(e: Emit, text: Str) Str {
     acc = str.concat(acc, e_esc(text));
     acc = str.concat(acc, "\"} : () -> !frk_bstr.str");
     emit_line(e, str.concat(v, acc));
+    vset(e, v, Ty.StrV);
     return v;
-}
-
-pub fn emit_expr(e: Emit, ex: Expr) Str {
-    return match ex {
-        Expr.Int(t) => e_int(e, t),
-        Expr.Bool(t) => e_bool(e, t),
-        Expr.Str(t) => e_str(e, t),
-        Expr.Bad(b) => e_fail(e, b),
-        Expr.Ref(r) => e_fail_at(e, 0, 0, "refs land in slice 3b"),
-        Expr.Call(c) => e_fail_at(e, 0, 0, "calls land in slice 3b"),
-        Expr.Bin(b) => e_fail_at(e, 0, 0, "operators land in slice 3b"),
-        Expr.If(f) => e_fail_at(e, 0, 0, "if-expressions land in slice 3b"),
-        Expr.Match(m) => e_fail_at(e, 0, 0, "match lands in slice 3b"),
-        Expr.Make(m) => e_fail_at(e, 0, 0, "records land in slice 3b"),
-        Expr.Blk(b) => e_fail_at(e, 0, 0, "block expressions land in slice 3b"),
-    };
 }
 
 pub fn ty_is_unit(t: Ty) bool {
@@ -208,35 +260,94 @@ pub fn sym_of(f: Fn) Str {
     if f.name == "main" {
         return "__calque_main";
     }
+    if str.len(f.ns) > 0 {
+        return str.concat(f.ns, str.concat("__", f.name));
+    }
     return f.name;
 }
 
 pub fn e_fn(e: Emit, f: Fn) {
+    vector.set(e.tmp, 0, 0);
+    vector.set(e.blk, 0, 0);
+    var fresh_vt: Vector(VTy) = vector.new();
+    vector.set(e.vtypes, 0, %VtCell{items: fresh_vt});
+    var fresh_sc: Vector(Scope) = vector.new();
+    vector.set(e.scopes, 0, %XCell{items: fresh_sc});
+    e_ret_set(e, f.ret);
+    e_file_set(e, f.file);
+    vector.set(e.terminated, 0, 0);
+    scope_push(e);
     var head: Str = str.concat("func.func @", sym_of(f));
     var args: Str = "%env: !frk_closure.envref";
     const np: i64 = vector.len(f.params);
     var i: i64 = 0;
     while i < np {
-        const p: Param = vector.get(f.params, i);
-        args = str.concat(args, str.concat(", %", str.concat(p.name, str.concat(": ", ty_ir(p.ty)))));
+        const prm: Param = vector.get(f.params, i);
+        args = str.concat(args, str.concat(", %", str.concat(prm.name, str.concat(": ", value_ir_t(e_ast(e), prm.ty)))));
+        declare(e, %Binding{name: prm.name, is_box: false, ty: prm.ty, id: str.concat("%", prm.name), box: ""});
         i = i + 1;
     }
     head = str.concat(head, str.concat("(", str.concat(args, ")")));
     if ty_is_unit(f.ret) == false {
-        head = str.concat(head, str.concat(" -> ", ty_ir(f.ret)));
+        head = str.concat(head, str.concat(" -> ", value_ir_t(e_ast(e), f.ret)));
     }
     head = str.concat(head, " {");
     emit_top(e, head);
     const b: Block = f.body;
-    if b.has_tail == false {
-        emit_line(e, "func.return");
-    } else {
-        const v: Str = emit_expr(e, b.tail);
-        if e_ok(e) {
-            terminate(e, str.concat("func.return ", str.concat(v, str.concat(" : ", ty_ir(f.ret)))));
+    var upto: i64 = vector.len(b.stmts);
+    var tail_if: IfE = %IfE{cond: poison(), then: poison_block(), has_else: false, els: poison_block()};
+    var has_tail_if: bool = false;
+    if ty_is_unit(f.ret) == false {
+        if b.has_tail == false {
+            if upto > 0 {
+                const last: Stmt = vector.get(b.stmts, upto - 1);
+                tail_if = tail_if_of(last);
+                has_tail_if = tail_if.has_else;
+                if has_tail_if {
+                    upto = upto - 1;
+                }
+            }
         }
     }
+    var i2: i64 = 0;
+    while i2 < upto {
+        emit_stmt(e, vector.get(b.stmts, i2));
+        i2 = i2 + 1;
+    }
+    const a: Ast = e_ast(e);
+    if is_terminated(e) == false {
+    if has_tail_if {
+        const v: Str = emit_ifx(e, tail_if);
+        var acc: Str = "func.return ";
+        acc = str.concat(acc, v);
+        acc = str.concat(acc, " : ");
+        acc = str.concat(acc, value_ir_t(a, f.ret));
+        terminate(e, acc);
+    } else {
+        if b.has_tail {
+            const v2: Str = emit_expr(e, b.tail);
+            var acc2: Str = "func.return ";
+            acc2 = str.concat(acc2, v2);
+            acc2 = str.concat(acc2, " : ");
+            acc2 = str.concat(acc2, value_ir_t(a, f.ret));
+            terminate(e, acc2);
+        } else {
+            terminate(e, "func.return");
+        }
+    }
+    }
+    scope_pop(e);
     emit_top(e, "}");
+}
+
+// The seed's tail-if special case: a trailing `if ... else ...`
+// STATEMENT in a value-returning function is its value (emitted once,
+// as an expression).
+pub fn tail_if_of(s: Stmt) IfE {
+    return match s {
+        Stmt.If(f) => %IfE{cond: f.cond, then: f.then, has_else: f.has_else, els: f.els},
+        _ => %IfE{cond: poison(), then: poison_block(), has_else: false, els: poison_block()},
+    };
 }
 
 pub fn e_entry(e: Emit, sym: Str) {
@@ -253,12 +364,13 @@ pub fn e_entry(e: Emit, sym: Str) {
 // non-empty, lines indented two spaces), newline per line - the
 // driver prints each with io.print.
 pub fn e_render(e: Emit) Vector(Str) {
-    return e.out;
+    return e_out(e);
 }
 
 // Emits a whole module: every function, then the entry wrapper when a
 // `main` exists (the seed's shape).
 pub fn emit_module(e: Emit, a: Ast) {
+    e_ast_set(e, a);
     var has_main: bool = false;
     var main_ok: bool = true;
     const nf: i64 = vector.len(a.fns);
@@ -283,4 +395,990 @@ pub fn emit_module(e: Emit, a: Ast) {
             e_entry(e, "__calque_main");
         }
     }
+}
+
+// ---------------------------------------------------------------- 3b core
+// Scopes, bindings, and the type helpers the statements need. Bindings
+// are VALUES in a per-scope vector (the cell exception covers the
+// emitter's mutable state, D-109).
+
+pub const Binding = struct {
+    name: Str,
+    is_box: bool,
+    ty: Ty,
+    id: Str,
+    box: Str,
+};
+
+pub const Scope = struct {
+    entries: Vector(Binding),
+};
+
+// CELL elements (a vector cannot hold a vector directly; the named
+// wrappers make replacement values legal).
+pub const XCell = struct {
+    items: Vector(Scope),
+};
+
+pub const OutCell = struct {
+    items: Vector(Str),
+};
+
+pub const VtCell = struct {
+    items: Vector(VTy),
+};
+
+pub fn e_out(e: Emit) Vector(Str) {
+    const c: OutCell = vector.get(e.out, 0);
+    return c.items;
+}
+
+pub fn e_vtypes(e: Emit) Vector(VTy) {
+    const c: VtCell = vector.get(e.vtypes, 0);
+    return c.items;
+}
+
+pub fn e_scopes(e: Emit) Vector(Scope) {
+    const c: XCell = vector.get(e.scopes, 0);
+    return c.items;
+}
+
+pub fn empty_scope() Scope {
+    var entries: Vector(Binding) = vector.new();
+    return %Scope{entries: entries};
+}
+
+pub fn lookup(e: Emit, name: Str) Binding {
+    const sc: Vector(Scope) = e_scopes(e);
+    var i: i64 = vector.len(sc);
+    while i > 0 {
+        const s: Scope = vector.get(sc, i - 1);
+        var j: i64 = vector.len(s.entries);
+        while j > 0 {
+            const b: Binding = vector.get(s.entries, j - 1);
+            if b.name == name {
+                return b;
+            }
+            j = j - 1;
+        }
+        i = i - 1;
+    }
+    return %Binding{name: "", is_box: false, ty: Ty.UnitV, id: "", box: ""};
+}
+
+pub fn declare(e: Emit, b: Binding) {
+    const sc: Vector(Scope) = e_scopes(e);
+    const s: Scope = vector.get(sc, vector.len(sc) - 1);
+    vector.push(s.entries, b);
+}
+
+// Type environment: the AST's declarations (linear scan; calq0's own
+// scale is small by construction).
+pub fn find_td(a: Ast, name: Str) TypeDecl {
+    const n: i64 = vector.len(a.types);
+    var i: i64 = 0;
+    while i < n {
+        const td: TypeDecl = vector.get(a.types, i);
+        if td.name == name {
+            return td;
+        }
+        i = i + 1;
+    }
+    return %TypeDecl{name: "", is_union: false, fields: vector_new_fd(), variants: vector_new_vd()};
+}
+
+pub fn vector_new_fd() Vector(FieldDecl) {
+    var v: Vector(FieldDecl) = vector.new();
+    return v;
+}
+
+pub fn vector_new_vd() Vector(VariantDecl) {
+    var v: Vector(VariantDecl) = vector.new();
+    return v;
+}
+
+pub fn named_ok(a: Ast, n: Str) bool {
+    const td: TypeDecl = find_td(a, n);
+    return td.name != "";
+}
+
+pub fn typed_ok(a: Ast, ty: Ty) bool {
+    return match ty {
+        Ty.Named(n) => named_ok(a, n),
+        _ => true,
+    };
+}
+
+pub fn ir_ty(t: Ty) Str {
+    return match t {
+        Ty.I64 => "i64",
+        Ty.BoolV => "i1",
+        Ty.StrV => "!frk_bstr.str",
+        Ty.UnitV => "",
+        Ty.Named(n) => n,
+        Ty.Vec(inner) => "vec",
+        Ty.TyBad(b) => "bad",
+    };
+}
+
+// storage_ir mirrors the seed: named types erase to recref; vectors
+// keep their box; builtins map directly.
+pub fn storage_ir_t(a: Ast, t: Ty) Str {
+    return match t {
+        Ty.Named(n) => "!frk_mem.recref",
+        Ty.Vec(inner) => value_ir_t(a, t),
+        _ => ir_ty(t),
+    };
+}
+
+pub fn value_ir_t(a: Ast, t: Ty) Str {
+    return match t {
+        Ty.Named(n) => named_value_ir(a, n),
+        Ty.Vec(inner) => vec_box(a, inner),
+        _ => ir_ty(t),
+    };
+}
+
+pub fn named_value_ir(a: Ast, n: Str) Str {
+    const td: TypeDecl = find_td(a, n);
+    if td.is_union == false {
+        return str.concat("!frk_mem.box<", str.concat(product_ir(a, td), ">"));
+    }
+    return sum_ir(a, td);
+}
+
+pub fn product_ir(a: Ast, td: TypeDecl) Str {
+    var parts: Str = "";
+    const nf: i64 = vector.len(td.fields);
+    var i: i64 = 0;
+    while i < nf {
+        const f: FieldDecl = vector.get(td.fields, i);
+        if i > 0 {
+            parts = str.concat(parts, ", ");
+        }
+        parts = str.concat(parts, storage_ir_t(a, f.ty));
+        i = i + 1;
+    }
+    return str.concat("!frk_adt.product<[", str.concat(parts, "]>"));
+}
+
+pub fn sum_ir(a: Ast, td: TypeDecl) Str {
+    var parts: Str = "";
+    const nv: i64 = vector.len(td.variants);
+    var i: i64 = 0;
+    while i < nv {
+        const v: VariantDecl = vector.get(td.variants, i);
+        if i > 0 {
+            parts = str.concat(parts, ", ");
+        }
+        if v.has_payload {
+            parts = str.concat(parts, str.concat("[", str.concat(storage_ir_t(a, v.ty), "]")));
+        } else {
+            parts = str.concat(parts, "[]");
+        }
+        i = i + 1;
+    }
+    return str.concat("!frk_adt.sum<[", str.concat(parts, "]>"));
+}
+
+pub fn box_ir_t(a: Ast, t: Ty) Str {
+    return str.concat("!frk_mem.box<", str.concat(value_ir_t(a, t), ">"));
+}
+
+pub fn vec_slot_ir(t: Ty) Str {
+    return match t {
+        Ty.I64 => "i64",
+        Ty.StrV => "!frk_bstr.str",
+        Ty.Named(n) => "!frk_mem.recref",
+        _ => "bad",
+    };
+}
+
+pub fn vec_prefix(t: Ty) Str {
+    return match t {
+        Ty.I64 => "__calque_vector_i64",
+        Ty.StrV => "__calque_vector_bstr",
+        Ty.Named(n) => "__calque_vector_box",
+        _ => "__calque_vector_bad",
+    };
+}
+
+pub fn vec_box(a: Ast, inner: Ty) Str {
+    var acc: Str = "!frk_mem.box<!frk_adt.product<[!frk_mem.arr<";
+    acc = str.concat(acc, vec_slot_ir(inner));
+    acc = str.concat(acc, ">, i64, i64]>>");
+    return acc;
+}
+
+pub fn field_index(td: TypeDecl, name: Str) i64 {
+    const nf: i64 = vector.len(td.fields);
+    var i: i64 = 0;
+    while i < nf {
+        const f: FieldDecl = vector.get(td.fields, i);
+        if f.name == name {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------- values
+// The seed's E.vtypes convention: ids returned, types tracked beside
+// them. One lookup table per emission context.
+
+pub const VTy = struct {
+    id: Str,
+    ty: Ty,
+};
+
+pub fn vset(e: Emit, id: Str, ty: Ty) {
+    vector.push(e_vtypes(e), %VTy{id: id, ty: ty});
+}
+
+pub fn vget(e: Emit, id: Str) Ty {
+    const n: i64 = vector.len(e_vtypes(e));
+    var i: i64 = n;
+    while i > 0 {
+        const vt: VTy = vector.get(e_vtypes(e), i - 1);
+        if vt.id == id {
+            return vt.ty;
+        }
+        i = i - 1;
+    }
+    return Ty.UnitV;
+}
+
+pub fn e_ret(e: Emit) Ty {
+    return vector.get(e.rets, 0);
+}
+
+pub fn e_file(e: Emit) Str {
+    return vector.get(e.files, 0);
+}
+
+pub fn loc_msg(e: Emit, line: i64, col: i64, code: Str, what: Str) Str {
+    var acc: Str = str.concat(e_file(e), ":");
+    acc = str.concat(acc, str.fromI64(line));
+    acc = str.concat(acc, ":");
+    acc = str.concat(acc, str.fromI64(col));
+    acc = str.concat(acc, ": error: ");
+    acc = str.concat(acc, code);
+    acc = str.concat(acc, ": ");
+    acc = str.concat(acc, what);
+    return acc;
+}
+
+// A terminating poison value for the unreachable arms of emitted traps
+// (mirrors the seed's poison(): builtins as constants, named types as
+// empty boxes, vectors as the mirrored intrinsic's terminator).
+pub fn e_poison(e: Emit, t: Ty) Str {
+    const unit_t: Ty = t;
+    return match unit_t {
+        Ty.I64 => e_int(e, "0"),
+        Ty.BoolV => e_bool(e, "false"),
+        Ty.StrV => e_str(e, ""),
+        _ => named_poison(e, t),
+    };
+}
+
+pub fn named_poison(e: Emit, t: Ty) Str {
+    return match t {
+        Ty.Named(n) => named_poison_box(e, n),
+        Ty.Vec(inner) => named_poison_vec(e, inner),
+        _ => e_int(e, "0"),
+    };
+}
+
+pub fn named_poison_vec(e: Emit, inner: Ty) Str {
+    const v: Str = fresh(e);
+    emit_line(e, str.concat(v, str.concat(" = func.call @", str.concat(vec_prefix(inner), str.concat("_new() : () -> ", vec_box(e_ast(e), inner))))));
+    return v;
+}
+
+pub fn named_poison_box(e: Emit, n: Str) Str {
+    // The seed's struct poison: a box of a product of STORAGE poisons
+    // (named fields = recref_null). Union poison lands with match in
+    // 3b-beta; a union here still produces a well-formed empty box.
+    const a: Ast = e_ast(e);
+    const td: TypeDecl = find_td(a, n);
+    var acc: Str = "";
+    var acc_ty: Str = "!frk_adt.product<[]>";
+    const nf: i64 = vector.len(td.fields);
+    var i: i64 = 0;
+    var e0: Str = "";
+    if td.is_union == false {
+        e0 = fresh(e);
+        emit_line(e, str.concat(e0, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
+        acc = e0;
+        var j: i64 = 0;
+        while j < nf {
+            const f: FieldDecl = vector.get(td.fields, j);
+            const st: Str = storage_ir_t(a, f.ty);
+            var val: Str = "";
+            if ty_is_i64(f.ty) {
+                val = const_i64(e, "0");
+            } else {
+                val = e_str(e, "");
+            }
+            const nxt: Str = fresh(e);
+            emit_line(e, str.concat(nxt, str.concat(" = \"frk_adt.product_snoc\"(", str.concat(acc, str.concat(", ", str.concat(val, str.concat(") : (", str.concat(acc_ty, str.concat(", ", str.concat(st, str.concat(") -> !frk_adt.product<[", str.concat(st, "]>"))))))))))));
+            acc = nxt;
+            acc_ty = str.concat("!frk_adt.product<[", str.concat(st, "]>"));
+            j = j + 1;
+        }
+    } else {
+        e0 = fresh(e);
+        emit_line(e, str.concat(e0, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
+        acc = e0;
+    }
+    const b: Str = fresh(e);
+    emit_line(e, str.concat(b, str.concat(" = \"frk_mem.box_new\"(", str.concat(acc, str.concat(") : (", str.concat(acc_ty, str.concat(") -> !frk_mem.box<", str.concat(acc_ty, ">"))))))));
+    return b;
+}
+
+// The seed's guard: cond_br cond ^trap ^ok; ^trap: message + rt trap +
+// poison return; ^ok: continue. Byte-mirrored.
+pub fn guard(e: Emit, cond: Str, msg: Str, line: i64, col: i64) {
+    const trap: Str = fresh_label(e);
+    const ok: Str = fresh_label(e);
+    emit_line(e, str.concat("cf.cond_br ", str.concat(cond, str.concat(", ^", str.concat(trap, str.concat(", ^", ok))))));
+    new_label(e, trap);
+    const m: Str = e_str(e, msg);
+    emit_line(e, str.concat("func.call @frk_rt_calque_trap(", str.concat(m, ") : (!frk_bstr.str) -> ()")));
+    if ty_is_unit(e_ret(e)) {
+        terminate(e, "func.return");
+    } else {
+        const p: Str = e_poison(e, e_ret(e));
+        terminate(e, str.concat("func.return ", str.concat(p, str.concat(" : ", value_ir_t(e_ast(e), e_ret(e))))));
+    }
+    new_label(e, ok);
+}
+
+pub fn const_i64(e: Emit, text: Str) Str {
+    return e_int(e, text);
+}
+
+// Checked arithmetic, mirroring the seed's emit_checked op for op
+// (codes, messages, and the exact sequence shapes).
+pub fn emit_checked(e: Emit, op: Str, a: Str, b: Str, line: i64, col: i64) Str {
+    const res: Str = fresh(e);
+    const zero: Str = const_i64(e, "0");
+    if op == "+" {
+        emit_line(e, str.concat(res, str.concat(" = arith.addi ", str.concat(a, str.concat(", ", str.concat(b, " : i64"))))));
+        const x1: Str = fresh(e);
+        const x2: Str = fresh(e);
+        const x3: Str = fresh(e);
+        const neg: Str = fresh(e);
+        emit_line(e, str.concat(x1, str.concat(" = arith.xori ", str.concat(a, str.concat(", ", str.concat(res, " : i64"))))));
+        emit_line(e, str.concat(x2, str.concat(" = arith.xori ", str.concat(b, str.concat(", ", str.concat(res, " : i64"))))));
+        emit_line(e, str.concat(x3, str.concat(" = arith.andi ", str.concat(x1, str.concat(", ", str.concat(x2, " : i64"))))));
+        emit_line(e, str.concat(neg, str.concat(" = arith.cmpi slt, ", str.concat(x3, str.concat(", ", str.concat(zero, " : i64"))))));
+        guard(e, neg, loc_msg(e, line, col, "CQ0001", "integer overflow (i64 add)"), line, col);
+        vset(e, res, Ty.I64);
+        return res;
+    }
+    if op == "-" {
+        emit_line(e, str.concat(res, str.concat(" = arith.subi ", str.concat(a, str.concat(", ", str.concat(b, " : i64"))))));
+        const x1: Str = fresh(e);
+        const x2: Str = fresh(e);
+        const x3: Str = fresh(e);
+        const neg: Str = fresh(e);
+        emit_line(e, str.concat(x1, str.concat(" = arith.xori ", str.concat(a, str.concat(", ", str.concat(res, " : i64"))))));
+        emit_line(e, str.concat(x2, str.concat(" = arith.xori ", str.concat(a, str.concat(", ", str.concat(b, " : i64"))))));
+        emit_line(e, str.concat(x3, str.concat(" = arith.andi ", str.concat(x1, str.concat(", ", str.concat(x2, " : i64"))))));
+        emit_line(e, str.concat(neg, str.concat(" = arith.cmpi slt, ", str.concat(x3, str.concat(", ", str.concat(zero, " : i64"))))));
+        guard(e, neg, loc_msg(e, line, col, "CQ0002", "integer overflow (i64 sub)"), line, col);
+        vset(e, res, Ty.I64);
+        return res;
+    }
+    if op == "*" {
+        // overflow iff b != 0 and the wrapped product does not divide
+        // back; min*-1 routes the quotient to 0 via select (the seed's
+        // CQ0003 recipe, mirrored op for op).
+        const resm: Str = fresh(e);
+        emit_line(e, str.concat(resm, str.concat(" = arith.muli ", str.concat(a, str.concat(", ", str.concat(b, " : i64"))))));
+        const bnz: Str = fresh(e);
+        emit_line(e, str.concat(bnz, str.concat(" = arith.cmpi ne, ", str.concat(b, str.concat(", ", str.concat(zero, " : i64"))))));
+        const bz: Str = fresh(e);
+        emit_line(e, str.concat(bz, str.concat(" = arith.cmpi eq, ", str.concat(b, str.concat(", ", str.concat(zero, " : i64"))))));
+        const one1: Str = const_i64(e, "1");
+        const bsafe: Str = fresh(e);
+        emit_line(e, str.concat(bsafe, str.concat(" = arith.select ", str.concat(bz, str.concat(", ", str.concat(one1, str.concat(", ", str.concat(b, " : i64"))))))));
+        const maxlit: Str = const_i64(e, "9223372036854775807");
+        const one2: Str = const_i64(e, "1");
+        const m0: Str = fresh(e);
+        const minv: Str = fresh(e);
+        const minus1: Str = fresh(e);
+        emit_line(e, str.concat(m0, str.concat(" = arith.subi ", str.concat(zero, str.concat(", ", str.concat(maxlit, " : i64"))))));
+        emit_line(e, str.concat(minv, str.concat(" = arith.subi ", str.concat(m0, str.concat(", ", str.concat(one2, " : i64"))))));
+        emit_line(e, str.concat(minus1, str.concat(" = arith.subi ", str.concat(zero, str.concat(", ", str.concat(one2, " : i64"))))));
+        const amin: Str = fresh(e);
+        const bm1: Str = fresh(e);
+        const special: Str = fresh(e);
+        emit_line(e, str.concat(amin, str.concat(" = arith.cmpi eq, ", str.concat(a, str.concat(", ", str.concat(minv, " : i64"))))));
+        emit_line(e, str.concat(bm1, str.concat(" = arith.cmpi eq, ", str.concat(b, str.concat(", ", str.concat(minus1, " : i64"))))));
+        emit_line(e, str.concat(special, str.concat(" = arith.andi ", str.concat(amin, str.concat(", ", str.concat(bm1, " : i1"))))));
+        const zr: Str = fresh(e);
+        emit_line(e, str.concat(zr, str.concat(" = arith.select ", str.concat(special, str.concat(", ", str.concat(zero, str.concat(", ", str.concat(resm, " : i64"))))))));
+        const q: Str = fresh(e);
+        emit_line(e, str.concat(q, str.concat(" = arith.divsi ", str.concat(zr, str.concat(", ", str.concat(bsafe, " : i64"))))));
+        const nq: Str = fresh(e);
+        emit_line(e, str.concat(nq, str.concat(" = arith.cmpi ne, ", str.concat(q, str.concat(", ", str.concat(a, " : i64"))))));
+        const ovf: Str = fresh(e);
+        emit_line(e, str.concat(ovf, str.concat(" = arith.andi ", str.concat(nq, str.concat(", ", str.concat(bnz, " : i1"))))));
+        guard(e, ovf, loc_msg(e, line, col, "CQ0003", "integer overflow (i64 mul)"), line, col);
+        vset(e, resm, Ty.I64);
+        return resm;
+    }
+    if op == "/" {
+        return emit_div(e, op, a, b, res, line, col);
+    }
+    if op == "%" {
+        return emit_div(e, op, a, b, res, line, col);
+    }
+    return e_fail_at(e, line, col, str.concat("operator `", str.concat(op, "` lands in slice 3b-beta")));
+}
+
+// division/remainder: zero divisor and MIN/-1 overflow checks (the
+// seed's CQ0004/CQ0005 recipe, mirrored).
+pub fn emit_div(e: Emit, op: Str, a: Str, b: Str, res: Str, line: i64, col: i64) Str {
+    const zero2: Str = const_i64(e, "0");
+    const is_zero: Str = fresh(e);
+    emit_line(e, str.concat(is_zero, str.concat(" = arith.cmpi eq, ", str.concat(b, str.concat(", ", str.concat(zero2, " : i64"))))));
+    if op == "/" {
+        guard(e, is_zero, loc_msg(e, line, col, "CQ0004", "division by zero"), line, col);
+    } else {
+        guard(e, is_zero, loc_msg(e, line, col, "CQ0004", "remainder by zero"), line, col);
+    }
+    const maxlit: Str = const_i64(e, "9223372036854775807");
+    const one: Str = const_i64(e, "1");
+    const m1: Str = fresh(e);
+    const minv: Str = fresh(e);
+    const minus1: Str = fresh(e);
+    emit_line(e, str.concat(m1, str.concat(" = arith.subi ", str.concat(zero2, str.concat(", ", str.concat(maxlit, " : i64"))))));
+    emit_line(e, str.concat(minv, str.concat(" = arith.subi ", str.concat(m1, str.concat(", ", str.concat(one, " : i64"))))));
+    emit_line(e, str.concat(minus1, str.concat(" = arith.subi ", str.concat(zero2, str.concat(", ", str.concat(one, " : i64"))))));
+    const is_min: Str = fresh(e);
+    const is_m1: Str = fresh(e);
+    const both: Str = fresh(e);
+    emit_line(e, str.concat(is_min, str.concat(" = arith.cmpi eq, ", str.concat(a, str.concat(", ", str.concat(minv, " : i64"))))));
+    emit_line(e, str.concat(is_m1, str.concat(" = arith.cmpi eq, ", str.concat(b, str.concat(", ", str.concat(minus1, " : i64"))))));
+    emit_line(e, str.concat(both, str.concat(" = arith.andi ", str.concat(is_min, str.concat(", ", str.concat(is_m1, " : i1"))))));
+    if op == "/" {
+        guard(e, both, loc_msg(e, line, col, "CQ0005", "division overflow (i64 min / -1)"), line, col);
+    } else {
+        guard(e, both, loc_msg(e, line, col, "CQ0005", "remainder overflow (i64 min % -1)"), line, col);
+    }
+    if op == "/" {
+        emit_line(e, str.concat(res, str.concat(" = arith.divsi ", str.concat(a, str.concat(", ", str.concat(b, " : i64"))))));
+    } else {
+        emit_line(e, str.concat(res, str.concat(" = arith.remsi ", str.concat(a, str.concat(", ", str.concat(b, " : i64"))))));
+    }
+    vset(e, res, Ty.I64);
+    return res;
+}
+
+pub fn cmp_pred(op: Str) Str {
+    if op == "==" {
+        return "eq";
+    }
+    if op == "!=" {
+        return "ne";
+    }
+    if op == "<" {
+        return "slt";
+    }
+    if op == "<=" {
+        return "sle";
+    }
+    if op == ">" {
+        return "sgt";
+    }
+    return "sge";
+}
+
+pub fn emit_cmp(e: Emit, op: Str, a: Str, b: Str, line: i64, col: i64) Str {
+    const ta: Ty = vget(e, a);
+    const tb: Ty = vget(e, b);
+    var t: Ty = ta;
+    if ty_is_unit(t) {
+        t = tb;
+    }
+    if ty_is_i64(t) {
+        const r: Str = fresh(e);
+        emit_line(e, str.concat(r, str.concat(" = arith.cmpi ", str.concat(cmp_pred(op), str.concat(", ", str.concat(a, str.concat(", ", str.concat(b, " : i64"))))))));
+        vset(e, r, Ty.BoolV);
+        return r;
+    }
+    return e_fail_at(e, line, col, "Str/bool comparisons land in slice 3b-beta");
+}
+
+// ---------------------------------------------------------------- reads
+pub fn read_binding(e: Emit, b: Binding) Str {
+    if b.is_box == false {
+        vset(e, b.id, b.ty);
+        return b.id;
+    }
+    const v: Str = fresh(e);
+    const a: Ast = e_ast(e);
+    emit_line(e, str.concat(v, str.concat(" = \"frk_mem.box_get\"(", str.concat(b.id, str.concat(") : (", str.concat(b.box, str.concat(") -> ", value_ir_t(a, b.ty))))))));
+    vset(e, v, b.ty);
+    return v;
+}
+
+pub fn vty_of(e: Emit, a: Str) Ty {
+    return vget(e, a);
+}
+
+// ---------------------------------------------------------------- calls
+pub fn sym_of2(f: Fn) Str {
+    return sym_of(f);
+}
+
+pub fn call_sym(name: Str, mod: Str) Str {
+    if str.len(mod) > 0 {
+        return str.concat(mod, str.concat("__", name));
+    }
+    if name == "main" {
+        return "__calque_main";
+    }
+    return name;
+}
+
+pub fn find_fn(a: Ast, sym: Str) Fn {
+    const n: i64 = vector.len(a.fns);
+    var i: i64 = 0;
+    while i < n {
+        const f: Fn = vector.get(a.fns, i);
+        if sym_of(f) == sym {
+            return f;
+        }
+        i = i + 1;
+    }
+    return poison_fn();
+}
+
+pub fn emit_call(e: Emit, c: Call, line: i64, col: i64) Str {
+    const r: Ref = c.callee;
+    if r.mod == "io" {
+        if r.name == "print" {
+            const n_io: i64 = vector.len(c.args);
+            if n_io != 1 {
+                return e_fail_at(e, line, col, "io.print takes exactly one Str (seed v0)");
+            }
+            const a0: Str = emit_expr(e, vector.get(c.args, 0));
+            emit_line(e, str.concat("func.call @frk_rt_calque_print(", str.concat(a0, ") : (!frk_bstr.str) -> ()")));
+            return "";
+        }
+        return e_fail_at(e, line, col, str.concat("io.", str.concat(r.name, " is not in seed v0")));
+    }
+    if r.mod == "vector" {
+        return e_fail_at(e, line, col, "vector.* lands in slice 3b-beta");
+    }
+    if r.mod == "str" {
+        if r.name == "len" {
+            const na0: i64 = vector.len(c.args);
+            if na0 != 1 {
+                return e_fail_at(e, line, col, "str.len takes exactly one argument");
+            }
+            const a0: Str = emit_expr(e, vector.get(c.args, 0));
+            const res0: Str = fresh(e);
+            emit_line(e, str.concat(res0, str.concat(" = \"frk_bstr.len\"(", str.concat(a0, ") : (!frk_bstr.str) -> i64"))));
+            vset(e, res0, Ty.I64);
+            return res0;
+        }
+        if r.name == "concat" {
+            const na1: i64 = vector.len(c.args);
+            if na1 != 2 {
+                return e_fail_at(e, line, col, "str.concat takes exactly two arguments");
+            }
+            const x0: Str = emit_expr(e, vector.get(c.args, 0));
+            const x1: Str = emit_expr(e, vector.get(c.args, 1));
+            const res1: Str = fresh(e);
+            emit_line(e, str.concat(res1, str.concat(" = \"frk_bstr.concat\"(", str.concat(x0, str.concat(", ", str.concat(x1, ") : (!frk_bstr.str, !frk_bstr.str) -> !frk_bstr.str"))))));
+            vset(e, res1, Ty.StrV);
+            return res1;
+        }
+        if r.name == "sub" {
+            const na2: i64 = vector.len(c.args);
+            if na2 != 3 {
+                return e_fail_at(e, line, col, "str.sub takes exactly three arguments");
+            }
+            const s: Str = emit_expr(e, vector.get(c.args, 0));
+            const start: Str = emit_expr(e, vector.get(c.args, 1));
+            const len: Str = emit_expr(e, vector.get(c.args, 2));
+            const zero_sub: Str = const_i64(e, "0");
+            const e1: Str = fresh(e);
+            const e2: Str = fresh(e);
+            const endv: Str = fresh(e);
+            const e3: Str = fresh(e);
+            const bad1: Str = fresh(e);
+            const bad: Str = fresh(e);
+            const slen: Str = fresh(e);
+            emit_line(e, str.concat(slen, str.concat(" = \"frk_bstr.len\"(", str.concat(s, ") : (!frk_bstr.str) -> i64"))));
+            emit_line(e, str.concat(e1, str.concat(" = arith.cmpi slt, ", str.concat(start, str.concat(", ", str.concat(zero_sub, " : i64"))))));
+            emit_line(e, str.concat(e2, str.concat(" = arith.cmpi slt, ", str.concat(len, str.concat(", ", str.concat(zero_sub, " : i64"))))));
+            emit_line(e, str.concat(endv, str.concat(" = arith.addi ", str.concat(start, str.concat(", ", str.concat(len, " : i64"))))));
+            emit_line(e, str.concat(e3, str.concat(" = arith.cmpi sgt, ", str.concat(endv, str.concat(", ", str.concat(slen, " : i64"))))));
+            emit_line(e, str.concat(bad1, str.concat(" = arith.ori ", str.concat(e1, str.concat(", ", str.concat(e2, " : i1"))))));
+            emit_line(e, str.concat(bad, str.concat(" = arith.ori ", str.concat(bad1, str.concat(", ", str.concat(e3, " : i1"))))));
+            guard(e, bad, loc_msg(e, line, col, "CQ0006", "str.sub out of bounds"), line, col);
+            const one_sub: Str = const_i64(e, "1");
+            const from: Str = fresh(e);
+            const to: Str = fresh(e);
+            emit_line(e, str.concat(from, str.concat(" = arith.addi ", str.concat(start, str.concat(", ", str.concat(one_sub, " : i64"))))));
+            emit_line(e, str.concat(to, str.concat(" = arith.addi ", str.concat(start, str.concat(", ", str.concat(len, " : i64"))))));
+            const res2: Str = fresh(e);
+            emit_line(e, str.concat(res2, str.concat(" = \"frk_bstr.sub\"(", str.concat(s, str.concat(", ", str.concat(from, str.concat(", ", str.concat(to, ") : (!frk_bstr.str, i64, i64) -> !frk_bstr.str"))))))));
+            vset(e, res2, Ty.StrV);
+            return res2;
+        }
+        // str.fromI64 and other members resolve as namespaced functions.
+    }
+    const sym: Str = call_sym(r.name, r.mod);
+    const f: Fn = find_fn(e_ast(e), sym);
+    if f.name == "" {
+        return e_fail_at(e, line, col, str.concat("unknown function `", str.concat(sym, "`")));
+    }
+    const a: Ast = e_ast(e);
+    var parts: Str = "%env";
+    var types: Str = "!frk_closure.envref";
+    const na: i64 = vector.len(c.args);
+    const np: i64 = vector.len(f.params);
+    if na != np {
+        return e_fail_at(e, line, col, str.concat("`", str.concat(sym, "` arity mismatch")));
+    }
+    var i: i64 = 0;
+    while i < na {
+        const v: Str = emit_expr(e, vector.get(c.args, i));
+        const prm: Param = vector.get(f.params, i);
+        parts = str.concat(parts, str.concat(", ", v));
+        types = str.concat(types, str.concat(", ", value_ir_t(a, prm.ty)));
+        i = i + 1;
+    }
+    if ty_is_unit(f.ret) {
+        emit_line(e, str.concat("func.call @", str.concat(sym, str.concat("(", str.concat(parts, str.concat(") : (", str.concat(types, ") -> ()")))))));
+        return "";
+    }
+    const res: Str = fresh(e);
+    emit_line(e, str.concat(res, str.concat(" = func.call @", str.concat(sym, str.concat("(", str.concat(parts, str.concat(") : (", str.concat(types, str.concat(") -> ", value_ir_t(a, f.ret))))))))));
+    vset(e, res, f.ret);
+    return res;
+}
+
+// ---------------------------------------------------------------- expressions
+pub fn emit_expr(e: Emit, ex: Expr) Str {
+    return match ex {
+        Expr.Int(t) => e_int(e, t),
+        Expr.Bool(t) => e_bool(e, t),
+        Expr.Str(t) => e_str(e, t),
+        Expr.Ref(r) => emit_ref(e, r),
+        Expr.Call(c) => emit_call(e, c, c.line, c.col),
+        Expr.Bin(b) => emit_bin(e, b),
+        Expr.If(f) => emit_ifx(e, f),
+        Expr.Blk(b) => emit_block_expr(e, b),
+        Expr.Bad(b) => e_fail(e, b),
+        Expr.Match(m) => e_fail_at(e, 0, 0, "match lands in slice 3b-beta"),
+        Expr.Make(m) => e_fail_at(e, 0, 0, "records land in slice 3b-beta"),
+    };
+}
+
+pub fn emit_ref(e: Emit, r: Ref) Str {
+    if str.len(r.mod) > 0 {
+        return e_fail_at(e, 0, 0, "module-member values land in slice 3b-beta");
+    }
+    const b: Binding = lookup(e, r.name);
+    if b.name == "" {
+        return e_fail_at(e, 0, 0, str.concat("unknown name `", str.concat(r.name, "`")));
+    }
+    return read_binding(e, b);
+}
+
+pub fn emit_bin(e: Emit, b: Bin) Str {
+    const a: Str = emit_expr(e, b.l);
+    const c: Str = emit_expr(e, b.r);
+    if b.op == "+" {
+        return emit_checked(e, b.op, a, c, b.line, b.col);
+    }
+    if b.op == "-" {
+        return emit_checked(e, b.op, a, c, b.line, b.col);
+    }
+    if b.op == "*" {
+        return emit_checked(e, b.op, a, c, b.line, b.col);
+    }
+    if b.op == "/" {
+        return emit_checked(e, b.op, a, c, b.line, b.col);
+    }
+    if b.op == "%" {
+        return emit_checked(e, b.op, a, c, b.line, b.col);
+    }
+    if b.op == "==" {
+        return emit_cmp(e, b.op, a, c, b.line, b.col);
+    }
+    if b.op == "!=" {
+        return emit_cmp(e, b.op, a, c, b.line, b.col);
+    }
+    if b.op == "<" {
+        return emit_cmp(e, b.op, a, c, b.line, b.col);
+    }
+    if b.op == "<=" {
+        return emit_cmp(e, b.op, a, c, b.line, b.col);
+    }
+    if b.op == ">" {
+        return emit_cmp(e, b.op, a, c, b.line, b.col);
+    }
+    if b.op == ">=" {
+        return emit_cmp(e, b.op, a, c, b.line, b.col);
+    }
+    return e_fail_at(e, 0, 0, str.concat("operator `", str.concat(b.op, "` lands in slice 3b-beta")));
+}
+
+// Block expression: statements with scopes, optional tail value.
+pub fn emit_block_expr(e: Emit, b: Block) Str {
+    scope_push(e);
+    var value: Str = "";
+    const n: i64 = vector.len(b.stmts);
+    var i: i64 = 0;
+    while i < n {
+        if is_terminated(e) == false {
+            emit_stmt(e, vector.get(b.stmts, i));
+        }
+        i = i + 1;
+    }
+    if is_terminated(e) == false {
+        if b.has_tail {
+            value = emit_expr(e, b.tail);
+        }
+    }
+    scope_pop(e);
+    return value;
+}
+
+// `if` expression (else required): then/else arms branch to a join
+// with the value; mirrors the seed's block reordering linearly.
+pub fn emit_ifx(e: Emit, f: IfE) Str {
+    if f.has_else == false {
+        return e_fail_at(e, 0, 0, "an `if` in expression position requires `else` (SPEC 5)");
+    }
+    const cond: Str = emit_expr(e, f.cond);
+    const tl: Str = fresh_label(e);
+    const el: Str = fresh_label(e);
+    const jl: Str = fresh_label(e);
+    emit_line(e, str.concat("cf.cond_br ", str.concat(cond, str.concat(", ^", str.concat(tl, str.concat(", ^", el))))));
+    new_label(e, tl);
+    const tv: Str = emit_block_expr(e, f.then);
+    var ty: Ty = Ty.UnitV;
+    var has_ty: bool = false;
+    if str.len(tv) > 0 {
+        ty = vget(e, tv);
+        has_ty = true;
+    }
+    const then_end_len: i64 = vector.len(e_out(e));
+    new_label(e, el);
+    const ev: Str = emit_block_expr(e, f.els);
+    if has_ty == false {
+        if str.len(ev) > 0 {
+            ty = vget(e, ev);
+            has_ty = true;
+        }
+    }
+    const a: Ast = e_ast(e);
+    // join arg name mirrors the seed: %j<label-counter>
+    var join_arg: Str = "";
+    if has_ty {
+        join_arg = str.concat("%j", str.fromI64(vector.get(e.blk, 0)));
+        emit_top(e, str.concat("^", str.concat(jl, str.concat("(", str.concat(join_arg, str.concat(": ", str.concat(value_ir_t(a, ty), "):")))))));
+        vector.set(e.terminated, 0, 0);
+    } else {
+        new_label(e, jl);
+    }
+    // patch the then-branch: its br must land right after its arm lines
+    const br_then: Str = br_for(e, jl, tv, ty, has_ty);
+    const br_else: Str = br_for(e, jl, ev, ty, has_ty);
+    var patched: Vector(Str) = vector.new();
+    const no = vector.len(e_out(e));
+    var i: i64 = 0;
+    while i < no {
+        // splice br_then after the then arm (before the else label) and
+        // br_else at the end (before the join label) - linear rebuild
+        i = i + 1;
+    }
+    // Simpler: rebuild out by walking and inserting.
+    var rebuilt: Vector(Str) = vector.new();
+    var j: i64 = 0;
+    while j < no {
+        const line: Str = vector.get(e_out(e), j);
+        if j == then_end_len {
+            vector.push(rebuilt, br_then);
+        }
+        if j == no - 1 {
+            vector.push(rebuilt, br_else);
+        }
+        vector.push(rebuilt, line);
+        j = j + 1;
+    }
+    vector.set(e.out, 0, %OutCell{items: rebuilt});
+    if has_ty {
+        vset(e, join_arg, ty);
+        return join_arg;
+    }
+    return "";
+}
+
+pub fn br_for(e: Emit, jl: Str, v: Str, ty: Ty, has_ty: bool) Str {
+    const a: Ast = e_ast(e);
+    if has_ty {
+        if str.len(v) > 0 {
+            var acc: Str = "  cf.br ^"; // spliced raw: carries its indent
+            acc = str.concat(acc, jl);
+            acc = str.concat(acc, "(");
+            acc = str.concat(acc, v);
+            acc = str.concat(acc, " : ");
+            acc = str.concat(acc, value_ir_t(a, ty));
+            acc = str.concat(acc, ")");
+            return acc;
+        }
+    }
+    return str.concat("  cf.br ^", jl);
+}
+
+// ---------------------------------------------------------------- statements
+pub fn emit_stmt(e: Emit, s: Stmt) {
+    match s {
+        Stmt.Const(c) => emit_const(e, c),
+        Stmt.Var(v) => emit_var(e, v),
+        Stmt.Assign(a) => emit_assign(e, a),
+        Stmt.Ret(r) => emit_ret(e, r),
+        Stmt.While(w) => emit_while(e, w),
+        Stmt.If(f) => emit_ifs(e, %IfE{cond: f.cond, then: f.then, has_else: f.has_else, els: f.els}),
+        Stmt.Expr(x) => emit_expr_stmt(e, x),
+        Stmt.Destr(d) => emit_destr(e, d),
+    };
+}
+
+pub fn emit_const(e: Emit, c: ConstS) {
+    const v: Str = emit_expr(e, c.expr);
+    var ty: Ty = c.ty;
+    if c.has_ty == false {
+        ty = vget(e, v);
+    }
+    declare(e, %Binding{name: c.name, is_box: false, ty: ty, id: v, box: ""});
+}
+
+pub fn emit_var(e: Emit, d: VarS) {
+    const v: Str = emit_expr(e, d.expr);
+    const b: Str = fresh(e);
+    const a: Ast = e_ast(e);
+    emit_line(e, str.concat(b, str.concat(" = \"frk_mem.box_new\"(", str.concat(v, str.concat(") : (", str.concat(value_ir_t(a, d.ty), str.concat(") -> ", box_ir_t(a, d.ty))))))));
+    declare(e, %Binding{name: d.name, is_box: true, ty: d.ty, id: b, box: box_ir_t(a, d.ty)});
+}
+
+pub fn emit_assign(e: Emit, x: AssignS) {
+    const b: Binding = lookup(e, x.name);
+    if b.name == "" {
+        const _e: Str = e_fail_at(e, 0, 0, str.concat("unknown name `", str.concat(x.name, "` in assignment")));
+        return;
+    }
+    if b.is_box == false {
+        const _e2: Str = e_fail_at(e, 0, 0, str.concat("cannot assign to immutable `", str.concat(x.name, "`")));
+        return;
+    }
+    const v: Str = emit_expr(e, x.expr);
+    const a: Ast = e_ast(e);
+    emit_line(e, str.concat("\"frk_mem.box_set\"(", str.concat(b.id, str.concat(", ", str.concat(v, str.concat(") : (", str.concat(b.box, str.concat(", ", str.concat(value_ir_t(a, b.ty), ") -> ()")))))))));
+}
+
+pub fn emit_ret(e: Emit, r: RetS) {
+    if r.has_expr == false {
+        terminate(e, "func.return");
+        return;
+    }
+    const v: Str = emit_expr(e, r.expr);
+    const a: Ast = e_ast(e);
+    var acc: Str = "func.return ";
+    acc = str.concat(acc, v);
+    acc = str.concat(acc, " : ");
+    acc = str.concat(acc, value_ir_t(a, vget(e, v)));
+    terminate(e, acc);
+}
+
+pub fn emit_while(e: Emit, w: WhileS) {
+    const head: Str = fresh_label(e);
+    const body: Str = fresh_label(e);
+    const done: Str = fresh_label(e);
+    terminate(e, str.concat("cf.br ^", head));
+    new_label(e, head);
+    const cond: Str = emit_expr(e, w.cond);
+    emit_line(e, str.concat("cf.cond_br ", str.concat(cond, str.concat(", ^", str.concat(body, str.concat(", ^", done))))));
+    new_label(e, body);
+    emit_block_expr(e, w.body);
+    if is_terminated(e) == false {
+        terminate(e, str.concat("cf.br ^", head));
+    }
+    new_label(e, done);
+}
+
+pub fn emit_ifs(e: Emit, f: IfE) {
+    const cond: Str = emit_expr(e, f.cond);
+    const tl: Str = fresh_label(e);
+    const cont: Str = fresh_label(e);
+    var el: Str = "";
+    if f.has_else {
+        el = fresh_label(e);
+        emit_line(e, str.concat("cf.cond_br ", str.concat(cond, str.concat(", ^", str.concat(tl, str.concat(", ^", el))))));
+    } else {
+        emit_line(e, str.concat("cf.cond_br ", str.concat(cond, str.concat(", ^", str.concat(tl, str.concat(", ^", cont))))));
+    }
+    new_label(e, tl);
+    emit_block_expr(e, f.then);
+    if is_terminated(e) == false {
+        terminate(e, str.concat("cf.br ^", cont));
+    }
+    if f.has_else {
+        new_label(e, el);
+        emit_block_expr(e, f.els);
+        if is_terminated(e) == false {
+            terminate(e, str.concat("cf.br ^", cont));
+        }
+    }
+    new_label(e, cont);
+}
+
+pub fn emit_expr_stmt(e: Emit, x: ExprS) {
+    const v: Str = emit_expr(e, x.expr);
+    return;
+}
+
+pub fn emit_destr(e: Emit, d: DestrS) {
+    const _e: Str = e_fail_at(e, 0, 0, "destructuring emission lands in slice 3b-beta");
+}
+
+pub fn emit_tail_if(e: Emit, f: IfE) {
+    const cond: Str = emit_expr(e, f.cond);
+    const tl: Str = fresh_label(e);
+    const el: Str = fresh_label(e);
+    const jl: Str = fresh_label(e);
+    const ty: Ty = e_ret(e);
+    const a: Ast = e_ast(e);
+    emit_line(e, str.concat("cf.cond_br ", str.concat(cond, str.concat(", ^", str.concat(tl, str.concat(", ^", el))))));
+    emit_top(e, str.concat("^", str.concat(tl, ":")));
+    scope_push(e);
+    const tv: Str = emit_block_expr(e, f.then);
+    scope_pop(e);
+    var acc_t: Str = "func.return ";
+    acc_t = str.concat(acc_t, tv);
+    acc_t = str.concat(acc_t, " : ");
+    acc_t = str.concat(acc_t, value_ir_t(a, ty));
+    terminate(e, acc_t);
+    emit_top(e, str.concat("^", str.concat(el, ":")));
+    scope_push(e);
+    const ev: Str = emit_block_expr(e, f.els);
+    scope_pop(e);
+    var acc_e: Str = "func.return ";
+    acc_e = str.concat(acc_e, ev);
+    acc_e = str.concat(acc_e, " : ");
+    acc_e = str.concat(acc_e, value_ir_t(a, ty));
+    terminate(e, acc_e);
+    emit_top(e, str.concat("^", str.concat(jl, ":")));
 }

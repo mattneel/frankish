@@ -1,28 +1,51 @@
-// calq0 slice-3a driver: lex + parse + EMIT input unit 0, printing the
-// artifact text (one io.print per line). The emitter's failures render
-// at this boundary like every other calq0 diagnostic.
+// calq0 slice-3b driver: lex + parse + EMIT EVERY input unit (the
+// seed's multi-file shape: host-ordered units, one flat module),
+// printing the artifact text. Unit names ride the __calque_input_name
+// channel (diagnostics embed the file).
 pub fn main() i64 {
     const count: i64 = __calque_input_count();
     if count < 1 {
         io.print("error 1:1 no input unit\n");
         return 1;
     }
-    const src: Str = __calque_input(0);
-    const lx: Lexed = lex(src);
-    if state_ok(lx.state) == false {
-        io.print(fail_text(state_fail(lx.state)));
-        io.print("\n");
-        return 1;
+    var fns: Vector(Fn) = vector.new();
+    var types: Vector(TypeDecl) = vector.new();
+    var i: i64 = 0;
+    while i < count {
+        const src: Str = __calque_input(i);
+        const uname: Str = __calque_input_name(i);
+        const uns: Str = __calque_input_ns(i);
+        const lx: Lexed = lex(src);
+        if state_ok(lx.state) == false {
+            io.print(fail_text(state_fail(lx.state)));
+            io.print("\n");
+            return 1;
+        }
+        const p: P = p_new(lx.toks);
+        const a: Ast = p_ast(p);
+        if p_ok(p) == false {
+            io.print(fail_text(state_fail(p_state(p))));
+            io.print("\n");
+            return 1;
+        }
+        const nt: i64 = vector.len(a.types);
+        var j: i64 = 0;
+        while j < nt {
+            vector.push(types, vector.get(a.types, j));
+            j = j + 1;
+        }
+        const nf: i64 = vector.len(a.fns);
+        var k: i64 = 0;
+        while k < nf {
+            const f: Fn = vector.get(a.fns, k);
+            vector.push(fns, %Fn{name: f.name, params: f.params, ret: f.ret, body: f.body, file: uname, ns: uns});
+            k = k + 1;
+        }
+        i = i + 1;
     }
-    const p: P = p_new(lx.toks);
-    const a: Ast = p_ast(p);
-    if p_ok(p) == false {
-        io.print(fail_text(state_fail(p_state(p))));
-        io.print("\n");
-        return 1;
-    }
+    const merged: Ast = %Ast{fns: fns, types: types};
     const e: Emit = e_init();
-    emit_module(e, a);
+    emit_module(e, merged);
     if e_ok(e) == false {
         io.print(fail_text(state_fail(e_state(e))));
         io.print("\n");
@@ -30,11 +53,11 @@ pub fn main() i64 {
     }
     const lines: Vector(Str) = e_render(e);
     const n: i64 = vector.len(lines);
-    var i: i64 = 0;
-    while i < n {
-        io.print(vector.get(lines, i));
+    var m: i64 = 0;
+    while m < n {
+        io.print(vector.get(lines, m));
         io.print("\n");
-        i = i + 1;
+        m = m + 1;
     }
     return 0;
 }

@@ -123,6 +123,58 @@ pub fn input_injection(units: &[UnitFile]) -> String {
     out.push_str(
         "  %empty = \"frk_bstr.lit\"() {text = \"\"} : () -> !frk_bstr.str\n  return %empty : !frk_bstr.str\n}\n",
     );
+    // The NAMED channel: the unit's file name (the seed's CURRENT_FILE;
+    // diagnostics carry it, so the artifact text depends on it).
+    out.push_str("func.func @__calque_input_name(%arg0: i64) -> !frk_bstr.str {\n");
+    for (index, unit) in units.iter().enumerate() {
+        out.push_str(&format!("  %c{index} = arith.constant {index} : i64\n"));
+        out.push_str(&format!(
+            "  %eq{index} = arith.cmpi eq, %arg0, %c{index} : i64\n"
+        ));
+        out.push_str(&format!(
+            "  cf.cond_br %eq{index}, ^lit{index}, ^next{index}\n"
+        ));
+        out.push_str(&format!("^lit{index}:\n"));
+        out.push_str(&format!(
+            "  %s{index} = \"frk_bstr.lit\"() {{text = \"{}\"}} : () -> !frk_bstr.str\n",
+            mlir_escape(&unit.name)
+        ));
+        out.push_str(&format!("  return %s{index} : !frk_bstr.str\n"));
+        out.push_str(&format!("^next{index}:\n"));
+    }
+    out.push_str(
+        "  %msg2 = \"frk_bstr.lit\"() {text = \"__calque_input_name: index out of range\"} : () -> !frk_bstr.str\n",
+    );
+    out.push_str("  func.call @frk_rt_calque_trap(%msg2) : (!frk_bstr.str) -> ()\n");
+    out.push_str(
+        "  %empty2 = \"frk_bstr.lit\"() {text = \"\"} : () -> !frk_bstr.str\n  return %empty2 : !frk_bstr.str\n}\n",
+    );
+    // The NAMESPACE channel (D-094): the seed mangles namespaced decls
+    // as ns__name, so the compiler must know each unit's ns.
+    out.push_str("func.func @__calque_input_ns(%arg0: i64) -> !frk_bstr.str {\n");
+    for (index, unit) in units.iter().enumerate() {
+        out.push_str(&format!("  %c{index} = arith.constant {index} : i64\n"));
+        out.push_str(&format!(
+            "  %eq{index} = arith.cmpi eq, %arg0, %c{index} : i64\n"
+        ));
+        out.push_str(&format!(
+            "  cf.cond_br %eq{index}, ^lit{index}, ^next{index}\n"
+        ));
+        out.push_str(&format!("^lit{index}:\n"));
+        out.push_str(&format!(
+            "  %s{index} = \"frk_bstr.lit\"() {{text = \"{}\"}} : () -> !frk_bstr.str\n",
+            mlir_escape(unit.ns.as_deref().unwrap_or(""))
+        ));
+        out.push_str(&format!("  return %s{index} : !frk_bstr.str\n"));
+        out.push_str(&format!("^next{index}:\n"));
+    }
+    out.push_str(
+        "  %msg3 = \"frk_bstr.lit\"() {text = \"__calque_input_ns: index out of range\"} : () -> !frk_bstr.str\n",
+    );
+    out.push_str("  func.call @frk_rt_calque_trap(%msg3) : (!frk_bstr.str) -> ()\n");
+    out.push_str(
+        "  %empty3 = \"frk_bstr.lit\"() {text = \"\"} : () -> !frk_bstr.str\n  return %empty3 : !frk_bstr.str\n}\n",
+    );
     out
 }
 

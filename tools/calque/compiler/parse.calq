@@ -47,12 +47,16 @@ pub const Ref = struct {
 pub const Call = struct {
     callee: Ref,
     args: Vector(Expr),
+    line: i64, // the `(` token's position (guard messages ride it)
+    col: i64,
 };
 
 pub const Bin = struct {
     op: Str,
     l: Expr,
     r: Expr,
+    line: i64, // the OP token's position (guard messages ride it)
+    col: i64,
 };
 
 pub const P = struct {
@@ -275,9 +279,9 @@ pub fn parse_expr(p: P, level: i64) Expr {
             if str.len(op) == 0 {
                 go = false;
             } else {
-                const _t: Tok = p_next(p);
+                const op_t: Tok = p_next(p);
                 const right: Expr = parse_expr(p, level + 1);
-                left = Expr.Bin(%Bin{op, l: left, r: right});
+                left = Expr.Bin(%Bin{op, l: left, r: right, line: op_t.line, col: op_t.col});
                 if level == 4 {
                     const o2: Str = op_at(p, 4);
                     if str.len(o2) != 0 {
@@ -343,7 +347,7 @@ pub fn do_call(p: P, e: Expr) Expr {
             return bad_here(p);
         }
     }
-    return Expr.Call(%Call{callee: r, args});
+    return Expr.Call(%Call{callee: r, args, line: t.line, col: t.col});
 }
 
 pub fn do_dot(p: P, e: Expr) Expr {
@@ -650,6 +654,8 @@ pub const Fn = struct {
     params: Vector(Param),
     ret: Ty,
     body: Block,
+    file: Str, // the unit it came from (the driver tags it; the seed's CURRENT_FILE)
+    ns: Str,   // the unit's namespace (D-094 mangling: ns__name)
 };
 
 pub const Ast = struct {
@@ -1158,7 +1164,7 @@ pub fn p_block(p: P) Block {
 
 pub fn poison_fn() Fn {
     var empty: Vector(Param) = vector.new();
-    return %Fn{name: "", params: empty, ret: poison_ty(), body: poison_block()};
+    return %Fn{name: "", params: empty, ret: poison_ty(), body: poison_block(), file: "", ns: ""};
 }
 
 pub fn p_fn(p: P) Fn {
@@ -1186,7 +1192,7 @@ pub fn p_fn(p: P) Fn {
                 ret = p_type(p);
             }
             const body: Block = p_block(p);
-            return %Fn{name: name.text, params: params, ret: ret, body: body};
+            return %Fn{name: name.text, params: params, ret: ret, body: body, file: "", ns: ""};
         }
         const pn: Tok = p_peek(p);
         if is_name_tok(pn) == false {
