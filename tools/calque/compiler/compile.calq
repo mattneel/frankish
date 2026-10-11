@@ -21,7 +21,7 @@ pub fn main() i64 {
             io.print("\n");
             return 1;
         }
-        const p: P = p_new(lx.toks);
+        var p: P = p_new(lx.toks);
         const a: Ast = p_ast(p);
         if p_ok(p) == false {
             io.print(fail_text(state_fail(p_state(p))));

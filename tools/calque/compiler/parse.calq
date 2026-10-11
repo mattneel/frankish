@@ -64,40 +64,36 @@ pub const Bin = struct {
 
 pub const P = struct {
     toks: Vector(Tok),
-    pos: Vector(i64),
-    err: Vector(State),
+    pos: i64 = 0,
+    state: State = State.Ok,
 };
 
 pub fn p_new(toks: Vector(Tok)) P {
-    var pos: Vector(i64) = vector.new();
-    vector.push(pos, 0);
-    var errs: Vector(State) = vector.new();
-    vector.push(errs, State.Ok);
-    return %P{toks: toks, pos: pos, err: errs};
+    return %P{toks: toks};
 }
 
 pub fn p_ok(p: P) bool {
-    return state_ok(vector.get(p.err, 0));
+    return state_ok(p.state);
 }
 
 pub fn p_state(p: P) State {
-    return vector.get(p.err, 0);
+    return p.state;
 }
 
-pub fn p_fail(p: P, line: i64, col: i64, msg: Str) {
-    vector.set(p.err, 0, State.Failed(%Fail{msg: msg, line: line, col: col}));
+pub fn p_fail(mut p: P, line: i64, col: i64, msg: Str) {
+    p.state = State.Failed(%Fail{msg: msg, line: line, col: col});
 }
 
 pub fn p_peek(p: P) Tok {
-    return vector.get(p.toks, vector.get(p.pos, 0));
+    return vector.get(p.toks, p.pos);
 }
 
-pub fn p_next(p: P) Tok {
+pub fn p_next(mut p: P) Tok {
     const t: Tok = p_peek(p);
     if is_eof_tok(t) {
         return t;
     }
-    vector.set(p.pos, 0, vector.get(p.pos, 0) + 1);
+    p.pos = p.pos + 1;
     return t;
 }
 
@@ -176,7 +172,7 @@ pub fn is_eof_tok(t: Tok) bool {
     };
 }
 
-pub fn at_punct(p: P, v: Str) bool {
+pub fn at_punct(mut p: P, v: Str) bool {
     const t: Tok = p_peek(p);
     if is_punct_tok(t) == false {
         return false;
@@ -184,7 +180,7 @@ pub fn at_punct(p: P, v: Str) bool {
     return t.text == v;
 }
 
-pub fn at_kw(p: P, v: Str) bool {
+pub fn at_kw(mut p: P, v: Str) bool {
     const t: Tok = p_peek(p);
     if is_kw_tok(t) == false {
         return false;
@@ -192,7 +188,7 @@ pub fn at_kw(p: P, v: Str) bool {
     return t.text == v;
 }
 
-pub fn expect_punct(p: P, v: Str) bool {
+pub fn expect_punct(mut p: P, v: Str) bool {
     if at_punct(p, v) {
         const _t: Tok = p_next(p);
         return true;
@@ -202,14 +198,14 @@ pub fn expect_punct(p: P, v: Str) bool {
     return false;
 }
 
-pub fn bad(p: P, line: i64, col: i64, msg: Str) Expr {
+pub fn bad(mut p: P, line: i64, col: i64, msg: Str) Expr {
     p_fail(p, line, col, msg);
     return Expr.Bad(%BadNode{msg: msg, line: line, col: col});
 }
 
 // Recovery node for paths where the failure is ALREADY recorded
 // (expect_* returned false): no second message, just the Bad node.
-pub fn bad_here(p: P) Expr {
+pub fn bad_here(mut p: P) Expr {
     const t: Tok = p_peek(p);
     return Expr.Bad(%BadNode{msg: "recovery", line: t.line, col: t.col});
 }
@@ -218,7 +214,7 @@ pub fn poison() Expr {
     return Expr.Bad(%BadNode{msg: "<absent>", line: 0, col: 0});
 }
 
-pub fn op_at(p: P, level: i64) Str {
+pub fn op_at(mut p: P, level: i64) Str {
     const t: Tok = p_peek(p);
     if is_punct_tok(t) == false {
         return "";
@@ -268,7 +264,7 @@ pub fn op_at(p: P, level: i64) Str {
     return "";
 }
 
-pub fn parse_expr(p: P, level: i64) Expr {
+pub fn parse_expr(mut p: P, level: i64) Expr {
     if level > 6 {
         return parse_postfix(p);
     }
@@ -298,7 +294,7 @@ pub fn parse_expr(p: P, level: i64) Expr {
     return left;
 }
 
-pub fn parse_postfix(p: P) Expr {
+pub fn parse_postfix(mut p: P) Expr {
     var e: Expr = parse_primary(p);
     var go: bool = true;
     while go {
@@ -319,7 +315,7 @@ pub fn parse_postfix(p: P) Expr {
     return e;
 }
 
-pub fn do_call(p: P, e: Expr) Expr {
+pub fn do_call(mut p: P, e: Expr) Expr {
     const t: Tok = p_peek(p);
     const r: Ref = match e {
         Expr.Ref(r0) => r0,
@@ -353,7 +349,7 @@ pub fn do_call(p: P, e: Expr) Expr {
     return Expr.Call(%Call{callee: r, args, line: t.line, col: t.col});
 }
 
-pub fn do_dot(p: P, e: Expr) Expr {
+pub fn do_dot(mut p: P, e: Expr) Expr {
     const t: Tok = p_peek(p);
     const r: Ref = match e {
         Expr.Ref(r0) => r0,
@@ -374,7 +370,7 @@ pub fn do_dot(p: P, e: Expr) Expr {
     return Expr.Ref(%Ref{name: m.text, mod: r.name});
 }
 
-pub fn parse_primary(p: P) Expr {
+pub fn parse_primary(mut p: P) Expr {
     const t: Tok = p_peek(p);
     if is_int_tok(t) {
         const _t: Tok = p_next(p);
@@ -711,12 +707,12 @@ pub const Ast = struct {
     types: Vector(TypeDecl),
 };
 
-pub fn bad_ty(p: P, line: i64, col: i64, msg: Str) Ty {
+pub fn bad_ty(mut p: P, line: i64, col: i64, msg: Str) Ty {
     p_fail(p, line, col, msg);
     return Ty.TyBad(%BadNode{msg: msg, line: line, col: col});
 }
 
-pub fn bad_pat(p: P, line: i64, col: i64, msg: Str) Pat {
+pub fn bad_pat(mut p: P, line: i64, col: i64, msg: Str) Pat {
     p_fail(p, line, col, msg);
     return Pat.PatBad(%BadNode{msg: msg, line: line, col: col});
 }
@@ -735,7 +731,7 @@ pub fn poison_block() Block {
 }
 
 // reads `{ ... }` (the seed's expect_punct + loop shape)
-pub fn expect_kw(p: P, v: Str) bool {
+pub fn expect_kw(mut p: P, v: Str) bool {
     if at_kw(p, v) {
         const _t: Tok = p_next(p);
         return true;
@@ -745,7 +741,7 @@ pub fn expect_kw(p: P, v: Str) bool {
     return false;
 }
 
-pub fn p_type(p: P) Ty {
+pub fn p_type(mut p: P) Ty {
     const t: Tok = p_peek(p);
     if is_kw_tok(t) {
         if t.text == "i64" {
@@ -801,7 +797,7 @@ pub fn p_type(p: P) Ty {
     return bad_ty(p, t.line, t.col, "invalid type");
 }
 
-pub fn p_pattern(p: P) Pat {
+pub fn p_pattern(mut p: P) Pat {
     const t: Tok = p_peek(p);
     if is_name_tok(t) {
         if t.text == "_" {
@@ -906,7 +902,7 @@ pub fn p_pattern(p: P) Pat {
     return bad_pat(p, t.line, t.col, "invalid pattern");
 }
 
-pub fn p_if(p: P) IfE {
+pub fn p_if(mut p: P) IfE {
     const _kw: Tok = p_next(p);
     const cond: Expr = parse_expr(p, 4);
     const then_blk: Block = p_block(p);
@@ -928,7 +924,7 @@ pub fn p_if(p: P) IfE {
     return %IfE{cond: cond, then: then_blk, has_else: has_else, els: else_blk};
 }
 
-pub fn p_match(p: P) Expr {
+pub fn p_match(mut p: P) Expr {
     const _kw: Tok = p_next(p);
     const scrut: Expr = parse_expr(p, 4);
     if expect_punct(p, "{") == false {
@@ -958,7 +954,7 @@ pub fn p_match(p: P) Expr {
     return bad_here(p);
 }
 
-pub fn p_make(p: P) Expr {
+pub fn p_make(mut p: P) Expr {
     const pct: Tok = p_next(p);
     const name: Tok = p_peek(p);
     if is_name_tok(name) == false {
@@ -1030,7 +1026,7 @@ pub fn p_make(p: P) Expr {
     return bad_here(p);
 }
 
-pub fn p_destr(p: P, mutable: bool, kw_line: i64, kw_col: i64) DestrS {
+pub fn p_destr(mut p: P, mutable: bool, kw_line: i64, kw_col: i64) DestrS {
     const _c: Tok = p_next(p); // {
     var names: Vector(DName) = vector.new();
     while p_ok(p) {
@@ -1079,7 +1075,7 @@ pub fn p_destr(p: P, mutable: bool, kw_line: i64, kw_col: i64) DestrS {
 }
 
 pub fn p_tok_at(p: P, offset: i64) Tok {
-    const i: i64 = vector.get(p.pos, 0) + offset;
+    const i: i64 = p.pos + offset;
     if i < vector.len(p.toks) {
         return vector.get(p.toks, i);
     }
@@ -1087,7 +1083,7 @@ pub fn p_tok_at(p: P, offset: i64) Tok {
     return %Tok{kind: Kind.Eof, text: "", line: 1, col: 1};
 }
 
-pub fn expect_semi(p: P) bool {
+pub fn expect_semi(mut p: P) bool {
     return expect_punct(p, ";");
 }
 
@@ -1096,7 +1092,7 @@ pub const StmtOut = struct {
     tail: Expr,
 };
 
-pub fn p_stmt_into(p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
+pub fn p_stmt_into(mut p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
     // Parses one statement starting at the peeked t. added=false means
     // the tokens parsed were a TAIL expression (not `;`-terminated);
     // the caller consumes `}` and records the tail.
@@ -1237,7 +1233,7 @@ pub fn p_stmt_into(p: P, stmts: Vector(Stmt), t: Tok) StmtOut {
     return %StmtOut{added: false, tail: e2};
 }
 
-pub fn p_block(p: P) Block {
+pub fn p_block(mut p: P) Block {
     if expect_punct(p, "{") == false {
         return poison_block();
     }
@@ -1264,7 +1260,7 @@ pub fn poison_fn() Fn {
     return %Fn{name: "", params: empty, ret: poison_ty(), body: poison_block(), file: "", ns: ""};
 }
 
-pub fn p_fn(p: P) Fn {
+pub fn p_fn(mut p: P) Fn {
     if at_kw(p, "pub") {
         const _a: Tok = p_next(p);
     }
@@ -1341,7 +1337,7 @@ pub fn poison_td() TypeDecl {
     return %TypeDecl{name: "", is_union: false, fields: ef, variants: ev};
 }
 
-pub fn p_typedecl(p: P) TypeDecl {
+pub fn p_typedecl(mut p: P) TypeDecl {
     if at_kw(p, "pub") {
         const _a: Tok = p_next(p);
     }
@@ -1458,7 +1454,7 @@ pub fn p_typedecl(p: P) TypeDecl {
     return poison_td();
 }
 
-pub fn p_lit_expr(p: P) Expr {
+pub fn p_lit_expr(mut p: P) Expr {
     const d: Tok = p_peek(p);
     if is_int_tok(d) {
         const _c: Tok = p_next(p);
@@ -1497,7 +1493,7 @@ pub fn p_lit_expr(p: P) Expr {
     return bad(p, d.line, d.col, "seed v0 supports literal field defaults only (D-095)");
 }
 
-pub fn p_ast(p: P) Ast {
+pub fn p_ast(mut p: P) Ast {
     var fns: Vector(Fn) = vector.new();
     var types: Vector(TypeDecl) = vector.new();
     while p_ok(p) {
