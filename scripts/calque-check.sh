@@ -34,6 +34,10 @@ CALQUE_STEERING4_SHA=952d8860fc8e8c8abd7382f5eb887d2a335549f64da8ceb1ebb8ee01792
 # The fifth steering amendment (D-105: concurrency, modern CPUs) -
 # same pin discipline.
 CALQUE_STEERING5_SHA=7ffc46a95565ef563c70b63c010da9efc8d0acda666ad91ec1e8bcfec75a63ee
+# The sixth steering amendment (D-108: vector/array/SIMD syntax) and the
+# seventh (D-109: Silat Style) - same pin discipline.
+CALQUE_STEERING6_SHA=5e422a6b8c23c5063f29b9e0fdf919d21ad331e01ad5b00103756192c9b272fc
+CALQUE_SILAT_SHA=9b317c01c3d0d18c7b56b9f62f5367c50dc6f9c5a99f08a2d993c1bafa28140f
 
 fail=0
 err() { echo "calque-check: $1" >&2; fail=1; }
@@ -46,6 +50,8 @@ for f in docs/calque/GOAL.md docs/calque/SPEC.md docs/calque/BOOTSTRAP.md \
          docs/calque/STEERING-LSP.md \
          docs/calque/STEERING-DIAGNOSTICS-LINT-AGENT-HELP.md \
          docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md \
+         docs/calque/STEERING-VECTOR-SUGAR.md \
+         docs/calque/SILAT_STYLE.md \
          specimens/calque/MANIFEST.md \
          specimens/calque/examples/README.md book/src/specimens/calque.md; do
   [ -f "$f" ] || err "missing artifact: $f"
@@ -89,6 +95,17 @@ if [ -f docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md ]; then
   got=$(sha256sum docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md | cut -d' ' -f1)
   [ "$got" = "$CALQUE_STEERING5_SHA" ] \
     || err "STEERING-CONCURRENCY-MODERN-CPUS.md sha256 drifted: $got (pin $CALQUE_STEERING5_SHA)"
+fi
+# 2g/2h. Sixth amendment + Silat Style pins (D-108/D-109).
+if [ -f docs/calque/STEERING-VECTOR-SUGAR.md ]; then
+  got=$(sha256sum docs/calque/STEERING-VECTOR-SUGAR.md | cut -d' ' -f1)
+  [ "$got" = "$CALQUE_STEERING6_SHA" ] \
+    || err "STEERING-VECTOR-SUGAR.md sha256 drifted: $got (pin $CALQUE_STEERING6_SHA)"
+fi
+if [ -f docs/calque/SILAT_STYLE.md ]; then
+  got=$(sha256sum docs/calque/SILAT_STYLE.md | cut -d' ' -f1)
+  [ "$got" = "$CALQUE_SILAT_SHA" ] \
+    || err "SILAT_STYLE.md sha256 drifted: $got (pin $CALQUE_SILAT_SHA)"
 fi
 
 # 3. Matrix structure.
@@ -147,8 +164,10 @@ done < "$m4"
 ndone=$(grep -c '^|' "$m4" || true)
 rm -f "$m4"
 
-# 5. Frozen examples are ASCII (SPEC F18).
-for e in specimens/calque/examples/*.calq; do
+# 5. Frozen examples and the compiler sources are ASCII (SPEC F18:
+# the seed input channel is ASCII-only - a stray UTF-8 byte dies there,
+# loudly, at translation time; catch it in the charter pass first).
+for e in specimens/calque/examples/*.calq tools/calque/compiler/*.calq tools/calque/std/*.calq; do
   if LC_ALL=C grep -q '[^ -~]' "$e"; then
     err "non-ASCII bytes in $e (SPEC F18)"
   fi

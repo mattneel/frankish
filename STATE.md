@@ -28,7 +28,16 @@ upgradeable, and no second text shape may ship meanwhile; the FIFTH
 docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md; AC-S53..S60) FREEZES
 the ownership/transfer/cancellation/memory-model/target-layout
 contracts NOW and supersedes GOAL §21's "new scheduler" clause IN SCOPE
-(a structured local scheduler is core; actor runtimes stay out).
+(a structured local scheduler is core; actor runtimes stay out); the
+SIXTH (vector/array/SIMD syntax — D-108, sha-pinned at
+docs/calque/STEERING-VECTOR-SUGAR.md; AC-S61..S63/S67) makes `[T]`/
+`[N]T`/`vec[N]T`, literals/ranges/spreads/`++`/updates/comprehensions/
+patterns, and SIMD operators with once-broadcast scalars first-class
+surface (C2 collections, C4 SIMD) and supersedes construction
+ceremonies; the SEVENTH (Silat Style — D-109, sha-pinned at
+docs/calque/SILAT_STYLE.md; AC-S64..S67) is the HOUSE STYLE with an
+executed §12 migration phase 1 on this session's own lexer/parser and
+recorded exceptions.
 Tree: green — `cargo test -p calque` 13/13 seed + reference; `make
 test` green on this session's commits; diff 162 cases 0 divergent (8
 runners); grid 157/157 × BOTH strategies × 4 triples + s390x canary
@@ -1244,6 +1253,18 @@ rework flag, not a knob.
       `calque-diagnostics`/`calque-lint` gates, MANIFEST C2/C5 notes,
       checker pin; the record schema + source origins own C2 — the
       diagnostics printer freeze applies to calq0 from now on
+    - steering 6+7 (D-108/D-109): the vector-sugar amendment + Silat
+      Style stored and pinned; SPEC/MANIFEST rows; the SILAT §12
+      PHASE-1 MIGRATION EXECUTED on calq0 (the audited anchors):
+      rendered-name kind comparisons -> variant matches; the parser's
+      one-element error string cell -> an explicit `State` union
+      (`Ok`/`Failed: Fail{msg,line,col}`); `Expr.Int("0")` poison ->
+      explicit `Expr.Bad` recovery nodes; the lexer's parallel
+      ok/msg/err_line/err_col -> the same `State` union; diagnostics
+      rendered at the presentation boundary (drivers). EXCEPTION
+      RECORDED: the one-element CELL itself stays until b0 admits
+      reference parameters/field assignment or the C2 parser surface
+      lands (owner: calq0; executable removal condition in D-109)
     - steering 5 (D-105): the concurrency/modern-CPU amendment stored
       at docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md (sha-pinned),
       SPEC header + §13 (incl. the explicit GOAL §21 supersession),
@@ -1274,6 +1295,29 @@ rework flag, not a knob.
       eat the sugar (`%Tok{kind, text, line, col}`, `const {i, line,
       col} = st`, `%Call{callee: r, args}`); landmine paid again:
       `local` is a Lua keyword - never a table key
+    - DEV-LOOP FACTS (hard-won this session): the seed translating
+      the 1.5k-line parser under the REFERENCE INTERPRETER costs many
+      minutes per set (and libtest's 2 MiB stack overflows on it), so
+      the calque tests now (a) translate each driver set ONCE via
+      std::sync::OnceLock, (b) run the translation on a
+      frk_interp::STACK_SIZE thread, and (c) cache the artifact under
+      target/calque-artifacts/, keyed by a hash of seed.lua + all
+      unit texts (D-089's re-validated-by-key discipline; the cache
+      only ever holds artifacts the real pipeline produced). Warm it
+      visibly with `cargo test -p calque --test seed -- --ignored
+      --nocapture warm_calque_cache`; afterwards the suite is fast.
+      Root-cause note for C4: the interpreter is the loop's
+      bottleneck; the JIT runners (frk-harness::default_runners) are
+      the eventual fix for seed-translation speed, and the cache is
+      the bridge.
+    - calq0 slice 2b: parse.calq grew to the FULL b0 grammar (type
+      nodes + declarations, functions, blocks/tails via the
+      StmtOut{added, tail} wrapper, statements, destructuring,
+      if/match/%%literal/block expressions, the whole pattern set);
+      drivers split (exprdump.calq = slice-2a expression mode,
+      parsedump.calq = program dump); d_* dumpers; landmines: stray
+      `)` inside hand-written error strings (twice) and inline
+      vector.new() inside a %%literal (needs the annotated binding)
     - calq0 slice 2a: tools/calque/compiler/parse.calq (expressions +
       AST) + parsedump.calq; lex.calq became a pure library (its
       slice-1 driver moved to lexdump.calq — ONE main per
@@ -1289,11 +1333,14 @@ rework flag, not a knob.
       with doubling growth (4) + `ult` bounds traps; `vector.new()`
       instantiated by the binding ANNOTATION (syntax-directed);
       named slots marshalled via wrap_store/unwrap_load (recref)
-    Next: calq0 slice 2b — statements/declarations (const/var/assign/
-    return/if/while/blocks + fn decls + type decls) and then
-    match/%literals patterns in parse.calq; slice 3 is the emitter.
-    The slice drivers (lexdump.calq/parsedump.calq) are replaced by
-    the compiler's real main when the corpus gate lands.
+    Next: calq0 slice 3 — the EMITTER (AST -> kernel IR) in
+    tools/calque/compiler/emit.calq, mirroring the seed's emission
+    rules (checked arithmetic with CQ traps, the D-092 closure
+    convention, recref erasure, tag-dispatch matches); then the
+    corpus (goldens/calque/) as calq0's differential against the
+    Rust frontend, and the initial self-compilation gate. The slice
+    drivers (lexdump/exprdump/parsedump.calq) are replaced by the
+    compiler's real main when the corpus gate lands.
     Landmines (new this session):
     - `*` LANDED mid-session (checked mul, CQ0003; min*-1 routes
       through select so divsi(min,-1) never executes) — the

@@ -3222,3 +3222,158 @@ veto-ledger pattern and most deserve their review.
   destructures `%Tok` — the directive's second half: the compiler
   eats its own sugar BOTH ways). Verifiers: the dedicated seed test
   (const + var forms, hand-derived) and the calq0 suites.
+
+- D-108 [calque/vectors] VECTOR, ARRAY, AND SIMD SYNTAX ARE
+  FIRST-CLASS SURFACE (steering: the vector-sugar amendment §1–§8;
+  sha-pinned at docs/calque/STEERING-VECTOR-SUGAR.md; companion to
+  D-109). THREE SPELLINGS: `[T]` = the immutable persistent
+  `Vector(T)` (compatible explicit spelling; formatter/examples
+  prefer `[T]`), `[N]T` = fixed-length inline array, `vec[N]T` =
+  explicit SIMD with N LOGICAL lanes (independent of physical
+  register width). CONSTRUCTION: `[a, b, c]` is the collection
+  literal; unconstrained literals default to `[T]` under existing
+  inference/numeric-literal rules; an expected `[N]T`/`vec[N]T`
+  constructs that representation DIRECTLY (no persistent-vector
+  intermediate, no implicit box to reconcile heterogeneous elements;
+  heterogeneous elements diagnose); exactly N elements for fixed/ SIMD;
+  empty literals infer from context else require an annotation;
+  trailing commas/multiline/comments/source-mapped element errors.
+  OPERATIONS: checked `values[i]`; half-open ranges `[1..3]`,
+  `[1..]`, `[..2]` with `0 <= start <= end <= length` (constant
+  violations rejected at compile time, the rest deterministic runtime
+  checks; no silent negative wrap/truncation); persistent slices
+  return persistent values (sharing invisible); spreads
+  `[..left, v, ..right]` evaluate entries/sources once in written
+  order; `++` concatenates persistent vectors with CHECKED length
+  arithmetic (never elementwise `+`; no implicit collection->SIMD);
+  `values[i] = r` is replacement + REBINDING of a mutable place
+  (old aliases and snapshots preserved; `const` assignment rejected;
+  place/index/replacement evaluated once, documented order; bounds
+  failures/effect order preserved in expanded updates; internal reuse
+  only under uniqueness/ownership analysis; element-update syntax is
+  NOT atomic). COMPREHENSIONS: `[for binding in source [if pred] =>
+  expr]` is EAGER and ORDERED (source once; predicate per element in
+  traversal order; result only for accepted elements; half-open
+  numeric ranges iterable without an intermediate vector; try/effects/
+  checked arithmetic preserved; one builder where valid; no hidden
+  tasks/unordered evaluation/fast-math; no `seq.iter` requirement).
+  PATTERNS: `[]`, exact-length lists, one rest (`.._` or named; the
+  named capture is an immutable persistent vector) at beginning/
+  middle/end, composed with structs/variants/literals/guards/pins
+  through the EXISTING pattern compiler and exhaustiveness machinery
+  (concrete length/element witnesses; guards never unconditional;
+  ignored rests not allocated; length checks before extraction).
+  SIMD: lane-wise arithmetic operators for admitted element types;
+  SCALAR BROADCAST for one SIMD + one compatible scalar operand
+  (evaluated ONCE; no implicit narrowing/promotion; mismatched lane
+  counts/types diagnose at source); comparisons yield LANE MASKS
+  (no implicit mask->bool; `simd.any`/`simd.all` explicit);
+  `assert.equal` structural equality without implicit conversion;
+  `simd.select(mask, then, else)` one obvious primitive (compatible
+  scalar broadcasts; eager, normal call order; never claimed to
+  prevent traps in already-evaluated branches); checked lane access
+  via ordinary indexing; read-only `x/y/z/w` lane names; read-only
+  2–4 lane swizzles (`.xy`, `.zyxw`, `.xx`; compile-time selection,
+  no intermediate collection; no assignable/mixed-family swizzles in
+  v1; general shuffles via one typed library op). Semantics:
+  previously specified checked-arithmetic/FP policies preserved
+  (stable failing-lane diagnostics through scalar lane semantics; no
+  global reassociation/contraction from syntax alone; masked memory
+  ops remain the tail mechanism; scalarization under the same value/
+  failure contract; SIMD values flow through args/results/structs/
+  specialization; real instructions verified where supported).
+  TOOLS/COST: canonical formatter, LSP completion/hover showing the
+  three spellings distinctly, source origins through comprehension/
+  update expansion, cost documentation (slice retention/concat cost/
+  builders) WITH cost-analysis evidence for any "allocation-free"
+  claim, missed-vectorization explained (never rewrite safe source
+  into unchecked ops), CLI Markdown for all of it. SUPERSESSION: the
+  amendment supersedes earlier examples requiring `vector.from([...])`
+  for ordinary construction; the concurrency/CPU amendment's safety
+  and numerical semantics stand. STAGE: `[T]`/literal/pattern/
+  comprehension syntax lands WITH THE CORE COLLECTION WORK (C2);
+  `[N]T`/`vec[N]T` + SIMD operators/broadcast/swizzles land with the
+  first admitted SIMD operations (C4); b0's `Vector(T)` +
+  `vector.new()/push/get/set/len` surface is the BOOTSTRAP contract
+  (the seed's world) and calq0's sources migrate as the C2 surface
+  becomes compilable through the chain - the migration target and
+  its evidence requirements are recorded here and in AC-S61..S67.
+- D-109 [calque/style] SILAT STYLE IS THE HOUSE STYLE (steering:
+  docs/calque/SILAT_STYLE.md; sha-pinned; §1–§12). THE RULES:
+  "Write the intent. Own the effects. Prove the result." — source
+  describes the work, the compiler handles the mechanics; a
+  language implementation must not make temporary bootstrap
+  limitations the language's personality; bootstrap constraints get
+  explicit owners + exit conditions, never production idioms.
+  NAMING: PascalCase types/type factories, snake_case functions/
+  values/fields/modules/files (exact foreign/compat names preserved
+  via recorded decisions); domain names (`Token`, `Parser`,
+  `BinaryExpr`, `left`, `right`); units where ambiguity matters; one
+  term per concept; no Manager/Processor/Handler/Context layers
+  without concrete responsibility; no rename-only wrappers. STATE
+  HONESTY: Result/Option/structs/tagged unions for their
+  distinctions; match on VARIANTS not rendered names or
+  undocumented tags; no failure-as-empty-string/negative-sentinel/
+  dummy-success without a domain contract; recoverable vs internal
+  invariant violations distinguished; required fields + declared
+  defaults over meaningless zero init; validate at trust boundaries;
+  parser recovery = explicit error nodes WITH source origins,
+  REJECTED before execution; diagnostics' causes separate from
+  presentation buffers; a real cursor/explicit state/admitted
+  mutable cell instead of a one-element collection as a scalar box;
+  do not force functional state reconstruction when a confined
+  mutable cursor says it better. LANGUAGE USE: literals, patterns,
+  expression results, comprehensions, typed propagation; canonical
+  `[T]`/`[N]T`/`vec[N]T` (D-108); explicit builders/loops when their
+  contract matters; no arbitrary pipeline lengths or one-line
+  functions; infer obvious local types, state public contracts.
+  SIMD: operators + broadcast once + explicit `simd.any/all`
+  (D-108). ERRORS: `try` for compatible propagation, match/catch for
+  domain recovery, explicit adaptation at boundaries, assertion/trap
+  for invariants, structured diagnostic at the owning boundary;
+  never swallow for green; never wildcard to quiet exhaustiveness.
+  OWNERSHIP: scopes own tasks; explicit awaits/cancellation/
+  deadlines/cleanup; no hidden detach; parallelism distinct from
+  sequence evaluation; reject unsafe captures (no unchecked
+  repairs); shared mutation behind real sync; no per-library pools.
+  COST: representation/resource/ordering/numeric choices stated
+  when observable; concat vs SIMD distinct; eager allocation vs
+  explicit sequences distinct; builders/measured claims (D-108);
+  correctness evidence independent of speed; no unsafe casts/global
+  fast-math/weakened bounds for style. DOCS/TESTS: source docs for
+  public contracts/defaults/errors/effects/examples; comments for
+  invariants + rejected alternatives; no per-function preambles;
+  executable examples; ordinary assertions/doctests/properties/fuzz
+  regressions through the shared runner; failure boundaries tested;
+  regression input per repaired defect; no overclaiming what a suite
+  observes. NON-RULES: no bans on recursion/closures/managed
+  allocation/multicore; no assertion quotas/function-length limits;
+  no mandatory wrappers/pipelines; no AI-author classification.
+  ENFORCEMENT SPLIT: formatter = layout; compiler = semantic safety;
+  lint = defensible patterns (silat PROFILE on the EXISTING lint,
+  never a second linter/CI); review = taste. §12 MIGRATION MANDATE
+  (executed IN THIS SESSION, phase 1, on the audited anchors):
+  (5) rendered-name comparisons replaced by variant matches in
+  parse.calq (`is_punct`/`is_name`/`kind matches`; `kind_name`
+  remains ONLY as the drivers' presentation), (6) the parser's
+  one-element error cell now carries an EXPLICIT `State` union
+  (Ok | Failed: Fail{msg,line,col}) — the CELL itself is the recorded
+  exception (reason: b0 has no reference parameters/field assignment,
+  so a shared cursor across functions requires functional threading
+  or a cell; removal condition: when mutable-reference parameters or
+  the C2 parser surface land, the cursor becomes a `var Parser` with
+  field updates and this cell dies), (7) `Expr.Int("0")` poison
+  replaced by an explicit `Expr.Bad: BadNode{msg,line,col}` recovery
+  node (the emitter MUST reject Bad before execution — slice 3's
+  contract — and "absent optional" placeholders also carry Bad with
+  an explicit message), (8) the lexer's parallel ok/msg/err_line/
+  err_col fields replaced by the SAME `State` union (`Lexed{state}`);
+  (9) diagnostics rendered at the PRESENTATION boundary (the
+  drivers; `Fail` carries structured fields and nothing formats
+  "error L:C msg" at the failure site); equivalent behavior proven by
+  the unchanged byte-exact tests. INTEGRATION: `calque fmt --check`,
+  `calque lint --profile silat` (+ agent/markdown modes), `calque
+  help style` ride the EXISTING formatter/lint/docs/edit-plan
+  services (D-099/D-101/D-104); every style rule gets preferred
+  example + counterexample + applicability; auto-fixes must preserve
+  evaluation count/order/errors/aliasing; suppressions need reasons.

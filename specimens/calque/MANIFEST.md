@@ -134,6 +134,28 @@ SIMD/alignment/target config at C4, parallel collections/pipelines/
 dispatch/locality at C4–C5, adoption + replay + sanitizers at C5,
 target matrix at C6.
 
+Sixth steering amendment (D-108; `docs/calque/STEERING-VECTOR-SUGAR.md`)
+and seventh (D-109; `docs/calque/SILAT_STYLE.md`): vector/array/SIMD
+syntax is first-class surface — `[T]` (the persistent collection,
+compatible with `Vector(T)` and preferred by the formatter), `[N]T`
+fixed inline arrays, `vec[N]T` SIMD with logical lanes — with
+literals, checked indexing, half-open ranges, spreads, `++`, indexed
+rebinding with value semantics, eager ordered comprehensions,
+first-class collection patterns, and SIMD arithmetic with
+once-evaluated scalar broadcast, explicit masks (`simd.any/all`) and
+swizzles; construction ceremonies (`vector.from([...])`) are
+superseded. Silat Style is the house style: "write the intent, own
+the effects, prove the result" — literal/pattern/comprehension
+spelling over mechanical calls, variants and explicit recovery nodes
+over sentinels and poison successes, real cursors over
+collection-as-cell, diagnostics rendered at the presentation boundary,
+bootstrap exceptions recorded with owners and removal conditions, and
+enforcement split across the existing formatter/compiler/lint/docs
+services (no second linter). Stage: `[T]` + literal/pattern/
+comprehension syntax with C2's collection work; `[N]T`/`vec[N]T` +
+SIMD operators with C4's first SIMD operations; the silat lint
+profile at C5.
+
 ## Stages
 Each stage freezes at its milestone exit (goal §18; numbers from the
 current ledger, D-085):
@@ -148,7 +170,10 @@ current ledger, D-085):
   doctest registration (D-099/D-100); the shared diagnostic record
   schema + source origins (D-104); the frozen concurrency/memory-model/
   target-layout contracts + the async/scope/spawn surface vocabulary
-  with an executable specification (D-105).
+  with an executable specification (D-105); the `[T]` collection
+  surface (literals/indexing/ranges/spreads/`++`/updates/
+  comprehensions/patterns, D-108) with the collection work, under
+  Silat Style (D-109).
 - **C3 (M39) — shared compile-time execution.** `comptime`, type
   construction/reflection/reification, capabilities, budgets,
   caching, nested compiler-library + cross-specimen evaluation.

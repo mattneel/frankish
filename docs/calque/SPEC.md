@@ -24,6 +24,13 @@ The fifth steering amendment (structured concurrency, modern CPUs)
 lives at docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md and freezes
 the ownership/transfer/cancellation/memory-model/target-layout
 contracts ahead of the C2 surface (D-105); its stage mapping is in §13.
+The sixth steering amendment (vector/array/SIMD syntax) lives at
+docs/calque/STEERING-VECTOR-SUGAR.md (D-108): `[T]`/`[N]T`/`vec[N]T`,
+literals/ranges/spreads/`++`/indexed updates/comprehensions/patterns,
+and SIMD operators with once-evaluated scalar broadcast. The seventh
+(docs/calque/SILAT_STYLE.md, D-109) is the house style: source states
+intent, the compiler handles mechanics; bootstrap workarounds are
+exceptions with owners and exit conditions, never idioms.
 
 ---
 
@@ -568,6 +575,18 @@ the reviewed quick-fix plans over D-101's edit service; integrations
 with the runtime/tests/codecs and the LSP land as those subsystems
 exist. Forbidden defaults, trust boundaries, and the §12 verification
 matrix are ledger law.
+
+The sixth and seventh steering amendments extend the same plan: the
+vector/array/SIMD surface (`[T]`/`[N]T`/`vec[N]T`, literals, ranges,
+spreads, `++`, indexed updates, comprehensions, collection patterns —
+D-108) lands with the C2 core collection work, and its SIMD half
+(operators, once-broadcast scalars, masks, swizzles, `simd.select`)
+with the first admitted SIMD operations at C4; Silat Style (D-109)
+governs all Calque source from now on — the audited bootstrap
+workarounds in the active lexer/parser are migrated in-repo with
+equivalent-behavior evidence, each remaining exception carrying an
+owner and an executable removal condition (the `calque lint --profile
+silat` integration rides C5's lint with every other quality rule).
 
 The fifth steering amendment (concurrency/modern CPUs — D-105) freezes
 task ownership/lifetime, transfer-vs-share, cancellation, the memory
