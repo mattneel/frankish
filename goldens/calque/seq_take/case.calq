@@ -1,0 +1,16 @@
+// seq.take stops the pull early; fold consumes the truncated sequence.
+// Expected output (hand-derived): "3\n0\n"
+pub fn main() i64 {
+    var xs: Vector(i64) = vector.new();
+    vector.push(xs, 10);
+    vector.push(xs, 20);
+    vector.push(xs, 30);
+    vector.push(xs, 40);
+    const n = xs |> seq.iter() |> seq.take(3) |> seq.fold(0, fn (c, _v) { c + 1 });
+    io.print(str.fromI64(n));
+    io.print("\n");
+    const z = xs |> seq.iter() |> seq.take(0) |> seq.fold(0, fn (c, _v) { c + 1 });
+    io.print(str.fromI64(z));
+    io.print("\n");
+    0
+}

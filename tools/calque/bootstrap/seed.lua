@@ -2911,6 +2911,19 @@ function infer_expr_ty(expr, line, col)
   if expr.lit == "int" then
     return "i64"
   end
+  if expr.bin ~= nil then
+    -- a binary expression: comparisons/logic are bool; arithmetic
+    -- takes its operand's type (the left unless unknown).
+    local op = expr.bin
+    if op == "==" or op == "!=" or op == "<" or op == "<=" or op == ">" or op == ">=" or op == "and" or op == "or" then
+      return "bool"
+    end
+    local lt = infer_expr_ty(expr.l, line, col)
+    if lt ~= nil then
+      return lt
+    end
+    return infer_expr_ty(expr.r, line, col)
+  end
   if expr.lit == "str" then
     return "Str"
   end

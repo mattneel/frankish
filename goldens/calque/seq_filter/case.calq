@@ -1,0 +1,21 @@
+// seq.filter over i64 with a bare closure + collect into a Vector.
+// Expected output (hand-derived): "3\n12\n"
+pub fn main() i64 {
+    var xs: Vector(i64) = vector.new();
+    vector.push(xs, 1);
+    vector.push(xs, 2);
+    vector.push(xs, 3);
+    vector.push(xs, 4);
+    vector.push(xs, 5);
+    vector.push(xs, 6);
+    const evens = xs
+        |> seq.iter()
+        |> seq.filter(fn (x) { x % 2 == 0 })
+        |> seq.collect();
+    io.print(str.fromI64(vector.len(evens)));
+    io.print("\n");
+    const sum = evens |> seq.iter() |> seq.fold(0, fn (a, b) { a + b });
+    io.print(str.fromI64(sum));
+    io.print("\n");
+    0
+}

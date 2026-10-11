@@ -1,0 +1,30 @@
+// seq.flat_map: each element expands to its own pull sequence (a
+// closure returned by the mapping fn); the outer adapter drains each
+// inner sequence before pulling the next outer element.
+// Expected output (hand-derived): "3\n4\n"
+pub fn upTo(n: i64) fn () ?i64 {
+    var i: i64 = 0;
+    return fn () ?i64 {
+        if i >= n {
+            return .None;
+        }
+        i = i + 1;
+        return .Some(i);
+    };
+}
+
+pub fn main() i64 {
+    var xs: Vector(i64) = vector.new();
+    vector.push(xs, 1);
+    vector.push(xs, 2);
+    const flat = xs
+        |> seq.iter()
+        |> seq.flat_map(fn (x) { upTo(x) })
+        |> seq.collect();
+    io.print(str.fromI64(vector.len(flat)));
+    io.print("\n");
+    const sum = flat |> seq.iter() |> seq.fold(0, fn (a, b) { a + b });
+    io.print(str.fromI64(sum));
+    io.print("\n");
+    0
+}

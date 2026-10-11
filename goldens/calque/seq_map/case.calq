@@ -1,0 +1,18 @@
+// seq.map over i64 with a bare closure, consumed by fold.
+// Expected output (hand-derived): "14\n3\n"
+pub fn main() i64 {
+    var xs: Vector(i64) = vector.new();
+    vector.push(xs, 1);
+    vector.push(xs, 2);
+    vector.push(xs, 3);
+    const total = xs
+        |> seq.iter()
+        |> seq.map(fn (x) { x * x })
+        |> seq.fold(0, fn (a, b) { a + b });
+    io.print(str.fromI64(total));
+    io.print("\n");
+    const n = xs |> seq.iter() |> seq.map(fn (x) { x + 100 }) |> seq.fold(0, fn (c, _v) { c + 1 });
+    io.print(str.fromI64(n));
+    io.print("\n");
+    0
+}

@@ -100,9 +100,12 @@ pub fn take(comptime T: type, up: fn () ?T, n: i64) fn () ?T {
 }
 
 pub fn flat_map(comptime T: type, comptime U: type, up: fn () ?T, f: fn (T) fn () ?U) fn () ?U {
+    // the cursor (`have`/`inner`) persists ACROSS calls (vars of the
+    // enclosing fn are captured by box); the per-call loop guard and
+    // result are locals of the closure body.
+    var have: bool = false;
+    var inner: fn () ?U = fn () { return .None; };
     return fn () ?U {
-        var have: bool = false;
-        var inner: fn () ?U = f;
         var go: bool = true;
         var result: ?U = .None;
         while go {
@@ -125,6 +128,9 @@ pub fn flat_map(comptime T: type, comptime U: type, up: fn () ?T, f: fn (T) fn (
                         have = true;
                     },
                     .None => {
+                        // the outer sequence is exhausted: the adapter
+                        // ends (a stale `result` must NOT be re-emitted).
+                        result = .None;
                         go = false;
                     },
                 };

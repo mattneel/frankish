@@ -415,10 +415,11 @@ pub const LiftS = struct {
     capbar: i64,
     caps: [Binding],
     origs: [Binding],
+    cenv: Str,
 };
 
 pub fn lift_snapshot(mut e: Emitter) LiftS {
-    return %LiftS{out: e.output, nv: e.next_value, nb: e.next_block, term: e.terminated, vt: e.value_types, rets: e.return_types, depth: vector.len(e.scopes), capbar: e.capbar, caps: e.caps, origs: e.cap_origs};
+    return %LiftS{out: e.output, nv: e.next_value, nb: e.next_block, term: e.terminated, vt: e.value_types, rets: e.return_types, depth: vector.len(e.scopes), capbar: e.capbar, caps: e.caps, origs: e.cap_origs, cenv: e.capenv_ty};
 }
 
 pub fn scope_truncate(mut e: Emitter, depth: i64) {
@@ -443,6 +444,7 @@ pub fn lift_restore(mut e: Emitter, s: LiftS) {
     e.capbar = s.capbar;
     e.caps = s.caps;
     e.cap_origs = s.origs;
+    e.capenv_ty = s.cenv;
     scope_truncate(e, s.depth);
 }
 
@@ -757,10 +759,13 @@ pub fn emit_lambda_expr(mut e: Emitter, l: LamE) Str {
     }
     const lret0: Ty = tv_res(e, l.ret);
     const fake: Fn = %Fn{name: sym, params: lps, ret: lret0, body: l.body, file: e_file(e), ns: ""};
-    // the closure's OWN return type types its `return` statements
-    // (lift_snapshot/restore bracket the enclosing context).
-    e_ret_set(e, lret0);
+    // the return_types CELL is mutated in place (vector.set), so the
+    // lift snapshot aliases it: save/restore the enclosing ret
+    // explicitly around the closure's emission.
+    const old_ret: Ty = e_ret(e);
     const s1: LiftS = lift_snapshot(e);
+    // the closure's OWN return type types its `return` statements.
+    e_ret_set(e, lret0);
     lift_prepare(e, s1.depth);
     e.capenv_ty = "!frk_adt.product<[]>";
     e_fn_core(e, fake);
@@ -769,11 +774,13 @@ pub fn emit_lambda_expr(mut e: Emitter, l: LamE) Str {
     lift_restore(e, s1);
     const env_ty: Str = capenv_ir_e(e, caps1);
     const s2: LiftS = lift_snapshot(e);
+    e_ret_set(e, lret0);
     lift_prepare(e, s2.depth);
     e.capenv_ty = env_ty;
     e_fn_core(e, fake);
     const lifted: [Str] = e.output;
     lift_restore(e, s2);
+    e_ret_set(e, old_ret);
     emit_lifted_lines(e, lifted);
     const a: Ast = e_ast(e);
     const e0: Str = fresh(e);
@@ -2178,6 +2185,21 @@ pub fn infer_call_ty(mut e: Emitter, c0: Call, line: i64, col: i64) Ty {
     return f2.ret;
 }
 
+pub fn infer_bin_ty(mut e: Emitter, b0: Bin, line: i64, col: i64) Ty {
+    const op: Str = b0.op;
+    if op == "==" or op == "!=" or op == "<" or op == "<=" or op == ">" or op == ">=" {
+        return Ty.BoolV;
+    }
+    if op == "and" or op == "or" {
+        return Ty.BoolV;
+    }
+    const lt: Ty = infer_expr_ty(e, b0.l, line, col);
+    if ty_is_unknown(lt) {
+        return infer_expr_ty(e, b0.r, line, col);
+    }
+    return lt;
+}
+
 pub fn infer_expr_ty(mut e: Emitter, ex: Expr, line: i64, col: i64) Ty {
     return match ex {
         Expr.Int(t0) => Ty.I64,
@@ -2196,6 +2218,7 @@ pub fn infer_expr_ty(mut e: Emitter, ex: Expr, line: i64, col: i64) Ty {
             }
         },
         Expr.Call(c0) => infer_call_ty(e, c0, line, col),
+        Expr.Bin(b0) => infer_bin_ty(e, b0, line, col),
         _ => Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col}),
     };
 }

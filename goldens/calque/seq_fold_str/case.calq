@@ -1,0 +1,14 @@
+// seq.fold with a Str accumulator (A is its own comptime parameter).
+// Expected output (hand-derived): "314\n"
+pub fn main() i64 {
+    var xs: Vector(i64) = vector.new();
+    vector.push(xs, 3);
+    vector.push(xs, 1);
+    vector.push(xs, 4);
+    const s = xs
+        |> seq.iter()
+        |> seq.fold("", fn (acc, n) { str.concat(acc, str.fromI64(n)) });
+    io.print(s);
+    io.print("\n");
+    0
+}

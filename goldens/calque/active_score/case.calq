@@ -1,0 +1,32 @@
+// The frozen M38 example (specimens/calque/examples/active_score.calq):
+// records, the pipeline chain, the seq pull-sequence adapters, and
+// bare inferred closure parameters.
+// Expected output (hand-derived): "17\n2\n2\n"
+const User = struct {
+    name: Str,
+    score: i64,
+    active: bool,
+};
+
+pub fn activeScore(users: Vector(User)) i64 {
+    users
+        |> seq.iter()
+        |> seq.filter(fn (user) { user.active })
+        |> seq.map(fn (user) { user.score })
+        |> seq.fold(0, fn (total, score) { total + score })
+}
+
+pub fn main() i64 {
+    var us: Vector(User) = vector.new();
+    vector.push(us, %User{name: "a", score: 10, active: true});
+    vector.push(us, %User{name: "b", score: 5, active: false});
+    vector.push(us, %User{name: "c", score: 7, active: true});
+    io.print(str.fromI64(activeScore(us)));
+    io.print("\n");
+    const act = us |> seq.iter() |> seq.filter(fn (u) { u.active }) |> seq.collect();
+    io.print(str.fromI64(vector.len(act)));
+    io.print("\n");
+    io.print(str.fromI64(us |> seq.iter() |> seq.take(2) |> seq.fold(0, fn (n, _u) { n + 1 })));
+    io.print("\n");
+    0
+}

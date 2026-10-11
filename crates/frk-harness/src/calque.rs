@@ -313,6 +313,11 @@ fn run_composed(text: &str) -> Result<RunOutcome, String> {
 // The canonical compiler, as the golden harness's Calque front-end.
 
 /// The Calque standard library, as source (one unit, namespace `str`).
+/// The pull-sequence stdlib, as source (one unit, namespace `seq`).
+pub fn seq_source() -> &'static str {
+    include_str!("../../../tools/calque/std/seq.calq")
+}
+
 pub fn stdlib_source() -> &'static str {
     include_str!("../../../tools/calque/std/str.calq")
 }
@@ -411,6 +416,11 @@ pub fn compile_source(name: &str, source: &str) -> Result<String, String> {
             name: "tools/calque/std/str.calq".to_string(),
             ns: Some("str".to_string()),
             text: stdlib_source().to_string(),
+        },
+        UnitFile {
+            name: "tools/calque/std/seq.calq".to_string(),
+            ns: Some("seq".to_string()),
+            text: seq_source().to_string(),
         },
         UnitFile {
             name: name.to_string(),
