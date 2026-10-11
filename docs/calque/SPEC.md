@@ -229,18 +229,28 @@ callable path (`str.concat`, a fn-typed value, a closure). A
 pipeline stage that fails to type-check reports at the stage.
 
 ### §6.4 Functions, recursion, tail calls
-First-class functions and closures. Captures are by BINDING: a `const`
+First-class functions and closures. Calling convention (D-092): every
+function is envref-first uniform (`envref, params... -> R`) with typed
+parameters; fn values are closures (a no-capture function still yields
+a valid captureless closure); direct calls thread the caller's envref;
+the program entry `main` is convention-exempt (a nullary wrapper that
+applies a captureless closure over the entry body). Captures are by
+BINDING: a `const`
 captures the value; a `var` captures the BOX (mutations visible to
 the closure and vice versa); parameters behave as const captures.
 Recursion and mutual recursion are unrestricted (flat top-level
 scope). THE TAIL-CALL GUARANTEE: proper tail calls — direct, mutual,
-and through closures — are guaranteed by the language; they must not
-grow the stack (this is a semantic guarantee, implemented by the
-uniform closure convention + trampoline/musttail machinery already
-proven in Femto/M14/D-063). NON-tail recursion is not constant-stack
-and is documented as such: the interpreter caps non-tail depth
-(D-029, 1024 frames, deterministic trap); native builds are bounded
-by the host stack.
+and through closures — are guaranteed by the language wherever caller
+and callee share the same (params, return) signature (self-recursion,
+same-shape mutual recursion, and applies through same-typed fn
+values, the D-092 convention scope); cross-signature tail calls are
+legal but not stack-guaranteed, and that scope is documented rather
+than overclaimed. Guaranteed tail calls must not grow the stack
+(implemented by the D-092 convention plus the trampoline/musttail
+machinery proven in M14/D-063). Non-tail recursion is NOT
+constant-stack and is documented as such: the interpreter caps
+non-tail depth (D-029, 1024 frames, deterministic trap); native
+builds are bounded by the host stack.
 
 ### §6.5 Errors: `try`, `catch`, Option, Result
 `?T` = `Option(T)` = `{ Some(T), None }`; `E!T` = `Result(T, E)` =
@@ -395,7 +405,7 @@ require a D-entry and a row here. "Frozen-by" records the decision.
 | F7 | operator set + precedence table (§5.1); `try` prefix, `catch` handler; postfix `?` RETIRED | D-086; revised by D-090 |
 | F8 | pipeline desugar exact (§6.3) | GOAL §8, D-086 |
 | F9 | propagation `try e` + replacement `e catch` (§6.5); identical-E rule in b0; `?T`/`E!T` shorthands | D-086; revised by D-090 |
-| F10 | tail-call guarantee: direct, mutual, closure (§6.4) | GOAL §7, D-086 |
+| F10 | tail-call guarantee: same-signature direct, mutual, and closure tail calls are constant-stack; cross-signature tails not guaranteed (§6.4); every function envref-first uniform, entry exempt (D-092) | GOAL §7; D-086, scoped by D-092 |
 | F11 | safety: checked `+ - *`, trap on div/rem zero & BOUNDS (§6.7) | GOAL §10, D-086 |
 | F12 | `Str` = immutable byte string; b0 str surface (§6.8) | D-086 |
 | F13 | `Vector(T)` reference semantics in b0; immutable at C2 (§6.1) | D-086 |

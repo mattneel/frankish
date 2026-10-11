@@ -193,6 +193,38 @@ veto-ledger pattern and most deserve their review.
   frontends/emission produce mechanically. Revisit: if upstream IRDL
   gains per-element fresh variables, variadic surfaces may return
   (goldens re-blessed under L2).
+- D-092 [calque/convention] THE CALQUE CALL CONVENTION (settled at C1
+  planning, before the first emission exists). Every Calque function
+  compiles to the UNIFORM form (D-063) with TYPED parameters:
+  `(!frk_closure.envref, params...) -> R` — envref-first for EVERY
+  function, the entry excepted. Why envref-first everywhere: the
+  language's tail-call guarantee must hold on the NATIVE path for
+  direct, same-shape mutual, AND closure tail calls; an indirect
+  apply gets musttail only when the callee's prototype EQUALS the
+  caller's, which requires the caller to be envref-prefixed as well as
+  the callee (verified against closure.rs's verifier before this
+  entry: uniform detection is "first input spelled
+  `!frk_closure.envref`", with `leading = 1` plus the typed rest —
+  typed rest-parameters ARE the supported uniform shape). Fn VALUES
+  are frk_closure closures; noncapturing functions still produce a
+  valid captureless closure (empty env product); direct calls pass the
+  CALLER'S envref through — no envref is ever fabricated. THE ENTRY is
+  convention-exempt: `main` is emitted as a nullary `() -> i64`
+  wrapper (the corpus entry protocol, D-042) that makes a captureless
+  closure over the convention-shaped entry body and APPLIES it
+  (make + apply; the lua frontend's nullary-main precedent, extended
+  with the closure hop so no special envref value exists anywhere).
+  GUARANTEE SCOPE: tail calls are constant-stack-guaranteed when
+  caller and callee share the same (params, R) — covering
+  self-recursion, same-shape mutual recursion, and applies through
+  same-typed fn values; cross-signature tail calls are legal but NOT
+  guaranteed constant-stack (documented in SPEC §6.4; a warning is a
+  later C2+ nicety, not a requirement). Captures load via
+  closure.env_load; the empty-env product is the no-capture case.
+  Revisit: if C4's direct-call/specialization work prices a
+  convention-exempt fast path for non-escaping leaf functions (a perf
+  license only, never to weaken the guarantee), or if cross-signature
+  tail calls are ever priced.
 - D-091 [calque/emission] AMENDS D-088.5 (vector representation),
   found at C1 planning: b0's `vector.*` surface is GROWABLE, so
   Vector(T) is NOT a bare `frk_mem.arr`. Representation: a MANAGED BOX
