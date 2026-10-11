@@ -27,7 +27,7 @@ performance), C5=M41 (developer experience + portability), C6=M42
 
 | ID | Requirement | Stage | Evidence | Status |
 |---|---|---|---|---|
-| AC-1.1 | Canonical compiler written in Calque from the first substantial implementation; Frankish interprets it before native compilation; the same interpreter DEFINES comptime semantics (execution may use any conforming runner — JIT default — with byte-exact equivalence, D-110) | C1/C3/C4 | `make calque-selfhost` (chain + fixed point, BOOTSTRAP §3); sources under `tools/calque/compiler/` | pending (M37) |
+| AC-1.1 | Canonical compiler written in Calque from the first substantial implementation; Frankish interprets it before native compilation; the same interpreter DEFINES comptime semantics (execution may use any conforming runner — JIT default — with byte-exact equivalence, D-110) | C1/C3/C4 | `make calque-selfhost` (chain + fixed point, BOOTSTRAP §3); sources under `tools/calque/compiler/` | done (M37: fixed point green; the D-112 state migration kept every differential byte-identical) |
 | AC-1.2 | Calque stays inside the specimen architecture (not a separate platform) | C0 | MANIFEST; SPEC §8 entry; specimen table row in frk-harness at M37 | done |
 | AC-1.3 | Priority order honored: DX > runtime perf > compile/iteration speed; correctness+safety non-negotiable | ongoing | Stage exit bars; C6 audit row AC-23.1; safety fenced in SPEC §6.7/§10 | ongoing |
 | AC-1.4 | No claim that Calque is the "first self-hosted language" anywhere | C6 | repo-wide doc audit in the C6 sweep (grep for the claim class) | pending (M42) |
@@ -108,8 +108,8 @@ performance), C5=M41 (developer experience + portability), C6=M42
 | AC-7.2 | Explicit local mutation; no implicit shared mutation | C0/C1 | SPEC §6.1 (var + Vector's one aliasing surface); corpus; C2 removes Vector mutability | done (frozen) |
 | AC-7.3 | First-class functions, closures, higher-order generic functions | C1/C2 | SPEC §6.4 (b0 closures); generics at C2; corpus cases | pending (M37) |
 | AC-7.4 | Lexical scope; predictable shadowing | C0/C1 | SPEC §4 (reserved modules, no same-scope redeclare); shadowing tests | done (frozen) |
-| AC-7.5 | Recursion + mutual recursion | C1 | SPEC §6.4; corpus (fib, mutual chains) | pending (M37) |
-| AC-7.6 | Tail-call guarantee (direct, mutual, closure); documented | C1 | SPEC F10/§6.4; deep-recursion goldens (500k-class legs join the corpus at M37) | pending (M37) |
+| AC-7.5 | Recursion + mutual recursion | C1 | SPEC §6.4; corpus (fib, mutual chains) | done (M37: `goldens/calque/fib`, `goldens/calque/mutual` green interp/jit/jit-rc/AOT) |
+| AC-7.6 | Tail-call guarantee (direct, mutual, closure); documented | C1 | SPEC F10/§6.4; deep-recursion goldens (500k-class legs join the corpus at M37) | done (M37: `goldens/calque/tco` 500k tail calls green under jit/jit-rc/AOT; the reference interpreter's 1024-frame ceiling skips it explicitly, reported) |
 | AC-7.7 | No claim that arbitrary recursion is constant-stack | C0/ongoing | SPEC F24 (documented); C6 doc audit | done (documented) |
 | AC-7.8 | Destructuring for records, tuples, tagged values | C2 | SPEC §5.2 roadmap; corpus: destructuring cases | pending (M38) |
 | AC-7.9 | Optional values, typed error results, concise propagation + explicit recovery | C0/C1 | SPEC §6.5 (`try`/`catch`, Option/Result); corpus incl. trap-vs-error distinction | done (frozen) |
@@ -126,7 +126,7 @@ performance), C5=M41 (developer experience + portability), C6=M42
 | AC-8.3 | Eager collections vs explicit sequences distinguished; map/filter/fold/flat_map/take/zip/collect | C2 | `seq` stdlib in Calque + corpus `seq_*` cases | pending (M38) |
 | AC-8.4 | Explicit closures for partial application; no separate pipeline engine | C2 | Desugar-only pipelines (frozen design); closure tests | pending (M38) |
 | AC-8.5 | Failures/effects order preserved under fusion; no trap/divergence reordering | C4 | fusion pass tests with trap witnesses (`pipeline_trap_order`) | pending (M40) |
-| AC-8.6 | Patterns: literals, wildcards, bindings, nested, tagged variants; tuples/records/or/guards; or-bound consistency; guard order | C1/C2 | b0 subset live at M37 (SPEC §5.2); full set C2; pattern corpus incl. negative cases | pending (M37→M38) |
+| AC-8.6 | Patterns: literals, wildcards, bindings, nested, tagged variants; tuples/records/or/guards; or-bound consistency; guard order | C1/C2 | b0 subset live at M37 (SPEC §5.2); full set C2; pattern corpus incl. negative cases | done (b0, M37: corpus `goldens/calque/union_match`/`badge`/`destr` + the hand-asserted error tests in crates/calque/tests/seed.rs; tuples/or/guards remain C2) |
 | AC-8.7 | Arity: guarded arm does not fake exhaustiveness; missing cases reported with witnesses; redundancy policy documented | C0/C1 | SPEC §5.2 (error + witness; redundancy = error); negative tests | done (policy) / pending (M37 impl) |
 | AC-8.8 | Reuse/extend decision-tree machinery where appropriate; source origins in branches; tests incl. shadowed bindings + branch-local captures | C1/C2 | match lowering (D-088.4) with locations; corpus | pending (M37) |
 
@@ -153,7 +153,7 @@ performance), C5=M41 (developer experience + portability), C6=M42
 
 | ID | Requirement | Stage | Evidence | Status |
 |---|---|---|---|---|
-| AC-10.1 | RC as the initial managed profile; strategy stays a parameter; other strategies where admitted | C1/C4 | D-088 emission on frk_mem; corpus × {arena,rc} where admitted | pending (M37) |
+| AC-10.1 | RC as the initial managed profile; strategy stays a parameter; other strategies where admitted | C1/C4 | D-088 emission on frk_mem; corpus × {arena,rc} where admitted | done (M37: `make calque-test` grid leg green 11/11 on both strategies; jit-rc in the diff matrix) |
 | AC-10.2 | Immutable vectors/maps/sets with structural sharing; builders; aliases preserved after update | C2 | C2 collection design + corpus (`coll_alias`) | pending (M38) |
 | AC-10.3 | Managed views alive with backing storage; eq/hash consistency; deterministic iteration where observable | C2 | collection corpus + property tests | pending (M38) |
 | AC-10.4 | Escape analysis / uniqueness reuse where evidence supports; no mandatory borrow annotations | C4 | C4 optimization rows + no-annotation audit | pending (M40) |

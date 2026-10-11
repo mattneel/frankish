@@ -191,6 +191,37 @@ class: exercise an incoming transform over the EXISTING corpus (outputs
 stay byte-identical) while the new surface earns its own corpus — the
 pattern Calque's bootstrap checks reuse.
 
+m37-done — C1 SHIPPED (tagged at this commit) + the user-directed
+DX milestone (D-112). SHIPPED: (a) C1's exit bar in full — the seed
+translates b0 end to end; the canonical compiler (tools/calque/
+compiler, ~3600 lines of Calque) runs under Frankish; goldens/calque
+holds 11 hand-derived cases green across interp/jit/jit-rc and the
+AOT native grid (both strategies; tco's 500k tail calls skip the
+reference interpreter's 1024-frame ceiling explicitly, D-029); the
+self-compilation fixed point (seed -> calq0 -> calq0, byte-exact) via
+make calque-selfhost; the corpus + harness move (D-111: frk_harness::
+calque, SourceKind::Calque, runners= prefix entries). (b) The DX
+milestone (49dd1ac/5e7de7b/82bfe6c): the seed's constructor-scope
+surface ([T], annotation-typed literals, widened defaults, var
+inference, contextual mut, field assignment + exclusivity), calq0's
+mirror, and the migrations — Emitter (75 mutating helpers on `mut e:
+Emitter`, read-only helpers plain, %Emitter{} init, cells deleted)
+and P (pos/state fields). Every differential stayed byte-identical
+through both migrations. LEARNED (first-rank findings, all fixed):
+the seed's emit_arm left a dangling false target for failing-payload
+chain arms; calq0 lacked the four __calque_input* intrinsics; the
+poison mirror was non-recursive and non-accumulating; != lowered as
+cmpi ne instead of eq+xori; the seed CANNOT emit and/or (levels 4-6
+only — recorded gap); `mut` as a keyword collided with calq0's own
+Param.mut field (contextual now); the fassign lookahead indexed past
+the eof sentinel (bounds-safe now); parse.calq must not call
+emitter helpers (the dump driver compiles without emit.calq); the
+JIT's Lua-error abort hides seed messages (debugging used an
+env-gated stderr trace in the capture shim, reverted; the dev loop
+now runs the seed/set checks through the JIT under D-110's ruling
+with the interpreter leg as the ignored L3 test). CHEATS: none open
+in the compiler (the cells are gone); the seed's and/or gap and its
+literal-only scalar model remain recorded seed limitations.
 m34-done — Shipped: TS emitter hygiene (D-083) — three fixes, all
 node-witnessed first (L1). (1) BLOCK-SCOPED LET: the flat env
 snapshot-restores at every block scope (if arms each from the
