@@ -25,6 +25,9 @@ CALQUE_STEERING_SHA=87b4fe7c308830d41254020fe4086a7188ee0ffffd8128a1b9bc9834e6bb
 # The second steering amendment (D-099..D-102: docs, packages, fuzzing)
 # is a permanent record too; same pin discipline.
 CALQUE_STEERING2_SHA=a372428e51df80c51fe8f39c57c89cfd327b2bfb65cc0aab61618b303c1a64bc
+# The third steering amendment (D-103: the language server) — same pin
+# discipline.
+CALQUE_STEERING3_SHA=5fdaa2c124c0b66be18f57561c97e8ac976bf29533eb709ff6decfc57dc9c7dd
 
 fail=0
 err() { echo "calque-check: $1" >&2; fail=1; }
@@ -34,6 +37,7 @@ for f in docs/calque/GOAL.md docs/calque/SPEC.md docs/calque/BOOTSTRAP.md \
          docs/calque/ACCEPTANCE.md docs/calque/PERFORMANCE.md \
          docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md \
          docs/calque/STEERING-DOCS-PACKAGES-FUZZING.md \
+         docs/calque/STEERING-LSP.md \
          specimens/calque/MANIFEST.md \
          specimens/calque/examples/README.md book/src/specimens/calque.md; do
   [ -f "$f" ] || err "missing artifact: $f"
@@ -59,6 +63,12 @@ if [ -f docs/calque/STEERING-DOCS-PACKAGES-FUZZING.md ]; then
   got=$(sha256sum docs/calque/STEERING-DOCS-PACKAGES-FUZZING.md | cut -d' ' -f1)
   [ "$got" = "$CALQUE_STEERING2_SHA" ] \
     || err "STEERING-DOCS-PACKAGES-FUZZING.md sha256 drifted: $got (pin $CALQUE_STEERING2_SHA)"
+fi
+# 2d. Third steering amendment pin (D-103).
+if [ -f docs/calque/STEERING-LSP.md ]; then
+  got=$(sha256sum docs/calque/STEERING-LSP.md | cut -d' ' -f1)
+  [ "$got" = "$CALQUE_STEERING3_SHA" ] \
+    || err "STEERING-LSP.md sha256 drifted: $got (pin $CALQUE_STEERING3_SHA)"
 fi
 
 # 3. Matrix structure.

@@ -14,6 +14,9 @@ surface text here (D-095/D-096/D-097); its stage mapping is in §13.
 The second steering amendment (docs-as-source, packages, fuzzing) lives
 at docs/calque/STEERING-DOCS-PACKAGES-FUZZING.md and extends the release
 surface (D-099/D-100/D-101/D-102); its stage mapping is in §13.
+The third steering amendment (the built-in language server) lives at
+docs/calque/STEERING-LSP.md and deepens C5's server obligation (D-103);
+its stage mapping is in §13.
 
 ---
 
@@ -520,3 +523,13 @@ targets, coverage-guided native exploration behind a pinned engine,
 corpus lifecycle + promotion) at C4–C5; release packaging of
 documentation/help and the acceptance sweep at C6. The hosted
 registry service stays OUTSIDE (GOAL §21's exclusion stands).
+
+The third steering amendment (language server — D-103) sharpens the C5
+server obligation: `calque lsp --stdio` as a toolchain MODE over the
+same library queries as batch compilation (LSP 3.18 pinned, negotiated
+capabilities, overlays/Snapshots, bounded pure evaluation under an
+explicit trust policy), plus the CLI parity surface (`calque query
+hover|definition|references|rename --format markdown`) and the
+`make calque-lsp` gate with its VS Code/Neovim smoke evidence; the
+protocol remains JSON-RPC on the wire (never CON/CTF), and the
+amendment's §13 demonstrations are its exit evidence.

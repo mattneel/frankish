@@ -2684,3 +2684,161 @@ veto-ledger pattern and most deserve their review.
   docs/help and the acceptance demos' end-to-end runs C6; gates
   `make calque-docs` / `make calque-packages` / `make calque-fuzz`
   land with their stages and join `calque-test`'s matrix.
+
+- D-103 [calque/lsp] THE LANGUAGE SERVER IS A MODE OF THE TOOLCHAIN,
+  NOT AN INDEPENDENT IMPLEMENTATION (steering: LSP amendment §1–§13;
+  sha-pinned at docs/calque/STEERING-LSP.md). `calque lsp --stdio`
+  ships WITH every supported Calque development distribution (no
+  separate download, no Node service, no editor-specific compiler);
+  canonical analysis + language-service policy are written in
+  CALQUE, sharing parse/resolution/inference/effects/origins/
+  diagnostics with batch compilation through library QUERIES — never
+  CLI scraping or per-request compilation; frontend startup needs no
+  native emission, LLVM init, or whole-project compile; ONE
+  capability schema serves server configuration, help, and editor
+  settings; no new VM/actor runtime/production evaluator (Frankish
+  provides generic host services + bounded execution; transport/
+  scheduling/presentation stay separate from semantics). PROTOCOL:
+  LSP 3.18 pinned; negotiated capabilities only — advertised ==
+  implemented == tested, with a capability-to-test matrix;
+  byte-correct Content-Length framing over the common JSON codec
+  (NEVER CON/CTF on the wire); stdout is protocol-only (logs/traces
+  to stderr or negotiated channels); cancellation completes valid
+  responses (no orphaned ids); bounded frames/queues/outstanding
+  requests; unknown fields tolerated; malformed input cannot corrupt
+  later sessions; position encodings negotiated (UTF-16 default)
+  with scalar/UTF-8/UTF-16 conversion tests; incremental document
+  sync with valid full replacement; pull diagnostics + tested push
+  fallback; diagnostics keyed to the correct revision; Markdown help
+  kept off the live stream. SNAPSHOTS: a virtual filesystem with
+  explicit editor overlays; the BUFFER wins over disk; one coherent
+  snapshot per request; error-tolerant real syntax trees (comments,
+  missing tokens, error nodes, partial declarations preserved);
+  useful local results before full analysis; unresolved/
+  budget-limited information stays EXPLICIT — a guessed type is
+  never presented as verified; immutable snapshots +
+  cancellation-aware queries; interactive work prioritized over
+  background indexing; obsolete work stopped without publishing
+  stale diagnostics; bounded retained snapshots/indexes/memory;
+  missing uncached dependencies reported without automatic network
+  access. INTELLIGENCE (the capability table as law): diagnostics
+  (related spans, stable codes), completion (contextual names,
+  imports, struct fields, variants, callable parameters — INSIDE
+  broken expressions/unfinished literals/partial imports; lazily
+  resolved details where supported), signature help (active
+  argument, generics, PIPELINE insertion after implicit first-
+  argument insertion, documented effects), hover (resolved types,
+  canonical signatures, Markdown docs, defaults, VERIFIED contracts
+  only to their proven extent), navigation (definition/declaration/
+  type definition/references/document+workspace symbols), rename
+  (scope-aware; pinning and shadowing preserved), presentation
+  (semantic tokens, individually configurable inlay hints, folding,
+  selection ranges, highlights — derived from canonical analysis),
+  formatting (the SHARED canonical formatter; document + supported
+  ranges), code actions (located fixes, collision-aware
+  comment-preserving import edits, missing cases with concrete
+  witnesses, reviewed refactors), call hierarchy (explicit limits
+  for unresolved dynamic calls; never invent implementations or
+  callers), code lenses (test/doctest/fuzz-replay/docs actions);
+  severity consistent with `calque check` under equivalent inputs;
+  syntax-fallback information visibly distinct. CALQUE-SPECIFIC:
+  `%User{}` field completion from the resolved nominal (required vs
+  defaulted distinguished; misspelled/missing/duplicate/typed
+  explained; `%User{user | active: false}` without duplicate
+  suggestions), pattern completion from the scrutinee's actual type,
+  missing-arm witnesses, explicit unfinished bodies (never
+  fabricated logic), guards/or-pattern bindings consistent with
+  compiler semantics; generics shown as declaration + useful
+  instantiations (no instantiation duplication); effects/allocation
+  contracts only to their PROVEN extent; compile-time constants
+  without forced unbounded evaluation; source origins preserved
+  through specialization; read-only expansion/IR views via
+  negotiated support or a thin adapter (equivalent CLI inspection
+  when a client lacks virtual documents; no private-protocol
+  prerequisites for core editing). CON: shared implementation
+  (parse/format/navigation/diagnostics), schema-aware keys/defaults/
+  values only when a schema is EXPLICITLY associated, unnamed
+  nominal terms stay valid inert data, schema-free documents do not
+  pretend known field types; CTF binary inspection stays separate
+  from text sync. DOCS: hover/completion/signature/links read the
+  DOCUMENTATION GRAPH (D-099); resolved dependency docs for the
+  LOCKED version; local access without browser/network; negotiated
+  Markdown with plain-text fallback; untrusted docs sanitized,
+  executable links disabled; symbol completion inside `@doc`/
+  `@moduledoc`/guides; doctest extraction + setup rules SHARED with
+  D-100; mapped edits preserve escaping/indentation/hidden setup/
+  transcripts and REJECT ambiguity instead of altering the wrong
+  location; display NEVER executes examples. TESTS/FUZZ/PACKAGES:
+  discovery through the SHARED registry (tests/describes/fixtures/
+  doctests/fuzz targets/regressions), run/rerun/trace/failure
+  actions with EXPLICIT execution, reuse of output events/seeds/
+  capabilities/timeouts/supervised workers, long work outside the
+  interactive lane with documented cancellation, results labeled
+  with exact snapshot + configuration; unsaved-snapshot runs only
+  where the runner's effect contract permits, else require save and
+  explain (never silently run different disk contents);
+  test-explorer adapters thin over versioned contracts (never
+  claimed as standard LSP); locked package metadata read WITHOUT
+  dependency execution; missing deps/conflicts as actionable
+  diagnostics; installer plans reused with approval; editor overlays
+  are installer preconditions; stale plans rejected; package hooks
+  never run for completion/hover/help. EDITS: capability-compatible
+  workspace edits returned to the client — NOTHING written behind
+  the editor; versioned edits where supported; unopened-file +
+  project preconditions revalidated; edit planning SHARED with CLI +
+  installer; rename preparation + collision detection;
+  comments/aliases/public boundaries/unrelated same-spelled
+  identifiers preserved; actual source + doc references updated
+  through resolved identities; NO rewrites of arbitrary strings/
+  serialized field names/binary fixtures; public renames that change
+  CON/CTF/JSON schema compatibility WARN (wire migrations are
+  separate); narrow clients' capabilities not overclaimed; explain
+  rather than partial destructive refactor. TRUST: automatic
+  analysis = source analysis + trusted built-ins + bounded pure
+  evaluation through Frankish's existing service; caches obey the
+  CURRENT target/toolchain/dependency/capability policy (no bypass
+  via cache hit); explicit workspace policy before compile-time
+  reads beyond approved inputs; ambient network/shell/secrets/
+  installers/native plugins denied during automatic analysis —
+  enforced at the HOST-SERVICE boundary, not in annotations; bounded
+  steps/memory/recursion/time; nested evaluation cancellable +
+  isolated; over-budget evaluation retains useful analysis and
+  reports DEFERRED information (never as a source error, never
+  invented); explicit larger-budget action with visible permissions;
+  responsive transport under pathological programs; structured
+  command arguments (no shell concatenation); loopback-default
+  listeners; bounded logs without source contents/secrets unless
+  explicit tracing. CLI PARITY: `calque query
+  hover|definition|references|rename` (with `--dry-run`) over the
+  SAME library, `--format markdown` stable/uncolored, explicit CLI
+  line/column units DISTINCT from LSP encodings, input overlays
+  without a running editor, revision/toolchain/target/completeness
+  in reports, exact locations + explicit ambiguity, help generated
+  from the same schema and available offline/pre-init. PERFORMANCE:
+  measurements are the contract (startup-to-initialize vs
+  first-useful-result; warm completion/hover/rename/diagnostics/
+  cancellation p50/p95; peak memory; queue depth; query executions;
+  artifact reads), frozen fixtures + budgets BEFORE optimization,
+  realistic edit traces (comment/body/signature/same-result
+  compile-time edits), limited recomputation for unrelated
+  declarations, interactive analysis independent of native emission,
+  incremental/cancellable/visible indexing, corrupt-cache recovery
+  without losing buffers, bounded memory under long sessions +
+  project switches, published results (no unsupported promises).
+  GATES: `make calque-lsp` (library + wire + end-to-end tests; a
+  REAL subprocess over stdin/stdout; fragmented frames, malformed
+  JSON, invalid ranges, cancellation, shutdown races; minimal +
+  feature-rich clients; emoji/combining marks/CRLF/escaped URIs;
+  unsaved multi-file edits; same-spelled symbols + shadowing; failed
+  parses; stale-completion resolution; batch-vs-LSP diagnostic
+  comparison; doc/CON/test/fuzz/package integration; fuzzed
+  document-event sequences + protocol decoding under bounded
+  resources; incremental-vs-fresh query equivalence; minimized
+  protocol/edit-sequence failures promoted into regressions); a
+  thin VS Code integration + documented Neovim configuration
+  smoke-tested against the SHIPPED binary (no mandatory marketplace
+  access, no editor-specific forks); release packaging. STAGE: C5 —
+  the DX stage already owns "language server" per the stage list;
+  the `calque query` CLI and `make calque-lsp` land with it; nothing
+  here precedes the C5 gate, and the amendment's §13 demonstrations
+  1–10 + negative gates are its exit evidence.

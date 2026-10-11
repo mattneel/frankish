@@ -80,6 +80,19 @@ CLI Markdown help + full doctest integration + publication validation
 at C5; release packaging of docs/help at C6; gates `calque-docs`/
 `calque-packages`/`calque-fuzz` land with their stages (SPEC §13).
 
+Third steering amendment (D-103; `docs/calque/STEERING-LSP.md`): the
+language server is a MODE of the toolchain shipped with every supported
+development distribution (`calque lsp --stdio`), not an independent
+implementation — analysis and service policy in Calque over the same
+library queries as batch compilation, LSP 3.18 pinned with negotiated
+capabilities, buffer-wins virtual snapshots, bounded pure evaluation
+under an explicit trust policy, capability-compatible workspace edits
+(nothing written behind the editor), the documentation graph and the
+shared test/fuzz/package registries feeding hover/completion/lenses,
+and CLI parity (`calque query ...`). Stage: C5 (the DX stage's
+"language server" entry, deepened), with `make calque-lsp` carrying
+the §13 gate list and the VS Code/Neovim smoke evidence.
+
 ## Stages
 Each stage freezes at its milestone exit (goal §18; numbers from the
 current ledger, D-085):
@@ -103,7 +116,8 @@ current ledger, D-085):
   language server, REPL, incremental invalidation, native debug,
   target matrix; the documentation toolchain + CLI Markdown help +
   full doctest integration + package publication validation
-  (D-099/D-100/D-101).
+  (D-099/D-100/D-101); the built-in first-class language server +
+  `calque query` CLI (D-103).
 - **C6 (M42) — release and demonstration package.** Demos A–E
   (asciinema + MP4), documentation audit, acceptance sweep; generated
   documentation/help ship in the release artifacts.

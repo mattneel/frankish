@@ -1,21 +1,28 @@
 # STATE — frankish live handoff
 
-Updated: 2026-10-11 (M35 close + M36/C0 charter session)
-Phase: M35 complete (tag m35-done, note written late — see the log);
-M36 complete (tag m36-done): the Calque C0 charter — goal record
-(verbatim, sha-pinned), scope rulings D-085..D-090, b0 frozen
-(SPEC §12, F1–F33), the bootstrap route, the 180-row acceptance
-matrix, and the gates (`make calque-test`, in CI). M37/C1 is IN FLIGHT:
-the bootstrap SEED translates b0 end to end (fib.calq + the exact i64
-corner vectors green under `cargo test -p calque`); the user's STEERING
-amendment (structs `%Type{}`, `calque test`, CON/CTF; D-095..D-097) is
-recorded at docs/calque/STEERING-TESTS-STRUCTS-FORMATS.md (sha-pinned;
-the original GOAL stays pinned and untouched) and threaded through
-SPEC/ACCEPTANCE/MANIFEST.
-Tree: green — `make test` workspace suite green (554 s, gating run
-2026-10-11); diff 162 cases 0 divergent (8 runners); grid 157/157 ×
-BOTH strategies × 4 triples + s390x canary 157/157; `make calque-test`
-green (28/180 acceptance rows done).
+Updated: 2026-10-11 (M37/C1 session 2 — seed growth, input channel,
+steering 2, vectors)
+Phase: M35 complete (tag m35-done); M36 complete (tag m36-done — the
+Calque C0 charter). M37/C1 IN FLIGHT — four slabs landed this session:
+the SEED GROWTH (D-095/D-088: records/unions/match in b0 — `%Type{}`
+construction with literal defaults, immutable update, record/variant/
+literal/`^pin` patterns with exhaustiveness and redundancy errors);
+the COMPILER'S INPUT CHANNEL (BOOTSTRAP §2.1 — the driver's
+`__calque_input_count`/`__calque_input` injection + seed passthrough,
+which forced D-098: the bstr literal ASCII fence lifts, byte strings
+have no encoding); STEERING 2 recorded (docs-as-source, packages,
+fuzzing — D-099..D-102, sha-pinned at
+docs/calque/STEERING-DOCS-PACKAGES-FUZZING.md; AC-S19..S30; stage
+mapping in SPEC §13); and VECTOR(T) (F34/D-091 — the 15 per-slot-kind
+intrinsics with growth, and the annotated `vector.new()` surface). The
+first steering amendment (structs/tests/CON/CTF; D-095..D-097) stays
+threaded through SPEC/ACCEPTANCE/MANIFEST; the THIRD steering
+amendment (the built-in language server — D-103, sha-pinned at
+docs/calque/STEERING-LSP.md; AC-S31..S41) is recorded and mapped to C5.
+Tree: green — `cargo test -p calque` 13/13 seed + reference; `make
+test` green on this session's commits; diff 162 cases 0 divergent (8
+runners); grid 157/157 × BOTH strategies × 4 triples + s390x canary
+157/157; `make calque-test` green (29/211 acceptance rows done).
 
 WORKSTREAM: CALQUE (user-selected 2026-10-11). M36 = C0 → M42 = C6.
 docs/calque/GOAL.md is the acceptance contract (stored verbatim; its
@@ -28,16 +35,29 @@ is the live evidence matrix; the target family is `make calque-*`.
    behavior-preservation tests for every existing specimen), (b) the
    Calque intrinsics module + the new rt rows (print/eprint/trap), (c)
    the seed (Lua translator on femto_lua) targeting the D-088 emission
-   rules, (d) calq0 (the compiler core, written in b0), (e) the corpus
-   (goldens/calque/), (f) the initial self-compilation gate, (g) the
-   seed slab committed (seed.translate + stdlib + tests) — done this
-   session; remaining: (h) the struct surface lands WITH the C2 record
-   work (`%Type{...}`; b0 has no records, so the grammar is amended
-   pre-hardening — D-095), (i) the minimal `calque test` runner +
-   structural assertions are a C2 EXIT item (D-096), (j) CON/CTF/JSON
-   over one codec foundation at C2–C3 (D-097), CTF-vs-ETF at C4, the
-   full test experience at C5. Verifiers
-   and acceptance: ACCEPTANCE AC-18.2 + the AC-S rows; BOOTSTRAP §3.
+   rules; (d) calq0 (the compiler core, in b0), (e) the corpus
+   (`goldens/calque/`), (f) the initial self-compilation gate.
+   STATUS: (a)–(c) DONE; (g) DONE, plus the M37 session-2 slabs: the
+   RECORD
+   SURFACE (D-095 — b0 HAS records now; SPEC §5/§5.2 amended), the
+   INPUT CHANNEL (BOOTSTRAP §2.1; D-098), Vector(T) (F34/D-091), and
+   STEERING 2 recorded (D-099..D-102). NEXT: (d) calq0 slice 1 —
+   `tools/calque/compiler/` grows from the LEXER in b0 (tokens as a
+   union carried in a Vector, spans, the b0 token table), driven
+   through the input channel; then slice 2 the parser, slice 3 the
+   emitter; (e) the corpus (`goldens/calque/`) as calq0's
+   differential against the Rust frontend's artifacts; (f) the
+   initial self-compilation gate. SEED GAPS calq0 will hit next
+   (each its own slab): `*` arithmetic (the mul-overflow slice is
+   PENDING — `i * i` does NOT translate yet), byte-level str access
+   for the lexer, Option/Result, `for`. (i) the minimal `calque test`
+   runner + structural assertions are a C2 EXIT item (D-096),
+   (j) CON/CTF/JSON over one codec foundation at C2–C3 (D-097),
+   CTF-vs-ETF at C4, the full test experience at C5; STEERING 2's
+   features land at their stages (D-099..D-102; SPEC §13), and
+   STEERING 3 (the language server — D-103) deepens C5's server
+   obligation (`calque lsp --stdio` + `calque query`, `make
+   calque-lsp`).
 2. QUEUED (preserved; not this workstream's):
    - ts-4: generics (monomorphized), sealed-world switch, any/gradual
      boundary as contract ops (frk_contract's second act); the D-079
@@ -1171,6 +1191,73 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-10-11 (thirty-sixth entry)
+    Milestone/step: M37/C1 in flight — four slabs landed (seed
+    growth; input channel + D-098; steering 2 charter; vectors);
+    m37 NOT tagged yet (calq0 does not exist)
+    Green? yes — `cargo test -p calque` 13/13 seed + reference; the
+    workspace suite gated bash this session's commits (make test);
+    diff 162/0 (8 runners); calque-check green (29/211 rows)
+    Did:
+    - seed growth b567f02 (D-095/D-088): records (`const T = struct`
+      with literal defaults, `%T{f: v}`, `%T{base | f: v}`),
+      unions + variant construction, `match` over union/struct/
+      builtin scrutinees (record/variant/literal/`^pin` patterns,
+      catch-alls incl. all-binding record patterns, exhaustiveness
+      errors naming missing variants, redundant/failing-final-arm
+      errors), `user.field` access, unannotated `const`,
+      statement-position `match`; adt_probe + the steering `%User{}`
+      example + 6 negative cases; the seed also runs under lua5.1 as
+      the host oracle (bisected two seed bugs that way)
+    - input channel 15227ce (BOOTSTRAP §2.1): `input_injection`
+      (`__calque_input_count`/`__calque_input(i)`, arbitrary bytes as
+      bstr literals) + `run_artifact_with_input` + seed passthrough;
+      forced D-098 — the v0.1 bstr literal ASCII fence lifts (byte
+      strings have no encoding; verifier + lowering carry Vec<u8>;
+      the bstr_bytes test pins both strategies byte-exact, len counts
+      BYTES)
+    - steering 2 3be93fc (D-099..D-102): the amendment stored at
+      docs/calque/STEERING-DOCS-PACKAGES-FUZZING.md (sha-pinned),
+      SPEC header + §13 stage mapping, AC-S19..S30, MANIFEST stage
+      extensions (+ the stale "b0 has no records" line corrected),
+      checker pin; GOAL §21 conflict-checked (the hosted registry
+      stays excluded)
+    - steering 3 (D-103): the LSP amendment stored at
+      docs/calque/STEERING-LSP.md (sha-pinned), SPEC header + §13,
+      AC-S31..S41 + the `calque-lsp` planned target, MANIFEST C5
+      deepening, checker pin — recorded mid-session per the user's
+      interjection; implementation at C5 (nothing here precedes it)
+    - vectors 43c4ade (F34/D-091): Vector(T) parses/slots
+      i64/Str/declared; the 15 per-slot-kind intrinsics (new/len/get/
+      set/push) as kernel IR in crates/calque/src/intrinsics.mlir
+      with doubling growth (4) + `ult` bounds traps; `vector.new()`
+      instantiated by the binding ANNOTATION (syntax-directed);
+      named slots marshalled via wrap_store/unwrap_load (recref)
+    Next: calq0 slice 1 — the LEXER in
+    tools/calque/compiler/lex.calq (b0), driven through the input
+    channel; expect a `*`-arithmetic seed slab first (see landmines)
+    Landmines (new this session):
+    - `*` is NOT in the seed yet ("mul-overflow slice pending") — a
+      b0 program with `i * i` fails loudly; do not write calq0 code
+      using `*` before that slab lands
+    - the seed's expression convention: emit_expr returns the SSA id
+      only; STATIC TYPES ride E.vtypes[id] (calls may also return a
+      pair). Violating this was the one real bug class this session
+      (caught by lua5.1 in seconds — use the host oracle FIRST)
+    - `mlir-opt-22 --allow-unregistered-dialect` is the fast syntax
+      check for intrinsics.mlir (it caught a duplicate SSA name that
+      melior reports only as "composed module failed to parse")
+    - femto_lua again: locals REQUIRE initializers — write
+      `local v = nil` for forward locals (bit the new decl paths)
+    - intrinsics.mlir is include_str!'d into every composed module:
+      a syntax error there fails EVERY calque test at once (that is
+      by design; check with mlir-opt before cargo)
+    - vectors mutate IN PLACE through any binding (const included —
+      like a managed box); the surface is b0/bootstrap-only (the C2
+      immutable Vector replaces it per D-091)
+    - the seed input channel remains ASCII-ONLY (F18); ONLY the
+      compiler input channel is unrestricted (D-098)
 
     Session end: 2026-10-11 (thirty-fifth entry; the session log's
     entries stop at the thirty-fourth (M32) — M33..M35 shipped with
