@@ -450,7 +450,7 @@ pub fn step(src: Str, n: i64, toks: Vector(Tok), st: Scan) Scan {
         vector.push(toks, mk_tok(Kind.Punct, two, line, col));
         return move(st, i + 2, line, col + 2);
     }
-    if in_set("(){}[],;:.=<>+-*/%!^|", c) {
+    if in_set("(){}[],;:.=<>+-*/%!^|?", c) {
         vector.push(toks, mk_tok(Kind.Punct, c, line, col));
         return move(st, i + 1, line, col + 1);
     }

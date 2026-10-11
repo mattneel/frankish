@@ -229,6 +229,8 @@ pub fn ty_ir(t: Ty) Str {
         Ty.UnitV => "unit",
         Ty.Named(n) => n,
         Ty.Vec(inner) => "vec",
+        Ty.OptT(inner) => "opt",
+        Ty.ResT(rz) => "res",
         Ty.FnT(sig) => "fn",
         Ty.TyBad(b) => "bad",
     };
@@ -479,11 +481,11 @@ pub fn emit_lifted_lines(mut e: Emitter, lines: [Str]) {
 pub fn emit_try_e(mut e: Emitter, tr: TryX) Str {
     const v: Str = emit_expr(e, tr.expr);
     const oty: Ty = vget(e, v);
-    if is_named_t(oty) == false {
+    if is_named_t(oty) == false and is_res_t(oty) == false {
         return e_fail_at(e, tr.line, tr.col, "`try` needs an error-union operand");
     }
     const a: Ast = e_ast(e);
-    const od: TypeDecl = find_td(a, named_of(oty));
+    const od: TypeDecl = decl_for(a, oty);
     if od.is_union == false {
         return e_fail_at(e, tr.line, tr.col, "`try` needs an error union (Ok + Err variants)");
     }
@@ -505,10 +507,10 @@ pub fn emit_try_e(mut e: Emitter, tr: TryX) Str {
         return e_fail_at(e, tr.line, tr.col, "`try` needs an error union (Ok + Err variants)");
     }
     const rty: Ty = e_ret(e);
-    if is_named_t(rty) == false {
+    if is_named_t(rty) == false and is_res_t(rty) == false {
         return e_fail_at(e, tr.line, tr.col, "the enclosing function must return an error union for `try`");
     }
-    const rd: TypeDecl = find_td(a, named_of(rty));
+    const rd: TypeDecl = decl_for(a, rty);
     if rd.is_union == false {
         return e_fail_at(e, tr.line, tr.col, "the enclosing function must return an error union for `try`");
     }
@@ -784,6 +786,45 @@ pub fn declare(mut e: Emitter, b: Binding) {
 
 // Type environment: the AST's declarations (linear scan; calq0's own
 // scale is small by construction).
+// The virtual union decls of the structural shorthands (SPEC 6.5);
+// the match/variant/try machinery reads decls uniformly.
+pub fn synth_td(t: Ty) TypeDecl {
+    return match t {
+        Ty.OptT(inner) => synth_opt_td(inner),
+        Ty.ResT(rz) => synth_res_td(rz),
+        _ => synth_empty_td(),
+    };
+}
+
+pub fn synth_empty_td() TypeDecl {
+    var fs: Vector(FieldDecl) = vector.new();
+    var vs: Vector(VariantDecl) = vector.new();
+    return %TypeDecl{name: "", is_union: false, fields: fs, variants: vs};
+}
+
+pub fn synth_opt_td(inner: Ty) TypeDecl {
+    var fs: Vector(FieldDecl) = vector.new();
+    var vs: Vector(VariantDecl) = vector.new();
+    vector.push(vs, %VariantDecl{name: "Some", has_payload: true, ty: inner});
+    vector.push(vs, %VariantDecl{name: "None", has_payload: false, ty: Ty.UnitV});
+    return %TypeDecl{name: "", is_union: true, fields: fs, variants: vs};
+}
+
+pub fn synth_res_td(rz: ResTT) TypeDecl {
+    var fs: Vector(FieldDecl) = vector.new();
+    var vs: Vector(VariantDecl) = vector.new();
+    vector.push(vs, %VariantDecl{name: "Ok", has_payload: true, ty: rz.ok});
+    vector.push(vs, %VariantDecl{name: "Err", has_payload: true, ty: rz.err});
+    return %TypeDecl{name: "", is_union: true, fields: fs, variants: vs};
+}
+
+pub fn decl_for(a: Ast, t: Ty) TypeDecl {
+    if is_named_t(t) {
+        return find_td(a, named_of(t));
+    }
+    return synth_td(t);
+}
+
 pub fn find_td(a: Ast, name: Str) TypeDecl {
     const n: i64 = vector.len(a.types);
     var i: i64 = 0;
@@ -827,6 +868,8 @@ pub fn ir_ty(t: Ty) Str {
         Ty.UnitV => "",
         Ty.Named(n) => n,
         Ty.Vec(inner) => "vec",
+        Ty.OptT(inner) => "opt",
+        Ty.ResT(rz) => "res",
         Ty.FnT(sig) => "fn",
         Ty.TyBad(b) => "bad",
     };
@@ -838,6 +881,8 @@ pub fn storage_ir_t(a: Ast, t: Ty) Str {
     return match t {
         Ty.Named(n) => "!frk_mem.recref",
         Ty.Vec(inner) => value_ir_t(a, t),
+        Ty.OptT(inner) => value_ir_t(a, t),
+        Ty.ResT(rz) => value_ir_t(a, t),
         Ty.FnT(sig) => fn_ir_t(a, sig),
         _ => ir_ty(t),
     };
@@ -847,6 +892,8 @@ pub fn value_ir_t(a: Ast, t: Ty) Str {
     return match t {
         Ty.Named(n) => named_value_ir(a, n),
         Ty.Vec(inner) => vec_box(a, inner),
+        Ty.OptT(inner) => str.concat("!frk_adt.sum<[[", str.concat(storage_ir_t(a, inner), "], []]>")),
+        Ty.ResT(rz) => str.concat("!frk_adt.sum<[[", str.concat(storage_ir_t(a, rz.ok), str.concat("], [", str.concat(storage_ir_t(a, rz.err), "]]>")))),
         Ty.FnT(sig) => fn_ir_t(a, sig),
         _ => ir_ty(t),
     };
@@ -1010,8 +1057,42 @@ pub fn e_poison(mut e: Emitter, t: Ty) Str {
         Ty.I64 => e_int(e, "0"),
         Ty.BoolV => e_bool(e, "false"),
         Ty.StrV => e_str(e, ""),
+        Ty.OptT(inner) => poison_variant(e, inner, t),
+        Ty.ResT(rz) => poison_variant(e, rz.ok, t),
         _ => named_poison(e, t),
     };
+}
+
+// Variant-0 (Some/Ok) carry with a poisoned payload, for a structural
+// union's unreachable arms.
+pub fn poison_variant(mut e: Emitter, payload_ty: Ty, sum_ty: Ty) Str {
+    const a: Ast = e_ast(e);
+    const p: Str = e_poison(e, payload_ty);
+    const stored: Str = wrap_store(e, p, payload_ty, 0, 0);
+    const sty: Str = storage_ir_t(a, payload_ty);
+    const e0: Str = fresh(e);
+    emit_line(e, str.concat(e0, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
+    const prod: Str = fresh(e);
+    var l1: Str = " = \"frk_adt.product_snoc\"(";
+    l1 = str.concat(l1, e0);
+    l1 = str.concat(l1, ", ");
+    l1 = str.concat(l1, stored);
+    l1 = str.concat(l1, ") : (!frk_adt.product<[]>, ");
+    l1 = str.concat(l1, sty);
+    l1 = str.concat(l1, ") -> !frk_adt.product<[");
+    l1 = str.concat(l1, sty);
+    l1 = str.concat(l1, "]>");
+    emit_line(e, str.concat(prod, l1));
+    const s: Str = fresh(e);
+    var l2: Str = " = \"frk_adt.make_sum\"(";
+    l2 = str.concat(l2, prod);
+    l2 = str.concat(l2, ") {variant = 0 : i64} : (!frk_adt.product<[");
+    l2 = str.concat(l2, sty);
+    l2 = str.concat(l2, "]>) -> ");
+    l2 = str.concat(l2, value_ir_t(a, sum_ty));
+    emit_line(e, str.concat(s, l2));
+    vset(e, s, sum_ty);
+    return s;
 }
 
 pub fn named_poison(mut e: Emitter, t: Ty) Str {
@@ -1590,7 +1671,7 @@ pub fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
     if str.len(r.mod) > 0 {
         const td: TypeDecl = find_td(e_ast(e), r.mod);
         if td.name != "" {
-            return emit_variant_make(e, td, r.name, c.args, line, col);
+            return emit_variant_make(e, td, Ty.Named(td.name), r.name, c.args, line, col);
         }
     }
     if r.mod == "io" {
@@ -1775,7 +1856,7 @@ pub fn emit_ref(mut e: Emitter, r: Ref, line: i64, col: i64) Str {
             if v.has_payload {
                 return e_fail_at(e, line, col, str.concat("variant `", str.concat(r.name, "` carries a payload (call its constructor)")));
             }
-            return emit_unit_variant(e, td, r.name, line, col);
+            return emit_unit_variant(e, td, Ty.Named(td.name), r.name, line, col);
         }
         const owner: Binding = lookup(e, r.mod);
         if owner.name == "" {
@@ -2166,8 +2247,38 @@ pub fn same_ty(a: Ty, b: Ty) bool {
         Ty.UnitV => ty_is_unit(b),
         Ty.Named(n) => same_named(n, b),
         Ty.Vec(inner) => same_vec(inner, b),
+        Ty.OptT(inner) => same_opt(inner, b),
+        Ty.ResT(rz) => same_res(rz, b),
         Ty.FnT(sig) => same_fnsig(sig, b),
         Ty.TyBad(x) => ty_is_unit(b),
+    };
+}
+
+pub fn same_opt(inner: Ty, b: Ty) bool {
+    return match b {
+        Ty.OptT(i2) => same_ty(inner, i2),
+        _ => false,
+    };
+}
+
+pub fn same_res(rz: ResTT, b: Ty) bool {
+    return match b {
+        Ty.ResT(r2) => same_ty(rz.err, r2.err) and same_ty(rz.ok, r2.ok),
+        _ => false,
+    };
+}
+
+pub fn is_opt_t(t: Ty) bool {
+    return match t {
+        Ty.OptT(inner) => true,
+        _ => false,
+    };
+}
+
+pub fn is_res_t(t: Ty) bool {
+    return match t {
+        Ty.ResT(rz) => true,
+        _ => false,
     };
 }
 
@@ -2446,13 +2557,12 @@ pub fn emit_make(mut e: Emitter, m: MakeE, line: i64, col: i64) Str {
 
 // The unit-variant value (`Token.Plus`) and payload construction
 // (`Token.Ident("a")`), mirroring the seed's shapes.
-pub fn emit_unit_variant(mut e: Emitter, td: TypeDecl, vname: Str, line: i64, col: i64) Str {
+pub fn emit_unit_variant(mut e: Emitter, td: TypeDecl, uty: Ty, vname: Str, line: i64, col: i64) Str {
     const idx: i64 = variant_index(td, vname);
     if idx < 0 {
         return e_fail_at(e, line, col, str.concat("unknown variant `", str.concat(vname, "`")));
     }
     const a: Ast = e_ast(e);
-    const uty: Ty = Ty.Named(td.name);
     const uir: Str = value_ir_t(a, uty);
     const e0: Str = fresh(e);
     emit_line(e, str.concat(e0, " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>"));
@@ -2511,7 +2621,7 @@ pub fn emit_field_access(mut e: Emitter, recv: Str, rname: Str, field: Str, line
 
 // Payload variant construction: `T.Variant(expr)` (the seed's
 // emit_call head, mirrored).
-pub fn emit_variant_make(mut e: Emitter, td: TypeDecl, vname: Str, args: Vector(Expr), line: i64, col: i64) Str {
+pub fn emit_variant_make(mut e: Emitter, td: TypeDecl, uty: Ty, vname: Str, args: Vector(Expr), line: i64, col: i64) Str {
     const idx: i64 = variant_index(td, vname);
     if idx < 0 {
         return e_fail_at(e, line, col, str.concat("unknown variant `", str.concat(vname, "`")));
@@ -2519,14 +2629,13 @@ pub fn emit_variant_make(mut e: Emitter, td: TypeDecl, vname: Str, args: Vector(
     const nv: i64 = vector.len(td.variants);
     const v: VariantDecl = vector.get(td.variants, idx);
     const a: Ast = e_ast(e);
-    const uty: Ty = Ty.Named(td.name);
     const uir: Str = value_ir_t(a, uty);
     const na: i64 = vector.len(args);
     if na == 0 {
         if v.has_payload {
             return e_fail_at(e, line, col, str.concat("variant `", str.concat(vname, "` carries a payload (one argument)")));
         }
-        return emit_unit_variant(e, td, vname, line, col);
+        return emit_unit_variant(e, td, uty, vname, line, col);
     }
     if na != 1 {
         return e_fail_at(e, line, col, "a variant payload is ONE value (seed v0)");
@@ -2534,7 +2643,7 @@ pub fn emit_variant_make(mut e: Emitter, td: TypeDecl, vname: Str, args: Vector(
     if v.has_payload == false {
         return e_fail_at(e, line, col, str.concat("variant `", str.concat(vname, "` has no payload")));
     }
-    const payload: Str = emit_expr(e, vector.get(args, 0));
+    const payload: Str = emit_expr_typed(e, vector.get(args, 0), v.ty);
     const stored: Str = wrap_store(e, payload, v.ty, line, col);
     const sty: Str = storage_ir_t(a, v.ty);
     const e0: Str = fresh(e);
@@ -2949,11 +3058,11 @@ pub fn pc_rec(mut e: Emitter, r: PRec, value: Str, lty: Ty, p: Pat, out_bindings
 }
 
 pub fn pc_dot(mut e: Emitter, v: PVar, value: Str, lty: Ty, p: Pat) Str {
-    if is_named_t(lty) == false {
+    if is_named_t(lty) == false and is_opt_t(lty) == false and is_res_t(lty) == false {
         return e_fail_at(e, 0, 0, "`.Variant` patterns need a union subject");
     }
     const a: Ast = e_ast(e);
-    const td: TypeDecl = find_td(a, named_of(lty));
+    const td: TypeDecl = decl_for(a, lty);
     if td.is_union == false {
         return e_fail_at(e, 0, 0, "`.Variant` patterns need a union subject");
     }
@@ -2975,11 +3084,11 @@ pub fn pc_dot(mut e: Emitter, v: PVar, value: Str, lty: Ty, p: Pat) Str {
 }
 
 pub fn pc_variant(mut e: Emitter, v: PVar, value: Str, lty: Ty, p: Pat) Str {
-    if is_named_t(lty) == false {
+    if is_named_t(lty) == false and is_opt_t(lty) == false and is_res_t(lty) == false {
         return e_fail_at(e, 0, 0, "variant patterns need a union subject");
     }
     const a: Ast = e_ast(e);
-    const td: TypeDecl = find_td(a, named_of(lty));
+    const td: TypeDecl = decl_for(a, lty);
     if td.is_union == false {
         return e_fail_at(e, 0, 0, str.concat("pattern `", str.concat(v.ty, str.concat(".", str.concat(v.variant, "` does not match the subject type")))));
     }
@@ -3028,6 +3137,9 @@ pub fn emit_expr_typed(mut e: Emitter, ex: Expr, ty: Ty) Str {
         _ => {},
     };
     if is_dot {
+        if is_opt_t(ty) or is_res_t(ty) {
+            return emit_variant_make(e, synth_td(ty), ty, dot.name, dot_args, 0, 0);
+        }
         if is_named_t(ty) == false {
             return e_fail_at(e, 0, 0, "`.Variant` needs a union-typed context (annotate the binding or return a union)");
         }
@@ -3302,6 +3414,9 @@ pub fn emit_match(mut e: Emitter, m: MatchE) Str {
             return emit_match_union(e, m, td, value, sty, c);
         }
         return emit_match_struct(e, m, td, value, sty, c);
+    }
+    if is_opt_t(sty) or is_res_t(sty) {
+        return emit_match_union(e, m, synth_td(sty), value, sty, c);
     }
     return emit_match_builtin(e, m, value, sty, c);
 }

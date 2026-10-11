@@ -693,9 +693,18 @@ pub const Ty = union(enum) {
     // A first-class function type (SPEC 6.4): value_ir is
     // !frk_closure.fn<[params], [ret]>.
     FnT: FnSig,
+    // `?T` / `E!T` shorthands (SPEC 6.5): structural Option/Result,
+    // no per-instantiation decls needed.
+    OptT: Ty,
+    ResT: ResTT,
     // Explicit recovery (D-109): never a valid type; the State holds
     // the real message ("<absent>" marks flag-guarded placeholders).
     TyBad: BadNode,
+};
+
+pub const ResTT = struct {
+    err: Ty,
+    ok: Ty,
 };
 
 pub const Param = struct {
@@ -925,7 +934,7 @@ pub fn expect_kw(mut p: P, v: Str) bool {
     return false;
 }
 
-pub fn p_type(mut p: P) Ty {
+pub fn p_type_atom(mut p: P) Ty {
     const t: Tok = p_peek(p);
     if is_kw_tok(t) {
         if t.text == "i64" {
@@ -1009,6 +1018,21 @@ pub fn p_type(mut p: P) Ty {
     }
     p_fail(p, t.line, t.col, str.concat("unsupported type (token `", str.concat(t.text, "`)")));
     return bad_ty(p, t.line, t.col, "invalid type");
+}
+
+pub fn p_type(mut p: P) Ty {
+    // `?T` (Option) and `E!T` (Result) shorthands (SPEC 6.5): real
+    // structural types mirroring the seed.
+    if at_punct(p, "?") {
+        const _t0: Tok = p_next(p);
+        return Ty.OptT(p_type_atom(p));
+    }
+    const lhs: Ty = p_type_atom(p);
+    if at_punct(p, "!") {
+        const _t1: Tok = p_next(p);
+        return Ty.ResT(%ResTT{err: lhs, ok: p_type_atom(p)});
+    }
+    return lhs;
 }
 
 pub fn p_pattern(mut p: P) Pat {
@@ -1785,6 +1809,8 @@ pub fn d_ty(t: Ty) Str {
         Ty.UnitV => "(ty unit)",
         Ty.Named(n) => str.concat("(ty ", str.concat(n, ")")),
         Ty.Vec(inner) => str.concat("(ty vec ", str.concat(d_ty(inner), ")")),
+        Ty.OptT(inner) => str.concat("(ty opt ", str.concat(d_ty(inner), ")")),
+        Ty.ResT(rz) => str.concat("(ty res ", str.concat(d_ty(rz.err), str.concat(" ", str.concat(d_ty(rz.ok), ")")))),
         Ty.FnT(sig) => d_fnsig(sig),
         Ty.TyBad(b) => d_bad(b),
     };

@@ -1665,6 +1665,124 @@ pub fn main() i64 {
 }
 
 #[test]
+fn seed_option_result_shorthands() {
+    // SPEC 6.5's surface end to end: `?i64` / `Er!i64` structural
+    // error unions, `.Some`/`.None`/`.Ok`/`.Err(.TooSmall)` dot
+    // constructors, dot patterns in the recovery matches, and `try`
+    // propagating through a Result shorthand.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "sh.calq",
+            None,
+            "pub const Er = union(enum) { TooSmall };
+pub fn opt(x: i64) ?i64 {
+    if x > 0 { return .Some(x); }
+    return .None;
+}
+pub fn or0(v: ?i64) i64 {
+    const s = match v {
+        .Some(x) => x,
+        .None => 0,
+    };
+    s
+}
+pub fn dbl(x: i64) Er!i64 {
+    if x > 0 { return .Ok(x * 2); }
+    return .Err(.TooSmall);
+}
+pub fn use(x: i64) Er!i64 {
+    const v = try dbl(x);
+    return .Ok(v + 1);
+}
+pub fn main() i64 {
+    const a = or0(opt(5));
+    const b = or0(opt(0));
+    const u1 = use(5);
+    const r1 = match u1 {
+        .Ok(v) => v,
+        .Err(e) => 0,
+    };
+    const u2 = use(0);
+    const r2 = match u2 {
+        .Ok(v) => v,
+        .Err(e) => 9,
+    };
+    io.print(str.fromI64(a * 1000 + b * 100 + r1 + r2));
+    io.print(\"\\n\");
+    0
+}",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed emits the shorthand probe");
+    let outcome = run_artifact(&artifact).expect("the shorthand probe runs");
+    assert_eq!(outcome.output, "5020\n");
+}
+
+#[test]
+fn calq0_matches_the_seed_on_option_result_shorthands() {
+    // The differential for `?T` / `E!T`: calq0 (compiled by the seed)
+    // compiles the shorthand probe - its whole pipeline (parse wrapper,
+    // synthetic union decls, typed dot constructors, try, dot
+    // patterns) byte-equal to the seed's own artifact.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "sh.calq",
+            None,
+            "pub const Er = union(enum) { TooSmall };
+pub fn opt(x: i64) ?i64 {
+    if x > 0 { return .Some(x); }
+    return .None;
+}
+pub fn or0(v: ?i64) i64 {
+    const s = match v {
+        .Some(x) => x,
+        .None => 0,
+    };
+    s
+}
+pub fn dbl(x: i64) Er!i64 {
+    if x > 0 { return .Ok(x * 2); }
+    return .Err(.TooSmall);
+}
+pub fn use(x: i64) Er!i64 {
+    const v = try dbl(x);
+    return .Ok(v + 1);
+}
+pub fn main() i64 {
+    const a = or0(opt(5));
+    const b = or0(opt(0));
+    const u1 = use(5);
+    const r1 = match u1 {
+        .Ok(v) => v,
+        .Err(e) => 0,
+    };
+    const u2 = use(0);
+    const r2 = match u2 {
+        .Ok(v) => v,
+        .Err(e) => 9,
+    };
+    io.print(str.fromI64(a * 1000 + b * 100 + r1 + r2));
+    io.print(\"\\n\");
+    0
+}",
+        ),
+    ];
+    let artifact = compile_artifact();
+    let expected = seed_translate(&files).expect("the seed emits the shorthand probe");
+    let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the shorthand probe");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (option/result shorthands): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted probe runs");
+    assert_eq!(emitted.output, "5020\n");
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the

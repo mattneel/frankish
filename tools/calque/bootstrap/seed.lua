@@ -245,7 +245,7 @@ local function lex(source, file)
           or one == ";" or one == ":" or one == "." or one == "=" or one == "<"
           or one == ">" or one == "+" or one == "-" or one == "*" or one == "/"
           or one == "%" or one == "!" or one == "^" or one == "|"
-          or one == "[" or one == "]" then
+          or one == "[" or one == "]" or one == "?" then
           push("punct", one, line, col)
           i = i + 1
           col = col + 1
@@ -314,7 +314,7 @@ local function expect_name()
   return t
 end
 
-local function parse_type()
+local function parse_type_atom()
   local t = peek()
   if t.k == "kw" and t.v == "i64" then
     next_tok()
@@ -399,6 +399,23 @@ local function parse_type()
     return named_ty(t.v)
   end
   fail(t.line, t.col, "unsupported type (seed v0: i64, bool, Str, unit, declared types)")
+end
+
+function parse_type()
+  -- `?T` (Option) and `E!T` (Result) shorthands (SPEC 6.5): real
+  -- structural types, no per-instantiation decls needed.
+  local t = peek()
+  if t.k == "punct" and t.v == "?" then
+    next_tok()
+    return { opt = parse_type_atom() }
+  end
+  local lhs = parse_type_atom()
+  local nxt = peek()
+  if nxt.k == "punct" and nxt.v == "!" then
+    next_tok()
+    return { reserr = lhs, resok = parse_type_atom() }
+  end
+  return lhs
 end
 
 function parse_expr(level)
@@ -1230,6 +1247,9 @@ local function lookup(name)
 end
 
 local function ir_ty(ty, line, col)
+  if is_opt(ty) or is_res(ty) then
+    return value_ir(ty, line, col)
+  end
   if is_fn(ty) then
     return fn_ir(ty, line, col)
   end
@@ -1432,6 +1452,14 @@ function is_named(ty)
   return ty ~= nil and type(ty) == "table" and ty.named ~= nil
 end
 
+function is_opt(ty)
+  return ty ~= nil and type(ty) == "table" and ty.opt ~= nil
+end
+
+function is_res(ty)
+  return ty ~= nil and type(ty) == "table" and ty.reserr ~= nil
+end
+
 function is_fn(ty)
   return ty ~= nil and type(ty) == "table" and ty.fnp ~= nil
 end
@@ -1480,6 +1508,12 @@ function vec_ty(inner)
 end
 
 function same_type(a, b)
+  if is_opt(a) or is_opt(b) then
+    return is_opt(a) and is_opt(b) and same_type(a.opt, b.opt)
+  end
+  if is_res(a) or is_res(b) then
+    return is_res(a) and is_res(b) and same_type(a.reserr, b.reserr) and same_type(a.resok, b.resok)
+  end
   if is_fn(a) or is_fn(b) then
     if not (is_fn(a) and is_fn(b)) then
       return false
@@ -1562,6 +1596,14 @@ function emit_expr_typed(node, ty)
     return emit_list_literal(ty, node, node.line, node.col)
   end
   if node.varcon ~= nil then
+    if is_opt(ty) or is_res(ty) then
+      local sd = synth_decl(ty, node.line, node.col)
+      local v2 = emit_variant_make(sd, ty, node.varcon.name, node.varcon.args, node.line, node.col)
+      if v2 == nil then
+        fail(node.line, node.col, "`.Variant` produced no value")
+      end
+      return v2
+    end
     if not is_named(ty) then
       fail(node.line, node.col, "`.Variant` needs a union-typed context (annotate the binding or return a union)")
     end
@@ -1602,6 +1644,9 @@ function join_parts(parts)
 end
 
 function storage_ir(ty, line, col)
+  if is_opt(ty) or is_res(ty) then
+    return value_ir(ty, line, col)
+  end
   if is_fn(ty) then
     return fn_ir(ty, line, col)
   end
@@ -1635,6 +1680,12 @@ function fn_ir(ty, line, col)
 end
 
 function value_ir(ty, line, col)
+  if is_opt(ty) then
+    return "!frk_adt.sum<[[" .. storage_ir(ty.opt, line, col) .. "], []]>"
+  end
+  if is_res(ty) then
+    return "!frk_adt.sum<[[" .. storage_ir(ty.resok, line, col) .. "], [" .. storage_ir(ty.reserr, line, col) .. "]]>"
+  end
   if is_vec(ty) then
     return vec_box_ir(ty.vec, line, col)
   end
@@ -1677,6 +1728,28 @@ function poison(ty, line, col)
     local v = fresh()
     emit(v .. " = func.call @" .. prefix .. "_new() : () -> " .. vec_box_ir(ty.vec, line, col))
     return v
+  end
+  if is_opt(ty) or is_res(ty) then
+    -- Structural unions (SPEC 6.5): variant 0 (Some/Ok) with a
+    -- poisoned payload, or the payload-free first variant.
+    local sd = synth_decl(ty, line, col)
+    local v0 = sd.variants[1]
+    local uir = value_ir(ty, line, col)
+    if v0.ty == nil then
+      local e = fresh()
+      emit(e .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
+      local s = fresh()
+      emit(s .. " = \"frk_adt.make_sum\"(" .. e .. ") {variant = 0 : i64} : (!frk_adt.product<[]>) -> " .. uir)
+      E.vtypes[s] = ty
+      return s
+    end
+    local p = poison(v0.ty, line, col)
+    local stored, sty = wrap_store(p, v0.ty, line, col)
+    local prod = emit_product_single(stored, sty)
+    local s = fresh()
+    emit(s .. " = \"frk_adt.make_sum\"(" .. prod.value .. ") {variant = 0 : i64} : (" .. prod.ty .. ") -> " .. uir)
+    E.vtypes[s] = ty
+    return s
   end
   if not is_named(ty) then
     if ty == "i64" then
@@ -1845,6 +1918,37 @@ function read_binding(b, line, col)
   local v = fresh()
   emit(v .. " = \"frk_mem.box_get\"(" .. b.id .. ") : (" .. box_ir(b.ty, line, col) .. ") -> " .. value_ir(b.ty, line, col))
   return v, b.ty
+end
+
+-- The virtual union decl of a structural Option/Result (SPEC 6.5);
+-- the whole match/variant/try machinery reads decls uniformly.
+function synth_decl(ty, line, col)
+  if is_opt(ty) then
+    local vs = {
+      { name = "Some", ty = ty.opt, line = line, col = col },
+      { name = "None", ty = nil, line = line, col = col },
+    }
+    return { name = "", kind = "union", variants = vs }
+  end
+  if is_res(ty) then
+    local vs = {
+      { name = "Ok", ty = ty.resok, line = line, col = col },
+      { name = "Err", ty = ty.reserr, line = line, col = col },
+    }
+    return { name = "", kind = "union", variants = vs }
+  end
+  return nil
+end
+
+function decl_of(ty, line, col)
+  if is_named(ty) then
+    return find_type(ty.named, line, col)
+  end
+  local sd = synth_decl(ty, line, col)
+  if sd == nil then
+    fail(line, col, "internal: no decl for this type")
+  end
+  return sd
 end
 
 function find_field(decl, name, line, col)
@@ -2017,10 +2121,10 @@ local function pattern_conditions(sub, value, lty, out_bindings)
     return cond
   end
   if sub.pat == "dot" then
-    if not is_named(lty) then
+    if not (is_named(lty) or is_opt(lty) or is_res(lty)) then
       fail(sub.line, sub.col, "`.Variant` patterns need a union subject")
     end
-    local d = find_type(lty.named, sub.line, sub.col)
+    local d = decl_of(lty, sub.line, sub.col)
     if d.kind ~= "union" then
       fail(sub.line, sub.col, "`.Variant` patterns need a union subject")
     end
@@ -2032,10 +2136,10 @@ local function pattern_conditions(sub, value, lty, out_bindings)
     return eq
   end
   if sub.pat == "variant" then
-    if not is_named(lty) then
+    if not (is_named(lty) or is_opt(lty) or is_res(lty)) then
       fail(sub.line, sub.col, "variant patterns need a union subject")
     end
-    local d = find_type(lty.named, sub.line, sub.col)
+    local d = decl_of(lty, sub.line, sub.col)
     if d.kind ~= "union" or d.name ~= sub.ty then
       fail(sub.line, sub.col, "pattern `" .. sub.ty .. "." .. sub.variant .. "` does not match the subject type")
     end
@@ -2117,8 +2221,8 @@ local function emit_match(node)
   end
 
   -- classify arms per scrutinee kind
-  if is_named(sty) then
-    local d = find_type(sty.named, line, col)
+  if is_named(sty) or is_opt(sty) or is_res(sty) then
+    local d = decl_of(sty, line, col)
     if d.kind == "union" then
       local variant_arms = {}
       local default_arm = nil
@@ -2325,6 +2429,38 @@ local function emit_match(node)
   return nil
 end
 
+-- `Type.Variant` construction (D-095) and the synthetic Option/Result
+-- constructors: the sum value, wrapped at storage sites only.
+function emit_variant_make(td, uty, vname, args, line, col)
+  local idx = find_variant(td, vname, line, col)
+  local v = td.variants[idx]
+  local uir = value_ir(uty, line, col)
+  if #args == 0 then
+    if v.ty ~= nil then
+      fail(line, col, "variant `" .. vname .. "` carries a payload (one argument)")
+    end
+    local e = fresh()
+    emit(e .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
+    local s = fresh()
+    emit(s .. " = \"frk_adt.make_sum\"(" .. e .. ") {variant = " .. tostring(idx - 1) .. " : i64} : (!frk_adt.product<[]>) -> " .. uir)
+    E.vtypes[s] = uty
+    return s, uty
+  end
+  if #args ~= 1 then
+    fail(line, col, "a variant payload is ONE value (seed v0)")
+  end
+  if v.ty == nil then
+    fail(line, col, "variant `" .. vname .. "` has no payload")
+  end
+  local payload = emit_expr_typed(args[1], v.ty)
+  local stored, sty = wrap_store(payload, v.ty, line, col)
+  local prod = emit_product_single(stored, sty)
+  local s = fresh()
+  emit(s .. " = \"frk_adt.make_sum\"(" .. prod.value .. ") {variant = " .. tostring(idx - 1) .. " : i64} : (" .. prod.ty .. ") -> " .. uir)
+  E.vtypes[s] = uty
+  return s, uty
+end
+
 -- A call through a fn value: args ride a product into frk_closure.apply.
 local function emit_apply(cb, args, line, col)
   local fv = read_binding(cb, line, col)
@@ -2361,39 +2497,10 @@ local function emit_call(node)
   local args = node.args
   local td = callee.mod ~= nil and E.types[callee.mod] or nil
   if td ~= nil then
-    -- `Type.Variant` construction (D-095): the sum value, wrapped at
-    -- storage sites only.
     if td.kind ~= "union" then
       fail(line, col, "`" .. callee.mod .. "` is a struct type; construct it with `%" .. callee.mod .. "{...}`")
     end
-    local idx = find_variant(td, callee.name, line, col)
-    local v = td.variants[idx]
-    local uty = named_ty(td.name)
-    local uir = value_ir(uty, line, col)
-    if #args == 0 then
-      if v.ty ~= nil then
-        fail(line, col, "variant `" .. callee.name .. "` carries a payload (one argument)")
-      end
-      local e = fresh()
-      emit(e .. " = \"frk_adt.product_new\"() : () -> !frk_adt.product<[]>")
-      local s = fresh()
-      emit(s .. " = \"frk_adt.make_sum\"(" .. e .. ") {variant = " .. tostring(idx - 1) .. " : i64} : (!frk_adt.product<[]>) -> " .. uir)
-      E.vtypes[s] = uty
-      return s, uty
-    end
-    if #args ~= 1 then
-      fail(line, col, "a variant payload is ONE value (seed v0)")
-    end
-    if v.ty == nil then
-      fail(line, col, "variant `" .. callee.name .. "` has no payload")
-    end
-    local payload = emit_expr(args[1])
-    local stored, sty = wrap_store(payload, v.ty, line, col)
-    local prod = emit_product_single(stored, sty)
-    local s = fresh()
-    emit(s .. " = \"frk_adt.make_sum\"(" .. prod.value .. ") {variant = " .. tostring(idx - 1) .. " : i64} : (" .. prod.ty .. ") -> " .. uir)
-    E.vtypes[s] = uty
-    return s, uty
+    return emit_variant_make(td, named_ty(td.name), callee.name, args, line, col)
   end
   if callee.mod == "io" and callee.name == "print" then
     if #args ~= 1 then
@@ -2754,10 +2861,10 @@ local function emit_try(node)
   local col = node.col or 1
   local v = emit_expr(node.tryex)
   local oty = E.vtypes[v]
-  if not is_named(oty) then
+  if not (is_named(oty) or is_opt(oty) or is_res(oty)) then
     fail(line, col, "`try` needs an error-union operand")
   end
-  local od = find_type(oty.named, line, col)
+  local od = decl_of(oty, line, col)
   if od.kind ~= "union" or #od.variants ~= 2 then
     fail(line, col, "`try` needs an error union (Ok + Err variants)")
   end
@@ -2767,10 +2874,10 @@ local function emit_try(node)
     fail(line, col, "`try` needs an error union (Ok + Err variants)")
   end
   local rty = E.ret
-  if not is_named(rty) then
+  if not (is_named(rty) or is_res(rty)) then
     fail(line, col, "the enclosing function must return an error union for `try`")
   end
-  local rd = find_type(rty.named, line, col)
+  local rd = decl_of(rty, line, col)
   if rd.kind ~= "union" or #rd.variants ~= 2 or rd.variants[2].name ~= "Err" or rd.variants[2].ty == nil then
     fail(line, col, "the enclosing function must return an error union for `try`")
   end
