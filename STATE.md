@@ -1487,9 +1487,23 @@ rework flag, not a knob.
     block's value joins as the unwrapped type, a diverging block needs
     no join arm). Probe 105157; differential byte-equal + executed;
     suite 48 passed; SET OK; grid 13/13 both strategies.
-    NEXT in the C2 plan (STATE's earlier paragraphs): generics, then
-    seq / modules / stdlib, then grow calq0 to the full required
-    surface; error-context and text formatting ride the stdlib slice.
+    C2 GENERICS increment LANDED both sides (D-113 logged; seed
+    cf1d145, calq0 mirror on top): `comptime NAME: type` parameters,
+    explicit instantiation (`identity(i64, 5)`), one specialized fn
+    per type tuple (`name__<mangled>`), seed = type-position AST
+    substitution + deferred instance emission (pending queue, wave
+    flush); calq0 = shallow instance Fn + the tvars FUNNELS (param/
+    ret/annotation/lambda-signature reads) + instance queue. Probe
+    identity@i64/Str + pick@i64 = "42 abc 2"; differential byte-equal
+    + executed; suite 50 passed; SET OK; grid 13/13 both strategies.
+    LATENT BUG FIXED en route: the match/and-or joins' %j arg was
+    read late (aliased inner joins under nesting); now named from the
+    join's own block label in BOTH compilers - the try/catch/match
+    sites' bytes are unchanged.
+    NEXT in the C2 plan: `seq` stdlib in Calque (AC-8.3: iter/map/
+    filter/fold/flat_map/take/zip/collect + seq_* corpus; needs
+    inferred closure params) then active_score.calq (M38) - then
+    generics at C3 (identity_pair.calq, type-returning fns).
     CLOSURE DESIGN (settled, ready to implement; verified against the
     dialect this session): the frk_closure ops are make(env:
     product) {callee} -> fn, apply(fn, args: product) -> value, and
