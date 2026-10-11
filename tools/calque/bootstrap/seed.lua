@@ -436,9 +436,21 @@ local function parse_type_atom()
     return { tup = tys }
   end
   if t.k == "punct" and t.v == "[" then
-    -- `[T]` - the collection type (D-108's spelling; identical to
+    -- `[N]T` - a fixed-length inline array (the vector steering); `[T]`
+    -- - the collection type (D-108's spelling; identical to
     -- Vector(T) in v0, per D-112's constructor-scope ruling).
     next_tok()
+    local first = peek()
+    if first.k == "int" then
+      local save_pos = P.pos
+      next_tok()
+      if at_punct("]") then
+        next_tok()
+        local ety = parse_type()
+        return { arr = { n = PARSE_SLOT(first.v), ty = ety } }
+      end
+      P.pos = save_pos
+    end
     local inner = parse_type()
     local rb = peek()
     if not (rb.k == "punct" and rb.v == "]") then
@@ -627,6 +639,13 @@ function parse_postfix()
         fail(t.line, t.col, "callee must be a name or module member (seed v0)")
       end
       e = { call = e.ref, args = args, line = t.line, col = t.col }
+    elseif t.k == "punct" and t.v == "[" then
+      -- `v[i]` (the vector steering's index syntax): a fixed-array
+      -- element read.
+      next_tok()
+      local idxe = parse_expr(1)
+      expect_punct("]")
+      e = { index = { base = e, idx = idxe, line = t.line, col = t.col } }
     elseif t.k == "punct" and t.v == "." then
       next_tok()
       local mt2 = peek()
@@ -1504,6 +1523,9 @@ local function lookup(name)
 end
 
 local function ir_ty(ty, line, col)
+  if is_arr(ty) then
+    return value_ir(ty, line, col)
+  end
   if is_tup(ty) then
     return value_ir(ty, line, col)
   end
@@ -1720,6 +1742,10 @@ function is_res(ty)
   return ty ~= nil and type(ty) == "table" and ty.reserr ~= nil
 end
 
+function is_arr(ty)
+  return ty ~= nil and type(ty) == "table" and ty.arr ~= nil
+end
+
 function is_tup(ty)
   return ty ~= nil and type(ty) == "table" and ty.tup ~= nil
 end
@@ -1772,6 +1798,9 @@ function vec_ty(inner)
 end
 
 function same_type(a, b)
+  if is_arr(a) or is_arr(b) then
+    return is_arr(a) and is_arr(b) and a.arr.n == b.arr.n and same_type(a.arr.ty, b.arr.ty)
+  end
   if is_tup(a) or is_tup(b) then
     if not (is_tup(a) and is_tup(b) and #a.tup == #b.tup) then
       return false
@@ -1840,8 +1869,30 @@ end
 -- ANNOTATION's inner type; each element goes through the mirrored
 -- vector prelude (named slots wrap like vector.push).
 function emit_list_literal(ty, node, line, col)
+  if is_arr(ty) then
+    -- `[N]T` (the vector steering): exactly N elements, inline array.
+    if #node.list ~= ty.arr.n then
+      fail(line, col, "a fixed-length array literal needs exactly " .. tostring(ty.arr.n) .. " element(s)")
+    end
+    local av = fresh()
+    emit(av .. " = \"frk_mem.array_new\"(" .. const_i64(tostring(ty.arr.n)) .. ") : (i64) -> " .. value_ir(ty, line, col))
+    for i = 1, #node.list do
+      local xid = emit_expr_typed(node.list[i], ty.arr.ty)
+      local xty = E.vtypes[xid]
+      if not same_type(xty, ty.arr.ty) then
+        fail(node.line, node.col, "array literal element type does not match the [N]T annotation")
+      end
+      local stored = xid
+      if is_named(xty) then
+        stored, _ = wrap_store(xid, xty, node.line, node.col)
+      end
+      emit("\"frk_mem.array_set\"(" .. av .. ", " .. const_i64(tostring(i - 1)) .. ", " .. stored .. ") : (" .. value_ir(ty, line, col) .. ", i64, " .. storage_ir(xty, line, col) .. ") -> ()")
+    end
+    E.vtypes[av] = ty
+    return av
+  end
   if not is_vec(ty) then
-    fail(line, col, "a collection literal needs a [T]/Vector annotation (seed v0)")
+    fail(line, col, "a collection literal needs a [T]/Vector or [N]T annotation (seed v0)")
   end
   local slot, prefix = vec_slot(ty.vec, line, col)
   local v = fresh()
@@ -1950,6 +2001,9 @@ function join_parts(parts)
 end
 
 function storage_ir(ty, line, col)
+  if is_arr(ty) then
+    return value_ir(ty, line, col)
+  end
   if is_tup(ty) then
     return value_ir(ty, line, col)
   end
@@ -1989,6 +2043,9 @@ function fn_ir(ty, line, col)
 end
 
 function value_ir(ty, line, col)
+  if is_arr(ty) then
+    return "!frk_mem.arr<" .. storage_ir(ty.arr.ty, line, col) .. ">"
+  end
   if is_tup(ty) then
     local parts = {}
     for i = 1, #ty.tup do
@@ -2044,6 +2101,12 @@ function poison(ty, line, col)
     local v = fresh()
     emit(v .. " = func.call @" .. prefix .. "_new() : () -> " .. vec_box_ir(ty.vec, line, col))
     return v
+  end
+  if is_arr(ty) then
+    local nv = fresh()
+    emit(nv .. " = \"frk_mem.array_new\"(" .. const_i64(tostring(ty.arr.n)) .. ") : (i64) -> " .. value_ir(ty, line, col))
+    E.vtypes[nv] = ty
+    return nv
   end
   if is_tup(ty) then
     local acc = nil
@@ -3104,6 +3167,9 @@ function is_generic_fn(fn)
 end
 
 function mangle_ty(ty)
+  if is_arr(ty) then
+    return "arr" .. tostring(ty.arr.n) .. "_" .. mangle_ty(ty.arr.ty)
+  end
   if is_tup(ty) then
     local acc = "tup"
     for i = 1, #ty.tup do
@@ -3342,6 +3408,12 @@ function unify_ty(declared, actual, sub, names)
     end
     return
   end
+  if is_arr(declared) then
+    if is_arr(actual) then
+      unify_ty(declared.arr.ty, actual.arr.ty, sub, names)
+    end
+    return
+  end
   if is_tup(declared) then
     if is_tup(actual) then
       if #declared.tup == #actual.tup then
@@ -3390,6 +3462,9 @@ function has_unbound(ty, sub, names)
   end
   if is_named(ty) and names[ty.named] then
     return sub[ty.named] == nil
+  end
+  if is_arr(ty) then
+    return has_unbound(ty.arr.ty, sub, names)
   end
   if is_tup(ty) then
     for i = 1, #ty.tup do
@@ -3880,6 +3955,27 @@ end
 emit_expr = function(node)
   local line = node.line or 1
   local col = node.col or 1
+  if node.index ~= nil then
+    local base = node.index.base
+    if base.ref == nil then
+      fail(line, col, "indexing needs a named base (seed v0)")
+    end
+    local b = lookup(base.ref.name)
+    if b == nil then
+      fail(line, col, "unknown name `" .. base.ref.name .. "`")
+    end
+    local bty = b.ty
+    if not is_arr(bty) then
+      fail(line, col, "indexing needs a fixed array ([N]T) base (seed v0)")
+    end
+    local value = read_binding(b, line, col)
+    local iv = emit_expr(node.index.idx)
+    local out = fresh()
+    emit(out .. " = \"frk_mem.array_get\"(" .. value .. ", " .. iv .. ") : (" .. value_ir(bty, line, col) .. ", i64) -> " .. storage_ir(bty.arr.ty, line, col))
+    local uw = unwrap_load(out, bty.arr.ty, line, col)
+    E.vtypes[uw] = bty.arr.ty
+    return uw
+  end
   if node.tuple ~= nil then
     local v2 = emit_tuple(node, nil)
     return v2
@@ -4658,3 +4754,4 @@ end
 -- expression emitter through this alias (declared later as a local).
 EMIT_IF_EXPR = emit_if_expr
 EMIT_VALUE_BLOCK = emit_value_block
+PARSE_SLOT = parse_slot
