@@ -1,34 +1,50 @@
 # STATE — frankish live handoff
 
-Updated: 2026-07-18 (M33+M34 session)
-Phase: M34 complete (tag m34-done). TS emitter hygiene SHIPPED
-(D-083): block-scoped let (the D-080 landmine), throw-at-end-of-
-function (M27 dead-join class), and the synthesized-symbol
-namespace reserve — audited adversarially, the one hole the audit
-found (async-fn names skipping the reserve) closed in-milestone.
-Tree: green — `make test` 61 blocks; diff 144 cases 0 divergent
-(8 runners); grid 139/139 × BOTH strategies × 4 triples + s390x.
+Updated: 2026-10-11 (M35 close + M36/C0 charter session)
+Phase: M35 complete (tag m35-done): femto_lua v0.4 — coroutines as the
+resumable-frame pattern (D-084). NOTE: the M33+M34 session shipped M35
+but left its STATE note and tag unwritten; the close note below is
+written this session from the commit record + D-084. M36/C0 (the Calque
+charter) is IN FLIGHT in this session: docs/calque/{GOAL,SPEC,BOOTSTRAP,
+ACCEPTANCE}.md, specimens/calque/MANIFEST.md + frozen examples, ledger
+D-085..D-089, SPEC §8/§13/§14 + AGENTS.md amendments,
+scripts/calque-check.sh + `make calque-test` (wired into CI).
+Tree: green — `make test` workspace suite green (554 s, gating run
+2026-10-11); diff 162 cases 0 divergent (8 runners); grid 157/157 ×
+BOTH strategies × 4 triples + s390x canary 157/157; `make calque-test`
+green (28/178 acceptance rows done).
+
+WORKSTREAM: CALQUE (user-selected 2026-10-11). M36 = C0 → M42 = C6.
+docs/calque/GOAL.md is the acceptance contract (stored verbatim; its
+sha256 is pinned in scripts/calque-check.sh); docs/calque/ACCEPTANCE.md
+is the live evidence matrix; the target family is `make calque-*`.
 
 ## Next action
-M33+M34 closed. The queue (user-ratified 2026-07-18):
-1. M35 — tier-2: the stack-switching rung (re-entrant κ / winds) —
-   coroutines; generators (deferred from TS async) consume it.
-   NOTES: D-082 — the wind save/merge pairing becomes a STACK when
-   winds re-enter; κ_frk keystone — κ stays ONE-SHOT (re-entrant ≠
-   multi-shot; SPEC §14 full call/cc stays a non-goal); D-069
-   named the rung ("full re-entrant one-shot κ — non-tail resume,
-   stored continuations, clause code after body-rest"); revisit
-   hooks waiting on it: P13 guard re-raise, R7RS 4.2.7 re-raise
-   environment, TS generators/yield, coroutines.
-2. M36 — ts-4: generics (monomorphized), sealed-world switch, any/
-   gradual boundary as contract ops — frk_contract's second act;
-   the D-079 static-await-dispatch soundness note comes due; ALSO
-   owed here (D-083): the dot-separated synthesized-symbol scheme
-   (`__ctor.C`, `__m.C.x`) killing the composed-collision class
-   while generics rewrite class symbols anyway.
+1. M36/C0 — land the charter commits (this session's remaining work),
+   then tag m36-done. Exit bars: specimens/calque/MANIFEST.md "Exit
+   bars" M36 row (all authored; checker green; baseline recorded).
+2. M37/C1 — the interpreted compiler written in Calque. Slice order:
+   (a) the minimal language-dispatch table in frk-harness (+
+   behavior-preservation tests for every existing specimen), (b) the
+   Calque intrinsics module + the new rt rows (print/eprint/trap), (c)
+   the seed (Lua translator on femto_lua) targeting the D-088 emission
+   rules, (d) calq0 (the compiler core, written in b0), (e) the corpus
+   (goldens/calque/), (f) the initial self-compilation gate. Verifiers
+   and acceptance: ACCEPTANCE AC-18.2; BOOTSTRAP §3.
+3. QUEUED (preserved; not this workstream's):
+   - ts-4: generics (monomorphized), sealed-world switch, any/gradual
+     boundary as contract ops (frk_contract's second act); the D-079
+     static-await-dispatch soundness note comes due; ALSO owed (D-083):
+     the dot-separated synthesized-symbol scheme (`__ctor.C`,
+     `__m.C.x`) killing the composed-collision class.
+   - femto_lua v0.5+ fences (select(), string.format, rawset/rawget,
+     method declarations/colon calls, goto, weak tables, pcall/error).
+   - the re-entrant rung's consumers: scheme P13 + R7RS 4.2.7 (unfence
+     together), re-entrant winds — entry points recorded in D-084.8.
 
 ## In flight
-Nothing.
+M36/C0 charter — authored in this session (see Phase); its commits are
+this session's remaining work.
 
 ## For the human
 - RESOLVED (2026-07-03): the Rocq anchor — delegated back ("Atli is
@@ -36,21 +52,61 @@ Nothing.
   D-060. inscription + flexlang also registered as minable in-house
   art. If any κ_frk ruling misreads atli's intent (esp. the
   keystone: multi-shot call/cc stays fenced), strike via D-entry.
-- SEQUENCING: M0–M10 are done — the scheduled program is complete.
-  The beyond-M10 tracks (femto_lua implementation, the GC ladder,
-  scheme/ctl, effects, stage/TS-1..4/gpu) are peers; picking the
-  next one is the taste call the constitution routes to you. The
-  Next-action block lists them with their debt annotations. Default
-  recommendation if you want one: femto_lua implementation + the GC
-  ladder interleaved — they share the runtime dragon and every
-  ledger debt (D-041/D-045/D-049/D-051/D-053) points at that pair.
+- SEQUENCING RESOLVED (2026-10-11): the user selected the Calque
+  workstream (docs/calque/GOAL.md; D-085) — M36..M42. The previously
+  queued tracks (ts-4 etc.) remain recorded above as queued, not
+  dropped.
 - Review D-051 (fat values over NaN-boxing), D-052 (Lua byte-string
   ruling, v0.1 scope), D-053 (rc+cycles over MMTk; docs/gc-spike.md
   is the full argument) — the three M10 rulings, none flagged ⚑
   (all were L4 calls inside ruled territory), all cheap to strike
   now and expensive later.
+- M35 EXIT, BATCHED (D-084): the queue item said "tier-2 stack-
+  switching rung"; M35 shipped coroutines as a FRONTEND pattern (zero
+  frk_ctl ops) and RENAMED the kernel rung THE RE-ENTRANT RUNG (still
+  fenced; remaining consumers: scheme P13/R7RS 4.2.7, re-entrant
+  winds). If that consumer-first reinterpretation reads wrong, strike
+  via D-entry.
+- CALQUE ADMISSION (D-085/D-089, this session's charter): the goal's
+  §2 scope additions are recorded as ledger law (SPEC §14 carve-outs
+  for Calque only; L5's admission rule relaxed for Calque while
+  genuinely new shared semantics still promote under K1–K7; D-089
+  makes incrementality an architectural property with measured-not-
+  claimed targets). The goal document itself is the authority; if the
+  charter misreads it, strike via D-entry.
 
 ## Milestone log
+m35-done — Shipped: femto_lua v0.4 (D-084) — COROUTINES as the
+resumable-frame pattern. TAG_THREAD = 8 (the fourth D-051 widening,
+walked by the D-070 checklist; the tag-8-slot cycle drill lands in the
+SAME commit in both twins and was proven red-first load-bearing); the
+coroutine substrate (the parallel D-078 suspend channel, 13 intrinsics,
+status-before-walk, resumer links); the resumable-frame transform
+(entry state dispatch + guard-site capture over the uniform convention;
+the frk.capture attr keeps the rc planner's hot-path plans
+byte-identical; NumFor/GenFor/If-join threading; resume-reachable blocks
+with explicit block args); stackful corpus vs lua5.1 (16 co_* cases
+incl. co_deep800 and co_cycles at 100k yield/resume, nested coroutines,
+prodcons); license-per-module with the forced-transform gate over all
+18 pre-M35 cases (the tail_recursion 100k musttail canary caught a
+guarded tail site on day one). Suite green; diff 162/0 (8 runners);
+grid 157/157 × BOTH strategies × 4 triples + s390x canary 157/157.
+CLOSE NOTE: written at the M36 session start from the commit record —
+the shipping sessions left no STATE note or tag; the docs rollup commit
+791709d corrected the coroutine-corpus count 17→16 en route.
+M35 EXTRACTION: (1) STACKFUL BEHAVIOR NEED NOT SWITCH STACKS — the
+queued "tier-2 stack-switching rung" was reinterpreted consumer-first:
+the coroutine surface shipped as a FRONTEND pattern with zero frk_ctl
+ops, and the kernel rung was RENAMED THE RE-ENTRANT RUNG, still fenced,
+its remaining consumers named (scheme P13/R7RS 4.2.7, re-entrant
+winds). (2) THE INTERPRETER'S VALUE DOMAIN CONSTRAINS NATIVE
+REPRESENTATION: a captured frame is a CLOSURE, never a raw address (the
+interp cannot run an address word) — the differential law reaching into
+representation choices. (3) THE FORCED-TRANSFORM GATE is a new verifier
+class: exercise an incoming transform over the EXISTING corpus (outputs
+stay byte-identical) while the new surface earns its own corpus — the
+pattern Calque's bootstrap checks reuse.
+
 m34-done — Shipped: TS emitter hygiene (D-083) — three fixes, all
 node-witnessed first (L1). (1) BLOCK-SCOPED LET: the flat env
 snapshot-restores at every block scope (if arms each from the
@@ -1070,6 +1126,49 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-10-11 (thirty-fifth entry; the session log's
+    entries stop at the thirty-fourth (M32) — M33..M35 shipped with
+    milestone notes but no session entries; recorded here rather than
+    backfilled)
+    Milestone/step: M35 closed (tag m35-done, written late); M36/C0
+    Calque charter authored and landing
+    Green? yes — make test green (554 s); diff 162/0 (8 runners);
+    grid 157/157 × 2 × 4 triples + s390x 157/157; make calque-test
+    green (28/178 acceptance rows done)
+    Did:
+    - M35 close written from the commit record + D-084; docs rollup
+      791709d (book + MANIFEST v0.4; corpus count corrected 17→16)
+    - C0 charter: docs/calque/{GOAL (verbatim, sha-pinned), SPEC
+      (b0 frozen + §12 freeze log), BOOTSTRAP (seed/artifact/
+      fixed-point rules), ACCEPTANCE (178 rows)}; specimens/calque/
+      MANIFEST + 4 frozen examples; ledger D-085..D-089; SPEC
+      §0/§4.7/§8/§13/§14 + AGENTS.md amendments; scripts/
+      calque-check.sh + make calque-test (wired into scripts/ci.sh);
+      book chapter + specimens overview/README refresh
+    - baseline recorded at commit 791709d (this file's header + the
+      ACCEPTANCE §Baseline table)
+    Next: land the charter commits + tag m36-done; then M37/C1 in the
+    recorded slice order (Next action item 2)
+    Landmines:
+    - the seed input channel is ASCII-ONLY (femto_lua's literal fence,
+      D-056 → SPEC F18): non-ASCII in a b0 unit must be a LOUD driver
+      error, never a silent mis-lex; calq0's own input channel is
+      unrestricted (kernel-IR literals carry arbitrary bytes)
+    - b0 requires explicit types everywhere and the seed does NO
+      inference — do not add "helpful" inference to the seed
+    - the artifact marker is `// calque-artifact v0`; bumping it is a
+      D-entry that must preserve existing producers (BOOTSTRAP §2)
+    - compiler determinism is a REQUIREMENT: the fixed-point
+      comparator has ZERO documented exclusions (BOOTSTRAP §4);
+      cached artifacts are RE-VALIDATED on every verification-path
+      use (D-089) — never trusted by cache hit alone
+    - `make calque-test` pins docs/calque/GOAL.md's sha256: editing
+      the goal doc requires updating the pin in the same commit
+    - Calque's admission rule is RELAXED (D-085): features may be
+      admitted without new idioms when the language contract requires
+      them, while genuinely new shared semantics still promote under
+      K1–K7 — do not read L5 as unrepealed for this specimen
 
     Session end: 2026-07-18 (thirty-fourth entry)
     Milestone/step: M32 complete, tagged m32-done; TS-3 frozen
