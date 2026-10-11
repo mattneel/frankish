@@ -1481,11 +1481,15 @@ rework flag, not a knob.
     the arms; the seed's variant-make got the uty-parameter split and
     typed payloads. Probe 5020; differential byte-equal + executed;
     suite 46 passed; SET OK; grid 13/13 both strategies.
-    NEXT (errors, last piece): `catch` at precedence level 0 - the
-    playbook shape `expr catch { return .Err(...) }` / `catch |err|
-    { ... }` (replacement block with the error bound; the block's
-    type must unify with the try's success type). Then generics /
-    seq / modules per the C2 plan (STATE's earlier paragraphs).
+    C2 errors increment FIVE slices, the block COMPLETE: (5) `catch`
+    at the loosest precedence (parse_expr wrapper in both compilers;
+    the Err path runs the replacement block with the bound error, the
+    block's value joins as the unwrapped type, a diverging block needs
+    no join arm). Probe 105157; differential byte-equal + executed;
+    suite 48 passed; SET OK; grid 13/13 both strategies.
+    NEXT in the C2 plan (STATE's earlier paragraphs): generics, then
+    seq / modules / stdlib, then grow calq0 to the full required
+    surface; error-context and text formatting ride the stdlib slice.
     CLOSURE DESIGN (settled, ready to implement; verified against the
     dialect this session): the frk_closure ops are make(env:
     product) {callee} -> fn, apply(fn, args: product) -> value, and
