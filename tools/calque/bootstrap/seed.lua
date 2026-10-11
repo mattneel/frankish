@@ -87,7 +87,7 @@ end
 local KEYWORDS = {}
 for _, k in ipairs({
   "and", "bool", "break", "const", "continue", "else", "false", "fn",
-  "i64", "if", "match", "or", "pub", "return", "struct", "true",
+  "i64", "if", "match", "mut", "or", "pub", "return", "struct", "true",
   "union", "var", "while", "not", "try", "catch", "defer", "for",
 }) do
   KEYWORDS[k] = true
@@ -244,7 +244,8 @@ local function lex(source, file)
         if one == "(" or one == ")" or one == "{" or one == "}" or one == ","
           or one == ";" or one == ":" or one == "." or one == "=" or one == "<"
           or one == ">" or one == "+" or one == "-" or one == "*" or one == "/"
-          or one == "%" or one == "!" or one == "^" or one == "|" then
+          or one == "%" or one == "!" or one == "^" or one == "|"
+          or one == "[" or one == "]" then
           push("punct", one, line, col)
           i = i + 1
           col = col + 1
@@ -331,6 +332,21 @@ local function parse_type()
     next_tok()
     next_tok()
     return "unit"
+  end
+  if t.k == "punct" and t.v == "[" then
+    -- `[T]` - the collection type (D-108's spelling; identical to
+    -- Vector(T) in v0, per D-112's constructor-scope ruling).
+    next_tok()
+    local inner = parse_type()
+    local rb = peek()
+    if not (rb.k == "punct" and rb.v == "]") then
+      fail(rb.line, rb.col, "expected `]` after the collection element type")
+    end
+    next_tok()
+    if inner ~= "i64" and inner ~= "Str" and not (type(inner) == "table" and inner.named ~= nil) then
+      fail(t.line, t.col, "unsupported [T] slot (seed v0 instantiations: i64, Str, declared types)")
+    end
+    return vec_ty(inner)
   end
   if t.k == "name" and t.v == "Vector" then
     next_tok()
@@ -459,6 +475,27 @@ function parse_primary()
   end
   if t.k == "punct" and t.v == "%" then
     return parse_struct_literal_or_map()
+  end
+  if t.k == "punct" and t.v == "[" then
+    -- `[e1, e2]` / `[]` (D-112): the element type comes from the
+    -- TARGET annotation (a binding or a field's declared type), never
+    -- from inference.
+    next_tok()
+    local items = {}
+    while not at_punct("]") do
+      items[#items + 1] = parse_expr(4)
+      if at_punct(",") then
+        next_tok()
+      else
+        break
+      end
+    end
+    if not at_punct("]") then
+      local bt = peek()
+      fail(bt.line, bt.col, "expected `]` to close the collection literal")
+    end
+    next_tok()
+    return { list = items, line = t.line, col = t.col }
   end
   if t.k == "name" then
     next_tok()
@@ -706,8 +743,11 @@ function parse_block()
         stmts[#stmts + 1] = { destr = d }
       else
         local name = expect_name()
-        expect_punct(":")
-        local ty = parse_type()
+        local ty = nil
+        if at_punct(":") then
+          next_tok()
+          ty = parse_type()
+        end
         expect_punct("=")
         local e = parse_expr(4)
         expect_punct(";")
@@ -731,6 +771,17 @@ function parse_block()
     elseif t.k == "kw" and t.v == "if" then
       local iff = parse_if()
       stmts[#stmts + 1] = { ifstmt = iff.iff }
+    elseif t.k == "name" and P.toks[P.pos + 1].k == "punct" and P.toks[P.pos + 1].v == "."
+       and P.toks[P.pos + 2].k == "name"
+       and P.toks[P.pos + 3].k == "punct" and P.toks[P.pos + 3].v == "=" then
+      -- D-112 field assignment: `e.field = expr;`
+      local base = next_tok()
+      next_tok() -- `.`
+      local fld = next_tok()
+      next_tok() -- `=`
+      local e = parse_expr(4)
+      expect_punct(";")
+      stmts[#stmts + 1] = { fassign = { name = base.v, field = fld.v, expr = e, line = base.line, col = base.col } }
     elseif t.k == "name" and P.toks[P.pos + 1].k == "punct" and P.toks[P.pos + 1].v == "=" then
       local name = next_tok()
       next_tok() -- `=`
@@ -793,6 +844,10 @@ local function parse_type_decl()
         elseif d.k == "kw" and (d.v == "true" or d.v == "false") then
           default = { lit = "bool", text = d.v, line = d.line, col = d.col }
           next_tok()
+        elseif d.k == "punct" and d.v == "[" then
+          -- Collection-typed defaults (D-112): the literal takes the
+          -- field's declared element type at emission.
+          default = parse_expr(4)
         else
           fail(d.line, d.col, "seed v0 supports literal field defaults only (D-095)")
         end
@@ -849,10 +904,18 @@ local function parse_fn()
   local params = {}
   if not at_punct(")") then
     while true do
+      local is_mut = false
+      if at_kw("mut") then
+        next_tok()
+        is_mut = true
+      end
       local p = expect_name()
       expect_punct(":")
       local ty = parse_type()
-      params[#params + 1] = { name = p.v, ty = ty, line = p.line, col = p.col }
+      if is_mut and not is_named(ty) then
+        fail(p.line, p.col, "mut parameters take a record type (seed v0, D-112)")
+      end
+      params[#params + 1] = { name = p.v, ty = ty, mut = is_mut, line = p.line, col = p.col }
       if at_punct(",") then
         next_tok()
       else
@@ -1230,6 +1293,41 @@ function vec_box_ir(inner, line, col)
   return "!frk_mem.box<!frk_adt.product<[!frk_mem.arr<" .. slot .. ">, i64, i64]>>"
 end
 
+-- Collection literal emission (D-112): the element type is the
+-- ANNOTATION's inner type; each element goes through the mirrored
+-- vector prelude (named slots wrap like vector.push).
+function emit_list_literal(ty, node, line, col)
+  if not is_vec(ty) then
+    fail(line, col, "a collection literal needs a [T]/Vector annotation (seed v0)")
+  end
+  local slot, prefix = vec_slot(ty.vec, line, col)
+  local v = fresh()
+  emit(v .. " = func.call @" .. prefix .. "_new() : () -> " .. vec_box_ir(ty.vec, line, col))
+  for i = 1, #node.list do
+    local xid = emit_expr(node.list[i])
+    local xty = E.vtypes[xid]
+    if not same_type(xty, ty.vec) then
+      fail(node.line, node.col, "collection literal element type does not match the [T] annotation")
+    end
+    local stored = xid
+    if is_named(ty.vec) then
+      stored, _ = wrap_store(xid, xty, node.line, node.col)
+    end
+    emit("func.call @" .. prefix .. "_push(" .. v .. ", " .. stored .. ") : (" .. vec_box_ir(ty.vec, line, col) .. ", " .. slot .. ") -> ()")
+  end
+  E.vtypes[v] = ty
+  return v
+end
+
+-- Typed expression emission: literals take their element type from
+-- `ty`; everything else is the ordinary path (no inference).
+function emit_expr_typed(node, ty)
+  if node.list ~= nil then
+    return emit_list_literal(ty, node, node.line, node.col)
+  end
+  return emit_expr(node)
+end
+
 -- `vector.new()` is instantiated by its declaration's annotation
 -- (syntax-directed: b0 spells types; the seed never infers).
 function is_vec_new_call(expr)
@@ -1538,7 +1636,7 @@ local function emit_make(node)
       emit(stored .. " = \"frk_mem.field_get\"(" .. base_value .. ") {field = " .. tostring(index - 1) .. " : i64} : (" .. value_ir(named_ty(m.ty), line, col) .. ") -> " .. storage_ir(field.ty, field.line, field.col))
       value = unwrap_load(stored, field.ty, field.line, field.col)
     elseif field.default ~= nil then
-      value = emit_expr(field.default)
+      value = emit_expr_typed(field.default, field.ty)
     else
       fail(line, col, "missing required field `" .. field.name .. "` in %" .. m.ty .. "{...} (no default declared)")
     end
@@ -2146,9 +2244,36 @@ local function emit_call(node)
   local parts = "%env"
   local types = "!frk_closure.envref"
   for i = 1, #args do
-    local v = emit_expr(args[i])
-    parts = parts .. ", " .. v
-    types = types .. ", " .. value_ir(fn.params[i].ty, line, col)
+    local p = fn.params[i]
+    if p.mut then
+      -- D-112's exclusivity rules: the argument is a mutable binding
+      -- (var local or mut parameter), passed as its box; one binding
+      -- cannot occupy two mut positions in a call.
+      local an = args[i]
+      if an.ref == nil or an.ref.mod ~= nil then
+        fail(an.line, an.col, "mut arguments must be names (a variable or a mut parameter)")
+      end
+      local b = lookup(an.ref.name)
+      if b == nil then
+        fail(an.line, an.col, "unknown name `" .. an.ref.name .. "`")
+      end
+      if b.kind ~= "box" then
+        fail(an.line, an.col, "`" .. an.ref.name .. "` is not mutable (declare it with var, or take it as a mut parameter)")
+      end
+      local k = 1
+      while k < i do
+        if fn.params[k].mut and args[k].ref ~= nil and args[k].ref.name == an.ref.name then
+          fail(an.line, an.col, "`" .. an.ref.name .. "` cannot occupy two mut positions in one call")
+        end
+        k = k + 1
+      end
+      parts = parts .. ", " .. b.id
+      types = types .. ", " .. box_ir(p.ty, line, col)
+    else
+      local v = emit_expr(args[i])
+      parts = parts .. ", " .. v
+      types = types .. ", " .. value_ir(p.ty, line, col)
+    end
   end
   if fn.ret == "unit" then
     emit("func.call @" .. sym .. "(" .. parts .. ") : (" .. types .. ") -> ()")
@@ -2241,6 +2366,9 @@ end
 emit_expr = function(node)
   local line = node.line or 1
   local col = node.col or 1
+  if node.list ~= nil then
+    fail(node.line, node.col, "a collection literal needs a [T]/Vector annotation (bind it: `const v: [i64] = [...]`)")
+  end
   if node.lit == "int" then
     local v = fresh()
     emit(v .. " = arith.constant " .. node.text .. " : i64")
@@ -2362,7 +2490,7 @@ local function emit_stmt(node)
       end
       v = emit_vec_new(c.ty.vec, c.line, c.col)
     else
-      v = emit_expr(c.expr)
+      v = emit_expr_typed(c.expr, c.ty)
     end
     if v == nil then
       fail(c.line, c.col, "const initializer must be a value")
@@ -2422,11 +2550,49 @@ local function emit_stmt(node)
       end
       v = emit_vec_new(d.ty.vec, d.line, d.col)
     else
-      v = emit_expr(d.expr)
+      v = emit_expr_typed(d.expr, d.ty)
+    end
+    local dty = d.ty
+    if dty == nil then
+      dty = E.vtypes[v]
+      if dty == nil then
+        fail(d.line, d.col, "internal: untyped var initializer")
+      end
     end
     local b = fresh()
-    emit(b .. " = \"frk_mem.box_new\"(" .. v .. ") : (" .. value_ir(d.ty, d.line, d.col) .. ") -> " .. box_ir(d.ty, d.line, d.col))
-    declare(d.name, { kind = "box", ty = d.ty, id = b, box = box_ir(d.ty, d.line, d.col) }, d.line, d.col)
+    emit(b .. " = \"frk_mem.box_new\"(" .. v .. ") : (" .. value_ir(dty, d.line, d.col) .. ") -> " .. box_ir(dty, d.line, d.col))
+    declare(d.name, { kind = "box", ty = dty, id = b, box = box_ir(dty, d.line, d.col) }, d.line, d.col)
+    return
+  end
+  if node.fassign ~= nil then
+    local fa = node.fassign
+    local b = lookup(fa.name)
+    if b == nil then
+      fail(fa.line, fa.col, "unknown name `" .. fa.name .. "` in field assignment")
+    end
+    if b.kind ~= "box" then
+      fail(fa.line, fa.col, "cannot set a field through immutable `" .. fa.name .. "` (use a var binding or a mut parameter)")
+    end
+    if not is_named(b.ty) then
+      fail(fa.line, fa.col, "field assignment needs a record binding (seed v0)")
+    end
+    local drec = find_type(b.ty.named, fa.line, fa.col)
+    if drec.kind ~= "struct" then
+      fail(fa.line, fa.col, "`" .. b.ty.named .. "` is a union; assign through `match`")
+    end
+    local idx = find_field(drec, fa.field, fa.line, fa.col)
+    local fld = drec.fields[idx]
+    local v = emit_expr_typed(fa.expr, fld.ty)
+    if not same_type(E.vtypes[v], fld.ty) then
+      fail(fa.line, fa.col, "field `" .. fa.field .. "` does not take this value's type")
+    end
+    local rec = fresh()
+    emit(rec .. " = \"frk_mem.box_get\"(" .. b.id .. ") : (" .. box_ir(b.ty, fa.line, fa.col) .. ") -> " .. value_ir(b.ty, fa.line, fa.col))
+    local stored = v
+    if is_named(fld.ty) then
+      stored, _ = wrap_store(v, fld.ty, fa.line, fa.col)
+    end
+    emit("\"frk_mem.field_set\"(" .. rec .. ", " .. stored .. ") {field = " .. tostring(idx - 1) .. " : i64} : (" .. value_ir(b.ty, fa.line, fa.col) .. ", " .. storage_ir(fld.ty, fa.line, fa.col) .. ") -> ()")
     return
   end
   if node.assign ~= nil then
@@ -2548,8 +2714,15 @@ local function emit_fn(fn)
     if p.name == "env" then
       fail(p.line, p.col, "`env` is reserved in the seed's parameter namespace")
     end
-    params = params .. ", %" .. p.name .. ": " .. value_ir(p.ty, p.line, p.col)
-    declare(p.name, { kind = "ssa", ty = p.ty, id = "%" .. p.name }, p.line, p.col)
+    if p.mut then
+      -- D-112: a mut parameter is the value's box passed by handle;
+      -- reads box_get, field writes field_set, caller-visible.
+      params = params .. ", %" .. p.name .. ": " .. box_ir(p.ty, p.line, p.col)
+      declare(p.name, { kind = "box", ty = p.ty, id = "%" .. p.name, box = box_ir(p.ty, p.line, p.col) }, p.line, p.col)
+    else
+      params = params .. ", %" .. p.name .. ": " .. value_ir(p.ty, p.line, p.col)
+      declare(p.name, { kind = "ssa", ty = p.ty, id = "%" .. p.name }, p.line, p.col)
+    end
   end
   local ret_ir = ""
   if fn.ret ~= "unit" then

@@ -3448,3 +3448,39 @@ veto-ledger pattern and most deserve their review.
   public API for the glue (e.g. an external driver), relocate the
   module and INVERT the dependency (harness -> calque) after breaking
   the calque -> harness edge - never duplicate the glue.
+
+- D-112 [calque/state] THE CANONICAL COMPILER'S STATE MODEL: `mut`
+  PARAMETERS AND FIELD ASSIGNMENT - THE SCOPED EXCLUSIVE INTERFACE
+  (user priority correction, M37 session; the emitter's vector cells
+  are RETIRED, not documented-and-deferred). THE RULING:
+  (1) STATE OWNERSHIP. A function that changes state takes the value
+  as a `mut` parameter (`pub fn fresh(mut e: Emitter) Str`): mutation
+  is EXPLICIT in the signature, scoped to the call, and impossible
+  through ordinary parameters. Field assignment (`e.tmp = e.tmp + 1`)
+  is legal ONLY on mut parameters and var-bound locals; it is a
+  checker error everywhere else. Exclusivity rules (syntactic, NO
+  general borrow analysis - that project stays out): a mut argument
+  must be a var-bound local or another mut parameter, and one binding
+  may not occupy two mut positions in a single call.
+  (2) LOWERING. A mut parameter is the value's box passed by handle
+  (records are managed boxes already); reads are frk_mem.field_get,
+  writes frk_mem.field_set - both kernel ops exist (no new dialect
+  surface). Ordinary parameters keep immutable value semantics as a
+  language rule even where representation is shared.
+  (3) THE SURFACE ADDITIONS the migration needs (D-108's steering
+  pulled forward to constructor scope): `[T]` as Vector-compatible
+  type syntax, annotation-typed collection literals `[]` / `[a, b]`
+  (element type from the binding annotation or the field's declared
+  type - no general inference), collection-typed struct field
+  defaults, and `var x = e` initialization inference.
+  (4) MIGRATION SHAPE: the emitter's cells become an Emitter struct
+  initialized by `%Emitter{}` defaults; initialization stops being a
+  handwritten cell-constructor. The seed gains exactly the syntax
+  needed to compile the migrated sources (it retains its own style);
+  frozen snapshots move only through an explicit recorded bootstrap
+  transition.
+  REVISIT CONDITION: when C2 lands the persistent-collection work,
+  `[T]`'s field set expands and the exclusivity rules may tighten
+  with real analysis if a defect demands it; the seed's lack of
+  and/or emission is a separate recorded gap (STATE), not covered
+  here.

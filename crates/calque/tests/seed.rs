@@ -1090,6 +1090,120 @@ fn calq0_reports_match_errors() {
 }
 
 #[test]
+fn seed_mut_params_and_field_assignment() {
+    // D-112: mut parameters + field assignment. Caller-visible state
+    // updates through the borrow, independent emitter instances, and
+    // the exclusivity rules (immutable bindings and duplicate mut
+    // positions are errors).
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "mut.calq",
+            None,
+            "pub const Emitter = struct {
+    count: i64 = 0,
+    total: i64 = 0,
+    label: Str = \"\",
+};
+pub fn bump(mut e: Emitter, n: i64) i64 {
+    e.count = e.count + 1;
+    e.total = e.total + n;
+    e.count
+}
+pub fn main() i64 {
+    var a = %Emitter{};
+    var b = %Emitter{};
+    const c1: i64 = bump(a, 5);
+    const c2: i64 = bump(a, 7);
+    const c3: i64 = bump(b, 1);
+    io.print(str.fromI64(a.total));
+    io.print(\"\\n\");
+    io.print(str.fromI64(b.total));
+    io.print(\"\\n\");
+    io.print(str.fromI64(a.count));
+    io.print(\"\\n\");
+    io.print(str.fromI64(c1 + c2 + c3));
+    io.print(\"\\n\");
+    0
+}",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed emits the mut probe");
+    let outcome = run_artifact(&artifact).expect("the mut probe runs");
+    assert_eq!(outcome.output, "12\n1\n2\n4\n");
+
+    // an immutable binding cannot be a mut argument.
+    let bad1 = vec![
+        stdlib_str(),
+        unit(
+            "mutbad1.calq",
+            None,
+            "pub const E = struct { n: i64 = 0 };\npub fn bump(mut e: E) i64 {\n    e.n = e.n + 1;\n    e.n\n}\npub fn main() i64 {\n    const x = %E{};\n    bump(x)\n}\n",
+        ),
+    ];
+    let err1 = seed_translate(&bad1).expect_err("a const cannot be a mut argument");
+    assert!(
+        err1.contains("is not mutable") && err1.contains("`x`"),
+        "the exclusive-mutation rule must name the binding: {err1}"
+    );
+
+    // one binding cannot occupy two mut positions in a call.
+    let bad2 = vec![
+        stdlib_str(),
+        unit(
+            "mutbad2.calq",
+            None,
+            "pub const E = struct { n: i64 = 0 };\npub fn two(mut x: E, mut y: E) i64 {\n    x.n = x.n + 1;\n    y.n = y.n + 1;\n    x.n + y.n\n}\npub fn main() i64 {\n    var a = %E{};\n    two(a, a)\n}\n",
+        ),
+    ];
+    let err2 = seed_translate(&bad2).expect_err("one binding cannot be two mut positions");
+    assert!(
+        err2.contains("two mut positions"),
+        "the exclusivity rule must fire: {err2}"
+    );
+}
+
+#[test]
+fn seed_collection_literals_and_inference() {
+    // D-112's constructor-scope surface: `[T]` types, annotation-typed
+    // literals `[]` / `[a, b]` (named slots wrap like vector.push),
+    // collection-typed struct defaults, and `var x = e` inference.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "lit.calq",
+            None,
+            "pub const P2 = struct { a: i64, b: i64 };
+pub const B = struct { label: Str = \"\", lines: [Str] = [] };
+pub fn main() i64 {
+    var v: [i64] = [1, 2, 3];
+    const names: [Str] = [\"a\", \"b\"];
+    var empty: [i64] = [];
+    var inferred = 42;
+    const ps: [P2] = [%P2{a: 1, b: 2}];
+    const b = %B{};
+    io.print(str.fromI64(vector.len(v)));
+    io.print(\"\\n\");
+    io.print(str.fromI64(vector.len(names)));
+    io.print(\"\\n\");
+    io.print(str.fromI64(vector.len(empty)));
+    io.print(\"\\n\");
+    io.print(str.fromI64(inferred));
+    io.print(\"\\n\");
+    io.print(str.fromI64(vector.len(ps)));
+    io.print(\"\\n\");
+    io.print(str.fromI64(vector.len(b.lines)));
+    io.print(\"\\n\");
+    0
+}",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed emits the literal probe");
+    let outcome = run_artifact(&artifact).expect("the literal probe runs");
+    assert_eq!(outcome.output, "3\n2\n0\n42\n1\n0\n");
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the
