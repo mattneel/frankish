@@ -1472,13 +1472,20 @@ rework flag, not a knob.
     block-arg join); (3) `.Variant` PATTERNS for the recovery matches
     (the scrutinee supplies the union). All byte-mirrored in calq0
     with differentials; suite 44 passed.
-    NEXT (errors, continued): `?T`/`E!T` shorthands - plan: REAL Ty
-    variants (Ty.Option(inner) / Ty.Result(err, ok)) with SYNTHETIC
-    union decls built on the fly, so value_ir/storage_ir, the match
-    machinery (scrutinee-kind dispatch accepts them), the dot
-    constructors/patterns, and `try`'s metadata all reuse one path;
-    then `catch` (precedence level 0, the |err| binding + replacement
-    block, the playbook's `catch { return .Err(...) }` shape).
+    C2 errors increment now FOUR slices (6d9c922 on top): (4) `?T` /
+    `E!T` shorthands as REAL Ty variants (Ty.OptT/Ty.ResT in calq0,
+    {opt=...}/{reserr,resok} in the seed) with SYNTHETIC union decls
+    (Some/None, Ok/Err) built on the fly - synth_td/decl_for (calq0),
+    synth_decl/decl_of (seed) - so match/try/dot-ctors/dot-patterns
+    read them uniformly. Both compilers' ir/same_ty/poison/lexer grew
+    the arms; the seed's variant-make got the uty-parameter split and
+    typed payloads. Probe 5020; differential byte-equal + executed;
+    suite 46 passed; SET OK; grid 13/13 both strategies.
+    NEXT (errors, last piece): `catch` at precedence level 0 - the
+    playbook shape `expr catch { return .Err(...) }` / `catch |err|
+    { ... }` (replacement block with the error bound; the block's
+    type must unify with the try's success type). Then generics /
+    seq / modules per the C2 plan (STATE's earlier paragraphs).
     CLOSURE DESIGN (settled, ready to implement; verified against the
     dialect this session): the frk_closure ops are make(env:
     product) {callee} -> fn, apply(fn, args: product) -> value, and
