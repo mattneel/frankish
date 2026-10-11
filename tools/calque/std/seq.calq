@@ -1,0 +1,135 @@
+// seq - explicit pull sequences (AC-8.3; the playbook's `seq.*`
+// surface). A sequence is a `fn () ?T` closure: `iter` builds one
+// over a Vector, the adapters wrap an upstream sequence, and `fold`/
+// `collect` consume it. Element types come from the D-113 comptime
+// parameters; each distinct type tuple instantiates its own chain.
+// Eager collection operations stay on `vector.*`.
+
+pub fn iter(comptime T: type, v: Vector(T)) fn () ?T {
+    var i: i64 = 0;
+    return fn () ?T {
+        if i < vector.len(v) {
+            const x: T = vector.get(v, i);
+            i = i + 1;
+            return .Some(x);
+        }
+        return .None;
+    };
+}
+
+pub fn filter(comptime T: type, up: fn () ?T, pred: fn (T) bool) fn () ?T {
+    return fn () ?T {
+        var go: bool = true;
+        while go {
+            const x: ?T = up();
+            match x {
+                .Some(v) => {
+                    if pred(v) {
+                        return .Some(v);
+                    }
+                },
+                .None => {
+                    go = false;
+                },
+            };
+        }
+        return .None;
+    };
+}
+
+pub fn map(comptime T: type, comptime U: type, up: fn () ?T, f: fn (T) U) fn () ?U {
+    return fn () ?U {
+        const x: ?T = up();
+        return match x {
+            .Some(v) => {
+                const y: U = f(v);
+                const r: ?U = .Some(y);
+                r
+            },
+            .None => {
+                const r2: ?U = .None;
+                r2
+            },
+        };
+    };
+}
+
+pub fn fold(comptime T: type, comptime A: type, up: fn () ?T, init: A, f: fn (A, T) A) A {
+    var acc: A = init;
+    var go: bool = true;
+    while go {
+        const x: ?T = up();
+        match x {
+            .Some(v) => {
+                acc = f(acc, v);
+            },
+            .None => {
+                go = false;
+            },
+        };
+    }
+    acc
+}
+
+pub fn collect(comptime T: type, up: fn () ?T) Vector(T) {
+    var out: Vector(T) = vector.new();
+    var go: bool = true;
+    while go {
+        const x: ?T = up();
+        match x {
+            .Some(v) => {
+                vector.push(out, v);
+            },
+            .None => {
+                go = false;
+            },
+        };
+    }
+    return out;
+}
+
+pub fn take(comptime T: type, up: fn () ?T, n: i64) fn () ?T {
+    var left: i64 = n;
+    return fn () ?T {
+        if left <= 0 {
+            return .None;
+        }
+        left = left - 1;
+        return up();
+    };
+}
+
+pub fn flat_map(comptime T: type, comptime U: type, up: fn () ?T, f: fn (T) fn () ?U) fn () ?U {
+    return fn () ?U {
+        var have: bool = false;
+        var inner: fn () ?U = f;
+        var go: bool = true;
+        var result: ?U = .None;
+        while go {
+            if have {
+                const x2: ?U = inner();
+                match x2 {
+                    .Some(v2) => {
+                        result = .Some(v2);
+                        go = false;
+                    },
+                    .None => {
+                        have = false;
+                    },
+                };
+            } else {
+                const x: ?T = up();
+                match x {
+                    .Some(v) => {
+                        inner = f(v);
+                        have = true;
+                    },
+                    .None => {
+                        go = false;
+                    },
+                };
+            }
+        }
+        result
+    };
+}

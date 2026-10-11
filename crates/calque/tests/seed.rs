@@ -1954,6 +1954,217 @@ pub fn main() i64 {
 }
 
 #[test]
+fn seed_inferred_closure_params() {
+    // D-086's inferred closure parameters: a bare or partial closure
+    // literal at a fn-typed position takes its signature from the
+    // expected type; a closure with NO expected type fails loudly.
+    let files = vec![
+        stdlib_str(),
+        unit(
+            "inf.calq",
+            None,
+            "pub fn twice(comptime T: type, f: fn (T) T, x: T) T {
+    return f(f(x));
+}
+pub fn main() i64 {
+    const inc = fn (n: i64) i64 { return n + 1; };
+    const a = twice(i64, inc, 5);
+    const b = twice(i64, fn (n) { n * 3 }, 2);
+    const c = twice(i64, fn (n: i64) { return n - 1; }, 10);
+    io.print(str.fromI64(a * 100 + b * 10 + c));
+    io.print(\"\\n\");
+    0
+}",
+        ),
+    ];
+    let artifact = seed_translate(&files).expect("the seed emits the inference probe");
+    let outcome = run_artifact(&artifact).expect("the inference probe runs");
+    // twice applies f twice: 7, 18, 8 -> 888.
+    assert_eq!(outcome.output, "888\n");
+}
+
+#[test]
+fn seed_seq_stdlib() {
+    // AC-8.3: the `seq` pull-sequence stdlib in Calque (iter/filter/
+    // map/fold/collect/take), driven by D-113 inference - the frozen
+    // active_score.calq surface with bare closure parameters.
+    let files = vec![
+        stdlib_str(),
+        unit("tools/calque/std/seq.calq", Some("seq"), "// seq - explicit pull sequences (AC-8.3; the playbook's `seq.*`
+// surface). A sequence is a `fn () ?T` closure: `iter` builds one
+// over a Vector, the adapters wrap an upstream sequence, and `fold`/
+// `collect` consume it. Element types come from the D-113 comptime
+// parameters; each distinct type tuple instantiates its own chain.
+// Eager collection operations stay on `vector.*`.
+
+pub fn iter(comptime T: type, v: Vector(T)) fn () ?T {
+    var i: i64 = 0;
+    return fn () ?T {
+        if i < vector.len(v) {
+            const x: T = vector.get(v, i);
+            i = i + 1;
+            return .Some(x);
+        }
+        return .None;
+    };
+}
+
+pub fn filter(comptime T: type, up: fn () ?T, pred: fn (T) bool) fn () ?T {
+    return fn () ?T {
+        var go: bool = true;
+        while go {
+            const x: ?T = up();
+            match x {
+                .Some(v) => {
+                    if pred(v) {
+                        return .Some(v);
+                    }
+                },
+                .None => {
+                    go = false;
+                },
+            };
+        }
+        return .None;
+    };
+}
+
+pub fn map(comptime T: type, comptime U: type, up: fn () ?T, f: fn (T) U) fn () ?U {
+    return fn () ?U {
+        const x: ?T = up();
+        return match x {
+            .Some(v) => {
+                const y: U = f(v);
+                const r: ?U = .Some(y);
+                r
+            },
+            .None => {
+                const r2: ?U = .None;
+                r2
+            },
+        };
+    };
+}
+
+pub fn fold(comptime T: type, comptime A: type, up: fn () ?T, init: A, f: fn (A, T) A) A {
+    var acc: A = init;
+    var go: bool = true;
+    while go {
+        const x: ?T = up();
+        match x {
+            .Some(v) => {
+                acc = f(acc, v);
+            },
+            .None => {
+                go = false;
+            },
+        };
+    }
+    acc
+}
+
+pub fn collect(comptime T: type, up: fn () ?T) Vector(T) {
+    var out: Vector(T) = vector.new();
+    var go: bool = true;
+    while go {
+        const x: ?T = up();
+        match x {
+            .Some(v) => {
+                vector.push(out, v);
+            },
+            .None => {
+                go = false;
+            },
+        };
+    }
+    return out;
+}
+
+pub fn take(comptime T: type, up: fn () ?T, n: i64) fn () ?T {
+    var left: i64 = n;
+    return fn () ?T {
+        if left <= 0 {
+            return .None;
+        }
+        left = left - 1;
+        return up();
+    };
+}
+
+pub fn flat_map(comptime T: type, comptime U: type, up: fn () ?T, f: fn (T) fn () ?U) fn () ?U {
+    return fn () ?U {
+        var have: bool = false;
+        var inner: fn () ?U = f;
+        var go: bool = true;
+        var result: ?U = .None;
+        while go {
+            if have {
+                const x2: ?U = inner();
+                match x2 {
+                    .Some(v2) => {
+                        result = .Some(v2);
+                        go = false;
+                    },
+                    .None => {
+                        have = false;
+                    },
+                };
+            } else {
+                const x: ?T = up();
+                match x {
+                    .Some(v) => {
+                        inner = f(v);
+                        have = true;
+                    },
+                    .None => {
+                        go = false;
+                    },
+                };
+            }
+        }
+        result
+    };
+}
+"),
+        unit("sq.calq", None, "const User = struct {
+    name: Str,
+    score: i64,
+    active: bool,
+};
+
+pub fn activeScore(users: Vector(User)) i64 {
+    users
+        |> seq.iter()
+        |> seq.filter(fn (user) { user.active })
+        |> seq.map(fn (user) { user.score })
+        |> seq.fold(0, fn (total, score) { total + score })
+}
+
+pub fn main() i64 {
+    var us: Vector(User) = vector.new();
+    vector.push(us, %User{name: \"a\", score: 10, active: true});
+    vector.push(us, %User{name: \"b\", score: 5, active: false});
+    vector.push(us, %User{name: \"c\", score: 7, active: true});
+    const total = activeScore(us);
+    const evens = us
+        |> seq.iter()
+        |> seq.filter(fn (u) { u.active })
+        |> seq.collect();
+    io.print(str.fromI64(total));
+    io.print(\" \");
+    io.print(str.fromI64(vector.len(evens)));
+    io.print(\" \");
+    io.print(str.fromI64(us |> seq.iter() |> seq.take(2) |> seq.fold(0, fn (n, _u) { n + 1 })));
+    io.print(\"\\n\");
+    0
+}"),
+    ];
+    let artifact = seed_translate(&files).expect("the seed emits the seq probe");
+    let outcome = run_artifact(&artifact).expect("the seq probe runs");
+    assert_eq!(outcome.output, "17 2 2\n");
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the

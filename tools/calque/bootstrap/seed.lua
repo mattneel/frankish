@@ -593,8 +593,11 @@ function parse_primary()
     if not at_punct(")") then
       while true do
         local pn = expect_name()
-        expect_punct(":")
-        local pty = parse_type()
+        local pty = nil
+        if at_punct(":") then
+          next_tok()
+          pty = parse_type()
+        end
         params[#params + 1] = { name = pn.v, ty = pty, line = pn.line, col = pn.col }
         if at_punct(",") then
           next_tok()
@@ -608,7 +611,7 @@ function parse_primary()
       fail(rp.line, rp.col, "expected `)` after the fn literal's parameters")
     end
     next_tok()
-    local rty = "unit"
+    local rty = nil
     if not at_punct("{") then
       rty = parse_type()
     end
@@ -1647,6 +1650,33 @@ function emit_expr_typed(node, ty)
   if node.list ~= nil then
     return emit_list_literal(ty, node, node.line, node.col)
   end
+  if node.lam ~= nil and is_fn(ty) then
+    -- Inferred closure parameters (D-086: `fn (x) { ... }` at a
+    -- fn-typed position takes its signature from the expected type).
+    local l = node.lam
+    local nps = #ty.fnp
+    if #l.params ~= nps then
+      fail(node.line or 1, node.col or 1, "the closure's parameter count does not match the expected fn type")
+    end
+    for i = 1, #l.params do
+      local lp = l.params[i]
+      if lp.ty == nil then
+        lp.ty = ty.fnp[i]
+      elseif not same_type(lp.ty, ty.fnp[i]) then
+        fail(lp.line or 1, lp.col or 1, "the closure's parameter type does not match the expected fn type")
+      end
+    end
+    if l.ret == nil then
+      l.ret = ty.fnr
+    elseif not same_type(l.ret, ty.fnr) then
+      fail(node.line or 1, node.col or 1, "the closure's return type does not match the expected fn type")
+    end
+    local lv = emit_lambda(node)
+    if lv == nil then
+      fail(node.line or 1, node.col or 1, "closure produced no value")
+    end
+    return lv, ty
+  end
   if node.varcon ~= nil then
     if is_opt(ty) or is_res(ty) then
       local sd = synth_decl(ty, node.line, node.col)
@@ -2247,7 +2277,7 @@ local function emit_match(node)
         else
           if join_ty == nil then
             join_ty = vty
-          elseif join_ty ~= vty then
+          elseif not same_type(join_ty, vty) then
             fail(pat.line, pat.col, "match arms produce different types (`" .. tostring(join_ty) .. "` vs `" .. tostring(vty) .. "`)")
           end
           brs = brs + 1
@@ -2815,34 +2845,247 @@ function subst_ast(node, sub)
   return out
 end
 
+function is_tyarg_expr(a, line, col)
+  if a.tyval ~= nil then
+    return true
+  end
+  if a.ref ~= nil and a.ref.mod == nil then
+    -- a bare NAME is a type argument iff it is not a local binding
+    if lookup(a.ref.name) == nil then
+      return true
+    end
+  end
+  return false
+end
+
+function tyarg_value(a, line, col)
+  local ty = nil
+  if a.tyval ~= nil then
+    ty = a.tyval
+  elseif a.ref ~= nil and a.ref.mod == nil then
+    if a.ref.name == "Str" then
+      ty = "Str"
+    else
+      ty = { named = a.ref.name }
+    end
+  end
+  if ty == nil then
+    fail(a.line or line, a.col or col, "a comptime type argument must be a type name or type keyword")
+  end
+  if E.tvars ~= nil then
+    ty = subst_ast(ty, E.tvars)
+  end
+  return ty
+end
+
+-- A TYPE-ONLY probe of an expression, for comptime inference (D-113's
+-- revisit: the frozen corpus calls `seq.iter(v)` with no type
+-- argument). Never emits: refs read their binding's type; calls
+-- resolve (and memoize-queue) the callee instance for its ret; other
+-- shapes are unknown.
+function infer_expr_ty(expr, line, col)
+  if expr.lit == "int" then
+    return "i64"
+  end
+  if expr.lit == "str" then
+    return "Str"
+  end
+  if expr.lit == "bool" then
+    return "bool"
+  end
+  if expr.ref ~= nil and expr.ref.mod == nil then
+    local b = lookup(expr.ref.name)
+    if b ~= nil then
+      return b.ty
+    end
+    return nil
+  end
+  if expr.ref ~= nil and expr.ref.mod ~= nil then
+    -- a field access: the receiver's named type's field, quietly
+    local b = lookup(expr.ref.mod)
+    if b == nil or not is_named(b.ty) then
+      return nil
+    end
+    local td = E.types[b.ty.named]
+    if td == nil or td.kind == "union" then
+      return nil
+    end
+    local fd = nil
+    for i = 1, #td.fields do
+      if td.fields[i].name == expr.ref.name then
+        fd = td.fields[i]
+      end
+    end
+    if fd == nil then
+      return nil
+    end
+    if E.tvars ~= nil then
+      return subst_ast(fd.ty, E.tvars)
+    end
+    return fd.ty
+  end
+  if expr.call ~= nil then
+    local fn2 = nil
+    if expr.call.mod ~= nil then
+      fn2 = E.fns_by_sym[expr.call.mod .. "__" .. expr.call.name]
+    else
+      fn2 = E.fns[expr.call.name]
+    end
+    if fn2 == nil then
+      return nil
+    end
+    if is_generic_fn(fn2) then
+      local inst = resolve_generic(fn2, expr.args, expr.line or line, expr.col or col)
+      return inst.ret
+    end
+    return fn2.ret
+  end
+  return nil
+end
+
+function unify_ty(declared, actual, sub, names)
+  if declared == nil or actual == nil then
+    return
+  end
+  if is_named(declared) and names[declared.named] then
+    if sub[declared.named] == nil then
+      sub[declared.named] = actual
+    end
+    return
+  end
+  if is_vec(declared) then
+    if is_vec(actual) then
+      unify_ty(declared.vec, actual.vec, sub, names)
+    end
+    return
+  end
+  if is_opt(declared) then
+    if is_opt(actual) then
+      unify_ty(declared.opt, actual.opt, sub, names)
+    end
+    return
+  end
+  if is_res(declared) then
+    if is_res(actual) then
+      unify_ty(declared.reserr, actual.reserr, sub, names)
+      unify_ty(declared.resok, actual.resok, sub, names)
+    end
+    return
+  end
+  if is_fn(declared) then
+    if is_fn(actual) then
+      if #declared.fnp == #actual.fnp then
+        for i = 1, #declared.fnp do
+          unify_ty(declared.fnp[i], actual.fnp[i], sub, names)
+        end
+        unify_ty(declared.fnr, actual.fnr, sub, names)
+      end
+    end
+    return
+  end
+end
+
+function has_unbound(ty, sub, names)
+  if ty == nil then
+    return false
+  end
+  if is_named(ty) and names[ty.named] then
+    return sub[ty.named] == nil
+  end
+  if is_vec(ty) then
+    return has_unbound(ty.vec, sub, names)
+  end
+  if is_opt(ty) then
+    return has_unbound(ty.opt, sub, names)
+  end
+  if is_res(ty) then
+    return has_unbound(ty.reserr, sub, names) or has_unbound(ty.resok, sub, names)
+  end
+  if is_fn(ty) then
+    for i = 1, #ty.fnp do
+      if has_unbound(ty.fnp[i], sub, names) then
+        return true
+      end
+    end
+    return has_unbound(ty.fnr, sub, names)
+  end
+  return false
+end
+
 function resolve_generic(fn, args, line, col)
   local sub = {}
+  local names = {}
+  for i = 1, #fn.params do
+    if fn.params[i].is_comptime then
+      names[fn.params[i].name] = true
+    end
+  end
   local ai = 1
   for i = 1, #fn.params do
     local p = fn.params[i]
     if p.is_comptime then
-      if ai > #args then
-        fail(line, col, "`" .. fn.name .. "` needs an explicit type argument for `" .. p.name .. "` (D-113)")
+      if ai <= #args and is_tyarg_expr(args[ai], line, col) then
+        sub[p.name] = tyarg_value(args[ai], line, col)
+        ai = ai + 1
       end
-      local a = args[ai]
-      local ty = nil
-      if a.tyval ~= nil then
-        ty = a.tyval
-      elseif a.ref ~= nil and a.ref.mod == nil then
-        if a.ref.name == "Str" then
-          ty = "Str"
+    end
+  end
+  -- infer the rest from the value arguments' known types against the
+  -- declared parameter types; a closure argument with unbound names
+  -- in its declared type gets its TAIL probed (a body read like
+  -- `user.score` supplies `U`).
+  local vi = ai
+  for i = 1, #fn.params do
+    local p = fn.params[i]
+    if not p.is_comptime then
+      if vi <= #args then
+        local a = args[vi]
+        if a.lam ~= nil and is_fn(p.ty) and has_unbound(p.ty, sub, names) then
+          local decl_sig = subst_ast(p.ty, sub)
+          local lam = a.lam
+          local bound = true
+          scope_push()
+          for li = 1, #lam.params do
+            local lp = lam.params[li]
+            local lty = lp.ty
+            if lty == nil then
+              if li <= #decl_sig.fnp then
+                lty = decl_sig.fnp[li]
+              else
+                bound = false
+              end
+            end
+            if lty ~= nil and E.tvars ~= nil then
+              lty = subst_ast(lty, E.tvars)
+            end
+            if lty == nil then
+              bound = false
+            else
+              declare(lp.name, { kind = "ssa", ty = lty, id = "%" .. lp.name }, line, col)
+            end
+          end
+          local pret = nil
+          if bound and lam.body.tail ~= nil then
+            pret = infer_expr_ty(lam.body.tail, line, col)
+          end
+          scope_pop()
+          if pret ~= nil then
+            unify_ty(p.ty, { fnp = decl_sig.fnp, fnr = pret }, sub, names)
+          end
         else
-          ty = { named = a.ref.name }
+          local actual = infer_expr_ty(a, line, col)
+          if actual ~= nil then
+            unify_ty(p.ty, actual, sub, names)
+          end
         end
       end
-      if ty == nil then
-        fail(a.line or line, a.col or col, "a comptime type argument must be a type name or type keyword")
-      end
-      if E.tvars ~= nil then
-        ty = subst_ast(ty, E.tvars)
-      end
-      sub[p.name] = ty
-      ai = ai + 1
+      vi = vi + 1
+    end
+  end
+  for i = 1, #fn.params do
+    local p = fn.params[i]
+    if p.is_comptime and sub[p.name] == nil then
+      fail(line, col, "cannot infer the type argument for `" .. p.name .. "` of `" .. fn.name .. "` (pass it explicitly, D-113)")
     end
   end
   local key = fn.name
@@ -2911,7 +3154,7 @@ function emit_fn_call(fn, sym, args, line, col)
       parts = parts .. ", " .. b.id
       types = types .. ", " .. box_ir(p.ty, line, col)
     else
-      local v = emit_expr(args[i])
+      local v = emit_expr_typed(args[i], p.ty)
       parts = parts .. ", " .. v
       types = types .. ", " .. value_ir(p.ty, line, col)
     end
@@ -3673,6 +3916,14 @@ end
 
 emit_lambda = function(node)
   local l = node.lam
+  for i = 1, #l.params do
+    if l.params[i].ty == nil then
+      fail(l.params[i].line or node.line or 1, l.params[i].col or node.col or 1, "cannot infer this closure's parameter types; annotate them, or place the closure where a fn type is expected")
+    end
+  end
+  if l.ret == nil then
+    fail(node.line or 1, node.col or 1, "cannot infer this closure's return type; annotate it, or place the closure where a fn type is expected")
+  end
   local n = E.lam or 0
   E.lam = n + 1
   local sym = "__calque_lam_" .. tostring(n)
