@@ -40,6 +40,8 @@ pub const Expr = union(enum) {
     Lam: LamE,
     // `(a, b)` - a tuple literal (D-114); `(e)` stays grouping.
     Tup: Vector(Expr),
+    // `v[i]` (the vector steering): a fixed-array element read.
+    IndexE: IdxE,
     // `try e` (SPEC 6.5): on Err the enclosing function returns Err(x).
     TryE: TryX,
     CatchE: CatchX,
@@ -458,10 +460,14 @@ pub fn parse_postfix(mut p: P) Expr {
             if at_punct(p, "(") {
                 e = do_call(p, e);
             } else {
-                if at_punct(p, ".") {
-                    e = do_dot(p, e);
+                if at_punct(p, "[") {
+                    e = do_index(p, e);
                 } else {
-                    go = false;
+                    if at_punct(p, ".") {
+                        e = do_dot(p, e);
+                    } else {
+                        go = false;
+                    }
                 }
             }
         }
@@ -511,6 +517,26 @@ pub fn do_call(mut p: P, e: Expr) Expr {
         }
     }
     return Expr.Call(%Call{callee: r, args, line: t.line, col: t.col});
+}
+
+pub fn do_index(mut p: P, e: Expr) Expr {
+    const t: Tok = p_peek(p);
+    const r: Ref = match e {
+        Expr.Ref(r0) => r0,
+        _ => %Ref{name: "", mod: ""},
+    };
+    if str.len(r.name) == 0 {
+        return bad(p, t.line, t.col, "indexing needs a named base (slice)");
+    }
+    if str.len(r.mod) != 0 {
+        return bad(p, t.line, t.col, "indexing needs a named base (slice)");
+    }
+    const _b: Tok = p_next(p);
+    const ix: Expr = parse_expr(p, 1);
+    if expect_punct(p, "]") == false {
+        return bad(p, t.line, t.col, "expected `]` after the index");
+    }
+    return Expr.IndexE(%IdxE{base: r, idx: ix});
 }
 
 pub fn do_dot(mut p: P, e: Expr) Expr {
@@ -703,6 +729,7 @@ pub fn dump(e: Expr) Str {
         Expr.TryE(tr) => str.concat("(try ", str.concat(dump(tr.expr), ")")),
         Expr.CatchE(cx2) => d_catch(cx2),
         Expr.TyV(tx) => str.concat("(tyv ", str.concat(d_ty(tx), ")")),
+        Expr.IndexE(ix2) => d_index(ix2),
         Expr.Tup(es) => {
             var acc: Str = "(tup";
             const n: i64 = vector.len(es);
@@ -716,6 +743,11 @@ pub fn dump(e: Expr) Str {
         },
         Expr.Bad(b) => d_bad(b),
     };
+}
+
+pub fn d_index(ix2: IdxE) Str {
+    const br: Ref = ix2.base;
+    return str.concat("(index ", str.concat(br.name, str.concat(" ", str.concat(dump(ix2.idx), ")"))));
 }
 
 pub fn d_catch(cx: CatchX) Str {
@@ -793,6 +825,8 @@ pub const Ty = union(enum) {
     // `(T1, T2, ...)` - the tuple type (D-114): a structural product.
     // `()` is not a tuple type.
     Tup: Vector(Ty),
+    // `[N]T` - a fixed-length inline array (the vector steering).
+    ArrT: ArrTT,
     // Explicit recovery (D-109): never a valid type; the State holds
     // the real message ("<absent>" marks flag-guarded placeholders).
     TyBad: BadNode,
@@ -801,6 +835,11 @@ pub const Ty = union(enum) {
 pub const ResTT = struct {
     err: Ty,
     ok: Ty,
+};
+
+pub const ArrTT = struct {
+    n: i64,
+    ty: Ty,
 };
 
 pub const Param = struct {
@@ -905,6 +944,11 @@ pub const Stmt = union(enum) {
     TDestr: TDestrS,
     Expr: ExprS,
     FAssign: FAssS,
+};
+
+pub const IdxE = struct {
+    base: Ref,
+    idx: Expr,
 };
 
 pub const TryX = struct {
@@ -1012,6 +1056,56 @@ pub const Ast = struct {
     fns: Vector(Fn),
     types: Vector(TypeDecl),
 };
+
+// A digits-only i64 reader (the seed's parse_slot shape; `t.0`-style
+// indices and `[N]T` lengths arrive as plain digit runs).
+pub fn parse_i64_tok(s: Str) i64 {
+    const n: i64 = str.len(s);
+    var acc: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        const c: Str = str.sub(s, i, i + 1);
+        if c == "0" {
+            acc = acc * 10;
+        } else {
+            if c == "1" {
+                acc = acc * 10 + 1;
+            } else {
+                if c == "2" {
+                    acc = acc * 10 + 2;
+                } else {
+                    if c == "3" {
+                        acc = acc * 10 + 3;
+                    } else {
+                        if c == "4" {
+                            acc = acc * 10 + 4;
+                        } else {
+                            if c == "5" {
+                                acc = acc * 10 + 5;
+                            } else {
+                                if c == "6" {
+                                    acc = acc * 10 + 6;
+                                } else {
+                                    if c == "7" {
+                                        acc = acc * 10 + 7;
+                                    } else {
+                                        if c == "8" {
+                                            acc = acc * 10 + 8;
+                                        } else {
+                                            acc = acc * 10 + 9;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return acc;
+}
 
 pub fn ty_is_hole(t: Ty) bool {
     return match t {
@@ -1123,6 +1217,17 @@ pub fn p_type_atom(mut p: P) Ty {
         }
         if t.text == "[" {
             const _t: Tok = p_next(p);
+            const nx: Tok = p_peek(p);
+            if is_int_tok(nx) {
+                const save: i64 = p.pos;
+                const _n1: Tok = p_next(p);
+                if at_punct(p, "]") {
+                    const _c1: Tok = p_next(p);
+                    const ety: Ty = p_type(p);
+                    return Ty.ArrT(%ArrTT{n: parse_i64_tok(nx.text), ty: ety});
+                }
+                p.pos = save;
+            }
             const inner: Ty = p_type(p);
             if expect_punct(p, "]") == false {
                 return bad_ty(p, t.line, t.col, "invalid type");
@@ -2050,6 +2155,7 @@ pub fn d_ty(t: Ty) Str {
         Ty.Named(n) => str.concat("(ty ", str.concat(n, ")")),
         Ty.Vec(inner) => str.concat("(ty vec ", str.concat(d_ty(inner), ")")),
         Ty.OptT(inner) => str.concat("(ty opt ", str.concat(d_ty(inner), ")")),
+        Ty.ArrT(a2) => str.concat("(ty arr ", str.concat(str.fromI64(a2.n), str.concat(" ", str.concat(d_ty(a2.ty), ")")))),
         Ty.Tup(tys) => {
             var acc: Str = "(ty tup";
             const nt: i64 = vector.len(tys);

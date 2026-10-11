@@ -262,6 +262,7 @@ pub fn ty_ir(t: Ty) Str {
         Ty.OptT(inner) => "opt",
         Ty.ResT(rz) => "res",
         Ty.Tup(tys) => "tup",
+        Ty.ArrT(a2) => "arr",
         Ty.FnT(sig) => "fn",
         Ty.TyBad(b) => "bad",
     };
@@ -808,6 +809,48 @@ pub fn emit_tuple_e(mut e: Emitter, items: Vector(Expr), expected: Ty) Str {
     return acc;
 }
 
+pub fn emit_index_e(mut e: Emitter, ix: IdxE) Str {
+    const br: Ref = ix.base;
+    if str.len(br.mod) != 0 {
+        return e_fail_at(e, 0, 0, "indexing needs a named base (slice)");
+    }
+    const b: Binding = lookup(e, br.name);
+    if b.name == "" {
+        return e_fail_at(e, 0, 0, str.concat("unknown name `", str.concat(br.name, "`")));
+    }
+    var aty: Ty = poison_ty();
+    var n2: i64 = 0;
+    var ety: Ty = poison_ty();
+    var is_arr2: bool = false;
+    const bty2: Ty = b.ty;
+    match bty2 {
+        Ty.ArrT(a2) => {
+            aty = bty2;
+            n2 = a2.n;
+            ety = a2.ty;
+            is_arr2 = true;
+        },
+        _ => {},
+    };
+    if is_arr2 == false {
+        return e_fail_at(e, 0, 0, "indexing needs a fixed array ([N]T) base");
+    }
+    const a: Ast = e_ast(e);
+    const val: Str = read_binding(e, b);
+    const iv: Str = emit_expr(e, ix.idx);
+    const out: Str = fresh(e);
+    var l: Str = " = \"frk_mem.array_get\"(";
+    l = str.concat(l, val);
+    l = str.concat(l, ", ");
+    l = str.concat(l, iv);
+    l = str.concat(l, ") : (");
+    l = str.concat(l, value_ir_t(a, aty));
+    l = str.concat(l, ", i64) -> ");
+    l = str.concat(l, storage_ir_t(a, ety));
+    emit_line(e, str.concat(out, l));
+    return unwrap_load(e, out, ety, 0, 0);
+}
+
 pub fn emit_lambda_expr(mut e: Emitter, l: LamE) Str {
     const npg: i64 = vector.len(l.params);
     var pgi: i64 = 0;
@@ -1166,6 +1209,7 @@ pub fn ir_ty(t: Ty) Str {
         Ty.OptT(inner) => "opt",
         Ty.ResT(rz) => "res",
         Ty.Tup(tys) => "tup",
+        Ty.ArrT(a2) => "arr",
         Ty.FnT(sig) => "fn",
         Ty.TyBad(b) => "bad",
     };
@@ -1180,6 +1224,7 @@ pub fn storage_ir_t(a: Ast, t: Ty) Str {
         Ty.OptT(inner) => value_ir_t(a, t),
         Ty.ResT(rz) => value_ir_t(a, t),
         Ty.Tup(tys) => value_ir_t(a, t),
+        Ty.ArrT(a2) => value_ir_t(a, t),
         Ty.FnT(sig) => fn_ir_t(a, sig),
         _ => ir_ty(t),
     };
@@ -1260,6 +1305,7 @@ pub fn value_ir_t(a: Ast, t: Ty) Str {
         Ty.Vec(inner) => vec_box(a, inner),
         Ty.OptT(inner) => str.concat("!frk_adt.sum<[[", str.concat(storage_ir_t(a, inner), "], []]>")),
         Ty.Tup(tys) => tup_ir(a, tys),
+        Ty.ArrT(a2) => str.concat("!frk_mem.arr<", str.concat(storage_ir_t(a, a2.ty), ">")),
         Ty.ResT(rz) => str.concat("!frk_adt.sum<[[", str.concat(storage_ir_t(a, rz.ok), str.concat("], [", str.concat(storage_ir_t(a, rz.err), "]]>")))),
         Ty.FnT(sig) => fn_ir_t(a, sig),
         _ => ir_ty(t),
@@ -1427,8 +1473,21 @@ pub fn e_poison(mut e: Emitter, t: Ty) Str {
         Ty.OptT(inner) => poison_variant(e, inner, t),
         Ty.ResT(rz) => poison_variant(e, rz.ok, t),
         Ty.Tup(tys) => poison_tup(e, tys, t),
+        Ty.ArrT(a2) => poison_arr(e, a2, t),
         _ => named_poison(e, t),
     };
+}
+
+pub fn poison_arr(mut e: Emitter, a2: ArrTT, arr_ty: Ty) Str {
+    const av: Str = fresh(e);
+    const nl: Str = const_i64(e, str.fromI64(a2.n));
+    var l: Str = " = \"frk_mem.array_new\"(";
+    l = str.concat(l, nl);
+    l = str.concat(l, ") : (i64) -> ");
+    l = str.concat(l, value_ir_t(e_ast(e), arr_ty));
+    emit_line(e, str.concat(av, l));
+    vset(e, av, arr_ty);
+    return av;
 }
 
 pub fn poison_tup(mut e: Emitter, tys: Vector(Ty), sum_ty: Ty) Str {
@@ -2250,6 +2309,7 @@ pub fn mangle_ty(t: Ty) Str {
         Ty.UnitV => "unit",
         Ty.Named(mn) => mn,
         Ty.Vec(inner) => str.concat("vec_", mangle_ty(inner)),
+        Ty.ArrT(a2) => str.concat("arr", str.concat(str.fromI64(a2.n), str.concat("_", mangle_ty(a2.ty)))),
         Ty.Tup(tys) => {
             var acc: Str = "tup";
             const n: i64 = vector.len(tys);
@@ -2278,6 +2338,7 @@ pub fn subst_ty_list(t: Ty, sub: Vector(TV)) Ty {
     return match t {
         Ty.Named(nm) => find_tv(nm, sub),
         Ty.Vec(inner) => Ty.Vec(subst_ty_list(inner, sub)),
+        Ty.ArrT(a2) => Ty.ArrT(%ArrTT{n: a2.n, ty: subst_ty_list(a2.ty, sub)}),
         Ty.Tup(tys) => {
             var ts: Vector(Ty) = vector.new();
             const n: i64 = vector.len(tys);
@@ -2325,6 +2386,7 @@ pub fn tv_res(e: Emitter, t: Ty) Ty {
     return match t {
         Ty.Named(nm) => tv_lookup(e, nm),
         Ty.Vec(inner) => Ty.Vec(tv_res(e, inner)),
+        Ty.ArrT(a2) => Ty.ArrT(%ArrTT{n: a2.n, ty: tv_res(e, a2.ty)}),
         Ty.Tup(tys) => {
             var ts: Vector(Ty) = vector.new();
             const n: i64 = vector.len(tys);
@@ -2602,6 +2664,22 @@ pub fn infer_tup_lit(mut e: Emitter, es: Vector(Expr), line: i64, col: i64) Ty {
     return Ty.Tup(tys);
 }
 
+pub fn infer_index_ty(mut e: Emitter, ix: IdxE, line: i64, col: i64) Ty {
+    const br: Ref = ix.base;
+    if str.len(br.mod) != 0 {
+        return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
+    }
+    const b: Binding = lookup(e, br.name);
+    if b.name == "" {
+        return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
+    }
+    const bty2: Ty = b.ty;
+    return match bty2 {
+        Ty.ArrT(a2) => tv_res(e, a2.ty),
+        _ => Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col}),
+    };
+}
+
 pub fn infer_expr_ty(mut e: Emitter, ex: Expr, line: i64, col: i64) Ty {
     return match ex {
         Expr.Int(t0) => Ty.I64,
@@ -2622,6 +2700,7 @@ pub fn infer_expr_ty(mut e: Emitter, ex: Expr, line: i64, col: i64) Ty {
         Expr.Call(c0) => infer_call_ty(e, c0, line, col),
         Expr.Bin(b0) => infer_bin_ty(e, b0, line, col),
         Expr.Tup(es) => infer_tup_lit(e, es, line, col),
+        Expr.IndexE(ix2) => infer_index_ty(e, ix2, line, col),
         _ => Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col}),
     };
 }
@@ -2637,6 +2716,7 @@ pub fn has_unbound(t: Ty, sub: Vector(TV), names: Vector(Str)) bool {
         },
         Ty.Vec(inner) => has_unbound(inner, sub, names),
         Ty.OptT(inner) => has_unbound(inner, sub, names),
+        Ty.ArrT(a2) => has_unbound(a2.ty, sub, names),
         Ty.Tup(tys) => {
             var found: bool = false;
             const n: i64 = vector.len(tys);
@@ -2687,6 +2767,12 @@ pub fn unify_ty(declared: Ty, actual: Ty, sub: Vector(TV), names: Vector(Str)) {
         Ty.OptT(inner) => {
             match actual {
                 Ty.OptT(a2) => unify_ty(inner, a2, sub, names),
+                _ => {},
+            };
+        },
+        Ty.ArrT(a2) => {
+            match actual {
+                Ty.ArrT(b2) => unify_ty(a2.ty, b2.ty, sub, names),
                 _ => {},
             };
         },
@@ -2992,6 +3078,7 @@ pub fn emit_expr(mut e: Emitter, ex: Expr) Str {
         Expr.CatchE(cx) => emit_catch_e(e, cx),
         Expr.TyV(tx) => emit_tyv(e, tx),
         Expr.Tup(es) => emit_tuple_e(e, es, Ty.UnitV),
+        Expr.IndexE(ix2) => emit_index_e(e, ix2),
         Expr.Bad(b) => e_fail(e, b),
         Expr.Match(m) => emit_match(e, m),
         Expr.Make(m) => emit_make(e, m, m.line, m.col),
@@ -3565,9 +3652,23 @@ pub fn same_ty(a: Ty, b: Ty) bool {
         Ty.OptT(inner) => same_opt(inner, b),
         Ty.ResT(rz) => same_res(rz, b),
         Ty.Tup(tys) => same_tup(tys, b),
+        Ty.ArrT(a2) => same_arr(a2, b),
         Ty.FnT(sig) => same_fnsig(sig, b),
         Ty.TyBad(x) => ty_is_unit(b),
     };
+}
+
+pub fn same_arr(a2: ArrTT, b: Ty) bool {
+    var res: bool = false;
+    match b {
+        Ty.ArrT(b2) => {
+            if a2.n == b2.n {
+                res = same_ty(a2.ty, b2.ty);
+            }
+        },
+        _ => {},
+    };
+    return res;
 }
 
 pub fn same_tup(tys: Vector(Ty), b: Ty) bool {
@@ -4558,8 +4659,47 @@ pub fn has_ty_annotation(ty: Ty) bool {
 }
 
 pub fn emit_list_literal(mut e: Emitter, ty: Ty, items: Vector(Expr)) Str {
+    match ty {
+        Ty.ArrT(a2) => {
+            // `[N]T` (the vector steering): exactly N elements, inline.
+            const na: i64 = vector.len(items);
+            if na != a2.n {
+                return e_fail_at(e, 0, 0, str.concat("a fixed-length array literal needs exactly ", str.concat(str.fromI64(a2.n), " element(s)")));
+            }
+            const aa: Ast = e_ast(e);
+            const av: Str = fresh(e);
+            const nl: Str = const_i64(e, str.fromI64(a2.n));
+            var la: Str = " = \"frk_mem.array_new\"(";
+            la = str.concat(la, nl);
+            la = str.concat(la, ") : (i64) -> ");
+            la = str.concat(la, value_ir_t(aa, ty));
+            emit_line(e, str.concat(av, la));
+            var i2: i64 = 0;
+            while i2 < na {
+                const xa: Str = emit_expr_typed(e, vector.get(items, i2), a2.ty);
+                const stored: Str = wrap_store(e, xa, a2.ty, 0, 0);
+                const ki: Str = const_i64(e, str.fromI64(i2));
+                var ls: Str = "\"frk_mem.array_set\"(";
+                ls = str.concat(ls, av);
+                ls = str.concat(ls, ", ");
+                ls = str.concat(ls, ki);
+                ls = str.concat(ls, ", ");
+                ls = str.concat(ls, stored);
+                ls = str.concat(ls, ") : (");
+                ls = str.concat(ls, value_ir_t(aa, ty));
+                ls = str.concat(ls, ", i64, ");
+                ls = str.concat(ls, storage_ir_t(aa, a2.ty));
+                ls = str.concat(ls, ") -> ()");
+                emit_line(e, ls);
+                i2 = i2 + 1;
+            }
+            vset(e, av, ty);
+            return av;
+        },
+        _ => {},
+    };
     if is_vec_t(ty) == false {
-        return e_fail_at(e, 0, 0, "a collection literal needs a [T]/Vector annotation (seed v0)");
+        return e_fail_at(e, 0, 0, "a collection literal needs a [T]/Vector or [N]T annotation");
     }
     const a: Ast = e_ast(e);
     const inner: Ty = vec_inner(ty);

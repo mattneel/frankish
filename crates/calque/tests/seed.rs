@@ -2481,6 +2481,24 @@ fn seed_fixed_arrays() {
 const ARR_SRC: &str = "pub fn sum3(xs: [3]i64) i64 {\n    xs[0] + xs[1] + xs[2]\n}\npub fn main() i64 {\n    const xs: [3]i64 = [4, 5, 6];\n    io.print(str.fromI64(sum3(xs)));\n    io.print(\"|\");\n    io.print(str.fromI64(xs[2]));\n    io.print(\"\\n\");\n    0\n}\n";
 
 #[test]
+fn calq0_matches_the_seed_on_fixed_arrays() {
+    // The vector steering's `[N]T` differential: byte-equal to the
+    // seed, executed.
+    let files = vec![stdlib_str(), unit("ar.calq", None, ARR_SRC)];
+    let artifact = compile_artifact();
+    let expected = seed_translate(&files).expect("the seed emits the array probe");
+    let got = run_artifact_with_input(artifact, &files).expect("calq0 compiles the array probe");
+    assert_eq!(
+        got.output,
+        expected,
+        "calq0's emission must equal the seed's (fixed arrays): {}",
+        diff_hint(&got.output, &expected)
+    );
+    let emitted = run_artifact(&got.output).expect("the emitted array probe runs");
+    assert_eq!(emitted.output, "15|6\n");
+}
+
+#[test]
 fn calq0_compiles_itself() {
     // The C1 self-compilation gate: the seed builds calq0
     // (compile_artifact); calq0 then compiles its OWN sources, and the
