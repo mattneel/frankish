@@ -821,14 +821,26 @@ pub fn emit_tuple_e(mut e: Emitter, items: [Expr], expected: Ty) Str {
 
 pub fn emit_index_e(mut e: Emitter, ix: IdxE) Str {
     const br: Ref = ix.base;
+    // A field base (`e.blocks[i]`, D-125): the receiver is emitted as an
+    // ordinary field read; a plain name keeps the direct binding read.
+    var field_base: bool = false;
+    var field_val: Str = "";
+    var field_ty: Ty = Ty.UnitV;
     if str.len(br.mod) != 0 {
-        return e_fail_at(e, ix.line, ix.col, "indexing needs a named base (slice)");
+        field_val = emit_expr(e, Expr.Ref(br));
+        field_ty = vget(e, field_val);
+        field_base = true;
     }
-    const b: Binding = lookup(e, br.name);
-    if b.name == "" {
-        return e_fail_at(e, ix.line, ix.col, str.concat("unknown name `", str.concat(br.name, "`")));
+    var bty2: Ty = Ty.UnitV;
+    if field_base {
+        bty2 = field_ty;
+    } else {
+        const b: Binding = lookup(e, br.name);
+        if b.name == "" {
+            return e_fail_at(e, ix.line, ix.col, str.concat("unknown name `", str.concat(br.name, "`")));
+        }
+        bty2 = b.ty;
     }
-    const bty2: Ty = b.ty;
     // D-120: dynamic-vector reads lower to the same checked access the
     // `vector.get` intrinsic carries (bounds-check + trap), so the new
     // syntax and the historical function agree by construction.
@@ -843,7 +855,11 @@ pub fn emit_index_e(mut e: Emitter, ix: IdxE) Str {
         };
         const a0: Ast = e_ast(e);
         const prefix: Str = vec_prefix(inner);
-        const vid: Str = read_binding(e, b);
+        var vid: Str = field_val;
+        if field_base == false {
+            const b: Binding = lookup(e, br.name);
+            vid = read_binding(e, b);
+        }
         const iid: Str = emit_expr(e, ix.idx);
         const it: Ty = vget(e, iid);
         // (A frozen-seed fence: it mis-lowers ==/!= on payload unions,
@@ -882,7 +898,11 @@ pub fn emit_index_e(mut e: Emitter, ix: IdxE) Str {
     const ety: Ty = a2.ty;
     const aty: Ty = bty2;
     const a: Ast = e_ast(e);
-    const val: Str = read_binding(e, b);
+    var val: Str = field_val;
+    if field_base == false {
+        const b: Binding = lookup(e, br.name);
+        val = read_binding(e, b);
+    }
     const iv: Str = emit_expr(e, ix.idx);
     const out: Str = fresh(e);
     var l: Str = " = \"frk_mem.array_get\"(";
@@ -2797,16 +2817,19 @@ pub fn infer_tup_lit(mut e: Emitter, es: [Expr], line: i64, col: i64) Ty {
 
 pub fn infer_index_ty(mut e: Emitter, ix: IdxE, line: i64, col: i64) Ty {
     const br: Ref = ix.base;
+    var bty2: Ty = Ty.UnitV;
     if str.len(br.mod) != 0 {
-        return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
+        bty2 = infer_expr_ty(e, Expr.Ref(br), line, col);
+    } else {
+        const b: Binding = lookup(e, br.name);
+        if b.name == "" {
+            return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
+        }
+        bty2 = b.ty;
     }
-    const b: Binding = lookup(e, br.name);
-    if b.name == "" {
-        return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
-    }
-    const bty2: Ty = b.ty;
     return match bty2 {
         Ty.ArrT(a2) => tv_res(e, a2.ty),
+        Ty.Vec(inner) => tv_res(e, inner),
         _ => Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col}),
     };
 }

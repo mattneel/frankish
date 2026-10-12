@@ -3674,3 +3674,30 @@ veto-ledger pattern and most deserve their review.
   shape: the c3v1 compiler and the current chain-built compiler
   produce byte-identical artifacts for the same probe).
 
+- D-125 [calque/index] FIELD-BASE INDEX READS (`e.xs[i]`): the index
+  postfix accepts a field receiver (the existing Ref{name, mod}
+  representation covers it; emit_index_e resolves a mod-qualified base
+  through the ordinary field read and keeps the direct binding read
+  for plain names; infer_index_ty mirrors, and now covers Ty.Vec
+  elements too). Writes through field bases stay fenced (the place
+  mutation design). `snapshots/c4v1` records the feature state.
+  THE HOP RULE, OBSERVED AND RECORDED: after D-124, later snapshots
+  are NOT seed-buildable (the seed's surface closed); the previous
+  hop's compiler builds each next snapshot, and a directory marker
+  `SEED_BUILDABLE` records which snapshots the seed may translate
+  (`newest_seed_buildable()`). Handing post-freeze sources to the
+  seed aborts the process (its Lua runtime trap binds REAL under the
+  JIT) - tests must never do it.
+
+- D-126 [calque/chain] THE CHAIN FOLDS EVERY SNAPSHOT: `chain_fold`
+  rides the ordered snapshots (seed builds the oldest seed-buildable
+  one; each hop's compiler builds the next state; the newest snapshot
+  compiler builds the current sources), with `chain_fold_to(target)`
+  for the intermediate states; `canonical_compiler()` uses the fold.
+  THE TEST SUITE RESTATED for the post-D-124 world: `compile_artifact`
+  = the chain's product (the seed-built leg is gone); the C1
+  self-gate now asserts the calq0 -> calq0 fixed point byte-exactly;
+  `seed_translates_the_compiler_set` smokes the seed against the
+  newest SEED-BUILDABLE snapshot (its only remaining job). Suite 68
+  green; the chain's cold cost ~90s, warm seconds.
+

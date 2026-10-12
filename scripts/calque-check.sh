@@ -64,6 +64,8 @@ for f in docs/calque/GOAL.md docs/calque/SPEC.md docs/calque/BOOTSTRAP.md \
          tools/calque/bootstrap/snapshots/c2v1/MANIFEST.sha256 \
          tools/calque/bootstrap/snapshots/c3v1/README.md \
          tools/calque/bootstrap/snapshots/c3v1/MANIFEST.sha256 \
+         tools/calque/bootstrap/snapshots/c4v1/README.md \
+         tools/calque/bootstrap/snapshots/c4v1/MANIFEST.sha256 \
          specimens/calque/MANIFEST.md \
          specimens/calque/examples/README.md book/src/specimens/calque.md; do
   [ -f "$f" ] || err "missing artifact: $f"
@@ -138,6 +140,10 @@ fi
 if [ -d tools/calque/bootstrap/snapshots/c3v1 ]; then
   ( cd tools/calque/bootstrap/snapshots/c3v1 && sha256sum -c --status MANIFEST.sha256 ) \
     || err "the c3v1 snapshot drifted from MANIFEST.sha256 (snapshots are frozen, D-123)"
+fi
+if [ -d tools/calque/bootstrap/snapshots/c4v1 ]; then
+  ( cd tools/calque/bootstrap/snapshots/c4v1 && sha256sum -c --status MANIFEST.sha256 ) \
+    || err "the c4v1 snapshot drifted from MANIFEST.sha256 (snapshots are frozen, D-125)"
 fi
 
 # 3. Matrix structure.

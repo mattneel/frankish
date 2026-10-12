@@ -528,10 +528,7 @@ pub fn do_index(mut p: P, e: Expr) Expr {
         _ => %Ref{name: "", mod: ""},
     };
     if str.len(r.name) == 0 {
-        return bad(p, t.line, t.col, "indexing needs a named base (slice)");
-    }
-    if str.len(r.mod) != 0 {
-        return bad(p, t.line, t.col, "indexing needs a named base (slice)");
+        return bad(p, t.line, t.col, "indexing needs a name or a field base");
     }
     const _b: Tok = p_next(p);
     const ix: Expr = parse_expr(p, 1);

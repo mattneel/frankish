@@ -1573,6 +1573,15 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    FIELD-BASE INDEXING + THE CHAIN FOLD (D-125/D-126): `e.xs[i]`
+    reads landed (implementation; usages next), c4v1 recorded with
+    SEED_BUILDABLE markers (the hop rule: post-D-124 snapshots are
+    built by the previous hop, never the seed), `chain_fold` rides
+    every snapshot, and the suite is restated for the chain era
+    (compile_artifact = the chain's product; the self-gate = calq0's
+    byte-exact fixed point). NEXT: migrate the emitter accesses
+    (`vector.get(e.xs, i)` -> `e.xs[i]`, ~10 sites) through the
+    chain, or start D-120 item 3.
     MIGRATION + CHAIN-CANONICAL (D-124): compile.calq's reads use
     `v[i]` (8 sites); `canonical_compiler()` = the chain (seed ->
     c3v1 -> current) - the seed only ever translates c3v1. Proof:

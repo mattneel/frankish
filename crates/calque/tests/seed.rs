@@ -326,9 +326,18 @@ fn compiler_files() -> Vec<UnitFile> {
     ]
 }
 
+/// "calq0" for the tests: since D-124 the frozen seed cannot build
+/// the current sources (they use post-freeze surface), so the
+/// canonical object is the CHAIN's product (D-123/D-126): the seed
+/// builds the oldest snapshot, each hop builds the next, and the
+/// newest snapshot's compiler builds the current set.
 fn compile_artifact() -> &'static str {
     static A: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    A.get_or_init(|| translate_cached("compile", &compiler_files()))
+    A.get_or_init(|| {
+        calque::canonical_compiler()
+            .expect("the chain builds the current compiler")
+            .to_string()
+    })
 }
 
 // calq0 compiling a set through the JIT (D-110's fast path: the same
@@ -2584,8 +2593,8 @@ fn chain_compiler_agrees_body() {
     // state the seed can build) and the current chain-built compiler
     // must produce byte-identical artifacts for the same probe - any
     // behavior change the migration introduced shows up here.
-    let snapshot_bin = calque::snapshot_compiler("tools/calque/bootstrap/snapshots/c3v1")
-        .expect("the snapshot compiler builds");
+    let snapshot_bin = calque::chain_fold_to(&calque::newest_snapshot())
+        .expect("the newest snapshot's compiler builds via the fold");
     let current = calque::canonical_compiler().expect("the chain builds the current compiler");
     let units = vec![
         stdlib_str(),
@@ -2721,27 +2730,27 @@ fn calq0_matches_the_seed_on_imports() {
 
 #[test]
 fn calq0_compiles_itself() {
-    // The C1 self-compilation gate: the seed builds calq0
-    // (compile_artifact); calq0 then compiles its OWN sources, and the
-    // emission must be byte-identical to what the seed produced - the
-    // seed -> calq0 -> calq0 fixed point. calq0's execution of the
-    // 3000-line set is ~4 minutes cold (the reference interpreter), so
-    // the GOT side is cached like the seed side; the key covers seed,
-    // calq0, and all sources.
-    let seed_built = compile_artifact();
+    // The C1 self-compilation gate, restated for the chain era
+    // (D-124): calq0 (the chain's product for the current sources)
+    // compiles its OWN sources, and the result must be byte-identical
+    // to calq0 itself - the calq0 -> calq0 fixed point. The seed-built
+    // leg no longer exists (the seed's surface closed at D-124); the
+    // recorded chain in `make calque-bootstrap` carries the seed -> ...
+    // -> calq0 history instead.
+    let built = compile_artifact();
     let files = compiler_files();
-    let got = compile_via_calq0_cached("self", seed_built, &files);
+    let got = compile_via_calq0_cached("self", built, &files);
     assert_eq!(
         got.len(),
-        seed_built.len(),
-        "the self-translation must have the seed's length; head: {}",
+        built.len(),
+        "the self-translation must have calq0's length; head: {}",
         got.chars().take(160).collect::<String>()
     );
     assert_eq!(
         got,
-        *seed_built,
-        "seed -> calq0 -> calq0 must reproduce calq0 byte-exactly: {}",
-        diff_hint(&got, seed_built)
+        *built,
+        "calq0 -> calq0 must reproduce calq0 byte-exactly: {}",
+        diff_hint(&got, built)
     );
 
     // Round 2: the SELF-PRODUCED compiler is a working compiler - it
@@ -2807,10 +2816,14 @@ fn calq0_compiles_the_corpus_examples() {
 
 #[test]
 fn seed_translates_the_compiler_set() {
-    // The seed compiles the whole compiler set through the JIT path
-    // (cached like the self-gate): a fast smoke of the set against the
-    // current seed, before any differential runs.
-    let files = compiler_files();
+    // The seed compiles the NEWEST SNAPSHOT set through the JIT path
+    // (cached like the self-gate): a fast smoke of the one job the
+    // frozen seed still has after D-124 - the current sources ride the
+    // chain (canonical_compiler), never the seed. The seed's failure
+    // mode on post-freeze surface is a runtime trap the JIT binds
+    // REAL, so asking it for the current set would abort the process.
+    let seed_dir = calque::newest_seed_buildable().expect("a seed-buildable snapshot exists");
+    let files = calque::snapshot_sources(&seed_dir).expect("the seed-buildable snapshot reads");
     let seed_src = include_str!("../../../tools/calque/bootstrap/seed.lua");
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();

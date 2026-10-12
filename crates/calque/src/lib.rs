@@ -14,5 +14,6 @@ pub use frk_harness::calque::{
     compile_source, opt_source, res_source, run_test_blocks, seq_source,
     run_artifact_with_input, run_artifact_with_input_cached, seed_translate, seed_translate_jit,
     seed_translate_cached, stdlib_source, canonical_compiler, chain_compiler, snapshot_compiler,
-    snapshot_sources, snapshot_translate,
+    snapshot_sources, snapshot_translate, newest_snapshot, sorted_snapshots, chain_fold,
+    chain_fold_to, newest_seed_buildable,
 };

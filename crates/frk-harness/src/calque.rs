@@ -586,6 +586,124 @@ pub fn chain_compiler(snapshot_dir: &str, current: &[UnitFile]) -> Result<String
 /// current sources use surface the FROZEN seed cannot parse, the
 /// recorded chain (seed -> newest snapshot -> current) takes over
 /// (D-119's freeze discipline: growth rides calq0 + snapshots).
+/// Every recorded snapshot, oldest first (the naming is
+/// version-ordered: c2v1 < c3v1 < c4v1 < ...).
+pub fn sorted_snapshots() -> Vec<String> {
+    let base = workspace_path("tools/calque/bootstrap/snapshots");
+    let mut names: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('c') && !name.contains('.') {
+                names.push(name);
+            }
+        }
+    }
+    names.sort();
+    names
+        .into_iter()
+        .map(|n| format!("tools/calque/bootstrap/snapshots/{n}"))
+        .collect()
+}
+
+/// The chain across EVERY recorded snapshot (D-126): the frozen seed
+/// builds the oldest snapshot, and each snapshot's compiler builds
+/// the next state, ending with the current sources. A snapshot is
+/// seed-buildable only while it predates the first seed-unparseable
+/// surface; later hops are built by the previous hop's compiler.
+pub fn chain_fold(current: &[UnitFile]) -> Result<String, String> {
+    let snaps = sorted_snapshots();
+    if snaps.is_empty() {
+        return Err("chain: no snapshots recorded".to_string());
+    }
+    let mut artifact = snapshot_compiler(&snaps[0])?;
+    for dir in &snaps[1..] {
+        let units = snapshot_sources(dir)?;
+        let outcome = run_artifact_with_input_cached(&artifact, &units)?;
+        if outcome.output.starts_with("error ") {
+            return Err(format!(
+                "chain: a snapshot compiler rejected the {} sources: {}",
+                dir,
+                &outcome.output[..outcome.output.len().min(200)]
+            ));
+        }
+        artifact = outcome.output;
+    }
+    let outcome = run_artifact_with_input_cached(&artifact, current)?;
+    if outcome.output.starts_with("error ") {
+        return Err(format!(
+            "chain: the newest snapshot compiler rejected the current sources: {}",
+            &outcome.output[..outcome.output.len().min(200)]
+        ));
+    }
+    Ok(outcome.output)
+}
+
+/// The newest snapshot whose sources the FROZEN seed can still
+/// translate (recorded by a `SEED_BUILDABLE` marker in the
+/// directory). After D-124 the seed's surface is closed: later
+/// snapshots (c4v1 onward) are built by the previous hop's compiler
+/// and must never be handed to the seed - its failure mode is a
+/// runtime trap the JIT binds REAL.
+pub fn newest_seed_buildable() -> Option<String> {
+    let mut best: Option<String> = None;
+    for dir in sorted_snapshots() {
+        if workspace_path(&format!("{dir}/SEED_BUILDABLE")).exists() {
+            best = Some(dir);
+        }
+    }
+    best
+}
+
+/// The compiler built from one snapshot's sources alone: the fold
+/// through every snapshot up to and including `target` (exclusive of
+/// the current sources). The first snapshot must be seed-buildable.
+pub fn chain_fold_to(target: &str) -> Result<String, String> {
+    let snaps = sorted_snapshots();
+    if snaps.is_empty() {
+        return Err("chain: no snapshots recorded".to_string());
+    }
+    let mut artifact = snapshot_compiler(&snaps[0])?;
+    for dir in &snaps[1..] {
+        if dir.as_str() > target {
+            break;
+        }
+        let units = snapshot_sources(dir)?;
+        let outcome = run_artifact_with_input_cached(&artifact, &units)?;
+        if outcome.output.starts_with("error ") {
+            return Err(format!(
+                "chain: a snapshot compiler rejected the {} sources: {}",
+                dir,
+                &outcome.output[..outcome.output.len().min(200)]
+            ));
+        }
+        artifact = outcome.output;
+        if dir == target {
+            return Ok(artifact);
+        }
+    }
+    Ok(artifact)
+}
+
+/// The newest recorded snapshot (the naming is version-ordered:
+/// c2v1 < c3v1 < ...), or the c3v1 default if the directory is
+/// unreadable. The chain always rides the newest hop.
+pub fn newest_snapshot() -> String {
+    let base = workspace_path("tools/calque/bootstrap/snapshots");
+    let mut best: Option<String> = None;
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('c') && !name.contains('.') {
+                if best.as_deref().map_or(true, |b| name.as_str() > b) {
+                    best = Some(name);
+                }
+            }
+        }
+    }
+    format!("tools/calque/bootstrap/snapshots/{}", best.unwrap_or_else(|| "c3v1".to_string()))
+}
+
 pub fn canonical_compiler() -> Result<&'static str, String> {
     static COMPILER: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
     COMPILER
@@ -603,7 +721,7 @@ pub fn canonical_compiler() -> Result<&'static str, String> {
             // its failure mode is a runtime trap the JIT binds REAL
             // (the seed_translate_jit note above). The seed must only
             // ever translate its own recorded snapshot.
-            let chain = chain_compiler("tools/calque/bootstrap/snapshots/c3v1", &files)?;
+            let chain = chain_fold(&files)?;
             let _ = std::fs::create_dir_all(path.parent().unwrap());
             let _ = std::fs::write(&path, &chain);
             Ok(chain)
