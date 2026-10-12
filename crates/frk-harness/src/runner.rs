@@ -428,10 +428,24 @@ pub fn jit_run_text(
     entry: &str,
     strategy: frk_dialects::Strategy,
 ) -> Result<(String, i64), String> {
+    jit_run_text_opt(context, text, entry, strategy, 2)
+}
+
+/// `jit_run_text` with an explicit LLVM optimization level (D-121):
+/// the harness's dev-loop path passes 0 - codegen of compiler-scale
+/// modules at O2 costs minutes per stage, and the optimization level
+/// does not change the semantics the differential law pins.
+pub fn jit_run_text_opt(
+    context: &melior::Context,
+    text: &str,
+    entry: &str,
+    strategy: frk_dialects::Strategy,
+    opt_level: usize,
+) -> Result<(String, i64), String> {
     let mut module = Module::parse(context, text).ok_or_else(|| "parse failed".to_string())?;
     frk_dialects::verify(context, &module).map_err(|e| format!("verify: {e:?}"))?;
     pipeline::lower_to_llvm(context, &mut module, strategy).map_err(|e| format!("lower: {e}"))?;
-    let engine = ExecutionEngine::new(&module, 2, &[], false, false);
+    let engine = ExecutionEngine::new(&module, opt_level, &[], false, false);
     bind_rt_symbols(&engine);
     CAPTURE.with(|buffer| buffer.borrow_mut().clear());
     let mut result: i64 = 0;

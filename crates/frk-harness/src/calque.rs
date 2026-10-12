@@ -241,11 +241,12 @@ pub fn seed_translate_jit(files: &[UnitFile]) -> Result<String, String> {
     let module = frk_front::lua::compile_lua(&context, "calque_seed.lua", &source)
         .map_err(|error| format!("seed compile: {error}"))?;
     let text = module.as_operation().to_string();
-    let (output, _code) = crate::runner::jit_run_text(
+    let (output, _code) = crate::runner::jit_run_text_opt(
         &context,
         &text,
         "main",
         frk_dialects::Strategy::Rc,
+        0,
     )?;
     Ok(output)
 }
@@ -273,6 +274,71 @@ pub fn seed_translate(files: &[UnitFile]) -> Result<String, String> {
     }
     result.map_err(|error| format!("seed process failure: {error}"))?;
     Ok(output)
+}
+
+/// JIT + disk-cached seed translation for arbitrary unit sets - the
+/// fast path the differential tests and the bootstrap chain use. The
+/// result is byte-identical to `seed_translate` (differential law L3,
+/// asserted by the ignored verify test); success paths only - a seed
+/// FAILURE must go through `seed_translate`, whose interpreter
+/// surfaces the marker (the JIT binds the trap for real).
+pub fn seed_translate_cached(files: &[UnitFile]) -> Result<String, String> {
+    let seed = include_str!("../../../tools/calque/bootstrap/seed.lua");
+    let key = cache_key(seed, "seed-set", files);
+    let path = workspace_target().join(format!("seed-{key}.mlir"));
+    if let Ok(cached) = std::fs::read_to_string(&path) {
+        return Ok(cached);
+    }
+    let artifact = seed_translate_jit(files)?;
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    let _ = std::fs::write(&path, &artifact);
+    Ok(artifact)
+}
+
+/// JIT execution of an artifact with input injection - the fast path
+/// for the compiler-as-a-program runs (calq0 compiling itself). The
+/// outcome carries the entry i64 (what the JIT reports) and the
+/// captured output; the run is deterministic, so the entry value and
+/// output stream are cached on disk keyed by artifact + units.
+pub fn run_artifact_with_input_cached(
+    artifact: &str,
+    units: &[UnitFile],
+) -> Result<RunOutcome, String> {
+    check_artifact_marker(artifact)?;
+    let key = cache_key(artifact, "run-in", units);
+    let path = workspace_target().join(format!("run-{key}.out"));
+    let decode = |raw: &str| -> Result<RunOutcome, String> {
+        let (code_line, output) = raw
+            .split_once('\n')
+            .ok_or_else(|| "run cache: bad header".to_string())?;
+        let code: i64 = code_line
+            .parse()
+            .map_err(|e| format!("run cache: bad code: {e}"))?;
+        Ok(RunOutcome {
+            values: vec![frk_interp::Value::int(code as u64, 64)
+                .map_err(|e| format!("run cache: {e:?}"))?],
+            output: output.to_string(),
+        })
+    };
+    if let Ok(cached) = std::fs::read_to_string(&path) {
+        return decode(&cached);
+    }
+    let context = frk_core::context();
+    frk_dialects::register(&context).map_err(|error| format!("register: {error}"))?;
+    let composed = compose_unit_with_input(artifact, units);
+    let (output, code) = crate::runner::jit_run_text_opt(
+        &context,
+        &composed,
+        "main",
+        frk_dialects::Strategy::Rc,
+        0,
+    )?;
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    let _ = std::fs::write(&path, format!("{code}\n{output}"));
+    Ok(RunOutcome {
+        values: vec![frk_interp::Value::int(code as u64, 64).map_err(|e| format!("jit: {e:?}"))?],
+        output,
+    })
 }
 
 /// Parses, verifies, and interprets an artifact end to end (the

@@ -12,5 +12,6 @@ pub use frk_harness::calque::{
     ARTIFACT_MARKER, RunOutcome, UnitFile, check_artifact_marker, compiler_sources,
     compose_unit, compose_unit_with_input, intrinsics_source, input_injection, run_artifact,
     compile_source, opt_source, res_source, run_test_blocks, seq_source,
-    run_artifact_with_input, seed_translate, seed_translate_jit, stdlib_source,
+    run_artifact_with_input, run_artifact_with_input_cached, seed_translate, seed_translate_jit,
+    seed_translate_cached, stdlib_source,
 };
