@@ -2580,27 +2580,28 @@ fn chain_compiler_agrees_body() {
     // artifacts it produces for the same program. (Seed-built and
     // calq0-built compilers differ in incidental identifiers; §5's
     // fixed point is calq0-stability, not seed equality.)
-    let direct = calque::canonical_compiler().expect("direct build");
-    let chained = calque::chain_compiler(
-        "tools/calque/bootstrap/snapshots/c3v1",
-        &calque::compiler_sources(),
-    )
-    .expect("the chain builds");
+    // The migration-gate shape: the c3v1 compiler (the pre-migration
+    // state the seed can build) and the current chain-built compiler
+    // must produce byte-identical artifacts for the same probe - any
+    // behavior change the migration introduced shows up here.
+    let snapshot_bin = calque::snapshot_compiler("tools/calque/bootstrap/snapshots/c3v1")
+        .expect("the snapshot compiler builds");
+    let current = calque::canonical_compiler().expect("the chain builds the current compiler");
     let units = vec![
         stdlib_str(),
         unit("probe.calq", None, "pub fn main() i64 { io.print(str.fromI64(6 * 7)); 0 }\n"),
     ];
-    let via_direct = run_artifact_with_input_cached(direct, &units)
-        .expect("the direct compiler runs")
+    let via_snapshot = run_artifact_with_input_cached(&snapshot_bin, &units)
+        .expect("the snapshot compiler runs")
         .output;
-    let via_chain = run_artifact_with_input_cached(&chained, &units)
-        .expect("the chain compiler runs")
+    let via_current = run_artifact_with_input_cached(current, &units)
+        .expect("the current compiler runs")
         .output;
     assert_eq!(
-        via_chain,
-        via_direct,
-        "chain and direct compilers disagree on a probe: {}",
-        diff_hint(&via_chain, &via_direct)
+        via_current,
+        via_snapshot,
+        "the current compiler's output drifted from the c3v1 compiler's: {}",
+        diff_hint(&via_current, &via_snapshot)
     );
 }
 

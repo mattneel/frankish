@@ -3655,3 +3655,22 @@ veto-ledger pattern and most deserve their review.
   c3v1's hop record lives in its README; `read`-me discipline and the
   script pins cover both snapshots.
 
+- D-124 [calque/migration] THE FIRST REAL MIGRATION (D-120 item 2) AND
+  THE CHAIN AS THE CANONICAL PATH: compile.calq's DFS + driver reads
+  now use `v[i]` (8 sites; `vector.set` stays - bracket writes are
+  persistent, the mutable legacy path belongs to the recorded
+  versions). The frozen seed CANNOT parse the migrated sources (and
+  its failure mode on them is a Lua runtime trap the JIT binds REAL),
+  so `canonical_compiler()` no longer probes the direct build: THE
+  CHAIN IS THE CANONICAL PATH - the seed translates its own recorded
+  snapshot (c3v1) and only that; the snapshot compiler translates the
+  current sources. `make calque-bootstrap` defaults to c3v1.
+  EVIDENCE: artifact1 == artifact2 == b9912fc1 - the migrated
+  sources compile to the BYTE-IDENTICAL compiler binary as the
+  pre-migration ones (the migration is output-invariant at the
+  strongest level), corpus 28 cases 0 red through the chain-built
+  compiler, grid GREEN. Verifier:
+  chain_compiler_agrees_with_the_direct_build (renamed to its real
+  shape: the c3v1 compiler and the current chain-built compiler
+  produce byte-identical artifacts for the same probe).
+

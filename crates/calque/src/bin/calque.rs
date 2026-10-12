@@ -17,7 +17,7 @@ fn main() -> ExitCode {
         let dir = args
             .get(2)
             .cloned()
-            .unwrap_or_else(|| "tools/calque/bootstrap/snapshots/c2v1".to_string());
+            .unwrap_or_else(|| "tools/calque/bootstrap/snapshots/c3v1".to_string());
         return bootstrap(&dir);
     }
     if args.len() < 3 {

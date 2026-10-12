@@ -546,28 +546,38 @@ pub fn snapshot_sources(dir: &str) -> Result<Vec<UnitFile>, String> {
 /// the newest seed-buildable snapshot, and that compiler translates
 /// the CURRENT sources. Used when the current sources have outgrown
 /// the seed's surface (they then cannot be built directly).
-pub fn chain_compiler(snapshot_dir: &str, current: &[UnitFile]) -> Result<String, String> {
+pub fn snapshot_compiler(snapshot_dir: &str) -> Result<String, String> {
     let snap = snapshot_sources(snapshot_dir)?;
     let seed = include_str!("../../../tools/calque/bootstrap/seed.lua");
     let key0 = cache_key(seed, "snapshot-compiler", &snap);
     let path0 = workspace_target().join(format!("snap-{key0}.mlir"));
-    let artifact0 = match std::fs::read_to_string(&path0) {
-        Ok(cached) => cached,
+    match std::fs::read_to_string(&path0) {
+        Ok(cached) => Ok(cached),
         Err(_) => {
             let a = seed_translate_jit(&snap)?;
             let _ = std::fs::create_dir_all(path0.parent().unwrap());
             let _ = std::fs::write(&path0, &a);
-            a
+            Ok(a)
         }
-    };
+    }
+}
+
+/// `chain_compiler`'s second stage alone: the snapshot compiler
+/// translates `current`.
+pub fn snapshot_translate(snapshot_dir: &str, current: &[UnitFile]) -> Result<String, String> {
+    let artifact0 = snapshot_compiler(snapshot_dir)?;
     let outcome = run_artifact_with_input_cached(&artifact0, current)?;
     if outcome.output.contains("error ") && outcome.output.starts_with("error ") {
         return Err(format!(
-            "chain: the snapshot compiler rejected the current sources: {}",
+            "chain: the snapshot compiler rejected the sources: {}",
             &outcome.output[..outcome.output.len().min(200)]
         ));
     }
     Ok(outcome.output)
+}
+
+pub fn chain_compiler(snapshot_dir: &str, current: &[UnitFile]) -> Result<String, String> {
+    snapshot_translate(snapshot_dir, current)
 }
 
 /// The canonical compiler (calq0): the SEED translates the compiler
@@ -587,30 +597,16 @@ pub fn canonical_compiler() -> Result<&'static str, String> {
             if let Ok(cached) = std::fs::read_to_string(&path) {
                 return Ok(cached);
             }
-            // The JIT path: seed-translating the compiler set is a
-            // pure function and a success path; failures would use
-            // seed_translate (the trap marker only the interpreter
-            // surfaces). A seed failure on the CURRENT sources is the
-            // chain's cue: build via the newest seed-buildable snapshot.
-            match seed_translate_jit(&files) {
-                Ok(artifact) => {
-                    let _ = std::fs::create_dir_all(path.parent().unwrap());
-                    let _ = std::fs::write(&path, &artifact);
-                    Ok(artifact)
-                }
-                Err(direct) => {
-                    let chain = chain_compiler(
-                        "tools/calque/bootstrap/snapshots/c3v1",
-                        &files,
-                    )
-                    .map_err(|e| {
-                        format!("{e} (direct seed error: {direct})")
-                    })?;
-                    let _ = std::fs::create_dir_all(path.parent().unwrap());
-                    let _ = std::fs::write(&path, &chain);
-                    Ok(chain)
-                }
-            }
+            // The canonical path is the recorded chain (D-123): the
+            // frozen seed can no longer be ASKED to parse the current
+            // sources - after D-122 they may use surface it lacks, and
+            // its failure mode is a runtime trap the JIT binds REAL
+            // (the seed_translate_jit note above). The seed must only
+            // ever translate its own recorded snapshot.
+            let chain = chain_compiler("tools/calque/bootstrap/snapshots/c3v1", &files)?;
+            let _ = std::fs::create_dir_all(path.parent().unwrap());
+            let _ = std::fs::write(&path, &chain);
+            Ok(chain)
         })
         .as_deref()
         .map_err(|e| e.clone())

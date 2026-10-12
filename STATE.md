@@ -1573,6 +1573,14 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    MIGRATION + CHAIN-CANONICAL (D-124): compile.calq's reads use
+    `v[i]` (8 sites); `canonical_compiler()` = the chain (seed ->
+    c3v1 -> current) - the seed only ever translates c3v1. Proof:
+    artifact1 == artifact2 == b9912fc1 (the migration is
+    output-invariant to the byte), corpus 28/28, grid GREEN. NEXT per
+    D-120's order: item 2 continued (more emitter accesses; expr-base
+    indexing for `e.blocks[i]` is the gating surface) or item 3 (the
+    module + receiver-call surface).
     CHAIN FALLBACK (D-123): `canonical_compiler()` tries the direct
     seed build and falls back to seed -> c3v1 (the post-D-122
     snapshot) -> current sources; `chain_compiler` + the byte-agreement

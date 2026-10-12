@@ -31,15 +31,15 @@ pub fn dfs_imports(edge_from: [i64], edge_to: [i64], marks: [i64], u: i64, ns_na
     const ne: i64 = vector.len(edge_from);
     var i: i64 = 0;
     while i < ne {
-        if vector.get(edge_from, i) == u {
-            const v: i64 = vector.get(edge_to, i);
+        if edge_from[i] == u {
+            const v: i64 = edge_to[i];
             if v >= 0 {
-                if vector.get(marks, v) == 1 {
-                    const un: Str = vector.get(ns_names, u);
-                    const vn: Str = vector.get(ns_names, v);
+                if marks[v] == 1 {
+                    const un: Str = ns_names[u];
+                    const vn: Str = ns_names[v];
                     return str.concat("error 1:1 import cycle detected: `", str.concat(un, str.concat("` -> `", str.concat(vn, "`"))));
                 }
-                if vector.get(marks, v) == 0 {
+                if marks[v] == 0 {
                     const inner: Str = dfs_imports(edge_from, edge_to, marks, v, ns_names);
                     if str.len(inner) > 0 {
                         return inner;
@@ -103,7 +103,7 @@ pub fn main() i64 {
             const nns: i64 = vector.len(ns_names);
             var found_ns: bool = false;
             while nsi < nns {
-                if vector.get(ns_names, nsi) == uns {
+                if ns_names[nsi] == uns {
                     uidx = nsi;
                     found_ns = true;
                 }
@@ -129,14 +129,14 @@ pub fn main() i64 {
     var ei: i64 = 0;
     const ne: i64 = vector.len(import_decls);
     while ei < ne {
-        const im2: ImpDecl = vector.get(import_decls, ei);
+        const im2: ImpDecl = import_decls[ei];
         var tidx: i64 = 0 - 1;
         if is_reserved_ns(im2.name) == false {
             var ni: i64 = 0;
             const nn: i64 = vector.len(ns_names);
             var found_t: bool = false;
             while ni < nn {
-                if vector.get(ns_names, ni) == im2.name {
+                if ns_names[ni] == im2.name {
                     tidx = ni;
                     found_t = true;
                 }
@@ -160,7 +160,7 @@ pub fn main() i64 {
     }
     var si: i64 = 0;
     while si < nmk {
-        if vector.get(marks, si) == 0 {
+        if marks[si] == 0 {
             const cyc: Str = dfs_imports(edge_from, edge_to, marks, si, ns_names);
             if str.len(cyc) > 0 {
                 io.print(cyc);
@@ -175,8 +175,8 @@ pub fn main() i64 {
     var ii: i64 = 0;
     const ni: i64 = vector.len(import_decls);
     while ii < ni {
-        const im3: ImpDecl = vector.get(import_decls, ii);
-        const fidx: i64 = vector.get(edge_from, ii);
+        const im3: ImpDecl = import_decls[ii];
+        const fidx: i64 = edge_from[ii];
         var fns_name: Str = "";
         if fidx >= 0 {
             fns_name = vector.get(ns_names, fidx);
