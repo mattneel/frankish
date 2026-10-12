@@ -3735,3 +3735,23 @@ veto-ledger pattern and most deserve their review.
   nested modules, `(value.field)(args)` closures, module-declaration
   formatter/LSP surfaces.
 
+- D-129 [calque/emitter-module] THE FIRST COMPLETE EMITTER-API
+  MIGRATION (D-120 item 4): the Emitter struct moved into
+  `pub module Emitter` as its PRIMARY struct (the same name, so every
+  `%Emitter{}`, `e.field`, and `e: Emitter` reference is untouched),
+  and the blocks API moved with it: `pub fn current(self: Self) Blk`
+  (a read-only value parameter, per the steering's mut hygiene) and
+  `pub fn open_block(mut self: Self, label: Str)` (one operation
+  maintaining several invariants). Dead `cur_block` removed; the one
+  `new_block(e, "")` caller is now `e.open_block("")` (the receiver
+  spelling). snapshots/c5v1 = the pre-usage hop (built by c4v1's
+  compiler); the fold carries the module-using sources.
+  EVIDENCE: the c5v1 compiler and the migrated chain-built compiler
+  produce byte-identical probe artifacts
+  (chain_compiler_agrees_with_the_direct_build); corpus 29 cases 0 red
+  (28 interp + the module_counter case); grid GREEN; suite 69.
+  Acceptance per the steering: declaration (the module + primary
+  struct), initialization (`%Emitter{}`), a read (`e.current()` /
+  `Emitter.current(e)`), a stateful update (`e.open_block(...)`), and
+  a migrated caller shown above.
+

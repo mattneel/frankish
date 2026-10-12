@@ -1573,6 +1573,13 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    EMITTER-API MIGRATION (D-129): the Emitter struct is the primary
+    struct of `pub module Emitter`; the blocks API = `current(self)` +
+    `open_block(mut self, label)`; the caller uses `e.open_block("")`.
+    c5v1 recorded; gates green (c5v1-vs-current probe byte-equality,
+    corpus 29/29, suite 69). REMAINING from D-120: aliases/selective
+    imports (fenced), wider indexed coverage (slices/.at()/bracket
+    diagnostics), protocols on demand; then the C3..C6 milestone work.
     MODULE + RECEIVER-CALL SURFACE (D-128): `pub module M` with a
     primary struct + `Self`; `recv.name(args)` resolves statically via
     the type's owning module (qualified `M.name(recv, ...)` kept;

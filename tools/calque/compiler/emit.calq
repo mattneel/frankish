@@ -58,33 +58,53 @@ pub const NsImp = struct {
     mod: Str,
 };
 
-pub const Emitter = struct {
-    output: [Str] = ["// calque-artifact v0"],
+// The Emitter module (D-129, D-120 item 4): the emitter's state IS
+// its primary struct; the block API reads as `e.current()` /
+// `e.open_block(label)` while `Emitter.current(e)` stays available.
+pub module Emitter {
+    pub struct {
+        output: [Str] = ["// calque-artifact v0"],
 
-    next_value: i64 = 0,
-    next_block: i64 = 0,
-    current_block: i64 = 0,
-    terminated: bool = false,
-    state: State = State.Ok,
+        next_value: i64 = 0,
+        next_block: i64 = 0,
+        current_block: i64 = 0,
+        terminated: bool = false,
+        state: State = State.Ok,
 
-    blocks: [Blk] = [%Blk{}],
-    scopes: [Scope] = [],
-    value_types: [VTy] = [],
-    return_types: [Ty] = [Ty.UnitV],
-    files: [Str] = ["?"],
-    asts: [Ast] = [%Ast{fns: [], types: [], imports: []}],
-    lifted: [Str] = [],
-    instq: [InstE] = [],
-    insts: [InstN] = [],
-    tvars: [TV] = [],
-    lams: i64 = 0,
-    capbar: i64 = 0,
-    cur_ns: Str = "",
-    imports: [NsImp] = [],
-    caps: [Binding] = [],
-    cap_origs: [Binding] = [],
-    capenv_ty: Str = "",
-};
+        blocks: [Blk] = [%Blk{}],
+        scopes: [Scope] = [],
+        value_types: [VTy] = [],
+        return_types: [Ty] = [Ty.UnitV],
+        files: [Str] = ["?"],
+        asts: [Ast] = [%Ast{fns: [], types: [], imports: []}],
+        lifted: [Str] = [],
+        instq: [InstE] = [],
+        insts: [InstN] = [],
+        tvars: [TV] = [],
+        lams: i64 = 0,
+        capbar: i64 = 0,
+        cur_ns: Str = "",
+        imports: [NsImp] = [],
+        caps: [Binding] = [],
+        cap_origs: [Binding] = [],
+        capenv_ty: Str = "",
+    }
+
+    // The block currently being emitted (read-only: an ordinary value
+    // parameter).
+    pub fn current(self: Self) Blk {
+        return self.blocks[self.current_block];
+    }
+
+    // Open a fresh unterminated block labelled `label` (one operation
+    // maintaining several related invariants, per the steering).
+    pub fn open_block(mut self: Self, label: Str) {
+        var lines: [Str] = vector.new();
+        vector.push(self.blocks, %Blk{label: label, lines: lines});
+        self.current_block = vector.len(self.blocks) - 1;
+        self.terminated = false;
+    }
+}
 
 pub fn e_init() Emitter {
     return %Emitter{};
@@ -173,11 +193,6 @@ pub fn fresh_label(mut e: Emitter) Str {
     return str.concat("b", str.fromI64(e.next_block));
 }
 
-pub fn cur_block(mut e: Emitter) [Str] {
-    const b: Blk = e.blocks[e.current_block];
-    return b.lines;
-}
-
 // Indented line (inside a function body / block).
 pub fn emit_line(mut e: Emitter, s: Str) {
     vector.push(e.output, str.concat("  ", s));
@@ -186,13 +201,6 @@ pub fn emit_line(mut e: Emitter, s: Str) {
 // Top-level line (function headers, closing braces, wrapper lines).
 pub fn emit_top(mut e: Emitter, s: Str) {
     vector.push(e.output, s);
-}
-
-pub fn new_block(mut e: Emitter, label: Str) {
-    var lines: [Str] = vector.new();
-    vector.push(e.blocks, %Blk{label: label, lines: lines});
-    e.current_block = vector.len(e.blocks) - 1;
-    e.terminated = false;
 }
 
 pub fn terminate(mut e: Emitter, s: Str) {
@@ -323,7 +331,7 @@ pub fn e_fn(mut e: Emitter, f: Fn) {
     e_ret_set(e, f.ret);
     e_file_set(e, f.file);
     e.terminated = false;
-    new_block(e, "");
+    e.open_block("");
     e_fn_core(e, f);
 }
 
