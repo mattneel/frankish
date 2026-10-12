@@ -136,6 +136,9 @@ pub fn is_kw(s: Str) bool {
     if s == "module" {
         return true;
     }
+    if s == "alias" {
+        return true;
+    }
     if s == "const" {
         return true;
     }

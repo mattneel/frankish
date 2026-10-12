@@ -1573,6 +1573,12 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    LEXICAL ALIASES (D-130): `alias A.B.C;` expands at parse time in
+    types/makes/dotted bases; dotted modules (`Compiler.Emitter`) are
+    now usable end-to-end; collisions diagnosed at the declaration.
+    Corpus 30/30 incl. module_alias; suite 69. REMAINING from D-120:
+    selective/per-item imports + module-to-file resolution (fenced),
+    wider indexed coverage, protocols on demand.
     EMITTER-API MIGRATION (D-129): the Emitter struct is the primary
     struct of `pub module Emitter`; the blocks API = `current(self)` +
     `open_block(mut self, label)`; the caller uses `e.open_block("")`.

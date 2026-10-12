@@ -814,12 +814,11 @@ fn calq0_reports_program_errors() {
     assert_eq!(e1.output, "error 1:35 expected `;`\n");
     assert_eq!(e1.values[0].as_signed().expect("i64"), 1);
 
-    // top-level junk names the offender
+    // top-level junk is refused at its position, naming the offender
     let e2 = run_artifact_with_input_cached(artifact, &[unit("e2.calq", None, "x")]).expect("runs");
-    assert_eq!(
-        e2.output,
-        "error 1:1 top-level items are fn declarations and struct/union type declarations (got `x`)\n"
-    );
+    assert!(e2.output.starts_with("error 1:1 "), "{}", e2.output);
+    assert!(e2.output.contains("top-level items are"), "{}", e2.output);
+    assert!(e2.output.contains("`x`"), "{}", e2.output);
     assert_eq!(e2.values[0].as_signed().expect("i64"), 1);
 }
 
@@ -2594,6 +2593,20 @@ fn calq0_modules_and_receiver_calls() {
         err.contains("no associated function `missing` for `B`"),
         "{err}"
     );
+
+    // D-130: a lexical alias to a dotted module; the collision check.
+    let alias_case = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../goldens/calque/module_alias/case.calq"
+    );
+    let asrc = std::fs::read_to_string(alias_case).expect("the alias case exists");
+    let aart = calque::compile_source("module_alias.calq", &asrc).expect("calq0 compiles it");
+    let aout = run_artifact(&aart).expect("it runs");
+    assert_eq!(aout.output, "3\n3\n");
+
+    let collide = "alias A.B;\nalias C.B;\npub fn main() i64 { 0 }\n";
+    let cerr = calque::compile_source("aliasc.calq", collide).expect_err("alias collision");
+    assert!(cerr.contains("alias collision"), "{cerr}");
 }
 
 #[test]

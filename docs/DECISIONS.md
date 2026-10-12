@@ -3755,3 +3755,20 @@ veto-ledger pattern and most deserve their review.
   `Emitter.current(e)`), a stateful update (`e.open_block(...)`), and
   a migrated caller shown above.
 
+- D-130 [calque/aliases] LEXICAL ALIASES (D-120 §2's module
+  requirement): `alias A.B.C;` records the last component as a
+  per-unit lexical alias for the full dotted path; expansion happens
+  at PARSE time in type atoms, `%Alias{...}` constructions, and
+  dotted-call bases, so the AST carries full paths and no resolver
+  state changes. This makes dotted modules fully usable end-to-end
+  (`pub module Compiler.Emitter` + `alias Compiler.Emitter;` +
+  `%Emitter{}` + `e.bump()` + `Emitter.get(e)`). Colliding names are
+  DIAGNOSED at the declaration (never resolved by order, per the
+  steering). One diagnostics assertion relaxed from exact wording to
+  behavior (position + offender), per the test-quality rule.
+  Gates: goldens/calque/module_alias (hand-derived `3|3`), the
+  collision negative, corpus 30 cases 0 red, grid GREEN, suite 69.
+  FENCED: selective/per-item imports and module-to-file resolution
+  (D-116's revisit list), alias re-export, aliased paths in
+  diagnostics (the AST normalizes to full paths).
+

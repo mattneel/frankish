@@ -77,6 +77,14 @@ pub const Bin = struct {
     col: i64,
 };
 
+pub const Alias = struct {
+    // The short name and the full dotted path it stands for (D-130):
+    // `alias Compiler.Emitter;` gives { name: "Emitter", path:
+    // "Compiler.Emitter" }.
+    name: Str,
+    path: Str,
+};
+
 pub const P = struct {
     toks: [Tok],
     pos: i64 = 0,
@@ -84,7 +92,64 @@ pub const P = struct {
     // The enclosing `module`'s (possibly dotted) name, "" at top level
     // (D-128): `Self` and the primary struct resolve against it.
     cur_mod: Str = "",
+    // Lexical aliases declared so far in this unit (D-130).
+    aliases: [Alias] = [],
 };
+
+// The alias expansion (D-130): a name that a visible `alias` declared
+// expands to its full path; anything else is itself.
+pub fn alias_expand(p: P, nm: Str) Str {
+    const n: i64 = vector.len(p.aliases);
+    var i: i64 = 0;
+    while i < n {
+        const al: Alias = vector.get(p.aliases, i);
+        if al.name == nm {
+            return al.path;
+        }
+        i = i + 1;
+    }
+    return nm;
+}
+
+// `alias A.B.C;` (D-130): records the last component as the short
+// name. Colliding names are diagnosed, never resolved by order.
+pub fn p_alias(mut p: P) {
+    const kw: Tok = p_next(p);
+    const n0: Tok = p_peek(p);
+    if is_name_tok(n0) == false {
+        p_fail(p, n0.line, n0.col, "expected a path after `alias`");
+        return;
+    }
+    const _n0: Tok = p_next(p);
+    var path: Str = n0.text;
+    var short: Str = n0.text;
+    while at_punct(p, ".") {
+        const _d0: Tok = p_next(p);
+        const n1: Tok = p_peek(p);
+        if is_name_tok(n1) == false {
+            p_fail(p, n1.line, n1.col, "expected a name after `.`");
+            return;
+        }
+        const _n1: Tok = p_next(p);
+        path = str.concat(path, str.concat(".", n1.text));
+        short = n1.text;
+    }
+    const _semi: bool = expect_semi(p);
+    const n: i64 = vector.len(p.aliases);
+    var i: i64 = 0;
+    while i < n {
+        const al: Alias = vector.get(p.aliases, i);
+        if al.name == short {
+            if al.path != path {
+                p_fail(p, n0.line, n0.col, str.concat("alias collision: `", str.concat(short, str.concat("` is already aliased to `", str.concat(al.path, "`")))));
+                return;
+            }
+            return;
+        }
+        i = i + 1;
+    }
+    vector.push(p.aliases, %Alias{name: short, path: path});
+}
 
 pub fn p_new(toks: [Tok]) P {
     return %P{toks: toks};
@@ -559,7 +624,9 @@ pub fn do_dot(mut p: P, e: Expr) Expr {
         return bad(p, m.line, m.col, "expected an identifier or a tuple index after `.'");
     }
     const _m: Tok = p_next(p);
-    return Expr.Ref(%Ref{name: m.text, mod: r.name});
+    // An aliased base expands to its full path (D-130): `Emitter.f`
+    // with `alias Compiler.Emitter;` is `Compiler.Emitter.f`.
+    return Expr.Ref(%Ref{name: m.text, mod: alias_expand(p, r.name)});
 }
 
 pub fn parse_primary(mut p: P) Expr {
@@ -1262,7 +1329,7 @@ pub fn p_type_atom(mut p: P) Ty {
             }
             p_fail(p, t.line, t.col, "`Self` needs an enclosing module");
         }
-        return Ty.Named(t.text);
+        return Ty.Named(alias_expand(p, t.text));
     }
     if at_punct(p, "(") {
         const a: Tok = p_next(p);
@@ -1477,13 +1544,14 @@ pub fn p_make(mut p: P) Expr {
         return bad(p, name.line, name.col, "expected a type name after `%`");
     }
     const _n: Tok = p_next(p);
+    const make_ty: Str = alias_expand(p, name.text);
     if expect_punct(p, "{") == false {
         return bad_here(p);
     }
     if at_punct(p, "}") {
         const _c: Tok = p_next(p);
         var no_fields: [MakeField] = vector.new();
-        return Expr.Make(%MakeE{ty: name.text, fields: no_fields, has_base: false, base: poison(), line: pct.line, col: pct.col});
+        return Expr.Make(%MakeE{ty: make_ty, fields: no_fields, has_base: false, base: poison(), line: pct.line, col: pct.col});
     }
     var has_base: bool = false;
     var base: Expr = poison();
@@ -1545,7 +1613,7 @@ pub fn p_make(mut p: P) Expr {
     while p_ok(p) {
         if at_punct(p, "}") {
             const _c: Tok = p_next(p);
-            return Expr.Make(%MakeE{ty: name.text, fields: fields, has_base: has_base, base: base, line: pct.line, col: pct.col});
+            return Expr.Make(%MakeE{ty: make_ty, fields: fields, has_base: has_base, base: base, line: pct.line, col: pct.col});
         }
         const f: Tok = p_peek(p);
         if is_name_tok(f) == false {
@@ -2310,6 +2378,9 @@ pub fn p_ast(mut p: P) Ast {
             if t.text == "module" {
                 p_module(p, fns, types);
             } else {
+            if t.text == "alias" {
+                p_alias(p);
+            } else {
             if t.text == "test" {
                 n_tests = n_tests + 1;
                 vector.push(fns, p_test(p, n_tests));
@@ -2351,8 +2422,9 @@ pub fn p_ast(mut p: P) Ast {
             }
             }
             }
+            }
         } else {
-            p_fail(p, t.line, t.col, str.concat("top-level items are fn declarations and struct/union type declarations (got `", str.concat(t.text, "`)")));
+            p_fail(p, t.line, t.col, str.concat("top-level items are fn declarations, struct/union type declarations, modules, and aliases (got `", str.concat(t.text, "`)")));
             return %Ast{fns: fns, types: types, imports: imports};
         }
     }
