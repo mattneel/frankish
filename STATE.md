@@ -1573,6 +1573,14 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    INDEXED ACCESS SLICE 1 LANDED (D-122): vector `v[i]` reads
+    (checked intrinsic), persistent `v[i] = e` / `v[i] += e` (copy +
+    set + rebind; the §5 acceptance example is the corpus gate
+    goldens/calque/idx_persist), the union `==`/`!=` emitter fix, and
+    the seed's union-compare fence (D-121). Chain re-verified:
+    artifact1 == artifact2 (b9912fc1). NEXT per D-120's order: wider
+    indexed coverage (nested places, slices, `.at()`) or the emitter
+    access migrations (item 2).
     MODULES-ACCESS AMENDMENT ADOPTED (D-120): the binding delivery
     order is (1) bracket indexing - checked reads + PERSISTENT indexed
     writes + ownership/alias tests (`var changed = original; changed[1]

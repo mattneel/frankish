@@ -305,7 +305,13 @@ pub fn run_artifact_with_input_cached(
     units: &[UnitFile],
 ) -> Result<RunOutcome, String> {
     check_artifact_marker(artifact)?;
-    let key = cache_key(artifact, "run-in", units);
+    // The composed module = intrinsics + artifact + injection, so the
+    // intrinsics source belongs in the key.
+    let key = cache_key(
+        &format!("{artifact}\n---intrinsics---\n{}", intrinsics_source()),
+        "run-in",
+        units,
+    );
     let path = workspace_target().join(format!("run-{key}.out"));
     let decode = |raw: &str| -> Result<RunOutcome, String> {
         let (code_line, output) = raw

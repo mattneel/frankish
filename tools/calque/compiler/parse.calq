@@ -958,6 +958,8 @@ pub const Stmt = union(enum) {
     TDestr: TDestrS,
     Expr: ExprS,
     FAssign: FAssS,
+    // `v[i] = e;` / `v[i] += e;` (D-120): the persistent indexed write.
+    IdxAssign: IdxAssS,
 };
 
 pub const IdxE = struct {
@@ -992,6 +994,16 @@ pub const LamE = struct {
 pub const FAssS = struct {
     name: Str,
     field: Str,
+    expr: Expr,
+    line: i64,
+    col: i64,
+};
+
+pub const IdxAssS = struct {
+    name: Str,
+    idx: Expr,
+    // "" = plain, "+" = compound add (D-120's `changed[i] += 1`).
+    op: Str,
     expr: Expr,
     line: i64,
     col: i64,
@@ -1806,6 +1818,41 @@ pub fn p_stmt_into(mut p: P, stmts: [Stmt], t: Tok) StmtOut {
         }
     }
     const e2: Expr = parse_expr(p, 1);
+    // `v[i] = e;` / `v[i] += e;` (D-120 slice 1): an index expression
+    // in statement position with an assignment follows it.
+    const is_idx: bool = match e2 {
+        Expr.IndexE(ix0) => true,
+        _ => false,
+    };
+    if is_idx {
+        const eqp: Tok = p_peek(p);
+        var op0: Str = "";
+        var is_ass: bool = false;
+        if is_punct_tok(eqp) {
+            if eqp.text == "=" {
+                is_ass = true;
+            }
+            if eqp.text == "+=" {
+                is_ass = true;
+                op0 = "+";
+            }
+        }
+        if is_ass {
+            const _e0: Tok = p_next(p);
+            const ix2: IdxE = match e2 {
+                Expr.IndexE(ixv) => ixv,
+                _ => %IdxE{base: %Ref{name: "", mod: ""}, idx: Expr.Int("0"), line: t.line, col: t.col},
+            };
+            const ixb: Ref = ix2.base;
+            if str.len(ixb.mod) != 0 {
+                p_fail(p, ix2.line, ix2.col, "indexed assignment needs a named base");
+            }
+            const rhs: Expr = parse_expr(p, 1);
+            const _s0: bool = expect_semi(p);
+            vector.push(stmts, Stmt.IdxAssign(%IdxAssS{name: ixb.name, idx: ix2.idx, op: op0, expr: rhs, line: ix2.line, col: ix2.col}));
+            return %StmtOut{added: true, tail: poison()};
+        }
+    }
     if at_punct(p, ";") {
         const _c: Tok = p_next(p);
         vector.push(stmts, Stmt.Expr(%ExprS{expr: e2}));
@@ -2393,6 +2440,7 @@ pub fn d_stmt(s: Stmt) Str {
         },
         Stmt.Expr(e) => str.concat("(expr ", str.concat(dump(e.expr), ")")),
         Stmt.FAssign(f) => str.concat("(fassign ", str.concat(f.name, str.concat(".", str.concat(f.field, str.concat(" ", str.concat(dump(f.expr), ")")))))),
+        Stmt.IdxAssign(f2) => str.concat("(idxassign ", str.concat(f2.name, str.concat("[", str.concat(dump(f2.idx), str.concat("] ", str.concat(f2.op, str.concat(" ", str.concat(dump(f2.expr), ")")))))))),
     };
 }
 

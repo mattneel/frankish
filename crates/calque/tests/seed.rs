@@ -2564,6 +2564,21 @@ fn seed_imports() {
 }
 
 #[test]
+fn calq0_indexed_writes_are_persistent() {
+    // D-120 slice 1, the acceptance example: a write through one
+    // binding leaves another binding's vector intact. calq0-only (the
+    // frozen seed predates the surface).
+    let case_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../goldens/calque/idx_persist/case.calq"
+    );
+    let src = std::fs::read_to_string(case_path).expect("the acceptance case exists");
+    let artifact = calque::compile_source("idx_persist.calq", &src).expect("calq0 compiles it");
+    let outcome = run_artifact(&artifact).expect("it runs");
+    assert_eq!(outcome.output, "20|99|35|30\n");
+}
+
+#[test]
 fn calq0_matches_the_seed_on_visibility() {
     // D-118: bare own-unit calls in a namespaced unit resolve; a
     // dotted member needs an import and pub, with the seed's texts.
@@ -2785,4 +2800,3 @@ fn seed_translates_the_compiler_set() {
         Err(e) => println!("SET ERR: {e}"),
     }
 }
-

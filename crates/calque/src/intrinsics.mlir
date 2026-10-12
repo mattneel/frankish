@@ -68,6 +68,84 @@ func.func @__calque_vector_i64_set(%v: !frk_mem.box<!frk_adt.product<[!frk_mem.a
   return
 }
 
+func.func @__calque_vector_i64_copy(%v: !frk_mem.box<!frk_adt.product<[!frk_mem.arr<i64>, i64, i64]>>) -> !frk_mem.box<!frk_adt.product<[!frk_mem.arr<i64>, i64, i64]>> {
+  // D-120: the persistent-write copy. A fresh array of the same length
+  // (tight), elementwise copy, fresh box - the old box is untouched.
+  %arr = "frk_mem.field_get"(%v) {field = 0 : i64} : (!frk_mem.box<!frk_adt.product<[!frk_mem.arr<i64>, i64, i64]>>) -> !frk_mem.arr<i64>
+  %n = "frk_mem.field_get"(%v) {field = 1 : i64} : (!frk_mem.box<!frk_adt.product<[!frk_mem.arr<i64>, i64, i64]>>) -> i64
+  %arr2 = "frk_mem.array_new"(%n) : (i64) -> !frk_mem.arr<i64>
+  %z = arith.constant 0 : i64
+  %o = arith.constant 1 : i64
+  cf.br ^copy_loop(%z : i64)
+^copy_loop(%i: i64):
+  %more = arith.cmpi slt, %i, %n : i64
+  cf.cond_br %more, ^copy_body, ^copy_done
+^copy_body:
+  %x = "frk_mem.array_get"(%arr, %i) : (!frk_mem.arr<i64>, i64) -> i64
+  "frk_mem.array_set"(%arr2, %i, %x) : (!frk_mem.arr<i64>, i64, i64) -> ()
+  %i2 = arith.addi %i, %o : i64
+  cf.br ^copy_loop(%i2 : i64)
+^copy_done:
+  %e = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
+  %p1 = "frk_adt.product_snoc"(%e, %arr2) : (!frk_adt.product<[]>, !frk_mem.arr<i64>) -> !frk_adt.product<[!frk_mem.arr<i64>]>
+  %p2 = "frk_adt.product_snoc"(%p1, %n) : (!frk_adt.product<[!frk_mem.arr<i64>]>, i64) -> !frk_adt.product<[!frk_mem.arr<i64>, i64]>
+  %p3 = "frk_adt.product_snoc"(%p2, %n) : (!frk_adt.product<[!frk_mem.arr<i64>, i64]>, i64) -> !frk_adt.product<[!frk_mem.arr<i64>, i64, i64]>
+  %b = "frk_mem.box_new"(%p3) : (!frk_adt.product<[!frk_mem.arr<i64>, i64, i64]>) -> !frk_mem.box<!frk_adt.product<[!frk_mem.arr<i64>, i64, i64]>>
+  return %b : !frk_mem.box<!frk_adt.product<[!frk_mem.arr<i64>, i64, i64]>>
+}
+
+func.func @__calque_vector_bstr_copy(%v: !frk_mem.box<!frk_adt.product<[!frk_mem.arr<!frk_bstr.str>, i64, i64]>>) -> !frk_mem.box<!frk_adt.product<[!frk_mem.arr<!frk_bstr.str>, i64, i64]>> {
+  // D-120: the persistent-write copy. A fresh array of the same length
+  // (tight), elementwise copy, fresh box - the old box is untouched.
+  %arr = "frk_mem.field_get"(%v) {field = 0 : i64} : (!frk_mem.box<!frk_adt.product<[!frk_mem.arr<!frk_bstr.str>, i64, i64]>>) -> !frk_mem.arr<!frk_bstr.str>
+  %n = "frk_mem.field_get"(%v) {field = 1 : i64} : (!frk_mem.box<!frk_adt.product<[!frk_mem.arr<!frk_bstr.str>, i64, i64]>>) -> i64
+  %arr2 = "frk_mem.array_new"(%n) : (i64) -> !frk_mem.arr<!frk_bstr.str>
+  %z = arith.constant 0 : i64
+  %o = arith.constant 1 : i64
+  cf.br ^copy_loop(%z : i64)
+^copy_loop(%i: i64):
+  %more = arith.cmpi slt, %i, %n : i64
+  cf.cond_br %more, ^copy_body, ^copy_done
+^copy_body:
+  %x = "frk_mem.array_get"(%arr, %i) : (!frk_mem.arr<!frk_bstr.str>, i64) -> !frk_bstr.str
+  "frk_mem.array_set"(%arr2, %i, %x) : (!frk_mem.arr<!frk_bstr.str>, i64, !frk_bstr.str) -> ()
+  %i2 = arith.addi %i, %o : i64
+  cf.br ^copy_loop(%i2 : i64)
+^copy_done:
+  %e = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
+  %p1 = "frk_adt.product_snoc"(%e, %arr2) : (!frk_adt.product<[]>, !frk_mem.arr<!frk_bstr.str>) -> !frk_adt.product<[!frk_mem.arr<!frk_bstr.str>]>
+  %p2 = "frk_adt.product_snoc"(%p1, %n) : (!frk_adt.product<[!frk_mem.arr<!frk_bstr.str>]>, i64) -> !frk_adt.product<[!frk_mem.arr<!frk_bstr.str>, i64]>
+  %p3 = "frk_adt.product_snoc"(%p2, %n) : (!frk_adt.product<[!frk_mem.arr<!frk_bstr.str>, i64]>, i64) -> !frk_adt.product<[!frk_mem.arr<!frk_bstr.str>, i64, i64]>
+  %b = "frk_mem.box_new"(%p3) : (!frk_adt.product<[!frk_mem.arr<!frk_bstr.str>, i64, i64]>) -> !frk_mem.box<!frk_adt.product<[!frk_mem.arr<!frk_bstr.str>, i64, i64]>>
+  return %b : !frk_mem.box<!frk_adt.product<[!frk_mem.arr<!frk_bstr.str>, i64, i64]>>
+}
+
+func.func @__calque_vector_box_copy(%v: !frk_mem.box<!frk_adt.product<[!frk_mem.arr<!frk_mem.recref>, i64, i64]>>) -> !frk_mem.box<!frk_adt.product<[!frk_mem.arr<!frk_mem.recref>, i64, i64]>> {
+  // D-120: the persistent-write copy. A fresh array of the same length
+  // (tight), elementwise copy, fresh box - the old box is untouched.
+  %arr = "frk_mem.field_get"(%v) {field = 0 : i64} : (!frk_mem.box<!frk_adt.product<[!frk_mem.arr<!frk_mem.recref>, i64, i64]>>) -> !frk_mem.arr<!frk_mem.recref>
+  %n = "frk_mem.field_get"(%v) {field = 1 : i64} : (!frk_mem.box<!frk_adt.product<[!frk_mem.arr<!frk_mem.recref>, i64, i64]>>) -> i64
+  %arr2 = "frk_mem.array_new"(%n) : (i64) -> !frk_mem.arr<!frk_mem.recref>
+  %z = arith.constant 0 : i64
+  %o = arith.constant 1 : i64
+  cf.br ^copy_loop(%z : i64)
+^copy_loop(%i: i64):
+  %more = arith.cmpi slt, %i, %n : i64
+  cf.cond_br %more, ^copy_body, ^copy_done
+^copy_body:
+  %x = "frk_mem.array_get"(%arr, %i) : (!frk_mem.arr<!frk_mem.recref>, i64) -> !frk_mem.recref
+  "frk_mem.array_set"(%arr2, %i, %x) : (!frk_mem.arr<!frk_mem.recref>, i64, !frk_mem.recref) -> ()
+  %i2 = arith.addi %i, %o : i64
+  cf.br ^copy_loop(%i2 : i64)
+^copy_done:
+  %e = "frk_adt.product_new"() : () -> !frk_adt.product<[]>
+  %p1 = "frk_adt.product_snoc"(%e, %arr2) : (!frk_adt.product<[]>, !frk_mem.arr<!frk_mem.recref>) -> !frk_adt.product<[!frk_mem.arr<!frk_mem.recref>]>
+  %p2 = "frk_adt.product_snoc"(%p1, %n) : (!frk_adt.product<[!frk_mem.arr<!frk_mem.recref>]>, i64) -> !frk_adt.product<[!frk_mem.arr<!frk_mem.recref>, i64]>
+  %p3 = "frk_adt.product_snoc"(%p2, %n) : (!frk_adt.product<[!frk_mem.arr<!frk_mem.recref>, i64]>, i64) -> !frk_adt.product<[!frk_mem.arr<!frk_mem.recref>, i64, i64]>
+  %b = "frk_mem.box_new"(%p3) : (!frk_adt.product<[!frk_mem.arr<!frk_mem.recref>, i64, i64]>) -> !frk_mem.box<!frk_adt.product<[!frk_mem.arr<!frk_mem.recref>, i64, i64]>>
+  return %b : !frk_mem.box<!frk_adt.product<[!frk_mem.arr<!frk_mem.recref>, i64, i64]>>
+}
+
 func.func @__calque_vector_i64_push(%v: !frk_mem.box<!frk_adt.product<[!frk_mem.arr<i64>, i64, i64]>>, %x: i64) {
   %n = "frk_mem.field_get"(%v) {field = 1 : i64} : (!frk_mem.box<!frk_adt.product<[!frk_mem.arr<i64>, i64, i64]>>) -> i64
   %cap = "frk_mem.field_get"(%v) {field = 2 : i64} : (!frk_mem.box<!frk_adt.product<[!frk_mem.arr<i64>, i64, i64]>>) -> i64

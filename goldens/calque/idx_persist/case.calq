@@ -1,0 +1,22 @@
+// D-120 section 5's required acceptance example: indexed writes are
+// PERSISTENT. `changed[1] = 99` allocates a fresh vector and rebinds
+// `changed`; `original` keeps its own. Hand-derived output:
+//   original[1] = 20 | changed[1] = 99 | changed[2] = 30+5 = 35 |
+//   original[2] = 30
+pub fn main() i64 {
+    const original: [i64] = [10, 20, 30];
+    var changed = original;
+
+    changed[1] = 99;
+    changed[2] += 5;
+
+    io.print(str.fromI64(original[1]));
+    io.print("|");
+    io.print(str.fromI64(changed[1]));
+    io.print("|");
+    io.print(str.fromI64(changed[2]));
+    io.print("|");
+    io.print(str.fromI64(original[2]));
+    io.print("\n");
+    0
+}

@@ -829,8 +829,54 @@ pub fn emit_index_e(mut e: Emitter, ix: IdxE) Str {
         return e_fail_at(e, ix.line, ix.col, str.concat("unknown name `", str.concat(br.name, "`")));
     }
     const bty2: Ty = b.ty;
+    // D-120: dynamic-vector reads lower to the same checked access the
+    // `vector.get` intrinsic carries (bounds-check + trap), so the new
+    // syntax and the historical function agree by construction.
+    const is_vec_base: bool = match bty2 {
+        Ty.Vec(v0) => true,
+        _ => false,
+    };
+    if is_vec_base {
+        const inner: Ty = match bty2 {
+            Ty.Vec(v1) => v1,
+            _ => Ty.UnitV,
+        };
+        const a0: Ast = e_ast(e);
+        const prefix: Str = vec_prefix(inner);
+        const vid: Str = read_binding(e, b);
+        const iid: Str = emit_expr(e, ix.idx);
+        const it: Ty = vget(e, iid);
+        // (A frozen-seed fence: it mis-lowers ==/!= on payload unions,
+        // so calq0's own sources test union values with matches.)
+        const it_i64: bool = match it {
+            Ty.I64 => true,
+            _ => false,
+        };
+        if it_i64 == false {
+            return e_fail_at(e, ix.line, ix.col, "a vector index must be i64");
+        }
+        const res: Str = fresh(e);
+        var l: Str = " = func.call @";
+        l = str.concat(l, prefix);
+        l = str.concat(l, "_get(");
+        l = str.concat(l, vid);
+        l = str.concat(l, ", ");
+        l = str.concat(l, iid);
+        l = str.concat(l, ") : (");
+        l = str.concat(l, vec_box(a0, inner));
+        l = str.concat(l, ", i64) -> ");
+        l = str.concat(l, vec_slot_ir(inner));
+        emit_line(e, str.concat(res, l));
+        if is_named_t(inner) {
+            const value: Str = unwrap_load(e, res, inner, ix.line, ix.col);
+            vset(e, value, inner);
+            return value;
+        }
+        vset(e, res, inner);
+        return res;
+    }
     if is_arr_t(bty2) == false {
-        return e_fail_at(e, ix.line, ix.col, "indexing needs a fixed array ([N]T) base");
+        return e_fail_at(e, ix.line, ix.col, "indexing needs a vector ([T]) or fixed array ([N]T) base");
     }
     const a2: ArrTT = arr_of(bty2);
     const ety: Ty = a2.ty;
@@ -1876,11 +1922,59 @@ pub fn emit_cmp(mut e: Emitter, op: Str, a: Str, b: Str, line: i64, col: i64) St
         if ty_is_str(t) {
             return e_fail_at(e, line, col, "string ordering is outside the verified subset (use == / !=)");
         }
+        // i64 ordering reaches the cmpi below.
+        const r: Str = fresh(e);
+        emit_line(e, str.concat(r, str.concat(" = arith.cmpi ", str.concat(cmp_pred(op), str.concat(", ", str.concat(a, str.concat(", ", str.concat(b, " : i64"))))))));
+        vset(e, r, Ty.BoolV);
+        return r;
     }
-    const r: Str = fresh(e);
-    emit_line(e, str.concat(r, str.concat(" = arith.cmpi ", str.concat(cmp_pred(op), str.concat(", ", str.concat(a, str.concat(", ", str.concat(b, " : i64"))))))));
-    vset(e, r, Ty.BoolV);
-    return r;
+    // D-120 note: this used to fall through to a raw i64 cmpi for ANY
+    // non-comparable operand - silently wrong IR for payload unions and
+    // aggregates. `==`/`!=` on a payload union now compare TAGS (the
+    // semantics patterns rely on); anything else is a loud error.
+    var eq_final: bool = false;
+    if op == "==" {
+        eq_final = true;
+    }
+    if op == "!=" {
+        eq_final = true;
+    }
+    const t_named: bool = match t {
+        Ty.Named(n3) => true,
+        _ => false,
+    };
+    if t_named {
+        const a0: Ast = e_ast(e);
+        const n0: Str = named_of(t);
+        const td0: TypeDecl = find_td(a0, n0);
+        if td0.is_union {
+            if eq_final {
+                const ta0: Ty = vget(e, a);
+                const tb0: Ty = vget(e, b);
+                const g1: Str = fresh(e);
+                var g1l: Str = " = \"frk_adt.tag_of\"(";
+                g1l = str.concat(g1l, a);
+                g1l = str.concat(g1l, ") : (");
+                g1l = str.concat(g1l, value_ir_t(a0, ta0));
+                g1l = str.concat(g1l, ") -> i64");
+                emit_line(e, str.concat(g1, g1l));
+                const g2: Str = fresh(e);
+                var g2l: Str = " = \"frk_adt.tag_of\"(";
+                g2l = str.concat(g2l, b);
+                g2l = str.concat(g2l, ") : (");
+                g2l = str.concat(g2l, value_ir_t(a0, tb0));
+                g2l = str.concat(g2l, ") -> i64");
+                emit_line(e, str.concat(g2, g2l));
+                const rr2: Str = fresh(e);
+                emit_line(e, str.concat(rr2, str.concat(" = arith.cmpi ", str.concat(cmp_pred(op), str.concat(", ", str.concat(g1, str.concat(", ", str.concat(g2, " : i64"))))))));
+                vset(e, rr2, Ty.BoolV);
+                return rr2;
+            }
+            return e_fail_at(e, line, col, "ordering compares i64 operands only");
+        }
+        return e_fail_at(e, line, col, str.concat("equality for `", str.concat(n0, "` is outside the verified subset (compare fields or match)")));
+    }
+    return e_fail_at(e, line, col, "ordering and equality compare i64, bool, str, or payload-union operands");
 }
 
 // ---------------------------------------------------------------- reads
@@ -3422,6 +3516,7 @@ pub fn emit_stmt(mut e: Emitter, s: Stmt) {
         Stmt.Const(c) => emit_const(e, c),
         Stmt.Var(v) => emit_var(e, v),
         Stmt.FAssign(f) => emit_fassign(e, f),
+        Stmt.IdxAssign(ia) => emit_idxassign(e, ia),
         Stmt.Assign(a) => emit_assign(e, a),
         Stmt.Ret(r) => emit_ret(e, r),
         Stmt.While(w) => emit_while(e, w),
@@ -4840,6 +4935,119 @@ pub fn emit_list_literal(mut e: Emitter, ty: Ty, items: [Expr], line: i64, col: 
 // Field assignment (D-112): legal only through a mutable binding (a
 // var local or a mut parameter); the write is frk_mem.field_set on the
 // record's box.
+// D-120 slice 1: the persistent indexed write. `v[i] = x` allocates a
+// fresh vector (copy + set) and rebinds the binding; a binding that
+// shares the old value keeps it, which is the amendment's acceptance
+// example (`var changed = original; changed[1] = 99` leaves `original`
+// intact). Compound `+=` reads the old element ONCE through the
+// checked get, then adds with the checked-arithmetic sequence.
+pub fn emit_idxassign(mut e: Emitter, ia: IdxAssS) {
+    const b: Binding = lookup(e, ia.name);
+    if b.name == "" {
+        const _e0: Str = e_fail_at(e, ia.line, ia.col, str.concat("unknown name `", str.concat(ia.name, "` in indexed assignment")));
+        return;
+    }
+    var assignable: bool = b.is_box;
+    if b.is_cap {
+        if b.cap_kind == "box" {
+            assignable = true;
+        }
+    }
+    if assignable == false {
+        const _e1: Str = e_fail_at(e, ia.line, ia.col, str.concat("cannot write through immutable `", str.concat(ia.name, "` (use a var binding or a mut parameter)")));
+        return;
+    }
+    const bty2: Ty = b.ty;
+    const is_vec_base: bool = match bty2 {
+        Ty.Vec(v0) => true,
+        _ => false,
+    };
+    if is_vec_base == false {
+        const _e2: Str = e_fail_at(e, ia.line, ia.col, "indexed assignment needs a vector binding (D-120 slice 1; [N]T writes arrive with the place migration)");
+        return;
+    }
+    const inner: Ty = match bty2 {
+        Ty.Vec(v1) => v1,
+        _ => Ty.UnitV,
+    };
+    const a0: Ast = e_ast(e);
+    const prefix: Str = vec_prefix(inner);
+    const box: Str = vec_box(a0, inner);
+    const slot: Str = vec_slot_ir(inner);
+    const vid: Str = read_binding(e, b);
+    const iid: Str = emit_expr(e, ia.idx);
+    const it: Ty = vget(e, iid);
+    const it_i64: bool = match it {
+        Ty.I64 => true,
+        _ => false,
+    };
+    if it_i64 == false {
+        const _e3: Str = e_fail_at(e, ia.line, ia.col, "a vector index must be i64");
+        return;
+    }
+    var newv: Str = "";
+    if str.len(ia.op) > 0 {
+        // compound: the old element once, through the checked get.
+        const inner_i64: bool = match inner {
+            Ty.I64 => true,
+            _ => false,
+        };
+        if inner_i64 == false {
+            const _e4: Str = e_fail_at(e, ia.line, ia.col, "compound indexed assignment is i64-only for now (D-120 slice 1)");
+            return;
+        }
+        const oldv: Str = fresh(e);
+        var g0: Str = " = func.call @";
+        g0 = str.concat(g0, prefix);
+        g0 = str.concat(g0, "_get(");
+        g0 = str.concat(g0, vid);
+        g0 = str.concat(g0, ", ");
+        g0 = str.concat(g0, iid);
+        g0 = str.concat(g0, ") : (");
+        g0 = str.concat(g0, box);
+        g0 = str.concat(g0, ", i64) -> ");
+        g0 = str.concat(g0, slot);
+        emit_line(e, str.concat(oldv, g0));
+        const rhs: Str = emit_expr_typed(e, ia.expr, inner, ia.line, ia.col);
+        const sumv: Str = emit_checked(e, ia.op, oldv, rhs, ia.line, ia.col);
+        newv = sumv;
+    } else {
+        const rhs2: Str = emit_expr_typed(e, ia.expr, inner, ia.line, ia.col);
+        newv = rhs2;
+    }
+    // the copy + set + rebind.
+    const v2: Str = fresh(e);
+    var c0: Str = " = func.call @";
+    c0 = str.concat(c0, prefix);
+    c0 = str.concat(c0, "_copy(");
+    c0 = str.concat(c0, vid);
+    c0 = str.concat(c0, ") : (");
+    c0 = str.concat(c0, box);
+    c0 = str.concat(c0, ") -> ");
+    c0 = str.concat(c0, box);
+    emit_line(e, str.concat(v2, c0));
+    var s0: Str = "func.call @";
+    s0 = str.concat(s0, prefix);
+    s0 = str.concat(s0, "_set(");
+    s0 = str.concat(s0, v2);
+    s0 = str.concat(s0, ", ");
+    s0 = str.concat(s0, iid);
+    s0 = str.concat(s0, ", ");
+    s0 = str.concat(s0, newv);
+    s0 = str.concat(s0, ") : (");
+    s0 = str.concat(s0, box);
+    s0 = str.concat(s0, ", i64, ");
+    s0 = str.concat(s0, slot);
+    s0 = str.concat(s0, ") -> ()");
+    emit_line(e, s0);
+    const bid: Str = binding_slot(e, b);
+    var bty: Str = b.box;
+    if b.is_cap {
+        bty = b.cap_box;
+    }
+    emit_line(e, str.concat("\"frk_mem.box_set\"(", str.concat(bid, str.concat(", ", str.concat(v2, str.concat(") : (", str.concat(bty, str.concat(", ", str.concat(box, ") -> ()")))))))));
+}
+
 pub fn emit_fassign(mut e: Emitter, f: FAssS) {
     const b: Binding = lookup(e, f.name);
     if b.name == "" {

@@ -3601,3 +3601,38 @@ veto-ledger pattern and most deserve their review.
   only when a real polymorphic consumer appears. D-116/D-118's import
   + visibility work stands (the resolver the module surface builds
   on). Not blocked on a trait/protocol solver.
+
+- D-121 [calque/dev-loop] THE ITERATION LOOP (user priority: 20+ minute
+  waits are untenable): (1) `seed_translate_cached` +
+  `run_artifact_with_input_cached` - JIT + disk caches for arbitrary
+  unit sets and artifact runs, in the canonical_compiler discipline;
+  (2) `jit_run_text_opt` - the harness dev path passes LLVM opt 0
+  (O2 codegen of compiler-scale modules costs minutes per stage;
+  semantics unchanged, pinned by the corpus and the interp-vs-jit
+  verify test); (3) the run-cache key includes the intrinsics source
+  (it is composed into every run). Measured: warm seed suite 90s ->
+  ~6s; `make calque-bootstrap` 20+ min -> 0.4s warm / ~80s cold-fill.
+  Calq0's own sources must never compare payload unions with ==/!=:
+  THE FROZEN SEED mis-lowers those to a raw i64 cmpi (no tag_of), so
+  such code compiles to wrong IR silently - use matches (the existing
+  source convention). calq0's own emit_cmp lowers union ==/!= to tag
+  compares correctly (and now errors loudly instead of emitting a raw
+  cmpi for non-comparable operands).
+
+- D-122 [calque/index] INDEXED ACCESS SLICE 1 (D-120's delivery order,
+  item 1): `v[i]` reads on dynamic vectors (same checked intrinsic as
+  `vector.get` - bounds check + trap, so the syntax and the historical
+  function agree by construction); `v[i] = e;` and `v[i] += e;` (the
+  `+=` is one lexer token) lower to a PERSISTENT update: copy the
+  vector (per-slot `__calque_vector_*_copy` intrinsics, cf-loop shape -
+  the interpreter has no index-typed scf.for), set the element, rebind
+  the binding. The §5 acceptance example is the corpus gate
+  (goldens/calque/idx_persist): `var changed = original;
+  changed[1] = 99` leaves `original` intact. Compound writes read the
+  old element ONCE through the checked get and add with the checked
+  sequence. The bootstrap chain re-verified: artifact1 == artifact2
+  (b9912fc1), snapshot != current (the sources outgrew c2v1 - the hop
+  it exists for). FENCED: `[N]T` writes, nested places, slices,
+  `.at()`/`len()` receiver spelling, negative/out-of-range diagnostic
+  positions at the bracket (E1-E3 of the amendment's list onward).
+

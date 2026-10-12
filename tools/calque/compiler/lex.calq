@@ -557,6 +557,12 @@ pub fn step(src: Str, n: i64, toks: [Tok], st: Scan) Scan {
         vector.push(toks, mk_tok(Kind.Punct, two, line, col));
         return move(st, i + 2, line, col + 2);
     }
+    // `+=` (D-120 slice 1: compound indexed writes) is ONE token, so
+    // expression parsing stops at it.
+    if two == "+=" {
+        vector.push(toks, mk_tok(Kind.Punct, two, line, col));
+        return move(st, i + 2, line, col + 2);
+    }
     if two == "!=" {
         vector.push(toks, mk_tok(Kind.Punct, two, line, col));
         return move(st, i + 2, line, col + 2);
