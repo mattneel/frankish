@@ -1,0 +1,20 @@
+// Collection receiver methods (D-137): push/len/get/set on a [T]
+// receiver - the documented associated functions through the same
+// lookup contract (the steering's items.len()/items.at() direction).
+// Hand-derived: len 3 | xs[0] 4 | xs[1] 9 (after set) | xs[2] 6.
+pub fn main() i64 {
+    var xs: [i64] = [];
+    xs.push(4);
+    xs.push(5);
+    xs.push(6);
+    xs.set(1, 9);
+    io.print(str.fromI64(xs.len()));
+    io.print("|");
+    io.print(str.fromI64(xs.get(0)));
+    io.print("|");
+    io.print(str.fromI64(xs.get(1)));
+    io.print("|");
+    io.print(str.fromI64(xs.get(2)));
+    io.print("\n");
+    0
+}

@@ -859,8 +859,10 @@ pub fn emit_comptime_e(mut e: Emitter, b: Block, line: i64, col: i64) Str {
         }
         i = i + 1;
     }
+    // The synthetic entry's return type is the block's value type.
+    const bt0: Ty = infer_expr_ty(e, b.tail, line, col);
     const eps0: [Param] = vector.new();
-    var entry: Fn = %Fn{name: "__comptime_entry", params: eps0, ret: Ty.I64, body: b, file: "", ns: "", test_name: "", is_pub: false};
+    var entry: Fn = %Fn{name: "__comptime_entry", params: eps0, ret: bt0, body: b, file: "", ns: "", test_name: "", is_pub: false};
     e_fn(sub, entry);
     if e_ok(sub) == false {
         const submsg: Str = fail_text(state_fail(e_state(sub)));
@@ -878,17 +880,28 @@ pub fn emit_comptime_e(mut e: Emitter, b: Block, line: i64, col: i64) Str {
         mod_text = str.concat(mod_text, vector.get(lines, j));
         j = j + 1;
     }
-    // The service call runs while calq0 compiles; the digits reify
-    // into the program's constant line.
+    // The service call runs while calq0 compiles. A STRING result
+    // reifies as a bstr literal; an i64 result's digits land in a
+    // constant line.
+    const bt: Ty = bt0;
+    const is_str: bool = match bt {
+        Ty.StrV => true,
+        _ => false,
+    };
+    if is_str {
+        const sv: Str = __calque_eval_s(mod_text, "__comptime_entry", 0);
+        const es: Str = e_esc(sv);
+        const res2: Str = fresh(e);
+        var l2: Str = " = \"frk_bstr.lit\"() {text = \"";
+        l2 = str.concat(l2, es);
+        l2 = str.concat(l2, "\"} : () -> !frk_bstr.str");
+        emit_line(e, str.concat(res2, l2));
+        vset(e, res2, Ty.StrV);
+        return res2;
+    }
     const v: i64 = __calque_eval_i64(mod_text, "__comptime_entry", 0);
     const dg: Str = str.fromI64(v);
-    const res: Str = fresh(e);
-    var cl: Str = " = arith.constant ";
-    cl = str.concat(cl, dg);
-    cl = str.concat(cl, " : i64");
-    emit_line(e, str.concat(res, cl));
-    vset(e, res, Ty.I64);
-    return res;
+    return e_int(e, dg);
 }
 
 pub fn emit_index_e(mut e: Emitter, ix: IdxE) Str {
@@ -2411,6 +2424,27 @@ pub fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
             vset(e, res9, Ty.I64);
             return res9;
         }
+        if r.name == "__calque_eval_s" {
+            // The string arm of the evaluation service (D-136): the
+            // same host call with a bstr result.
+            if vector.len(c.args) != 3 {
+                return e_fail_at(e, line, col, "__calque_eval_s takes (module, entry, arg)");
+            }
+            const bv0: Str = emit_expr(e, vector.get(c.args, 0));
+            const bv1: Str = emit_expr(e, vector.get(c.args, 1));
+            const bv2: Str = emit_expr(e, vector.get(c.args, 2));
+            const rs9: Str = fresh(e);
+            var ls9: Str = " = func.call @__calque_eval_s(";
+            ls9 = str.concat(ls9, bv0);
+            ls9 = str.concat(ls9, ", ");
+            ls9 = str.concat(ls9, bv1);
+            ls9 = str.concat(ls9, ", ");
+            ls9 = str.concat(ls9, bv2);
+            ls9 = str.concat(ls9, ") : (!frk_bstr.str, !frk_bstr.str, i64) -> !frk_bstr.str");
+            emit_line(e, str.concat(rs9, ls9));
+            vset(e, rs9, Ty.StrV);
+            return rs9;
+        }
         if r.name == "__calque_input_count" {
             if vector.len(c.args) != 0 {
                 return e_fail_at(e, line, col, "__calque_input_count takes no arguments");
@@ -3343,12 +3377,99 @@ pub fn resolve_generic(mut e: Emitter, f: Fn, args: [Expr], line: i64, col: i64)
 pub fn emit_receiver_call(mut e: Emitter, r: Ref, args: [Expr], line: i64, col: i64) Str {
     const rb: Binding = lookup(e, r.mod);
     const rty: Ty = tv_res(e, rb.ty);
+    // Collection receiver methods (D-137): `items.push(x)`,
+    // `items.len()`, `items.get(i)`, `items.set(i, x)` resolve to the
+    // documented associated functions of the built-in collection
+    // types - the same lookup contract, no import-order search. The
+    // mutating ones keep the historical in-place semantics of the
+    // `vector.*` builtins (SPEC s8); a persistent spelling arrives
+    // with the collection-value migration.
+    const is_vec_r: bool = match rty {
+        Ty.Vec(v9) => true,
+        _ => false,
+    };
+    if is_vec_r {
+        const vty9: Ty = rty;
+        const inner9: Ty = match rty {
+            Ty.Vec(v10) => v10,
+            _ => Ty.UnitV,
+        };
+        const a9: Ast = e_ast(e);
+        const prefix9: Str = vec_prefix(inner9);
+        const box9: Str = vec_box(a9, inner9);
+        const slot9: Str = vec_slot_ir(inner9);
+        const vid9: Str = read_binding(e, rb);
+        if r.name == "len" {
+            const res9b: Str = fresh(e);
+            var l9b: Str = " = func.call @";
+            l9b = str.concat(l9b, prefix9);
+            l9b = str.concat(l9b, "_len(");
+            l9b = str.concat(l9b, vid9);
+            l9b = str.concat(l9b, ") : (");
+            l9b = str.concat(l9b, box9);
+            l9b = str.concat(l9b, ") -> i64");
+            emit_line(e, str.concat(res9b, l9b));
+            vset(e, res9b, Ty.I64);
+            return res9b;
+        }
+        if r.name == "push" {
+            // emit_vec_push_set's convention indexes the receiver
+            // slot; the receiver is already evaluated (vid9), so the
+            // placeholder is never read.
+            var a9w: [Expr] = vector.new();
+            vector.push(a9w, Expr.Int("0"));
+            const np9: i64 = vector.len(args);
+            var ip9: i64 = 0;
+            while ip9 < np9 {
+                vector.push(a9w, vector.get(args, ip9));
+                ip9 = ip9 + 1;
+            }
+            return emit_vec_push_set(e, "push", vid9, vty9, inner9, box9, slot9, prefix9, a9w, line, col);
+        }
+        if r.name == "set" {
+            var a9s: [Expr] = vector.new();
+            vector.push(a9s, Expr.Int("0"));
+            const ns9: i64 = vector.len(args);
+            var is9: i64 = 0;
+            while is9 < ns9 {
+                vector.push(a9s, vector.get(args, is9));
+                is9 = is9 + 1;
+            }
+            return emit_vec_push_set(e, "set", vid9, vty9, inner9, box9, slot9, prefix9, a9s, line, col);
+        }
+        if r.name == "get" {
+            if vector.len(args) != 1 {
+                return e_fail_at(e, line, col, "get takes exactly one index");
+            }
+            const gi9: Str = emit_expr(e, vector.get(args, 0));
+            const gr9: Str = fresh(e);
+            var gl9: Str = " = func.call @";
+            gl9 = str.concat(gl9, prefix9);
+            gl9 = str.concat(gl9, "_get(");
+            gl9 = str.concat(gl9, vid9);
+            gl9 = str.concat(gl9, ", ");
+            gl9 = str.concat(gl9, gi9);
+            gl9 = str.concat(gl9, ") : (");
+            gl9 = str.concat(gl9, box9);
+            gl9 = str.concat(gl9, ", i64) -> ");
+            gl9 = str.concat(gl9, slot9);
+            emit_line(e, str.concat(gr9, gl9));
+            if is_named_t(inner9) {
+                const gv9: Str = unwrap_load(e, gr9, inner9, line, col);
+                vset(e, gv9, inner9);
+                return gv9;
+            }
+            vset(e, gr9, inner9);
+            return gr9;
+        }
+        return e_fail_at(e, line, col, str.concat("no collection method `", str.concat(r.name, "` (push, len, get, set)")));
+    }
     const is_named_r: bool = match rty {
         Ty.Named(n0) => true,
         _ => false,
     };
     if is_named_r == false {
-        return e_fail_at(e, line, col, "a receiver call needs a record receiver");
+        return e_fail_at(e, line, col, "a receiver call needs a record or collection receiver");
     }
     const tn: Str = match rty {
         Ty.Named(n1) => n1,

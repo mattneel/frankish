@@ -1,0 +1,25 @@
+// Field punning (D-106's shorthand, pinned at D-138): `%Blk{label,
+// lines}` means `label: label, lines: lines` in MAKES, in record
+// DESTRUCTURING (`const {label, lines} = b`, with `field: other`
+// renames beside puns), and in MATCH PATTERNS. Hand-derived:
+// entry|3|entry then 4.
+pub const Blk = struct { label: Str, lines: i64 };
+pub fn main() i64 {
+    const label: Str = "entry";
+    const lines: i64 = 3;
+    const b: Blk = %Blk{label, lines};
+    io.print(b.label);
+    io.print("|");
+    const {label: l2, lines: n2} = b;
+    io.print(str.fromI64(n2));
+    io.print("|");
+    const {label, lines} = b;
+    io.print(label);
+    io.print("\n");
+    const t: i64 = match b {
+        %Blk{label, lines} => lines + 1,
+    };
+    io.print(str.fromI64(t));
+    io.print("\n");
+    0
+}

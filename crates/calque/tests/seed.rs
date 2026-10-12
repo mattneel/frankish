@@ -2610,6 +2610,26 @@ fn calq0_modules_and_receiver_calls() {
 }
 
 #[test]
+fn calq0_collection_receiver_methods() {
+    // D-137: items.push/len/get/set resolve through the collection's
+    // associated functions; the mutating ones keep the vector.*
+    // in-place semantics.
+    let case_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../goldens/calque/vec_methods/case.calq"
+    );
+    let src = std::fs::read_to_string(case_path).expect("the methods case exists");
+    let artifact = calque::compile_source("vec_methods.calq", &src).expect("calq0 compiles it");
+    let outcome = run_artifact(&artifact).expect("it runs");
+    assert_eq!(outcome.output, "3|4|9|6\n");
+
+    // an unknown method names the available ones
+    let bad = "pub fn main() i64 {\n    var xs: [i64] = [];\n    xs.frob(1);\n    0\n}\n";
+    let err = calque::compile_source("vm_bad.calq", bad).expect_err("unknown method");
+    assert!(err.contains("no collection method `frob`"), "{err}");
+}
+
+#[test]
 fn calq0_comptime_evaluates_and_reifies() {
     // D-134: the block runs at compile time through the evaluation
     // service; the result reifies as a constant. The reified constant
@@ -2636,6 +2656,16 @@ fn calq0_comptime_evaluates_and_reifies() {
         err.contains("compile-time-computable"),
         "{err}"
     );
+
+    // D-136: a STRING result reifies as a lit constant.
+    let ssrc = "pub fn main() i64 {\n    const s: Str = comptime { str.concat(\"com\", \"ptime\") };\n    io.print(s);\n    io.print(\"\\n\");\n    0\n}\n";
+    let sart = calque::compile_source("ctstr.calq", ssrc).expect("calq0 compiles it");
+    assert!(
+        sart.contains("text = \"comptime\""),
+        "the comptime string must reify as a lit constant"
+    );
+    let sout = run_artifact(&sart).expect("it runs");
+    assert_eq!(sout.output, "comptime\n");
 }
 
 #[test]

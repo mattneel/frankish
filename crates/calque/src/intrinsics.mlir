@@ -17,6 +17,7 @@ func.func private @frk_rt_calque_trap(!frk_bstr.str)
 // it (interp builtin + JIT shim); the compiler's own comptime path
 // calls it at emission time.
 func.func private @__calque_eval_i64(!frk_bstr.str, !frk_bstr.str, i64) -> i64
+func.func private @__calque_eval_s(!frk_bstr.str, !frk_bstr.str, i64) -> !frk_bstr.str
 
 // ---------------------------------------------------------------- vectors
 //

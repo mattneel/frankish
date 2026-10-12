@@ -1,0 +1,9 @@
+// `comptime { ... }` with a STRING result (D-136): the block runs at
+// compile time; the bstr result reifies as a lit constant. Prints the
+// reified text.
+pub fn main() i64 {
+    const s: Str = comptime { str.concat("com", "ptime") };
+    io.print(s);
+    io.print("\n");
+    0
+}

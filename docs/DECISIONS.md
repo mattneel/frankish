@@ -3868,3 +3868,40 @@ veto-ledger pattern and most deserve their review.
   over aggregates/strings, capability/budget parameters, custom
   compile-time diagnostics, call-trace preservation.
 
+- D-136 [calque/comptime] STRING COMPTIME RESULTS (structured results,
+  first arm): a second service entry `__calque_eval_s` (the same
+  evaluation; the inner run's bstr result COPIED into the outer world -
+  the inner heap never escapes; the JIT shim interns it) + the
+  intrinsics declaration + calq0's emission case (landed FIRST, then
+  c7v1, then the usage - the feature-then-usage discipline run once
+  more). emit_comptime_e now dispatches on the block's inferred type:
+  Str -> the string arm reifies with the EXISTING e_esc (the seed's
+  closed escape set) into a `frk_bstr.lit` line. Gates:
+  goldens/probe/eval_service_bstr (content asserted via frk_bstr.eq
+  through interp == jit == jit-rc), goldens/calque/comptime_str
+  (`comptime { str.concat("com", "ptime") }` prints comptime; the
+  artifact carries `text = "comptime"`), the extended
+  calq0_comptime_evaluates_and_reifies. The staged duplicate esc_mlir
+  was deleted in favor of e_esc. NOTE: `str.sub(s, from, LENGTH)` (not
+  a range) - a length-based fix the string probe caught.
+
+- D-137 [calque/collections] COLLECTION RECEIVER METHODS (the
+  steering's items.push(x)/items.len() direction, section 3/4):
+  `recv.push(x)`, `recv.len()`, `recv.get(i)`, `recv.set(i, x)` on
+  [T] receivers resolve through the built-in collection's associated
+  functions - no import-order search; the mutating ones keep the
+  vector.* in-place semantics (section 5's legacy path), and unknown
+  methods name the available set. Gates: goldens/calque/vec_methods
+  (hand-derived 3|4|9|6), calq0_collection_receiver_methods incl. the
+  unknown-method negative. The open_block migration to
+  `self.blocks.push(...)` rides the next hop (c8v1).
+
+- D-138 [calque/punning] FIELD PUNNING, PINNED (user ruling: "field
+  punning should be a thing, it's supposed to work for destructuring
+  too"): the shorthand already existed in all three positions (D-106
+  makes, record destructuring `const {label, lines} = b` with
+  `field: other` renames beside puns, match patterns) but had NO gate.
+  goldens/calque/punning exercises all three; hand-derived output
+  pinned. No parser change was needed - the probe proved the surface
+  end-to-end and the corpus now holds it.
+

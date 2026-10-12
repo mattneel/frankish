@@ -455,6 +455,7 @@ pub fn jit_run_text_opt(
     // host symbol beyond the frk-abi registry.
     unsafe {
         engine.register_symbol("__calque_eval_i64", host_eval_i64 as *mut ());
+        engine.register_symbol("__calque_eval_s", host_eval_s as *mut ());
     }
     CAPTURE.with(|buffer| buffer.borrow_mut().clear());
     let mut result: i64 = 0;
@@ -492,6 +493,7 @@ impl Runner for JitRunner {
         // engine that can run Calque artifacts.
         unsafe {
             engine.register_symbol("__calque_eval_i64", host_eval_i64 as *mut ());
+        engine.register_symbol("__calque_eval_s", host_eval_s as *mut ());
         }
         // Registry-driven JIT resolution (D-062, finished at M21): the
         // frk-abi table is the AUTHORITY on which symbols the JIT must
@@ -644,6 +646,19 @@ pub fn register_protocol_builtins(interp: &mut frk_interp::Interp<'_, '_>) {
     // a harness-level host service beyond frk-abi, registered for
     // every interp-based run (the calque protocol, the corpus legs).
     interp.register_builtin(
+        "__calque_eval_s",
+        Box::new(|args, _out| {
+            let text = std::str::from_utf8(args[0].as_bytes()?)
+                .map_err(|e| frk_interp::EvalError::Unsupported(format!("eval: {e}")))?;
+            let entry = std::str::from_utf8(args[1].as_bytes()?)
+                .map_err(|e| frk_interp::EvalError::Unsupported(format!("eval: {e}")))?;
+            let arg = args[2].as_signed()?;
+            let v = eval_module_bstr(text, entry, arg)
+                .map_err(frk_interp::EvalError::Unsupported)?;
+            Ok(vec![frk_interp::Value::bytes(v)])
+        }),
+    );
+    interp.register_builtin(
         "__calque_eval_i64",
         Box::new(|args, _out| {
             let text = std::str::from_utf8(args[0].as_bytes()?)
@@ -793,6 +808,32 @@ pub fn eval_module_i64(module_text: &str, entry: &str, arg: i64) -> Result<i64, 
     first.as_signed().map_err(|e| format!("eval: {e}"))
 }
 
+/// The string-result arm of the service (D-136): the same evaluation,
+/// with the inner run's bstr result COPIED into the outer world (a
+/// fresh Vec<u8> - the inner interpreter's heap never escapes).
+pub fn eval_module_bstr(module_text: &str, entry: &str, arg: i64) -> Result<Vec<u8>, String> {
+    let context = frk_core::context();
+    frk_dialects::register(&context).map_err(|e| format!("eval: register: {e}"))?;
+    let full = format!("{}\n{}\n", crate::calque::intrinsics_source(), module_text);
+    let module = melior::ir::Module::parse(&context, &full)
+        .ok_or_else(|| "eval: the module text does not parse".to_string())?;
+    frk_dialects::verify(&context, &module).map_err(|e| format!("eval: verify: {e:?}"))?;
+    let mut interp =
+        frk_interp::Interp::new(&module).map_err(|e| format!("eval: interp: {e}"))?;
+    frk_dialects::register_eval(&mut interp);
+    register_protocol_builtins(&mut interp);
+    let args = [frk_interp::Value::int(arg as u64, 64).map_err(|e| format!("eval: {e:?}"))?];
+    let values = interp
+        .eval_function(entry, &args)
+        .map_err(|e| format!("eval: {entry}: {e}"))?;
+    let _ = interp.take_output();
+    let first = values
+        .first()
+        .ok_or_else(|| format!("eval: {entry} returned no values"))?;
+    let bytes = first.as_bytes().map_err(|e| format!("eval: {e}"))?;
+    Ok(bytes.as_ref().clone())
+}
+
 /// The JIT-side shim for the evaluation service: reads two bstr
 /// pointers plus the i64 argument, evaluates, and returns the result;
 /// a failure aborts with the service's message (the JIT context has
@@ -802,6 +843,20 @@ unsafe extern "C" fn host_eval_i64(text: *const u8, entry: *const u8, arg: i64) 
     let entry_s = unsafe { String::from_utf8_lossy(frk_rt::bstr_parts(entry)).into_owned() };
     match eval_module_i64(&text_s, &entry_s, arg) {
         Ok(v) => v,
+        Err(msg) => {
+            eprintln!("frk: eval: {msg}");
+            std::process::abort();
+        }
+    }
+}
+
+/// The JIT-side string shim: interns the result bytes and returns the
+/// fresh bstr pointer (the outer world owns it).
+unsafe extern "C" fn host_eval_s(text: *const u8, entry: *const u8, arg: i64) -> *mut u8 {
+    let text_s = unsafe { String::from_utf8_lossy(frk_rt::bstr_parts(text)).into_owned() };
+    let entry_s = unsafe { String::from_utf8_lossy(frk_rt::bstr_parts(entry)).into_owned() };
+    match eval_module_bstr(&text_s, &entry_s, arg) {
+        Ok(bytes) => unsafe { frk_rt::frk_rt_bstr_intern(bytes.as_ptr(), bytes.len() as u64) },
         Err(msg) => {
             eprintln!("frk: eval: {msg}");
             std::process::abort();

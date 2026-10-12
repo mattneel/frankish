@@ -1573,6 +1573,14 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    STRING COMPTIME + COLLECTION METHODS + PUNNING GATE
+    (D-136/D-137/D-138): `__calque_eval_s` (the bstr arm of the
+    service; inner heap copied out), the string comptime arm reified
+    via e_esc, `items.push/len/get/set` receiver methods, and the
+    punning corpus gate (all three positions). Corpus 33+ cases;
+    suite green. NEXT: the open_block -> self.blocks.push() migration
+    (rides c8v1), structured results widening, then the goal s9
+    type-construction/reflection list.
     COMPTIME LANDED (D-134/D-135): `comptime { ... }` evaluates at
     compile time through the shared service (c6v1's hop carries the
     source-level call); results reify as constants (fib(10) -> 55,
