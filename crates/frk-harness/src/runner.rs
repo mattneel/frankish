@@ -771,7 +771,11 @@ fn builtin_for(name: &str) -> Option<frk_interp::Builtin> {
 pub fn eval_module_i64(module_text: &str, entry: &str, arg: i64) -> Result<i64, String> {
     let context = frk_core::context();
     frk_dialects::register(&context).map_err(|e| format!("eval: register: {e}"))?;
-    let module = melior::ir::Module::parse(&context, module_text)
+    // The intrinsics compose first (their declarations satisfy the
+    // sub-module's rt/service calls) - the same composition the
+    // artifact runs use.
+    let full = format!("{}\n{}\n", crate::calque::intrinsics_source(), module_text);
+    let module = melior::ir::Module::parse(&context, &full)
         .ok_or_else(|| "eval: the module text does not parse".to_string())?;
     frk_dialects::verify(&context, &module).map_err(|e| format!("eval: verify: {e:?}"))?;
     let mut interp =

@@ -2610,6 +2610,35 @@ fn calq0_modules_and_receiver_calls() {
 }
 
 #[test]
+fn calq0_comptime_evaluates_and_reifies() {
+    // D-134: the block runs at compile time through the evaluation
+    // service; the result reifies as a constant. The reified constant
+    // is asserted in the artifact (the feature's output), and the
+    // runtime-local rejection is asserted as the required-comptime
+    // diagnostic.
+    let case_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../goldens/calque/comptime/case.calq"
+    );
+    let src = std::fs::read_to_string(case_path).expect("the comptime case exists");
+    let artifact = calque::compile_source("comptime.calq", &src).expect("calq0 compiles it");
+    assert!(
+        artifact.contains("arith.constant 55 : i64"),
+        "the comptime result must be reified into the artifact"
+    );
+    let outcome = run_artifact(&artifact).expect("it runs");
+    assert_eq!(outcome.output, "55\n");
+
+    // a runtime local inside a comptime block is refused loudly
+    let bad = "pub fn main() i64 {\n    const y: i64 = 3;\n    const x: i64 = comptime { y + 1 };\n    x\n}\n";
+    let err = calque::compile_source("ctrej.calq", bad).expect_err("runtime dependency");
+    assert!(
+        err.contains("compile-time-computable"),
+        "{err}"
+    );
+}
+
+#[test]
 fn calq0_selective_imports() {
     // D-131: `import m.{quad};` brings a pub member into the bare
     // scope; ambiguity is a diagnosed collision; a non-pub member is

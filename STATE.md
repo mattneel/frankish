@@ -1573,6 +1573,13 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    COMPTIME LANDED (D-134/D-135): `comptime { ... }` evaluates at
+    compile time through the shared service (c6v1's hop carries the
+    source-level call); results reify as constants (fib(10) -> 55,
+    asserted in the artifact); runtime dependencies refused. Corpus
+    31/31, suite 71. NEXT (C3 continuing): structured comptime results
+    (non-i64/aggregates), capability/budget parameters, then type
+    construction/reflection (the goal s9 list).
     COMPTIME SURFACE STAGED (D-134 first half): parse (ComptimeX) +
     the sub-module builder + the __calque_eval_i64 emit_call case;
     c6v1 recorded; the usage (emit_comptime_e calling the service +

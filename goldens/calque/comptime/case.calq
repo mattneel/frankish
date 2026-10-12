@@ -1,0 +1,16 @@
+// `comptime { ... }` (D-134, goal s11): the block runs at COMPILE time
+// through the shared evaluation service - fib(10) evaluates while the
+// compiler runs, and its digits reify as a constant in the artifact.
+// Hand-derived: fib(10) = 55.
+pub fn fib(n: i64) i64 {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+pub fn main() i64 {
+    const x: i64 = comptime { fib(10) };
+    io.print(str.fromI64(x));
+    io.print("\n");
+    0
+}

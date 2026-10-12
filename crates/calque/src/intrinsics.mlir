@@ -13,6 +13,11 @@
 func.func private @frk_rt_calque_print(!frk_bstr.str)
 func.func private @frk_rt_calque_trap(!frk_bstr.str)
 
+// The compile-time evaluation service (D-133/D-134): the harness binds
+// it (interp builtin + JIT shim); the compiler's own comptime path
+// calls it at emission time.
+func.func private @__calque_eval_i64(!frk_bstr.str, !frk_bstr.str, i64) -> i64
+
 // ---------------------------------------------------------------- vectors
 //
 // Vector(T) instantiations (F34/D-091): a managed box of

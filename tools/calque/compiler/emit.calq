@@ -866,7 +866,29 @@ pub fn emit_comptime_e(mut e: Emitter, b: Block, line: i64, col: i64) Str {
         const submsg: Str = fail_text(state_fail(e_state(sub)));
         return e_fail_at(e, line, col, str.concat("the comptime block must be compile-time-computable (", str.concat(submsg, ")")));
     }
-    return e_fail_at(e, line, col, "the comptime evaluation rides the next bootstrap hop (D-134): the service call-emission lands first, the usage after the c6v1 snapshot");
+    // The sub-module's text (calq0 builds the bstr at its own runtime).
+    const lines: [Str] = e_render(sub);
+    var mod_text: Str = "";
+    const nl: i64 = vector.len(lines);
+    var j: i64 = 0;
+    while j < nl {
+        if j > 0 {
+            mod_text = str.concat(mod_text, "\n");
+        }
+        mod_text = str.concat(mod_text, vector.get(lines, j));
+        j = j + 1;
+    }
+    // The service call runs while calq0 compiles; the digits reify
+    // into the program's constant line.
+    const v: i64 = __calque_eval_i64(mod_text, "__comptime_entry", 0);
+    const dg: Str = str.fromI64(v);
+    const res: Str = fresh(e);
+    var cl: Str = " = arith.constant ";
+    cl = str.concat(cl, dg);
+    cl = str.concat(cl, " : i64");
+    emit_line(e, str.concat(res, cl));
+    vset(e, res, Ty.I64);
+    return res;
 }
 
 pub fn emit_index_e(mut e: Emitter, ix: IdxE) Str {

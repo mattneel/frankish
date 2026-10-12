@@ -3844,3 +3844,27 @@ veto-ledger pattern and most deserve their review.
   caught a stray section sign in a comment (cleaned). Gate: suite 70;
   the refusal probe shows the positioned diagnostic.
 
+- D-135 [calque/comptime] COMPTIME EVALUATION AND REIFICATION LANDED
+  (D-134's second half; goal s11's "explicit comptime expressions and
+  blocks" + "execute ordinary pure library functions at compile time"
+  + "reject runtime dependencies"): emit_comptime_e now builds the
+  sub-module, joins its text, and emits a SOURCE-LEVEL
+  `__calque_eval_i64(mod_text, "__comptime_entry", 0)` call - c6v1's
+  compiler knows its emission case, so calq0's own artifact carries
+  the call and executes the service while compiling; the i64 result
+  feeds str.fromI64 and its digits are concatenated into the emitted
+  `arith.constant` line (the emitter's runtime-built-text model).
+  Two enablers: the intrinsics now DECLARE `__calque_eval_i64`
+  (artifacts verify; the interp builtin answers for the bodyless
+  symbol, like the trap), and the service composes the intrinsics
+  before parsing the sub-module (its rt/service calls resolve).
+  EVIDENCE: `comptime { 7 }` -> 7, `comptime { quad(7) }` -> 49,
+  `comptime { fib(10) }` -> 55 (recursion at compile time); the
+  artifact contains `arith.constant 55 : i64` (reification asserted);
+  a runtime local in a comptime block refuses with the required-
+  comptime diagnostic. Gates: goldens/calque/comptime (3 runners),
+  calq0_comptime_evaluates_and_reifies, corpus 31 cases 0 red, grid
+  GREEN, suite 71. FENCED: non-i64 comptime result types, comptime
+  over aggregates/strings, capability/budget parameters, custom
+  compile-time diagnostics, call-trace preservation.
+
