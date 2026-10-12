@@ -3823,3 +3823,24 @@ veto-ledger pattern and most deserve their review.
   `comptime` surface riding this service; structured results; target/
   capability/budget parameters (the goal §11 list continues).
 
+- D-134 [calque/comptime] THE COMPTIME SURFACE, STAGED (goal s11;
+  first half): the parse surface for `comptime { ... }` and
+  `comptime e` (a ComptimeX node carrying its position; the dump
+  prints it), the sub-module builder in the emitter (every
+  non-generic, non-main top-level fn plus a synthetic
+  `__comptime_entry`, in a fresh emitter - a runtime-local reference
+  fails the sub-emission and yields the required-comptime diagnostic),
+  and the `__calque_eval_i64` emission case in emit_call. THE
+  ARCHITECTURE, SETTLED: the reified evaluation must be a SOURCE-LEVEL
+  call in calq0 - calq0's own artifact runs the service while it
+  compiles, obtains the i64, formats it with str.fromI64, and the
+  digits are concatenated into the emitted constant line (the
+  emitter's text is runtime-built, so this composes with its existing
+  model; emitting the call into the PROGRAM's artifact would run it at
+  runtime and silently violate required comptime). That call needs a
+  compiler hop whose emit_call KNOWS the case: the case lands first
+  (this D), snapshots/c6v1 records it, and the usage lands next - an
+  honest, positioned refusal until then. NOTE: F18's ASCII fence
+  caught a stray section sign in a comment (cleaned). Gate: suite 70;
+  the refusal probe shows the positioned diagnostic.
+

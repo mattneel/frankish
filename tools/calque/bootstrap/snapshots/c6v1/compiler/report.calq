@@ -1,0 +1,14 @@
+// calq0's PRESENTATION boundary (D-109): failure states are matched
+// and rendered here (and in the drivers); the lexer/parser carry
+// structured fields only. Output format: "error <line>:<col> <msg>"
+// (no trailing newline; the drivers add it).
+pub fn state_fail(s: State) Fail {
+    return match s {
+        State.Ok => %Fail{msg: "", line: 0, col: 0},
+        State.Failed(f) => f,
+    };
+}
+
+pub fn fail_text(f: Fail) Str {
+    return str.concat("error ", str.concat(str.fromI64(f.line), str.concat(":", str.concat(str.fromI64(f.col), str.concat(" ", f.msg)))));
+}

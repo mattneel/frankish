@@ -44,6 +44,9 @@ pub const Expr = union(enum) {
     Tup: [Expr],
     // `v[i]` (the vector steering): a fixed-array element read.
     IndexE: IdxE,
+    // `comptime { ... }` / `comptime e` (D-134): the block must be
+    // compile-time-computable; its value reifies as a constant.
+    ComptimeE: ComptimeX,
     // `try e` (SPEC 6.5): on Err the enclosing function returns Err(x).
     TryE: TryX,
     CatchE: CatchX,
@@ -658,6 +661,16 @@ pub fn parse_primary(mut p: P) Expr {
         if t.text == "fn" {
             return p_lambda(p);
         }
+        if t.text == "comptime" {
+            const ck: Tok = p_next(p);
+            if at_punct(p, "{") {
+                const b: Block = p_block(p);
+                return Expr.ComptimeE(%ComptimeX{body: b, line: ck.line, col: ck.col});
+            }
+            const e0: Expr = parse_expr(p, 1);
+            var stmts: [Stmt] = vector.new();
+            return Expr.ComptimeE(%ComptimeX{body: %Block{stmts: stmts, tail: e0, has_tail: true}, line: ck.line, col: ck.col});
+        }
         return bad(p, t.line, t.col, str.concat("unexpected keyword `", str.concat(t.text, "`")));
     }
     if is_name_tok(t) {
@@ -799,6 +812,7 @@ pub fn dump(e: Expr) Str {
         Expr.CatchE(cx2) => d_catch(cx2),
         Expr.TyV(tx) => str.concat("(tyv ", str.concat(d_ty(tx), ")")),
         Expr.IndexE(ix2) => d_index(ix2),
+        Expr.ComptimeE(cx) => d_comptime(cx),
         Expr.Tup(es) => {
             var acc: Str = "(tup";
             const n: i64 = vector.len(es);
@@ -812,6 +826,11 @@ pub fn dump(e: Expr) Str {
         },
         Expr.Bad(b) => d_bad(b),
     };
+}
+
+pub fn d_comptime(cx: ComptimeX) Str {
+    const bd: Block = cx.body;
+    return str.concat("(comptime ", str.concat(dump(bd.tail), ")"));
 }
 
 pub fn d_index(ix2: IdxE) Str {
@@ -1027,6 +1046,12 @@ pub const Stmt = union(enum) {
     FAssign: FAssS,
     // `v[i] = e;` / `v[i] += e;` (D-120): the persistent indexed write.
     IdxAssign: IdxAssS,
+};
+
+pub const ComptimeX = struct {
+    body: Block,
+    line: i64,
+    col: i64,
 };
 
 pub const IdxE = struct {

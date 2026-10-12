@@ -1,0 +1,29 @@
+// calque stdlib - the `str` namespace, b0 subset (M37, D-094).
+// Ordinary library algorithms in Calque (goal 13); the primitive
+// ops (len/concat/eq/sub) are the prelude's kernel mappings.
+
+// Exact decimal rendering for every i64 (SPEC 6.8: no %.14g
+// dependence); hand-derived test vectors live in the seed corpus.
+pub fn fromI64(v: i64) Str {
+    if v == 0 { return "0"; }
+    // i64.minValue: (0 - maxValue) - 1 overflows by construction, so
+    // the value cannot be reached by negation below.
+    if v == (0 - 9223372036854775807) - 1 { return "-9223372036854775808"; }
+
+    var neg: bool = false;
+    var n: i64 = v;
+    if n < 0 {
+        neg = true;
+        n = 0 - n;
+    }
+
+    var out: Str = "";
+    while n > 0 {
+        const d: i64 = n % 10;
+        out = str.concat(str.sub("0123456789", d, 1), out);
+        n = n / 10;
+    }
+
+    if neg { out = str.concat("-", out); }
+    return out;
+}

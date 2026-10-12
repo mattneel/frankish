@@ -829,6 +829,46 @@ pub fn emit_tuple_e(mut e: Emitter, items: [Expr], expected: Ty) Str {
     return acc;
 }
 
+// `comptime { ... }` (D-134, goal s11): the block is evaluated at
+// compile time through the shared evaluation service. STAGED: this
+// landing carries the parse surface and the sub-module builder (every
+// non-generic, non-main top-level fn plus a synthetic entry, in a
+// fresh emitter) - the SERVICE CALL itself is a source-level
+// `__calque_eval_i64` call whose emission needs the next bootstrap
+// hop's compiler (the c6v1 discipline: the call-emission case lands
+// first, the usage after the hop records it). Until then a comptime
+// expression is a loud, honest refusal - required comptime is never
+// silently deferred to runtime.
+pub fn emit_comptime_cx(mut e: Emitter, cx: ComptimeX) Str {
+    const bd: Block = cx.body;
+    return emit_comptime_e(e, bd, cx.line, cx.col);
+}
+
+pub fn emit_comptime_e(mut e: Emitter, b: Block, line: i64, col: i64) Str {
+    const a0: Ast = e_ast(e);
+    var sub: Emitter = %Emitter{};
+    e_ast_set(sub, a0);
+    const nf: i64 = vector.len(a0.fns);
+    var i: i64 = 0;
+    while i < nf {
+        const f: Fn = vector.get(a0.fns, i);
+        if f.name != "main" {
+            if is_generic_fn(f) == false {
+                e_fn(sub, f);
+            }
+        }
+        i = i + 1;
+    }
+    const eps0: [Param] = vector.new();
+    var entry: Fn = %Fn{name: "__comptime_entry", params: eps0, ret: Ty.I64, body: b, file: "", ns: "", test_name: "", is_pub: false};
+    e_fn(sub, entry);
+    if e_ok(sub) == false {
+        const submsg: Str = fail_text(state_fail(e_state(sub)));
+        return e_fail_at(e, line, col, str.concat("the comptime block must be compile-time-computable (", str.concat(submsg, ")")));
+    }
+    return e_fail_at(e, line, col, "the comptime evaluation rides the next bootstrap hop (D-134): the service call-emission lands first, the usage after the c6v1 snapshot");
+}
+
 pub fn emit_index_e(mut e: Emitter, ix: IdxE) Str {
     const br: Ref = ix.base;
     // A field base (`e.blocks[i]`, D-125): the receiver is emitted as an
@@ -2325,6 +2365,30 @@ pub fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
         }
     }
     if str.len(r.mod) == 0 {
+        if r.name == "__calque_eval_i64" {
+            // The compile-time evaluation service (D-133/D-134): a
+            // harness-bound host call. calq0's own comptime path calls
+            // it at emission time (the c6v1 discipline: this emission
+            // case must exist in a compiled hop BEFORE any source uses
+            // the call).
+            if vector.len(c.args) != 3 {
+                return e_fail_at(e, line, col, "__calque_eval_i64 takes (module, entry, arg)");
+            }
+            const av0: Str = emit_expr(e, vector.get(c.args, 0));
+            const av1: Str = emit_expr(e, vector.get(c.args, 1));
+            const av2: Str = emit_expr(e, vector.get(c.args, 2));
+            const res9: Str = fresh(e);
+            var l9: Str = " = func.call @__calque_eval_i64(";
+            l9 = str.concat(l9, av0);
+            l9 = str.concat(l9, ", ");
+            l9 = str.concat(l9, av1);
+            l9 = str.concat(l9, ", ");
+            l9 = str.concat(l9, av2);
+            l9 = str.concat(l9, ") : (!frk_bstr.str, !frk_bstr.str, i64) -> i64");
+            emit_line(e, str.concat(res9, l9));
+            vset(e, res9, Ty.I64);
+            return res9;
+        }
         if r.name == "__calque_input_count" {
             if vector.len(c.args) != 0 {
                 return e_fail_at(e, line, col, "__calque_input_count takes no arguments");
@@ -2954,6 +3018,7 @@ pub fn infer_expr_ty(mut e: Emitter, ex: Expr, line: i64, col: i64) Ty {
         Expr.Bin(b0) => infer_bin_ty(e, b0, line, col),
         Expr.Tup(es) => infer_tup_lit(e, es, line, col),
         Expr.IndexE(ix2) => infer_index_ty(e, ix2, line, col),
+        Expr.ComptimeE(cx3) => Ty.I64,
         _ => Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col}),
     };
 }
@@ -3385,6 +3450,7 @@ pub fn emit_expr(mut e: Emitter, ex: Expr) Str {
         Expr.TyV(tx) => emit_tyv(e, tx),
         Expr.Tup(es) => emit_tuple_e(e, es, Ty.UnitV),
         Expr.IndexE(ix2) => emit_index_e(e, ix2),
+        Expr.ComptimeE(cx2) => emit_comptime_cx(e, cx2),
         Expr.Bad(b) => e_fail(e, b),
         Expr.Match(m) => emit_match(e, m),
         Expr.Make(m) => emit_make(e, m, m.line, m.col),

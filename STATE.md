@@ -1573,6 +1573,12 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    COMPTIME SURFACE STAGED (D-134 first half): parse (ComptimeX) +
+    the sub-module builder + the __calque_eval_i64 emit_call case;
+    c6v1 recorded; the usage (emit_comptime_e calling the service +
+    reification + probes/corpus) is the NEXT work - the architecture
+    is settled in the D-entry (a source-level call in calq0, digits
+    via str.fromI64 into the emitted constant line).
     C3 OPENED: THE EVAL SERVICE (D-133): eval_module_i64 + the
     __calque_eval_i64 interp builtin (every interp run) + the JIT shim
     at both engines; gate goldens/probe/eval_service (36 through
