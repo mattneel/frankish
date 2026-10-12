@@ -1573,6 +1573,11 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    COMPTIME ASSERTIONS (D-139): `assert.comptime(cond, msg)` with the
+    custom message surfacing through the service; nested comptime works
+    in expression positions (41); the statement-position edge is
+    fenced. Corpus 36/36; suite 72. NEXT: structured results widening
+    or the goal s9 type-construction/reflection list.
     STRING COMPTIME + COLLECTION METHODS + PUNNING GATE
     (D-136/D-137/D-138): `__calque_eval_s` (the bstr arm of the
     service; inner heap copied out), the string comptime arm reified

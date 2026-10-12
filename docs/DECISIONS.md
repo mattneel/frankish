@@ -3905,3 +3905,22 @@ veto-ledger pattern and most deserve their review.
   pinned. No parser change was needed - the probe proved the surface
   end-to-end and the corpus now holds it.
 
+- D-139 [calque/comptime] COMPILE-TIME ASSERTIONS AND CUSTOM MESSAGES
+  (goal s11's "provide compile-time assertions and custom
+  source-level diagnostic messages"): `assert.comptime(cond, msg)` -
+  the guard's false path calls the new `__calque_comptime_fail`
+  service builtin (declared in the intrinsics; the interp builtin
+  raises the message into the evaluation, so the compiler's failure
+  output carries it). The member position admits the `comptime`
+  keyword after `.` (the only keyword so honored) to spell it.
+  NESTED COMPTIME: expressions nest (`comptime { 1 + comptime { 40 }
+  }` -> 41; the service recurses with fresh-interp isolation).
+  FENCED: a comptime expression as a STATEMENT/`const` initializer
+  INSIDE a comptime block hits a parser/emitter edge (the outer
+  sub-emission loses a `;` boundary) - the narrow fence is recorded;
+  expression-position nesting is the supported form. EVIDENCE:
+  goldens/calque/comptime_assert (42 through the assertion),
+  goldens/calque/comptime_nested (41), the extended
+  calq0_comptime_evaluates_and_reifies (the custom message surfaces
+  in the failure), corpus 36 cases 0 red, grid GREEN, suite 72.
+

@@ -623,7 +623,21 @@ pub fn do_dot(mut p: P, e: Expr) Expr {
     }
     const _t: Tok = p_next(p);
     const m: Tok = p_peek(p);
-    if is_name_tok(m) == false and is_int_tok(m) == false {
+    // `assert.comptime(...)` (D-139): the member may be the comptime
+    // keyword - the only keyword admitted in member position.
+    var member_ok: bool = false;
+    if is_name_tok(m) {
+        member_ok = true;
+    }
+    if is_int_tok(m) {
+        member_ok = true;
+    }
+    if is_kw_tok(m) {
+        if m.text == "comptime" {
+            member_ok = true;
+        }
+    }
+    if member_ok == false {
         return bad(p, m.line, m.col, "expected an identifier or a tuple index after `.'");
     }
     const _m: Tok = p_next(p);

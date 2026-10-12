@@ -2546,6 +2546,46 @@ pub fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
             new_label(e, okb);
             return "";
         }
+        if r.name == "comptime" {
+            // `assert.comptime(cond, msg)` (D-139, goal s11):
+            // compile-time assertions with custom source-level
+            // messages. Inside a comptime block the false path calls
+            // the comptime-failure service, whose builtin raises the
+            // message into the evaluation (and thence into the
+            // compiler's diagnostic); at runtime the same guard traps.
+            const n3: i64 = vector.len(c.args);
+            if n3 != 2 {
+                return e_fail_at(e, line, col, "assert.comptime takes (condition, message)");
+            }
+            const cv: Str = emit_expr(e, vector.get(c.args, 0));
+            const cty: Ty = vget(e, cv);
+            const is_b: bool = match cty {
+                Ty.BoolV => true,
+                _ => false,
+            };
+            if is_b == false {
+                return e_fail_at(e, line, col, "assert.comptime wants a bool condition");
+            }
+            const mv: Str = emit_expr(e, vector.get(c.args, 1));
+            const mty: Ty = vget(e, mv);
+            const is_s: bool = match mty {
+                Ty.StrV => true,
+                _ => false,
+            };
+            if is_s == false {
+                return e_fail_at(e, line, col, "assert.comptime wants a Str message");
+            }
+            const okc: Str = fresh_label(e);
+            const failc: Str = fresh_label(e);
+            emit_line(e, str.concat("cf.cond_br ", str.concat(cv, str.concat(", ^", str.concat(okc, str.concat(", ^", failc))))));
+            new_label(e, failc);
+            emit_line(e, str.concat("func.call @__calque_comptime_fail(", str.concat(mv, ") : (!frk_bstr.str) -> ()")));
+            const rt3: Ty = e_ret(e);
+            const pv3: Str = e_poison(e, rt3);
+            terminate(e, str.concat("func.return ", str.concat(pv3, str.concat(" : ", value_ir_t(e_ast(e), rt3)))));
+            new_label(e, okc);
+            return "";
+        }
     }
     if r.mod == "io" {
         if r.name == "print" {

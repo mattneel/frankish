@@ -645,6 +645,17 @@ pub fn register_protocol_builtins(interp: &mut frk_interp::Interp<'_, '_>) {
     // The shared compile-time evaluation service (D-133, goal §11):
     // a harness-level host service beyond frk-abi, registered for
     // every interp-based run (the calque protocol, the corpus legs).
+    // The compile-time failure channel (D-139): the assert.comptime
+    // guard's false path calls this inside an evaluation; the builtin
+    // raises the custom message into the eval error, which surfaces
+    // as the compiler's diagnostic.
+    interp.register_builtin(
+        "__calque_comptime_fail",
+        Box::new(|args, _out| {
+            let m = String::from_utf8_lossy(args[0].as_bytes()?).into_owned();
+            Err(frk_interp::EvalError::Trap(m))
+        }),
+    );
     interp.register_builtin(
         "__calque_eval_s",
         Box::new(|args, _out| {

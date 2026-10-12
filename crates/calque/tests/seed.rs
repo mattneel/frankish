@@ -2657,6 +2657,12 @@ fn calq0_comptime_evaluates_and_reifies() {
         "{err}"
     );
 
+    // D-139: assert.comptime - the false path surfaces the custom
+    // message through the evaluation service.
+    let afail = "pub fn main() i64 {\n    const x: i64 = comptime {\n        assert.comptime(1 == 2, \"one is not two\");\n        0\n    };\n    x\n}\n";
+    let aerr = calque::compile_source("ctafail.calq", afail).expect_err("assert fails");
+    assert!(aerr.contains("one is not two"), "{aerr}");
+
     // D-136: a STRING result reifies as a lit constant.
     let ssrc = "pub fn main() i64 {\n    const s: Str = comptime { str.concat(\"com\", \"ptime\") };\n    io.print(s);\n    io.print(\"\\n\");\n    0\n}\n";
     let sart = calque::compile_source("ctstr.calq", ssrc).expect("calq0 compiles it");
