@@ -3804,3 +3804,22 @@ veto-ledger pattern and most deserve their review.
   jit-rc on a hand-derived 0+1+2+3+4. Full workspace suite green
   (`make test`). C2's items are complete; the next milestone is C3.
 
+- D-133 [calque/comptime-service] THE SHARED COMPILE-TIME EVALUATION
+  SERVICE (goal §11's first requirement, C3 item 1's foundation): a
+  verified module text, an entry, and one i64 argument run under a
+  FRESH reference interpreter - `frk_harness::runner::eval_module_i64`
+  (the same per-op semantics as ordinary interpretation; the inner
+  run's print channel discarded, isolation slice 1). Two bindings:
+  the INTERP builtin `__calque_eval_i64` (registered in
+  `register_protocol_builtins`, which now runs for EVERY interp run -
+  raw .mlir artifacts resolve host services too, the gap the fixture
+  flushed out) and the JIT shim at BOTH engine sites (the frnksh
+  runner's and `jit_run_text_opt`'s); failures abort with the
+  service's message in the JIT context. Gate:
+  goldens/probe/eval_service - an inner module computing 6*6 = 36
+  through interp == jit == jit-rc, the declaration carrying the
+  trap-style private signature (host builtins answer only for absent/
+  bodyless symbols). Full `make test` green. NEXT SLICES: calq0's
+  `comptime` surface riding this service; structured results; target/
+  capability/budget parameters (the goal §11 list continues).
+

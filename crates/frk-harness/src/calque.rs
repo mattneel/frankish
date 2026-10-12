@@ -87,6 +87,13 @@ fn mlir_escape(text: &str) -> String {
     out
 }
 
+/// The Calque protocol services beyond frk-abi (D-133): the shared
+/// compile-time evaluation service every interp-based run registers,
+/// alongside the ordinary protocol builtins.
+pub fn register_calque_services(interp: &mut frk_interp::Interp<'_, '_>) {
+    crate::runner::register_protocol_builtins(interp);
+}
+
 /// Generates the input injection (BOOTSTRAP §2.1): `__calque_input_count()`
 /// and 0-based `__calque_input(i)` as kernel-IR definitions carrying the
 /// unit texts as bstr literals. This is the compiler's "stdin"; it is the
@@ -262,7 +269,7 @@ pub fn seed_translate(files: &[UnitFile]) -> Result<String, String> {
     let mut interp =
         frk_interp::Interp::new(&module).map_err(|error| format!("seed interp: {error}"))?;
     frk_dialects::register_eval(&mut interp);
-    crate::runner::register_protocol_builtins(&mut interp);
+    register_calque_services(&mut interp);
 
     let result = interp.eval_function("main", &[]);
     let output = interp.take_output();
@@ -398,7 +405,7 @@ pub fn run_test_blocks(artifact: &str) -> Result<Vec<(String, bool)>, String> {
         let mut interp =
             frk_interp::Interp::new(&module).map_err(|error| format!("interp: {error}"))?;
         frk_dialects::register_eval(&mut interp);
-        crate::runner::register_protocol_builtins(&mut interp);
+        register_calque_services(&mut interp);
         let ok = interp.eval_function(&sym, &[]).is_ok();
         results.push((label, ok));
     }
@@ -414,7 +421,7 @@ fn run_composed(text: &str) -> Result<RunOutcome, String> {
     let mut interp =
         frk_interp::Interp::new(&module).map_err(|error| format!("interp: {error}"))?;
     frk_dialects::register_eval(&mut interp);
-    crate::runner::register_protocol_builtins(&mut interp);
+    register_calque_services(&mut interp);
     let values = interp
         .eval_function("main", &[])
         .map_err(|error| error.to_string())?;

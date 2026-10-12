@@ -1190,7 +1190,7 @@ fn bstr_intern_bytes(bytes: &[u8]) -> *mut u8 {
     base
 }
 
-unsafe fn bstr_parts<'a>(s: *const u8) -> &'a [u8] {
+pub unsafe fn bstr_parts<'a>(s: *const u8) -> &'a [u8] {
     unsafe {
         let len = *(s as *const u64) as usize;
         std::slice::from_raw_parts(s.add(8), len)

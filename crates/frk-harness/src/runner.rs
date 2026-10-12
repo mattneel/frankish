@@ -342,16 +342,20 @@ fn interpret_case(case: &Case) -> Result<String, RunError> {
         frk_interp::Interp::new(&module).map_err(|e| RunError::Invoke(e.to_string()))?;
     frk_dialects::register_eval(&mut interp);
 
+    // Host builtins are registered for EVERY interp run (D-133): they
+    // answer only for absent/bodyless symbols, so raw .mlir artifacts
+    // calling host services (the evaluation service's fixture) resolve
+    // them too. Registration is REGISTRY-DRIVEN (D-062, finished at
+    // M21): frk-abi's Builtin rows are the set; builtin_for supplies
+    // the behavior; a row with no behavior panics here and fails the
+    // coverage test.
+    register_protocol_builtins(&mut interp);
     if matches!(
         case.kind,
         SourceKind::Ts | SourceKind::Lua | SourceKind::Scheme | SourceKind::Calque
     ) {
         // TS-0/Lua/Scheme print protocols: void entry; output = the
-        // captured print stream. Registration is REGISTRY-DRIVEN
-        // (D-062, finished at M21): frk-abi's Builtin rows are the
-        // set; builtin_for supplies the behavior; a row with no
-        // behavior panics here and fails the coverage test.
-        register_protocol_builtins(&mut interp);
+        // captured print stream.
         interp
             .eval_function(&case.entry, &[])
             .map_err(|e| RunError::Invoke(e.to_string()))?;
@@ -447,6 +451,11 @@ pub fn jit_run_text_opt(
     pipeline::lower_to_llvm(context, &mut module, strategy).map_err(|e| format!("lower: {e}"))?;
     let engine = ExecutionEngine::new(&module, opt_level, &[], false, false);
     bind_rt_symbols(&engine);
+    // The compile-time evaluation service (D-133): a harness-owned
+    // host symbol beyond the frk-abi registry.
+    unsafe {
+        engine.register_symbol("__calque_eval_i64", host_eval_i64 as *mut ());
+    }
     CAPTURE.with(|buffer| buffer.borrow_mut().clear());
     let mut result: i64 = 0;
     unsafe {
@@ -479,6 +488,11 @@ impl Runner for JitRunner {
         // Entry functions carry llvm.emit_c_interface (goldens/README.md);
         // invoke_packed resolves the _mlir_ciface_ wrapper by entry name.
         let engine = ExecutionEngine::new(&module, 2, &[], false, false);
+        // The compile-time evaluation service (D-133) rides every JIT
+        // engine that can run Calque artifacts.
+        unsafe {
+            engine.register_symbol("__calque_eval_i64", host_eval_i64 as *mut ());
+        }
         // Registry-driven JIT resolution (D-062, finished at M21): the
         // frk-abi table is the AUTHORITY on which symbols the JIT must
         // bind and how (Real twin fn vs capturing shim); jit_symbol
@@ -626,6 +640,22 @@ pub fn register_protocol_builtins(interp: &mut frk_interp::Interp<'_, '_>) {
         });
         interp.register_builtin(entry.name, builtin);
     }
+    // The shared compile-time evaluation service (D-133, goal §11):
+    // a harness-level host service beyond frk-abi, registered for
+    // every interp-based run (the calque protocol, the corpus legs).
+    interp.register_builtin(
+        "__calque_eval_i64",
+        Box::new(|args, _out| {
+            let text = std::str::from_utf8(args[0].as_bytes()?)
+                .map_err(|e| frk_interp::EvalError::Unsupported(format!("eval: {e}")))?;
+            let entry = std::str::from_utf8(args[1].as_bytes()?)
+                .map_err(|e| frk_interp::EvalError::Unsupported(format!("eval: {e}")))?;
+            let arg = args[2].as_signed()?;
+            let v = eval_module_i64(text, entry, arg)
+                .map_err(frk_interp::EvalError::Unsupported)?;
+            Ok(vec![frk_interp::Value::int(v as u64, 64)?])
+        }),
+    );
 }
 
 /// The interpreter behavior for a registered Builtin symbol.
@@ -730,6 +760,49 @@ fn builtin_for(name: &str) -> Option<frk_interp::Builtin> {
         }),
         _ => return None,
     })
+}
+
+/// The shared compile-time evaluation service (D-133, goal §11): a
+/// verified kernel-IR module text, an entry, and one i64 argument run
+/// under a FRESH reference interpreter - the same per-op semantics as
+/// ordinary interpretation, never a second evaluator. The inner run's
+/// print channel is discarded (isolation slice 1); a failure returns
+/// the service's message.
+pub fn eval_module_i64(module_text: &str, entry: &str, arg: i64) -> Result<i64, String> {
+    let context = frk_core::context();
+    frk_dialects::register(&context).map_err(|e| format!("eval: register: {e}"))?;
+    let module = melior::ir::Module::parse(&context, module_text)
+        .ok_or_else(|| "eval: the module text does not parse".to_string())?;
+    frk_dialects::verify(&context, &module).map_err(|e| format!("eval: verify: {e:?}"))?;
+    let mut interp =
+        frk_interp::Interp::new(&module).map_err(|e| format!("eval: interp: {e}"))?;
+    frk_dialects::register_eval(&mut interp);
+    register_protocol_builtins(&mut interp);
+    let args = [frk_interp::Value::int(arg as u64, 64).map_err(|e| format!("eval: {e:?}"))?];
+    let values = interp
+        .eval_function(entry, &args)
+        .map_err(|e| format!("eval: {entry}: {e}"))?;
+    let _ = interp.take_output();
+    let first = values
+        .first()
+        .ok_or_else(|| format!("eval: {entry} returned no values"))?;
+    first.as_signed().map_err(|e| format!("eval: {e}"))
+}
+
+/// The JIT-side shim for the evaluation service: reads two bstr
+/// pointers plus the i64 argument, evaluates, and returns the result;
+/// a failure aborts with the service's message (the JIT context has
+/// no structured failure channel in slice 1).
+unsafe extern "C" fn host_eval_i64(text: *const u8, entry: *const u8, arg: i64) -> i64 {
+    let text_s = unsafe { String::from_utf8_lossy(frk_rt::bstr_parts(text)).into_owned() };
+    let entry_s = unsafe { String::from_utf8_lossy(frk_rt::bstr_parts(entry)).into_owned() };
+    match eval_module_i64(&text_s, &entry_s, arg) {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("frk: eval: {msg}");
+            std::process::abort();
+        }
+    }
 }
 
 /// Test-only coverage probe over [`jit_symbol`] (the pointer itself

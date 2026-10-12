@@ -1573,6 +1573,12 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    C3 OPENED: THE EVAL SERVICE (D-133): eval_module_i64 + the
+    __calque_eval_i64 interp builtin (every interp run) + the JIT shim
+    at both engines; gate goldens/probe/eval_service (36 through
+    interp/jit/jit-rc). NEXT: calq0's `comptime` surface riding the
+    service (parse + sub-emission + reification), then structured
+    results + target/capability/budget parameters.
     C2 COMPLETE. SERVICE PROMOTIONS AUDITED (D-132): extsi, the
     harness JIT/cache services, and the interp's index-typed
     arith/scf support are the generic services Calque forced - each
