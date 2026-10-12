@@ -1162,7 +1162,11 @@ pub const Fn = struct {
 };
 
 pub const ImpDecl = struct {
+    // The module path (`A` or `A.B`); empty `members` imports the
+    // module, a members list is a SELECTIVE import bringing those
+    // names into the bare scope (D-131).
     name: Str,
+    members: [Str],
     line: i64,
     col: i64,
 };
@@ -2332,16 +2336,68 @@ pub fn p_lit_expr(mut p: P) Expr {
 
 pub fn p_import(mut p: P) ImpDecl {
     const kw: Tok = p_next(p);
+    var members: [Str] = vector.new();
     const nm: Tok = p_peek(p);
     if is_name_tok(nm) == false {
         p_fail(p, nm.line, nm.col, "expected a unit name after `import`");
-        return %ImpDecl{name: "", line: kw.line, col: kw.col};
+        return %ImpDecl{name: "", members: members, line: kw.line, col: kw.col};
     }
     const _n: Tok = p_next(p);
-    if expect_punct(p, ";") == false {
-        return %ImpDecl{name: "", line: kw.line, col: kw.col};
+    // A dotted module path (D-131): `import A.B;`. (`break` is a
+    // top-level-only statement in the compiler's own subset: flags.)
+    var path: Str = nm.text;
+    var path_go: bool = true;
+    while path_go {
+        if at_punct(p, ".") {
+            const d0: Tok = p_next(p);
+            if at_punct(p, "{") {
+                // `import A.B.{f, g};` - explicit selective members.
+                const _c0: Tok = p_next(p);
+                var mem_go: bool = true;
+                while mem_go {
+                    if p_ok(p) == false {
+                        mem_go = false;
+                    } else {
+                        if at_punct(p, "}") {
+                            const _c1: Tok = p_next(p);
+                            mem_go = false;
+                        } else {
+                            const m0: Tok = p_peek(p);
+                            if is_name_tok(m0) == false {
+                                p_fail(p, m0.line, m0.col, "expected a member name in the import list");
+                                return %ImpDecl{name: path, members: members, line: kw.line, col: kw.col};
+                            }
+                            const _m0: Tok = p_next(p);
+                            vector.push(members, m0.text);
+                            if at_punct(p, ",") {
+                                const _c2: Tok = p_next(p);
+                            } else {
+                                if at_punct(p, "}") == false {
+                                    p_fail(p, m0.line, m0.col, "expected `,` or `}` in the import list");
+                                    return %ImpDecl{name: path, members: members, line: kw.line, col: kw.col};
+                                }
+                            }
+                        }
+                    }
+                }
+                path_go = false;
+            } else {
+                const n1: Tok = p_peek(p);
+                if is_name_tok(n1) == false {
+                    p_fail(p, d0.line, d0.col, "expected a name after `.` in the import path");
+                    return %ImpDecl{name: path, members: members, line: kw.line, col: kw.col};
+                }
+                const _n1: Tok = p_next(p);
+                path = str.concat(path, str.concat(".", n1.text));
+            }
+        } else {
+            path_go = false;
+        }
     }
-    return %ImpDecl{name: nm.text, line: kw.line, col: kw.col};
+    if expect_punct(p, ";") == false {
+        return %ImpDecl{name: path, members: members, line: kw.line, col: kw.col};
+    }
+    return %ImpDecl{name: path, members: members, line: kw.line, col: kw.col};
 }
 
 pub fn p_test(mut p: P, idx: i64) Fn {

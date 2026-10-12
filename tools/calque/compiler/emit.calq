@@ -53,9 +53,11 @@ pub const GRes = struct {
 };
 
 // D-118: one unit's imports (the visibility check's context).
+// D-131: `members` carries a selective import's names.
 pub const NsImp = struct {
     ns: Str,
     mod: Str,
+    members: [Str],
 };
 
 // The Emitter module (D-129, D-120 item 4): the emitter's state IS
@@ -2153,6 +2155,58 @@ pub fn check_mod_vis(mut e: Emitter, mod: Str, f: Fn, line: i64, col: i64) bool 
     return false;
 }
 
+// A selective import's member (D-131): a bare name that matches
+// exactly one imported member resolves to that module's pub fn.
+// Ambiguity between two imports is a DIAGNOSED collision, never an
+// order-dependent choice. Returns poison + records the error on
+// failure.
+pub fn resolve_member_import(mut e: Emitter, nm: Str, line: i64, col: i64) Fn {
+    const a0: Ast = e_ast(e);
+    var found: Fn = poison_fn();
+    var found_mod: Str = "";
+    var count: i64 = 0;
+    const ni: i64 = vector.len(e.imports);
+    var i: i64 = 0;
+    while i < ni {
+        const im: NsImp = vector.get(e.imports, i);
+        if im.ns == e_cur_ns(e) {
+            const nm2: i64 = vector.len(im.members);
+            var j: i64 = 0;
+            while j < nm2 {
+                const m: Str = vector.get(im.members, j);
+                if m == nm {
+                    count = count + 1;
+                    const sym0: Str = str.concat(im.mod, str.concat("__", nm));
+                    const f0: Fn = find_fn(a0, sym0);
+                    if f0.name != "" {
+                        found = f0;
+                        found_mod = im.mod;
+                    }
+                }
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+    if count == 0 {
+        const _e0: Str = e_fail_at(e, line, col, str.concat("unknown name `", str.concat(nm, "`")));
+        return poison_fn();
+    }
+    if count > 1 {
+        const _e1: Str = e_fail_at(e, line, col, str.concat("import collision: `", str.concat(nm, "` comes from more than one import")));
+        return poison_fn();
+    }
+    if found.name == "" {
+        const _e2: Str = e_fail_at(e, line, col, str.concat("`", str.concat(found_mod, str.concat(".", str.concat(nm, "` is not exported")))));
+        return poison_fn();
+    }
+    if found.is_pub == false {
+        const _e3: Str = e_fail_at(e, line, col, str.concat("imported member `", str.concat(nm, "` is not pub")));
+        return poison_fn();
+    }
+    return found;
+}
+
 // D-118: bare names resolve in the unit first (a namespaced unit's own
 // fns), then the flat table (ns-less units); dotted names go through
 // the qualified sym directly.
@@ -2458,9 +2512,17 @@ pub fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
         }
     }
     const sym: Str = call_sym(r.name, r.mod);
-    const f: Fn = find_fn_ctx(e, r.name, r.mod);
+    var f: Fn = find_fn_ctx(e, r.name, r.mod);
     if f.name == "" {
-        return e_fail_at(e, line, col, str.concat("unknown function `", str.concat(sym, "`")));
+        if str.len(r.mod) == 0 {
+            // A selective import may provide the name (D-131).
+            f = resolve_member_import(e, r.name, line, col);
+            if f.name == "" {
+                return "";
+            }
+        } else {
+            return e_fail_at(e, line, col, str.concat("unknown function `", str.concat(sym, "`")));
+        }
     }
     if str.len(r.mod) > 0 {
         if check_mod_vis(e, r.mod, f, line, col) {

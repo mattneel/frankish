@@ -187,7 +187,7 @@ pub fn main() i64 {
         if fidx >= 0 {
             fns_name = vector.get(ns_names, fidx);
         }
-        vector.push(nsimps, %NsImp{ns: fns_name, mod: im3.name});
+        vector.push(nsimps, %NsImp{ns: fns_name, mod: im3.name, members: im3.members});
         ii = ii + 1;
     }
     var e: Emitter = e_init();

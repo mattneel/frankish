@@ -3772,3 +3772,19 @@ veto-ledger pattern and most deserve their review.
   (D-116's revisit list), alias re-export, aliased paths in
   diagnostics (the AST normalizes to full paths).
 
+- D-131 [calque/imports] SELECTIVE IMPORTS AND DOTTED PATHS (the last
+  C2 module-support fence): `import A.B;` accepts dotted module paths,
+  and `import A.B.{f, g};` is an EXPLICIT SELECTIVE import bringing
+  pub members into the bare scope. Resolution: a bare name that
+  `find_fn_ctx` cannot resolve searches the CURRENT unit's selective
+  imports only; the target must be pub; matching more than one import
+  is a DIAGNOSED collision, never an order-dependent choice (the
+  steering's rule); zero matches keeps the ordinary unknown-name
+  error. Gate: calq0_selective_imports (25 through a member import,
+  the collision, the non-pub refusal). SELF-HOSTING CONSTRAINT
+  RECORDED: the compiler's own subset accepts `break` only at a
+  loop's top level - flag loops in compiler source (the D-131 parser
+  rewrite hit this via the c5v1 compiler's diagnostic).
+  FENCED: re-exports, per-item type/const imports, member imports
+  from scratch aliases.
+

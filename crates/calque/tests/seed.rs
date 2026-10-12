@@ -2610,6 +2610,53 @@ fn calq0_modules_and_receiver_calls() {
 }
 
 #[test]
+fn calq0_selective_imports() {
+    // D-131: `import m.{quad};` brings a pub member into the bare
+    // scope; ambiguity is a diagnosed collision; a non-pub member is
+    // refused. calq0-only (post-freeze surface).
+    let compiler = calque::canonical_compiler().expect("the chain builds it");
+    let m = calque::UnitFile {
+        name: "m.calq".to_string(),
+        ns: Some("m".to_string()),
+        text: "pub fn quad(x: i64) i64 { x * x }\nfn hidden(x: i64) i64 { x }\n".to_string(),
+    };
+    let n = calque::UnitFile {
+        name: "n.calq".to_string(),
+        ns: Some("n".to_string()),
+        text: "pub fn quad(x: i64) i64 { x + 1 }\n".to_string(),
+    };
+    let main_ok = calque::UnitFile {
+        name: "main.calq".to_string(),
+        ns: None,
+        text: "import m.{quad};\npub fn main() i64 { io.print(str.fromI64(quad(5))); io.print(\"\\n\"); 0 }\n".to_string(),
+    };
+    let files = vec![stdlib_str(), m.clone(), n.clone(), main_ok];
+    let compiled = run_artifact_with_input_cached(compiler, &files).expect("it compiles");
+    let outcome = run_artifact(&compiled.output).expect("the program runs");
+    assert_eq!(outcome.output, "25\n", "{}", outcome.output);
+
+    // ambiguity between two imports is a collision, not an order pick
+    let main_amb = calque::UnitFile {
+        name: "main.calq".to_string(),
+        ns: None,
+        text: "import m.{quad};\nimport n.{quad};\npub fn main() i64 { quad(5) }\n".to_string(),
+    };
+    let files2 = vec![stdlib_str(), m.clone(), n.clone(), main_amb];
+    let out2 = run_artifact_with_input_cached(compiler, &files2).expect("runs");
+    assert!(out2.output.contains("import collision"), "{}", out2.output);
+
+    // a non-pub member is refused
+    let main_hid = calque::UnitFile {
+        name: "main.calq".to_string(),
+        ns: None,
+        text: "import m.{hidden};\npub fn main() i64 { hidden(5) }\n".to_string(),
+    };
+    let files3 = vec![stdlib_str(), m.clone(), main_hid];
+    let out3 = run_artifact_with_input_cached(compiler, &files3).expect("runs");
+    assert!(out3.output.contains("is not pub"), "{}", out3.output);
+}
+
+#[test]
 fn chain_compiler_agrees_with_the_direct_build() {
     std::thread::Builder::new()
         .stack_size(frk_interp::STACK_SIZE)

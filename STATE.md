@@ -1573,6 +1573,12 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    SELECTIVE IMPORTS (D-131): `import A.B;` dotted paths +
+    `import A.B.{f, g};` member imports into the bare scope (pub
+    checked; collisions diagnosed; zero-match keeps the ordinary
+    error). Suite 70; corpus 30/30. C2 module support = COMPLETE
+    (re-exports fenced in D-116/D-131's revisit lines). NEXT: C2's
+    last item (promote kernel/runtime/frontend services) or C3.
     LEXICAL ALIASES (D-130): `alias A.B.C;` expands at parse time in
     types/makes/dotted bases; dotted modules (`Compiler.Emitter`) are
     now usable end-to-end; collisions diagnosed at the declaration.
