@@ -88,6 +88,25 @@ seed revision is preserved in git (the parent of the v0.2 commit
 ac1cbb0). After the M37 gate the freeze stands unconditionally:
 further growth rides the calq0 chain.
 
+**The D-119 freeze record (honest history + the standing rule).**
+Through D-118 the seed gained further surface - struct spread, the
+`calque` CLI glue, `[N]T` fixed arrays, `test` blocks, `_`
+separators and `"""` multiline strings, tuples and destructuring,
+first-class fn values, generics, the seq/opt/res stdlib, `catch`,
+`?T`/`E!T`, `.Variant` patterns, imports, `usize`, and
+module-member visibility - each recorded in its D-entry and verified
+by the corpus and the seed/calq0 differentials. In practice that was
+a continuous transition era, not the single M37 hop this section
+originally described. D-119 closes it in the goal's shape: the seed's
+bytes are pinned (`CALQUE_SEED_SHA` in `scripts/calque-check.sh`),
+the last seed-buildable compiler source set is preserved as
+`snapshots/c2v1/` (byte-pinned by its `MANIFEST.sha256`), and FROM
+THE FREEZE POINT ON NO SEED EDITS OCCUR. New surface lands in the
+canonical compiler (calq0); the seed builds c2v1; c2v1 (and each
+later snapshot) builds the current sources. `make calque-bootstrap`
+runs and records that chain (artifact0/1/2 + sha256s under
+`out/calque/`).
+
 ## §2 The artifact
 
 An **artifact** is one kernel-IR module in MLIR textual form
@@ -177,7 +196,8 @@ native legs (5–6) and the clean-input fixed point.
 
 The commands (targets land with their stages; `make calque-test`
 exists now):
-`make calque-bootstrap` (step 1 artifact0 rebuild, reproducible
+`make calque-bootstrap` (step 1 artifact0 rebuild, reproducible;
+implemented by `calque bootstrap`, D-119
 offline), `make calque-selfhost` (steps 2–7 comparisons),
 `make calque-test` (corpus + charter checks), `make calque-comptime`
 (C3), `make calque-dx` (C5), `make calque-bench` (C4),

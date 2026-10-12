@@ -1573,6 +1573,21 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    MODULES-ACCESS AMENDMENT ADOPTED (D-120): the binding delivery
+    order is (1) bracket indexing - checked reads + PERSISTENT indexed
+    writes + ownership/alias tests (`var changed = original; changed[1]
+    = 99` leaves `original` intact) -> (2) migrate real emitter
+    accesses -> (3) module + companion/receiver-call surface -> (4)
+    migrate one emitter API -> (5) tools/docs/bootstrap -> (6)
+    protocols only on demand. D-116/D-118 stand as its resolver base.
+    NEXT ACTION: the indexed-access slice (surface + checked lowering +
+    persistence semantics + the §5 acceptance example as its gate).
+    BOOTSTRAP (D-119): the seed is FROZEN - sha-pinned, and further
+    surface growth rides calq0 + snapshot hops; c2v1 = the last
+    seed-buildable compiler source set (README + MANIFEST.sha256);
+    `make calque-bootstrap` = seed -> artifact0 -> current ->
+    artifact1 -> current -> artifact2 + sha256s of record under
+    out/calque/ (chain report: see the latest commit message).
     VISIBILITY (D-118, D-116's next slice): dotted members need an
     import + `pub`; reserved modules implicit; bare own-unit calls in
     namespaced units now resolve (a latent v0 hole the probes caught).

@@ -56,6 +56,7 @@ dependencies = [
  "frk-harness",
  "frk-interp",
  "melior",
+ "sha2",
 ]
 
 [[package]]

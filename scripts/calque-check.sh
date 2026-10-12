@@ -38,6 +38,13 @@ CALQUE_STEERING5_SHA=7ffc46a95565ef563c70b63c010da9efc8d0acda666ad91ec1e8bcfec75
 # seventh (D-109: Silat Style) - same pin discipline.
 CALQUE_STEERING6_SHA=5e422a6b8c23c5063f29b9e0fdf919d21ad331e01ad5b00103756192c9b272fc
 CALQUE_SILAT_SHA=9b317c01c3d0d18c7b56b9f62f5367c50dc6f9c5a99f08a2d993c1bafa28140f
+# The eighth steering amendment (D-120: modules, companion functions,
+# collection access) - same pin discipline.
+CALQUE_STEERING8_SHA=99c9b939277f0c30b4b4c701abd3df44d69072f0fe81ffe594bab04a065fd67b
+# The FROZEN seed (D-119; BOOTSTRAP.md section 1.3): byte-pinned from
+# the freeze point onwards. New language growth rides calq0 and the
+# snapshot chain, never this file.
+CALQUE_SEED_SHA=75206d8319d88442df0eb7fce92819a833a1eb4acc711f4b5f5a952bb1a78cd2
 
 fail=0
 err() { echo "calque-check: $1" >&2; fail=1; }
@@ -52,6 +59,9 @@ for f in docs/calque/GOAL.md docs/calque/SPEC.md docs/calque/BOOTSTRAP.md \
          docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md \
          docs/calque/STEERING-VECTOR-SUGAR.md \
          docs/calque/SILAT_STYLE.md \
+         docs/calque-steering-modules-access.md \
+         tools/calque/bootstrap/snapshots/c2v1/README.md \
+         tools/calque/bootstrap/snapshots/c2v1/MANIFEST.sha256 \
          specimens/calque/MANIFEST.md \
          specimens/calque/examples/README.md book/src/specimens/calque.md; do
   [ -f "$f" ] || err "missing artifact: $f"
@@ -106,6 +116,22 @@ if [ -f docs/calque/SILAT_STYLE.md ]; then
   got=$(sha256sum docs/calque/SILAT_STYLE.md | cut -d' ' -f1)
   [ "$got" = "$CALQUE_SILAT_SHA" ] \
     || err "SILAT_STYLE.md sha256 drifted: $got (pin $CALQUE_SILAT_SHA)"
+fi
+# 2i. Eighth amendment pin (D-120).
+if [ -f docs/calque-steering-modules-access.md ]; then
+  got=$(sha256sum docs/calque-steering-modules-access.md | cut -d' ' -f1)
+  [ "$got" = "$CALQUE_STEERING8_SHA" ] \
+    || err "calque-steering-modules-access.md sha256 drifted: $got (pin $CALQUE_STEERING8_SHA)"
+fi
+# 2j. The frozen seed + the c2v1 snapshot manifest (D-119).
+if [ -f tools/calque/bootstrap/seed.lua ]; then
+  got=$(sha256sum tools/calque/bootstrap/seed.lua | cut -d' ' -f1)
+  [ "$got" = "$CALQUE_SEED_SHA" ] \
+    || err "the frozen seed drifted: $got (pin $CALQUE_SEED_SHA; growth rides calq0 + snapshots, D-119)"
+fi
+if [ -d tools/calque/bootstrap/snapshots/c2v1 ]; then
+  ( cd tools/calque/bootstrap/snapshots/c2v1 && sha256sum -c --status MANIFEST.sha256 ) \
+    || err "the c2v1 snapshot drifted from MANIFEST.sha256 (snapshots are frozen, D-119)"
 fi
 
 # 3. Matrix structure.

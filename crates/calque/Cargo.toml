@@ -13,3 +13,4 @@ frk-dialects = { workspace = true }
 frk-front = { workspace = true }
 frk-interp = { workspace = true }
 frk-harness = { workspace = true }
+sha2 = { workspace = true }

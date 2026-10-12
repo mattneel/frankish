@@ -19,7 +19,7 @@ export TABLEGEN_220_PREFIX ?= $(MLIR_PREFIX)
 CARGO ?= cargo
 CARGOFLAGS ?=
 
-.PHONY: setup build test bless diff dashboard grid grid-native canary ci clean book book-serve abi calque-test calque-selfhost
+.PHONY: setup build test bless diff dashboard grid grid-native canary ci clean book book-serve abi calque-test calque-selfhost calque-bootstrap
 
 # Verify the pinned toolchain is present; names anything missing. Never
 # mutates the system.
@@ -88,6 +88,13 @@ calque-test:
 # self-produced compiler compiles a probe equal to the seed's emission.
 calque-selfhost:
 	$(CARGO) test -p calque $(CARGOFLAGS) --test seed calq0_compiles_itself
+
+# The recorded bootstrap chain (BOOTSTRAP.md §4, D-119): the frozen
+# seed -> c2v1 snapshot -> artifact0 -> current sources -> artifact1
+# -> artifact2 (the fixed point in embryo). Artifacts of record land
+# in out/calque/ (gitignored); sha256s printed.
+calque-bootstrap:
+	$(CARGO) run -q -p calque $(CARGOFLAGS) --bin calque -- bootstrap
 
 book-serve:
 	mdbook serve book --open

@@ -3567,3 +3567,37 @@ veto-ledger pattern and most deserve their review.
   the plain call (byte-equal with the seed again).
   FENCED: type visibility (named-type refs remain flat-merged),
   path-qualified/per-item imports, re-exports (D-116's list).
+
+- D-119 [calque/bootstrap] THE FREEZE MADE REAL (goal §5; BOOTSTRAP
+  §1.3/§5): the seed's byte history shows the M37 freeze was, in
+  practice, a continuous transition era (every post-M37 surface
+  addition edited the seed; each recorded in its D-entry). Ruling:
+  the seed freezes AT ITS CURRENT BYTES (sha256 pinned as
+  CALQUE_SEED_SHA in scripts/calque-check.sh), the last seed-buildable
+  compiler source set is preserved as
+  tools/calque/bootstrap/snapshots/c2v1/ (6 units + README +
+  byte manifest, checked by the script), and from here on new surface
+  lands in calq0 only; the seed builds c2v1, c2v1 builds the current
+  sources. `make calque-bootstrap` (the `calque bootstrap` driver)
+  runs seed -> artifact0 -> current -> artifact1 -> current ->
+  artifact2, writes them + sha256s of record under out/calque/, and
+  reports the fixed point (artifact1 == artifact2). Revisit: a new
+  snapshot (c3v1, ...) when a source feature outgrows the frozen seed;
+  C4 completes the native/mutation arms of §5.
+
+- D-120 [calque/modules-access] THE MODULES-ACCESS AMENDMENT ADOPTED
+  (docs/calque-steering-modules-access.md, sha-pinned as
+  CALQUE_STEERING8_SHA): modules own names, values own data, brackets
+  express access, protocols express genuinely shared behavior. The
+  binding delivery order, as the amendment states: (1) checked indexed
+  reads + indexed writes with ownership/alias tests (bracket access is
+  required source syntax; writes are PERSISTENT - `var changed =
+  original; changed[1] = 99` must leave `original` intact - and the
+  historical shared-vector mutation survives only in the recorded
+  snapshot/bootstrapped versions); (2) migrate real emitter accesses;
+  (3) the module + companion-call surface (primary structs, Self,
+  receiver-call spelling of ordinary functions); (4) migrate one
+  emitter API; (5) tools/docs/bootstrap transitions; (6) protocols
+  only when a real polymorphic consumer appears. D-116/D-118's import
+  + visibility work stands (the resolver the module surface builds
+  on). Not blocked on a trait/protocol solver.
