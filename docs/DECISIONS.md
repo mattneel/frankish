@@ -3701,3 +3701,14 @@ veto-ledger pattern and most deserve their review.
   newest SEED-BUILDABLE snapshot (its only remaining job). Suite 68
   green; the chain's cold cost ~90s, warm seconds.
 
+- D-127 [calque/migration] THE EMITTER ACCESS MIGRATION (D-120 item 2,
+  completed through the chain): ten `vector.get(e.field, i)` sites in
+  emit.calq become `e.field[i]` (asts/blocks/scopes/lifted/value_types
+  /return_types/files/tvars/insts/output) - the amendment's "migrate
+  several real emitter accesses through the new syntax". The frozen
+  seed cannot parse these sources; the fold carries them (seed ->
+  c2v1 -> c3v1 -> c4v1 -> current, D-126). Gate: the c4v1 compiler and
+  the migrated chain-built compiler produce byte-identical probe
+  artifacts (chain_compiler_agrees_with_the_direct_build), corpus 28
+  cases 0 red, grid GREEN.
+

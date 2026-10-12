@@ -91,7 +91,7 @@ pub fn e_init() Emitter {
 }
 
 pub fn e_ast(mut e: Emitter) Ast {
-    return vector.get(e.asts, 0);
+    return e.asts[0];
 }
 
 pub fn e_cur_ns(mut e: Emitter) Str {
@@ -174,7 +174,7 @@ pub fn fresh_label(mut e: Emitter) Str {
 }
 
 pub fn cur_block(mut e: Emitter) [Str] {
-    const b: Blk = vector.get(e.blocks, e.current_block);
+    const b: Blk = e.blocks[e.current_block];
     return b.lines;
 }
 
@@ -464,7 +464,7 @@ pub fn scope_truncate(mut e: Emitter, depth: i64) {
         var kept: [Scope] = vector.new();
         var i: i64 = 0;
         while i < depth {
-            vector.push(kept, vector.get(e.scopes, i));
+            vector.push(kept, e.scopes[i]);
             i = i + 1;
         }
         e.scopes = kept;
@@ -1085,7 +1085,7 @@ pub fn emit_module(mut e: Emitter, a: Ast) {
         if nlift > 0 {
             var li: i64 = 0;
             while li < nlift {
-                vector.push(e.output, vector.get(e.lifted, li));
+                vector.push(e.output, e.lifted[li]);
                 li = li + 1;
             }
             var fresh_lift: [Str] = vector.new();
@@ -1461,7 +1461,7 @@ pub fn vget(mut e: Emitter, id: Str) Ty {
     const n: i64 = vector.len(e.value_types);
     var i: i64 = n;
     while i > 0 {
-        const vt: VTy = vector.get(e.value_types, i - 1);
+        const vt: VTy = e.value_types[i - 1];
         if vt.id == id {
             return vt.ty;
         }
@@ -1471,11 +1471,11 @@ pub fn vget(mut e: Emitter, id: Str) Ty {
 }
 
 pub fn e_ret(mut e: Emitter) Ty {
-    return vector.get(e.return_types, 0);
+    return e.return_types[0];
 }
 
 pub fn e_file(mut e: Emitter) Str {
-    return vector.get(e.files, 0);
+    return e.files[0];
 }
 
 pub fn loc_msg(mut e: Emitter, line: i64, col: i64, code: Str, what: Str) Str {
@@ -2559,7 +2559,7 @@ pub fn tv_lookup(e: Emitter, nm: Str) Ty {
     const n: i64 = vector.len(e.tvars);
     var i: i64 = 0;
     while i < n {
-        const tv: TV = vector.get(e.tvars, i);
+        const tv: TV = e.tvars[i];
         if tv.name == nm {
             return tv.ty;
         }
@@ -3118,7 +3118,7 @@ pub fn resolve_generic(mut e: Emitter, f: Fn, args: [Expr], line: i64, col: i64)
     const ni: i64 = vector.len(e.insts);
     var ii: i64 = 0;
     while ii < ni {
-        const ie: InstN = vector.get(e.insts, ii);
+        const ie: InstN = e.insts[ii];
         if ie.key == key {
             found2 = true;
             instf = ie.f;
@@ -3498,7 +3498,7 @@ pub fn emit_ifx(mut e: Emitter, f: IfE) Str {
     var rebuilt: [Str] = vector.new();
     var j: i64 = 0;
     while j < no {
-        const line: Str = vector.get(e.output, j);
+        const line: Str = e.output[j];
         if j == then_end_len {
             vector.push(rebuilt, br_then);
         }

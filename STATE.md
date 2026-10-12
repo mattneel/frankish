@@ -1573,6 +1573,11 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    EMITTER MIGRATION (D-127): 10 `vector.get(e.field, i)` -> `e.xs[i]`
+    in emit.calq, carried by the fold; c4v1-vs-current probe equality +
+    corpus 28/28 + grid GREEN. NEXT: D-120 item 3 (module +
+    companion/receiver-call surface) or wider indexed coverage
+    (slices/`.at()`/diagnostic positions at the bracket).
     FIELD-BASE INDEXING + THE CHAIN FOLD (D-125/D-126): `e.xs[i]`
     reads landed (implementation; usages next), c4v1 recorded with
     SEED_BUILDABLE markers (the hop rule: post-D-124 snapshots are
