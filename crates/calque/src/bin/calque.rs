@@ -112,34 +112,13 @@ fn progress(msg: &str) {
 fn bootstrap(snapshot_dir: &str) -> ExitCode {
     use sha2::{Digest, Sha256};
 
-    let read_unit = |rel: &str, ns: Option<&str>| -> Result<calque::UnitFile, String> {
-        let path = format!("{snapshot_dir}/{rel}");
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| format!("bootstrap: cannot read {path}: {e}"))?;
-        Ok(calque::UnitFile {
-            name: path,
-            ns: ns.map(|s| s.to_string()),
-            text,
-        })
-    };
-
-    let mut snap = Vec::new();
-    for (rel, ns) in [
-        ("std/str.calq", Some("str")),
-        ("compiler/lex.calq", None),
-        ("compiler/report.calq", None),
-        ("compiler/parse.calq", None),
-        ("compiler/emit.calq", None),
-        ("compiler/compile.calq", None),
-    ] {
-        match read_unit(rel, ns) {
-            Ok(u) => snap.push(u),
-            Err(e) => {
-                eprintln!("{e}");
-                return ExitCode::from(2);
-            }
+    let snap = match calque::snapshot_sources(snapshot_dir) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("bootstrap: {e}");
+            return ExitCode::from(2);
         }
-    }
+    };
 
     let current = calque::compiler_sources();
 

@@ -3636,3 +3636,22 @@ veto-ledger pattern and most deserve their review.
   `.at()`/`len()` receiver spelling, negative/out-of-range diagnostic
   positions at the bracket (E1-E3 of the amendment's list onward).
 
+- D-123 [calque/chain] THE CHAIN TAKES OVER WHEN THE SEED CANNOT
+  (D-119's mechanism, first real use prepared): every surface addition
+  after D-122 the amendment's items 2-4 will make lands in calq0, and
+  the frozen seed stops parsing calq0's own sources the moment they
+  USE the new syntax. The harness's `canonical_compiler()` now tries
+  the direct build (seed + current sources) and FALLS BACK to the
+  recorded chain: frozen seed -> the newest seed-buildable snapshot
+  (`snapshots/c3v1` = the post-D-122 state, byte-pinned) -> the
+  current sources. `chain_compiler()` reads a snapshot directory from
+  disk and runs both stages (JIT + disk caches, in the run-cache key
+  discipline). Verifier: `chain_compiler_agrees_with_the_direct_build`
+  - while the sources remain seed-buildable, the chain's compiler and
+  the direct build agree byte-for-byte on the artifacts they produce
+  for the same probe (byte-equality between seed-built and calq0-built
+  compiler BINARIES is not promised; §5's fixed point is
+  calq0-stability, artifact1 == artifact2).
+  c3v1's hop record lives in its README; `read`-me discipline and the
+  script pins cover both snapshots.
+

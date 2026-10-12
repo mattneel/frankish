@@ -1,0 +1,2551 @@
+// calq0 - the PARSER: tokens -> AST (unions + records + Vectors, b0
+// values throughout). The grammar mirrors the SEED's parser (the
+// normative shape); where the two must agree byte-for-byte the
+// differential tests enforce it, and every surface slice lands in
+// both. The freeze sources are SPEC (5/6) and the demo playbook.
+//
+// STATE (D-112): the parser threads ONE `P` value; helpers that
+// advance take `mut p: P` (the scoped exclusive interface), lookahead
+// helpers take plain `p`. No hidden globals.
+//
+// ERRORS ARE VALUES (D-109): `p_fail` records the FIRST failure in
+// the State (later diagnostics cascade from the root); poisoned
+// nodes keep the grammar total, and every loop re-checks `p_ok`, so
+// parsing stops cleanly at the first error.
+//
+// SPANS: every user-facing node carries line/col (consts, vars,
+// assignments, returns, ifs, matches, arms, patterns, lambdas, tuple
+// destructuring, indexes); diagnostics render through report.calq.
+
+pub const BadNode = struct {
+    msg: Str,
+    line: i64,
+    col: i64,
+};
+
+pub const Expr = union(enum) {
+    Int: Str,
+    Str: Str,
+    Bool: Str,
+    Ref: Ref,
+    Call: Call,
+    Bin: Bin,
+    If: IfE,
+    Match: MatchE,
+    Make: MakeE,
+    Blk: Block,
+    // A collection literal (D-112): typed ONLY by its target
+    // annotation; the bare emitter rejects it.
+    List: [Expr],
+    // A closure literal (SPEC 6.4): lifted to a top-level function by
+    // the emitter; the expression evaluates to the closure value.
+    Lam: LamE,
+    // `(a, b)` - a tuple literal (D-114); `(e)` stays grouping.
+    Tup: [Expr],
+    // `v[i]` (the vector steering): a fixed-array element read.
+    IndexE: IdxE,
+    // `try e` (SPEC 6.5): on Err the enclosing function returns Err(x).
+    TryE: TryX,
+    CatchE: CatchX,
+    // A bare type value in argument position (D-113): an explicit
+    // instantiation argument (`identity(i64, 5)`).
+    TyV: Ty,
+    // Explicit recovery node (D-109): the emitter MUST reject it before
+    // execution can treat it as a valid expression. Also carries the
+    // "<absent>" marker for optional fields that are read only when
+    // their flag says present.
+    Bad: BadNode,
+};
+
+pub const Ref = struct {
+    name: Str,
+    mod: Str,
+};
+
+pub const Call = struct {
+    callee: Ref,
+    args: [Expr],
+    line: i64, // the `(` token's position (guard messages ride it)
+    col: i64,
+};
+
+pub const Bin = struct {
+    op: Str,
+    l: Expr,
+    r: Expr,
+    line: i64, // the OP token's position (guard messages ride it)
+    col: i64,
+};
+
+pub const P = struct {
+    toks: [Tok],
+    pos: i64 = 0,
+    state: State = State.Ok,
+};
+
+pub fn p_new(toks: [Tok]) P {
+    return %P{toks: toks};
+}
+
+pub fn p_ok(p: P) bool {
+    return state_ok(p.state);
+}
+
+pub fn p_state(p: P) State {
+    return p.state;
+}
+
+pub fn p_fail(mut p: P, line: i64, col: i64, msg: Str) {
+    p.state = State.Failed(%Fail{msg: msg, line: line, col: col});
+}
+
+pub fn p_peek(p: P) Tok {
+    return vector.get(p.toks, p.pos);
+}
+
+pub fn p_next(mut p: P) Tok {
+    const t: Tok = p_peek(p);
+    if is_eof_tok(t) {
+        return t;
+    }
+    p.pos = p.pos + 1;
+    return t;
+}
+
+// Token-kind predicates: a match on the ACTUAL variant (D-109) -
+// never a comparison of rendered names. Keyword/text comparisons stay
+// exactly where the token's TEXT is the domain ("punct", "fn").
+pub fn is_name_tok(t: Tok) bool {
+    const k: Kind = t.kind;
+    return match k {
+        Kind.Name => true,
+        Kind.Int => false,
+        Kind.Str => false,
+        Kind.Punct => false,
+        Kind.Kw => false,
+        Kind.Eof => false,
+    };
+}
+
+pub fn is_int_tok(t: Tok) bool {
+    const k: Kind = t.kind;
+    return match k {
+        Kind.Name => false,
+        Kind.Int => true,
+        Kind.Str => false,
+        Kind.Punct => false,
+        Kind.Kw => false,
+        Kind.Eof => false,
+    };
+}
+
+pub fn is_str_tok(t: Tok) bool {
+    const k: Kind = t.kind;
+    return match k {
+        Kind.Name => false,
+        Kind.Int => false,
+        Kind.Str => true,
+        Kind.Punct => false,
+        Kind.Kw => false,
+        Kind.Eof => false,
+    };
+}
+
+pub fn is_punct_tok(t: Tok) bool {
+    const k: Kind = t.kind;
+    return match k {
+        Kind.Name => false,
+        Kind.Int => false,
+        Kind.Str => false,
+        Kind.Punct => true,
+        Kind.Kw => false,
+        Kind.Eof => false,
+    };
+}
+
+pub fn is_kw_tok(t: Tok) bool {
+    const k: Kind = t.kind;
+    return match k {
+        Kind.Name => false,
+        Kind.Int => false,
+        Kind.Str => false,
+        Kind.Punct => false,
+        Kind.Kw => true,
+        Kind.Eof => false,
+    };
+}
+
+pub fn is_eof_tok(t: Tok) bool {
+    const k: Kind = t.kind;
+    return match k {
+        Kind.Name => false,
+        Kind.Int => false,
+        Kind.Str => false,
+        Kind.Punct => false,
+        Kind.Kw => false,
+        Kind.Eof => true,
+    };
+}
+
+pub fn at_punct(mut p: P, v: Str) bool {
+    const t: Tok = p_peek(p);
+    if is_punct_tok(t) == false {
+        return false;
+    }
+    return t.text == v;
+}
+
+pub fn at_kw(mut p: P, v: Str) bool {
+    const t: Tok = p_peek(p);
+    if is_kw_tok(t) == false {
+        return false;
+    }
+    return t.text == v;
+}
+
+pub fn expect_punct(mut p: P, v: Str) bool {
+    if at_punct(p, v) {
+        const _t: Tok = p_next(p);
+        return true;
+    }
+    const t: Tok = p_peek(p);
+    p_fail(p, t.line, t.col, str.concat("expected `", str.concat(v, "`")));
+    return false;
+}
+
+pub fn bad(mut p: P, line: i64, col: i64, msg: Str) Expr {
+    p_fail(p, line, col, msg);
+    return Expr.Bad(%BadNode{msg: msg, line: line, col: col});
+}
+
+// Recovery node for paths where the failure is ALREADY recorded
+// (expect_* returned false): no second message, just the Bad node.
+pub fn bad_here(mut p: P) Expr {
+    const t: Tok = p_peek(p);
+    return Expr.Bad(%BadNode{msg: "recovery", line: t.line, col: t.col});
+}
+
+pub fn poison() Expr {
+    return Expr.Bad(%BadNode{msg: "<absent>", line: 0, col: 0});
+}
+
+pub fn op_at(mut p: P, level: i64) Str {
+    const t: Tok = p_peek(p);
+    if is_kw_tok(t) {
+        if level == 2 {
+            if t.text == "or" {
+                return "or";
+            }
+        }
+        if level == 3 {
+            if t.text == "and" {
+                return "and";
+            }
+        }
+        return "";
+    }
+    if is_punct_tok(t) == false {
+        return "";
+    }
+    if level == 1 {
+        if t.text == "|>" {
+            return "|>";
+        }
+    }
+    if level == 4 {
+        if t.text == "==" {
+            return "==";
+        }
+        if t.text == "!=" {
+            return "!=";
+        }
+        if t.text == "<" {
+            return "<";
+        }
+        if t.text == "<=" {
+            return "<=";
+        }
+        if t.text == ">" {
+            return ">";
+        }
+        if t.text == ">=" {
+            return ">=";
+        }
+        return "";
+    }
+    if level == 5 {
+        if t.text == "+" {
+            return "+";
+        }
+        if t.text == "-" {
+            return "-";
+        }
+        return "";
+    }
+    if level == 6 {
+        if t.text == "*" {
+            return "*";
+        }
+        if t.text == "/" {
+            return "/";
+        }
+        if t.text == "%" {
+            return "%";
+        }
+        return "";
+    }
+    return "";
+}
+
+pub fn parse_expr_ops(mut p: P, level: i64) Expr {
+    if level > 6 {
+        const tk: Tok = p_peek(p);
+        if is_kw_tok(tk) {
+            if tk.text == "try" {
+                const _t: Tok = p_next(p);
+                const inner: Expr = parse_expr(p, 7);
+                return Expr.TryE(%TryX{expr: inner, line: tk.line, col: tk.col});
+            }
+        }
+        return parse_postfix(p);
+    }
+    var left: Expr = parse_expr(p, level + 1);
+    var go: bool = true;
+    while go {
+        if p_ok(p) == false {
+            go = false;
+        } else {
+            const op: Str = op_at(p, level);
+            if str.len(op) == 0 {
+                go = false;
+            } else {
+                const op_t: Tok = p_next(p);
+                const right: Expr = parse_expr(p, level + 1);
+                if op == "|>" {
+                    left = pipe_into(p, left, right, op_t);
+                } else {
+                    left = Expr.Bin(%Bin{op, l: left, r: right, line: op_t.line, col: op_t.col});
+                }
+                if level == 4 {
+                    const o2: Str = op_at(p, 4);
+                    if str.len(o2) != 0 {
+                        const t2: Tok = p_peek(p);
+                        p_fail(p, t2.line, t2.col, "comparisons do not chain (SPEC 5.1)");
+                    }
+                }
+            }
+        }
+    }
+    return left;
+}
+
+pub fn parse_expr(mut p: P, level: i64) Expr {
+    // `catch` binds at the LOOSEST precedence (SPEC 6.5): the operand
+    // chain first, then zero or more `catch |e| { ... }` clauses.
+    var e: Expr = parse_expr_ops(p, level);
+    if level != 1 {
+        return e;
+    }
+    var go: bool = true;
+    while go {
+        if p_ok(p) == false {
+            go = false;
+        } else {
+            const t: Tok = p_peek(p);
+            if is_kw_tok(t) and t.text == "catch" {
+                const ct: Tok = p_next(p);
+                var bind: Str = "";
+                const t2: Tok = p_peek(p);
+                if is_punct_tok(t2) and t2.text == "|" {
+                    const _b0: Tok = p_next(p);
+                    const nm: Tok = p_next(p);
+                    if is_name_tok(nm) == false {
+                        p_fail(p, nm.line, nm.col, "expected a binding name in `catch |name|`");
+                    }
+                    bind = nm.text;
+                    if expect_punct(p, "|") == false {
+                        p_fail(p, t2.line, t2.col, "expected `|` after the catch binding");
+                    }
+                }
+                const blk: Block = p_block(p);
+                e = Expr.CatchE(%CatchX{expr: e, bind: bind, block: blk, line: ct.line, col: ct.col});
+            } else {
+                go = false;
+            }
+        }
+    }
+    return e;
+}
+
+// x |> f(a, b) = f(x, a, b); x |> f = f(x) (SPEC 6.3): the piped
+// value leads the argument list, evaluated first and exactly once.
+pub fn pipe_into(mut p: P, piped: Expr, stage: Expr, op_t: Tok) Expr {
+    match stage {
+        Expr.Call(c) => {
+            var args: [Expr] = vector.new();
+            vector.push(args, piped);
+            const n: i64 = vector.len(c.args);
+            var i: i64 = 0;
+            while i < n {
+                vector.push(args, vector.get(c.args, i));
+                i = i + 1;
+            }
+            return Expr.Call(%Call{callee: c.callee, args: args, line: op_t.line, col: op_t.col});
+        },
+        Expr.Ref(r) => {
+            var args2: [Expr] = vector.new();
+            vector.push(args2, piped);
+            return Expr.Call(%Call{callee: r, args: args2, line: op_t.line, col: op_t.col});
+        },
+        _ => {
+            p_fail(p, op_t.line, op_t.col, "a pipeline stage must be a callable path (SPEC 6.3)");
+            return bad(p, op_t.line, op_t.col, "pipeline");
+        },
+    }
+}
+
+// `fn (x: T, ...) R { body }` - a closure literal (SPEC 6.4).
+pub fn p_lambda(mut p: P) Expr {
+    const kw: Tok = p_next(p);
+    if expect_punct(p, "(") == false {
+        return bad(p, kw.line, kw.col, "fn literal needs a parameter list");
+    }
+    var lps: [Param] = vector.new();
+    var lgo: bool = true;
+    while lgo {
+        if p_ok(p) == false {
+            lgo = false;
+        } else {
+            if at_punct(p, ")") {
+                lgo = false;
+            } else {
+                const pn: Tok = p_peek(p);
+                if is_name_tok(pn) == false {
+                    p_fail(p, pn.line, pn.col, "expected a parameter name");
+                    return bad(p, pn.line, pn.col, "lambda");
+                }
+                const _pn: Tok = p_next(p);
+                // a bare parameter (no `: T`) is INFERRED from the
+                // expected fn type at the closure's position (D-086).
+                var pty: Ty = Ty.TyBad(%BadNode{msg: "<hole>", line: pn.line, col: pn.col});
+                if at_punct(p, ":") {
+                    const _cl: Tok = p_next(p);
+                    pty = p_type(p);
+                }
+                vector.push(lps, %Param{name: pn.text, ty: pty, mut: false, is_comptime: false});
+                if at_punct(p, ",") {
+                    const _c: Tok = p_next(p);
+                } else {
+                    lgo = false;
+                }
+            }
+        }
+    }
+    if expect_punct(p, ")") == false {
+        return bad(p, kw.line, kw.col, "lambda");
+    }
+    var lret: Ty = Ty.TyBad(%BadNode{msg: "<hole>", line: kw.line, col: kw.col});
+    if at_punct(p, "{") == false {
+        lret = p_type(p);
+    }
+    const lbody: Block = p_block(p);
+    return Expr.Lam(%LamE{params: lps, ret: lret, body: lbody, line: kw.line, col: kw.col});
+}
+
+pub fn parse_postfix(mut p: P) Expr {
+    var e: Expr = parse_primary(p);
+    var go: bool = true;
+    while go {
+        if p_ok(p) == false {
+            go = false;
+        } else {
+            if at_punct(p, "(") {
+                e = do_call(p, e);
+            } else {
+                if at_punct(p, "[") {
+                    e = do_index(p, e);
+                } else {
+                    if at_punct(p, ".") {
+                        e = do_dot(p, e);
+                    } else {
+                        go = false;
+                    }
+                }
+            }
+        }
+    }
+    return e;
+}
+
+pub fn do_call(mut p: P, e: Expr) Expr {
+    const t: Tok = p_peek(p);
+    const r: Ref = match e {
+        Expr.Ref(r0) => r0,
+        _ => %Ref{name: "", mod: ""},
+    };
+    if str.len(r.name) == 0 {
+        return bad(p, t.line, t.col, "callee must be a name or module member (slice 2a)");
+    }
+    const _t: Tok = p_next(p);
+    var args: [Expr] = vector.new();
+    if at_punct(p, ")") {
+        const _c: Tok = p_next(p);
+    } else {
+        var more: bool = true;
+        while more {
+            if p_ok(p) == false {
+                more = false;
+            } else {
+                const at2: Tok = p_peek(p);
+                if is_kw_tok(at2) and (at2.text == "i64" or at2.text == "bool") {
+                    const _k: Tok = p_next(p);
+                    if at2.text == "bool" {
+                        vector.push(args, Expr.TyV(Ty.BoolV));
+                    } else {
+                        vector.push(args, Expr.TyV(Ty.I64));
+                    }
+                } else {
+                    vector.push(args, parse_expr(p, 1));
+                }
+                if at_punct(p, ",") {
+                    const _c2: Tok = p_next(p);
+                } else {
+                    more = false;
+                }
+            }
+        }
+        if expect_punct(p, ")") == false {
+            return bad_here(p);
+        }
+    }
+    return Expr.Call(%Call{callee: r, args, line: t.line, col: t.col});
+}
+
+pub fn do_index(mut p: P, e: Expr) Expr {
+    const t: Tok = p_peek(p);
+    const r: Ref = match e {
+        Expr.Ref(r0) => r0,
+        _ => %Ref{name: "", mod: ""},
+    };
+    if str.len(r.name) == 0 {
+        return bad(p, t.line, t.col, "indexing needs a named base (slice)");
+    }
+    if str.len(r.mod) != 0 {
+        return bad(p, t.line, t.col, "indexing needs a named base (slice)");
+    }
+    const _b: Tok = p_next(p);
+    const ix: Expr = parse_expr(p, 1);
+    if expect_punct(p, "]") == false {
+        return bad(p, t.line, t.col, "expected `]` after the index");
+    }
+    return Expr.IndexE(%IdxE{base: r, idx: ix, line: t.line, col: t.col});
+}
+
+pub fn do_dot(mut p: P, e: Expr) Expr {
+    const t: Tok = p_peek(p);
+    const r: Ref = match e {
+        Expr.Ref(r0) => r0,
+        _ => %Ref{name: "", mod: ""},
+    };
+    if str.len(r.name) == 0 {
+        return bad(p, t.line, t.col, "`.' applies to a name (slice 2a)");
+    }
+    if str.len(r.mod) != 0 {
+        return bad(p, t.line, t.col, "chained module paths are not in slice 2a");
+    }
+    const _t: Tok = p_next(p);
+    const m: Tok = p_peek(p);
+    if is_name_tok(m) == false and is_int_tok(m) == false {
+        return bad(p, m.line, m.col, "expected an identifier or a tuple index after `.'");
+    }
+    const _m: Tok = p_next(p);
+    return Expr.Ref(%Ref{name: m.text, mod: r.name});
+}
+
+pub fn parse_primary(mut p: P) Expr {
+    const t: Tok = p_peek(p);
+    if is_int_tok(t) {
+        const _t: Tok = p_next(p);
+        return Expr.Int(t.text);
+    }
+    if is_str_tok(t) {
+        const _t: Tok = p_next(p);
+        return Expr.Str(t.text);
+    }
+    if is_kw_tok(t) {
+        if t.text == "true" {
+            const _t: Tok = p_next(p);
+            return Expr.Bool(t.text);
+        }
+        if t.text == "false" {
+            const _t: Tok = p_next(p);
+            return Expr.Bool(t.text);
+        }
+        if t.text == "if" {
+            const iff: IfE = p_if(p);
+            return Expr.If(iff);
+        }
+        if t.text == "match" {
+            return p_match(p);
+        }
+        if t.text == "fn" {
+            return p_lambda(p);
+        }
+        return bad(p, t.line, t.col, str.concat("unexpected keyword `", str.concat(t.text, "`")));
+    }
+    if is_name_tok(t) {
+        const _t: Tok = p_next(p);
+        return Expr.Ref(%Ref{name: t.text, mod: ""});
+    }
+    if at_punct(p, "-") {
+        return bad(p, t.line, t.col, "unary minus is not in seed v0 (write `0 - x`)");
+    }
+    if at_punct(p, "!") {
+        return bad(p, t.line, t.col, "`!` is not in seed v0");
+    }
+    if at_punct(p, "%") {
+        return p_make(p);
+    }
+    if at_punct(p, "(") {
+        const _t: Tok = p_next(p);
+        const first: Expr = parse_expr(p, 1);
+        if at_punct(p, ",") {
+            var items: [Expr] = vector.new();
+            vector.push(items, first);
+            var tgo: bool = true;
+            while tgo {
+                if at_punct(p, ",") {
+                    const _c: Tok = p_next(p);
+                    vector.push(items, parse_expr(p, 1));
+                } else {
+                    tgo = false;
+                }
+            }
+            if expect_punct(p, ")") == false {
+                return bad_here(p);
+            }
+            return Expr.Tup(items);
+        }
+        if expect_punct(p, ")") == false {
+            return bad_here(p);
+        }
+        return first;
+    }
+    if at_punct(p, "{") {
+        const b: Block = p_block(p);
+        return Expr.Blk(b);
+    }
+    if at_punct(p, ".") {
+        const _dot: Tok = p_next(p);
+        const vn: Tok = p_peek(p);
+        if is_name_tok(vn) == false {
+            p_fail(p, vn.line, vn.col, "expected a variant name after `.`");
+            return bad(p, vn.line, vn.col, "variant");
+        }
+        const _v: Tok = p_next(p);
+        var vargs: [Expr] = vector.new();
+        if at_punct(p, "(") {
+            const _lp: Tok = p_next(p);
+            while p_ok(p) {
+                if at_punct(p, ")") {
+                    const _rp: Tok = p_next(p);
+                    return Expr.Call(%Call{callee: %Ref{name: vn.text, mod: "@dot"}, args: vargs, line: vn.line, col: vn.col});
+                }
+                const va: Expr = parse_expr(p, 1);
+                vector.push(vargs, va);
+                if at_punct(p, ",") {
+                    const _c: Tok = p_next(p);
+                } else {
+                    if expect_punct(p, ")") == false {
+                        return bad(p, vn.line, vn.col, "variant");
+                    }
+                    return Expr.Call(%Call{callee: %Ref{name: vn.text, mod: "@dot"}, args: vargs, line: vn.line, col: vn.col});
+                }
+            }
+            return bad(p, vn.line, vn.col, "variant");
+        }
+        return Expr.Call(%Call{callee: %Ref{name: vn.text, mod: "@dot"}, args: vargs, line: vn.line, col: vn.col});
+    }
+    if at_punct(p, "[") {
+        const _lb: Tok = p_next(p);
+        var items: [Expr] = vector.new();
+        while p_ok(p) {
+            if at_punct(p, "]") {
+                const _rb: Tok = p_next(p);
+                return Expr.List(items);
+            }
+            const item: Expr = parse_expr(p, 1);
+            vector.push(items, item);
+            if at_punct(p, ",") {
+                const _c: Tok = p_next(p);
+            } else {
+                if at_punct(p, "]") == false {
+                    const bt: Tok = p_peek(p);
+                    return bad(p, bt.line, bt.col, "expected `]` to close the collection literal");
+                }
+            }
+        }
+        return bad(p, t.line, t.col, "unterminated collection literal");
+    }
+    if is_eof_tok(t) {
+        return bad(p, t.line, t.col, "unexpected end of input");
+    }
+    return bad(p, t.line, t.col, str.concat("unexpected token `", str.concat(t.text, "`")));
+}
+
+// ---------------------------------------------------------------- dump
+
+pub fn dump_ref(r: Ref) Str {
+    if str.len(r.mod) == 0 {
+        return str.concat("(ref ", str.concat(r.name, ")"));
+    }
+    return str.concat("(ref ", str.concat(r.mod, str.concat(".", str.concat(r.name, ")"))));
+}
+
+pub fn dump_call(c: Call) Str {
+    var acc: Str = str.concat("(call ", dump_ref(c.callee));
+    const n: i64 = vector.len(c.args);
+    var i: i64 = 0;
+    while i < n {
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, dump(vector.get(c.args, i)));
+        i = i + 1;
+    }
+    return str.concat(acc, ")");
+}
+
+pub fn dump(e: Expr) Str {
+    return match e {
+        Expr.Int(t) => str.concat("(int ", str.concat(t, ")")),
+        Expr.Str(t) => str.concat("(str ", str.concat(str.fromI64(str.len(t)), str.concat(" ", str.concat(t, ")")))),
+        Expr.Bool(t) => str.concat("(bool ", str.concat(t, ")")),
+        Expr.Ref(r) => dump_ref(r),
+        Expr.Call(c) => dump_call(c),
+        Expr.Bin(b) => str.concat("(bin ", str.concat(b.op, str.concat(" ", str.concat(dump(b.l), str.concat(" ", str.concat(dump(b.r), ")")))))),
+        Expr.If(f) => d_if(f),
+        Expr.Match(m) => d_match(m),
+        Expr.Make(m) => d_make(m),
+        Expr.Blk(b) => d_block(b),
+        Expr.List(l) => d_list(l),
+        Expr.Lam(l) => d_lam(l),
+        Expr.TryE(tr) => str.concat("(try ", str.concat(dump(tr.expr), ")")),
+        Expr.CatchE(cx2) => d_catch(cx2),
+        Expr.TyV(tx) => str.concat("(tyv ", str.concat(d_ty(tx), ")")),
+        Expr.IndexE(ix2) => d_index(ix2),
+        Expr.Tup(es) => {
+            var acc: Str = "(tup";
+            const n: i64 = vector.len(es);
+            var i: i64 = 0;
+            while i < n {
+                acc = str.concat(acc, " ");
+                acc = str.concat(acc, dump(vector.get(es, i)));
+                i = i + 1;
+            }
+            str.concat(acc, ")")
+        },
+        Expr.Bad(b) => d_bad(b),
+    };
+}
+
+pub fn d_index(ix2: IdxE) Str {
+    const br: Ref = ix2.base;
+    return str.concat("(index ", str.concat(br.name, str.concat(" ", str.concat(dump(ix2.idx), ")"))));
+}
+
+pub fn d_catch(cx: CatchX) Str {
+    const blk: Block = cx.block;
+    const bt: Expr = blk.tail;
+    return str.concat("(catch ", str.concat(dump(cx.expr), str.concat(" ", str.concat(dump(bt), ")"))));
+}
+
+pub fn d_lam(l: LamE) Str {
+    var acc: Str = "(lam [";
+    const n: i64 = vector.len(l.params);
+    var i: i64 = 0;
+    while i < n {
+        if i > 0 {
+            acc = str.concat(acc, " ");
+        }
+        const prm: Param = vector.get(l.params, i);
+        acc = str.concat(acc, str.concat("(", str.concat(prm.name, str.concat(" ", str.concat(d_ty(prm.ty), ")")))));
+        i = i + 1;
+    }
+    acc = str.concat(acc, "] ");
+    acc = str.concat(acc, d_ty(l.ret));
+    acc = str.concat(acc, " ");
+    acc = str.concat(acc, d_block(l.body));
+    return str.concat(acc, ")");
+}
+
+pub fn d_list(items: [Expr]) Str {
+    var acc: Str = "(list";
+    const n: i64 = vector.len(items);
+    var i: i64 = 0;
+    while i < n {
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, dump(vector.get(items, i)));
+        i = i + 1;
+    }
+    return str.concat(acc, ")");
+}
+
+pub fn d_bad(b: BadNode) Str {
+    var acc: Str = str.concat("(bad ", str.fromI64(b.line));
+    acc = str.concat(acc, ":");
+    acc = str.concat(acc, str.fromI64(b.col));
+    acc = str.concat(acc, " ");
+    acc = str.concat(acc, b.msg);
+    return str.concat(acc, ")");
+}
+
+// ---------------------------------------------------------------- slice 2b
+// The rest of the b0 grammar: type nodes, blocks and statements,
+// functions and type declarations, `if`/`match`/`%literal`/block
+// expressions, and patterns - all mirroring the seed's parser. The
+// "absent" parts of optional shapes are flags plus a poison value
+// (b0 has no Option), read only when the flag says present.
+
+pub const FnSig = struct {
+    params: [Ty],
+    ret: Ty,
+};
+
+pub const Ty = union(enum) {
+    I64,
+    BoolV,
+    StrV,
+    UnitV,
+    Named: Str,
+    Vec: Ty,
+    // A first-class function type (SPEC 6.4): value_ir is
+    // !frk_closure.fn<[params], [ret]>.
+    FnT: FnSig,
+    // `?T` / `E!T` shorthands (SPEC 6.5): structural Option/Result,
+    // no per-instantiation decls needed.
+    OptT: Ty,
+    ResT: ResTT,
+    // `(T1, T2, ...)` - the tuple type (D-114): a structural product.
+    // `()` is not a tuple type.
+    Tup: [Ty],
+    // `[N]T` - a fixed-length inline array (the vector steering).
+    ArrT: ArrTT,
+    // Explicit recovery (D-109): never a valid type; the State holds
+    // the real message ("<absent>" marks flag-guarded placeholders).
+    TyBad: BadNode,
+};
+
+pub const ResTT = struct {
+    err: Ty,
+    ok: Ty,
+};
+
+pub const ArrTT = struct {
+    n: i64,
+    ty: Ty,
+};
+
+pub const Param = struct {
+    name: Str,
+    ty: Ty,
+    mut: bool,
+    is_comptime: bool,
+};
+
+pub const FieldDecl = struct {
+    name: Str,
+    ty: Ty,
+    has_default: bool,
+    default: Expr,
+};
+
+pub const VariantDecl = struct {
+    name: Str,
+    has_payload: bool,
+    ty: Ty,
+};
+
+pub const TypeDecl = struct {
+    name: Str,
+    is_union: bool,
+    fields: [FieldDecl],
+    variants: [VariantDecl],
+};
+
+pub const Block = struct {
+    stmts: [Stmt],
+    has_tail: bool,
+    tail: Expr,
+};
+
+pub const TDestrS = struct {
+    names: [Str],
+    expr: Expr,
+    mutable: bool,
+    line: i64,
+    col: i64,
+};
+
+pub const ConstS = struct {
+    name: Str,
+    has_ty: bool,
+    ty: Ty,
+    expr: Expr,
+    line: i64,
+    col: i64,
+};
+
+pub const VarS = struct {
+    name: Str,
+    has_ty: bool,
+    ty: Ty,
+    expr: Expr,
+    line: i64,
+    col: i64,
+};
+
+pub const AssignS = struct {
+    name: Str,
+    expr: Expr,
+    line: i64,
+    col: i64,
+};
+
+pub const RetS = struct {
+    has_expr: bool,
+    expr: Expr,
+    line: i64,
+    col: i64,
+};
+
+pub const IfS = struct {
+    cond: Expr,
+    then: Block,
+    has_else: bool,
+    els: Block,
+    line: i64,
+    col: i64,
+};
+
+pub const WhileS = struct {
+    cond: Expr,
+    body: Block,
+};
+
+pub const DName = struct {
+    field: Str,
+    name: Str,
+};
+
+pub const DestrS = struct {
+    mutable: bool,
+    names: [DName],
+    expr: Expr,
+};
+
+pub const ExprS = struct {
+    expr: Expr,
+};
+
+pub const Stmt = union(enum) {
+    Const: ConstS,
+    Var: VarS,
+    Assign: AssignS,
+    Ret: RetS,
+    If: IfS,
+    While: WhileS,
+    Destr: DestrS,
+    // `const (x, y) = t;` / `var (x, y) = t;` - tuple destructuring.
+    TDestr: TDestrS,
+    Expr: ExprS,
+    FAssign: FAssS,
+    // `v[i] = e;` / `v[i] += e;` (D-120): the persistent indexed write.
+    IdxAssign: IdxAssS,
+};
+
+pub const IdxE = struct {
+    base: Ref,
+    idx: Expr,
+    line: i64,
+    col: i64,
+};
+
+pub const TryX = struct {
+    expr: Expr,
+    line: i64,
+    col: i64,
+};
+
+pub const CatchX = struct {
+    expr: Expr,
+    bind: Str,
+    block: Block,
+    line: i64,
+    col: i64,
+};
+
+pub const LamE = struct {
+    params: [Param],
+    ret: Ty,
+    body: Block,
+    line: i64,
+    col: i64,
+};
+
+pub const FAssS = struct {
+    name: Str,
+    field: Str,
+    expr: Expr,
+    line: i64,
+    col: i64,
+};
+
+pub const IdxAssS = struct {
+    name: Str,
+    idx: Expr,
+    // "" = plain, "+" = compound add (D-120's `changed[i] += 1`).
+    op: Str,
+    expr: Expr,
+    line: i64,
+    col: i64,
+};
+
+pub const IfE = struct {
+    cond: Expr,
+    then: Block,
+    has_else: bool,
+    els: Block,
+    line: i64,
+    col: i64,
+};
+
+pub const Arm = struct {
+    pat: Pat,
+    body: Expr,
+    line: i64,
+    col: i64,
+};
+
+pub const MatchE = struct {
+    scrut: Expr,
+    arms: [Arm],
+    line: i64,
+    col: i64,
+};
+
+pub const MakeField = struct {
+    name: Str,
+    expr: Expr,
+};
+
+pub const MakeE = struct {
+    ty: Str,
+    fields: [MakeField],
+    has_base: bool,
+    base: Expr,
+    line: i64, // the `%` token's position
+    col: i64,
+};
+
+pub const PLit = struct {
+    litty: Str,
+    text: Str,
+};
+
+pub const PField = struct {
+    name: Str,
+    has_sub: bool,
+    sub: Pat,
+};
+
+pub const PRec = struct {
+    ty: Str,
+    fields: [PField],
+};
+
+pub const PVar = struct {
+    ty: Str,
+    variant: Str,
+    has_payload: bool,
+    sub: Pat,
+    line: i64,
+    col: i64,
+};
+
+pub const Pat = union(enum) {
+    Wild,
+    Bind: Str,
+    Lit: PLit,
+    Pin: Str,
+    Rec: PRec,
+    Variant: PVar,
+    // `.Variant` / `.Variant(pat)`: the scrutinee supplies the union.
+    Dot: PVar,
+    PatBad: BadNode,
+};
+
+pub const Fn = struct {
+    name: Str,
+    params: [Param],
+    ret: Ty,
+    body: Block,
+    file: Str, // the unit it came from (the driver tags it; the seed's CURRENT_FILE)
+    ns: Str,   // the unit's namespace (D-094 mangling: ns__name)
+    test_name: Str, // a `test "name"` block's source name ("" otherwise)
+    is_pub: bool, // `pub fn` (D-118: the visibility check's flag)
+};
+
+pub const ImpDecl = struct {
+    name: Str,
+    line: i64,
+    col: i64,
+};
+
+pub const Ast = struct {
+    fns: [Fn],
+    types: [TypeDecl],
+    imports: [ImpDecl],
+};
+
+pub fn ty_is_hole(t: Ty) bool {
+    return match t {
+        Ty.TyBad(b) => b.msg == "<hole>",
+        _ => false,
+    };
+}
+
+pub fn bad_ty(mut p: P, line: i64, col: i64, msg: Str) Ty {
+    p_fail(p, line, col, msg);
+    return Ty.TyBad(%BadNode{msg: msg, line: line, col: col});
+}
+
+pub fn bad_pat(mut p: P, line: i64, col: i64, msg: Str) Pat {
+    p_fail(p, line, col, msg);
+    return Pat.PatBad(%BadNode{msg: msg, line: line, col: col});
+}
+
+pub fn poison_ty() Ty {
+    return Ty.TyBad(%BadNode{msg: "<absent>", line: 0, col: 0});
+}
+
+pub fn poison_pat() Pat {
+    return Pat.PatBad(%BadNode{msg: "<absent>", line: 0, col: 0});
+}
+
+pub fn poison_block() Block {
+    var empty: [Stmt] = vector.new();
+    return %Block{stmts: empty, has_tail: false, tail: poison()};
+}
+
+// reads `{ ... }` (the seed's expect_punct + loop shape)
+pub fn expect_kw(mut p: P, v: Str) bool {
+    if at_kw(p, v) {
+        const _t: Tok = p_next(p);
+        return true;
+    }
+    const t: Tok = p_peek(p);
+    p_fail(p, t.line, t.col, str.concat("expected keyword `", str.concat(v, "`")));
+    return false;
+}
+
+pub fn p_type_atom(mut p: P) Ty {
+    const t: Tok = p_peek(p);
+    if is_kw_tok(t) {
+        if t.text == "i64" {
+            const _t: Tok = p_next(p);
+            return Ty.I64;
+        }
+        if t.text == "usize" {
+            const _t: Tok = p_next(p);
+            return Ty.I64;
+        }
+        if t.text == "bool" {
+            const _t: Tok = p_next(p);
+            return Ty.BoolV;
+        }
+        if t.text == "fn" {
+            const _kw: Tok = p_next(p);
+            if expect_punct(p, "(") == false {
+                return bad_ty(p, t.line, t.col, "invalid type");
+            }
+            var ps: [Ty] = vector.new();
+            var pgo: bool = true;
+            while pgo {
+                if p_ok(p) == false {
+                    pgo = false;
+                } else {
+                    if at_punct(p, ")") {
+                        pgo = false;
+                    } else {
+                        const pt: Ty = p_type(p);
+                        vector.push(ps, pt);
+                        if at_punct(p, ",") {
+                            const _c: Tok = p_next(p);
+                        } else {
+                            pgo = false;
+                        }
+                    }
+                }
+            }
+            if expect_punct(p, ")") == false {
+                return bad_ty(p, t.line, t.col, "invalid type");
+            }
+            const rty: Ty = p_type(p);
+            return Ty.FnT(%FnSig{params: ps, ret: rty});
+        }
+        p_fail(p, t.line, t.col, str.concat("unsupported type keyword `", str.concat(t.text, "`")));
+        return bad_ty(p, t.line, t.col, "invalid type");
+    }
+    if is_punct_tok(t) {
+        if t.text == "(" {
+            const _p0: Tok = p_next(p);
+            var tys: [Ty] = vector.new();
+            vector.push(tys, p_type(p));
+            var tgo: bool = true;
+            while tgo {
+                if at_punct(p, ",") {
+                    const _c0: Tok = p_next(p);
+                    vector.push(tys, p_type(p));
+                } else {
+                    tgo = false;
+                }
+            }
+            if expect_punct(p, ")") == false {
+                return bad_ty(p, t.line, t.col, "invalid type");
+            }
+            if vector.len(tys) < 2 {
+                p_fail(p, t.line, t.col, "a tuple type has two or more element types (D-114)");
+                return bad_ty(p, t.line, t.col, "invalid type");
+            }
+            return Ty.Tup(tys);
+        }
+        if t.text == "[" {
+            const _t: Tok = p_next(p);
+            const nx: Tok = p_peek(p);
+            if is_int_tok(nx) {
+                const save: i64 = p.pos;
+                const _n1: Tok = p_next(p);
+                if at_punct(p, "]") {
+                    const _c1: Tok = p_next(p);
+                    const ety: Ty = p_type(p);
+                    return Ty.ArrT(%ArrTT{n: parse_digits(nx.text), ty: ety});
+                }
+                p.pos = save;
+            }
+            const inner: Ty = p_type(p);
+            if expect_punct(p, "]") == false {
+                return bad_ty(p, t.line, t.col, "invalid type");
+            }
+            return Ty.Vec(inner);
+        }
+    }
+    if is_name_tok(t) {
+        if t.text == "Str" {
+            const _t: Tok = p_next(p);
+            return Ty.StrV;
+        }
+    if t.text == "Vector" {
+            const _t: Tok = p_next(p);
+            if expect_punct(p, "(") == false {
+                return bad_ty(p, t.line, t.col, "invalid type");
+            }
+            const inner: Ty = p_type(p);
+            if expect_punct(p, ")") == false {
+                return bad_ty(p, t.line, t.col, "invalid type");
+            }
+            return Ty.Vec(inner);
+        }
+        const _t: Tok = p_next(p);
+        return Ty.Named(t.text);
+    }
+    if at_punct(p, "(") {
+        const a: Tok = p_next(p);
+        if at_punct(p, ")") {
+            const _b: Tok = p_next(p);
+            return Ty.UnitV;
+        }
+        p_fail(p, a.line, a.col, "unexpected `(` in a type");
+        return bad_ty(p, t.line, t.col, "invalid type");
+    }
+    p_fail(p, t.line, t.col, str.concat("unsupported type (token `", str.concat(t.text, "`)")));
+    return bad_ty(p, t.line, t.col, "invalid type");
+}
+
+pub fn p_type(mut p: P) Ty {
+    // `?T` (Option) and `E!T` (Result) shorthands (SPEC 6.5): real
+    // structural types mirroring the seed.
+    if at_punct(p, "?") {
+        const _t0: Tok = p_next(p);
+        return Ty.OptT(p_type_atom(p));
+    }
+    const lhs: Ty = p_type_atom(p);
+    if at_punct(p, "!") {
+        const _t1: Tok = p_next(p);
+        return Ty.ResT(%ResTT{err: lhs, ok: p_type_atom(p)});
+    }
+    return lhs;
+}
+
+pub fn p_pattern(mut p: P) Pat {
+    if at_punct(p, ".") {
+        const dot: Tok = p_next(p);
+        const vn: Tok = p_peek(p);
+        if is_name_tok(vn) == false {
+            p_fail(p, vn.line, vn.col, "expected a variant name after `.`");
+            return poison_pat();
+        }
+        const _v: Tok = p_next(p);
+        var dsub: Pat = Pat.Wild;
+        var has_sub: bool = false;
+        if at_punct(p, "(") {
+            const _lp: Tok = p_next(p);
+            dsub = p_pattern(p);
+            has_sub = true;
+            if expect_punct(p, ")") == false {
+                return poison_pat();
+            }
+        }
+        return Pat.Dot(%PVar{ty: "", variant: vn.text, has_payload: has_sub, sub: dsub, line: vn.line, col: vn.col});
+    }
+    const t: Tok = p_peek(p);
+    if is_name_tok(t) {
+        if t.text == "_" {
+            const _t: Tok = p_next(p);
+            return Pat.Wild;
+        }
+    }
+    if at_punct(p, "^") {
+        const _t: Tok = p_next(p);
+        const n: Tok = p_peek(p);
+        if is_name_tok(n) == false {
+            p_fail(p, n.line, n.col, "expected a name after `^`");
+            return bad_pat(p, t.line, t.col, "invalid pattern");
+        }
+        const _n: Tok = p_next(p);
+        return Pat.Pin(n.text);
+    }
+    if is_int_tok(t) {
+        const _t: Tok = p_next(p);
+        return Pat.Lit(%PLit{litty: "i64", text: t.text});
+    }
+    if is_str_tok(t) {
+        const _t: Tok = p_next(p);
+        return Pat.Lit(%PLit{litty: "str", text: t.text});
+    }
+    if is_kw_tok(t) {
+        if t.text == "true" {
+            const _t: Tok = p_next(p);
+            return Pat.Lit(%PLit{litty: "bool", text: t.text});
+        }
+        if t.text == "false" {
+            const _t: Tok = p_next(p);
+            return Pat.Lit(%PLit{litty: "bool", text: t.text});
+        }
+        p_fail(p, t.line, t.col, str.concat("unsupported pattern keyword `", str.concat(t.text, "`")));
+        return bad_pat(p, t.line, t.col, "invalid pattern");
+    }
+    if at_punct(p, "%") {
+        const _pct: Tok = p_next(p);
+        const name: Tok = p_peek(p);
+        if is_name_tok(name) == false {
+            p_fail(p, name.line, name.col, "expected a type name after `%`");
+            return bad_pat(p, t.line, t.col, "invalid pattern");
+        }
+        const _n: Tok = p_next(p);
+        if expect_punct(p, "{") == false {
+            return bad_pat(p, t.line, t.col, "invalid pattern");
+        }
+        var fields: [PField] = vector.new();
+        while p_ok(p) {
+            if at_punct(p, "}") {
+                const _c: Tok = p_next(p);
+                return Pat.Rec(%PRec{ty: name.text, fields: fields});
+            }
+            const f: Tok = p_peek(p);
+            if is_name_tok(f) == false {
+                p_fail(p, f.line, f.col, "expected a field name in the pattern");
+                return bad_pat(p, t.line, t.col, "invalid pattern");
+            }
+            const _f: Tok = p_next(p);
+            if at_punct(p, ":") {
+                const _c2: Tok = p_next(p);
+                const sub: Pat = p_pattern(p);
+                vector.push(fields, %PField{name: f.text, has_sub: true, sub: sub});
+            } else {
+                vector.push(fields, %PField{name: f.text, has_sub: true, sub: Pat.Bind(f.text)});
+            }
+            if at_punct(p, ",") {
+                const _c3: Tok = p_next(p);
+            } else {
+                if at_punct(p, "}") == false {
+                    p_fail(p, f.line, f.col, "expected `,` or `}` in the pattern");
+                    return bad_pat(p, t.line, t.col, "invalid pattern");
+                }
+            }
+        }
+        return bad_pat(p, t.line, t.col, "invalid pattern");
+    }
+    if is_name_tok(t) {
+        const _t: Tok = p_next(p);
+        if at_punct(p, ".") {
+            const _d: Tok = p_next(p);
+            const v: Tok = p_peek(p);
+            if is_name_tok(v) == false {
+                p_fail(p, v.line, v.col, "expected a variant name after `.'");
+                return bad_pat(p, t.line, t.col, "invalid pattern");
+            }
+            const _v: Tok = p_next(p);
+            if at_punct(p, "(") {
+                const _c: Tok = p_next(p);
+                const sub: Pat = p_pattern(p);
+                if expect_punct(p, ")") == false {
+                    return bad_pat(p, t.line, t.col, "invalid pattern");
+                }
+                return Pat.Variant(%PVar{ty: t.text, variant: v.text, has_payload: true, sub: sub, line: v.line, col: v.col});
+            }
+            return Pat.Variant(%PVar{ty: t.text, variant: v.text, has_payload: false, sub: poison_pat(), line: v.line, col: v.col});
+        }
+        return Pat.Bind(t.text);
+    }
+    p_fail(p, t.line, t.col, str.concat("unsupported pattern (token `", str.concat(t.text, "`)")));
+    return bad_pat(p, t.line, t.col, "invalid pattern");
+}
+
+pub fn p_if(mut p: P) IfE {
+    const kw: Tok = p_next(p);
+    const cond: Expr = parse_expr(p, 1);
+    const then_blk: Block = p_block(p);
+    var has_else: bool = false;
+    var else_blk: Block = poison_block();
+    if at_kw(p, "else") {
+        const _e: Tok = p_next(p);
+        has_else = true;
+        if at_kw(p, "if") {
+            // else-if: a block whose tail is the nested if (the seed's
+            // shape), so the emitter's tail-if rule carries through.
+            const nested: IfE = p_if(p);
+            var empty: [Stmt] = vector.new();
+            else_blk = %Block{stmts: empty, has_tail: true, tail: Expr.If(nested)};
+        } else {
+            else_blk = p_block(p);
+        }
+    }
+    return %IfE{cond: cond, then: then_blk, has_else: has_else, els: else_blk, line: kw.line, col: kw.col};
+}
+
+pub fn p_match(mut p: P) Expr {
+    const kw: Tok = p_next(p);
+    const scrut: Expr = parse_expr(p, 1);
+    if expect_punct(p, "{") == false {
+        return bad_here(p);
+    }
+    var arms: [Arm] = vector.new();
+    while p_ok(p) {
+        if at_punct(p, "}") {
+            const _c: Tok = p_next(p);
+            return Expr.Match(%MatchE{scrut: scrut, arms: arms, line: kw.line, col: kw.col});
+        }
+        const pt: Tok = p_peek(p);
+        const pat: Pat = p_pattern(p);
+        if expect_punct(p, "=>") == false {
+            return bad_here(p);
+        }
+        const body: Expr = parse_expr(p, 1);
+        vector.push(arms, %Arm{pat: pat, body: body, line: pt.line, col: pt.col});
+        if at_punct(p, ",") {
+            const _c2: Tok = p_next(p);
+        } else {
+            if at_punct(p, "}") == false {
+                const t2: Tok = p_peek(p);
+                return bad(p, t2.line, t2.col, "expected `,` or `}` after the match arm");
+            }
+        }
+    }
+    return bad_here(p);
+}
+
+pub fn p_make(mut p: P) Expr {
+    const pct: Tok = p_next(p);
+    const name: Tok = p_peek(p);
+    if is_name_tok(name) == false {
+        return bad(p, name.line, name.col, "expected a type name after `%`");
+    }
+    const _n: Tok = p_next(p);
+    if expect_punct(p, "{") == false {
+        return bad_here(p);
+    }
+    if at_punct(p, "}") {
+        const _c: Tok = p_next(p);
+        var no_fields: [MakeField] = vector.new();
+        return Expr.Make(%MakeE{ty: name.text, fields: no_fields, has_base: false, base: poison(), line: pct.line, col: pct.col});
+    }
+    var has_base: bool = false;
+    var base: Expr = poison();
+    // `%T{..base, f: v}` - the dot-dot SPREAD (F33/the playbook).
+    const d0: Tok = p_peek(p);
+    var is_spread: bool = false;
+    if is_punct_tok(d0) {
+        if d0.text == "." {
+            const d1: Tok = p_tok_at(p, 1);
+            if is_punct_tok(d1) {
+                if d1.text == "." {
+                    is_spread = true;
+                }
+            }
+        }
+    }
+    if is_spread {
+        const _d0: Tok = p_next(p);
+        const _d1: Tok = p_next(p);
+        const bn: Tok = p_peek(p);
+        if is_name_tok(bn) == false {
+            p_fail(p, bn.line, bn.col, "expected a base name after `..`");
+            return bad_here(p);
+        }
+        const _bn: Tok = p_next(p);
+        base = Expr.Ref(%Ref{name: bn.text, mod: ""});
+        has_base = true;
+        if at_punct(p, ",") {
+            const _c2: Tok = p_next(p);
+        }
+    } else {
+    // Field list iff NAME followed by `:`/`,`/`}`; otherwise an update
+    // base expression followed by `|` (the seed's disambiguation).
+    const a: Tok = p_peek(p);
+    var is_field_list: bool = false;
+    if is_name_tok(a) {
+        const b: Tok = p_tok_at(p, 1);
+        if is_punct_tok(b) {
+            if b.text == ":" {
+                is_field_list = true;
+            }
+            if b.text == "," {
+                is_field_list = true;
+            }
+            if b.text == "}" {
+                is_field_list = true;
+            }
+        }
+    }
+    if is_field_list == false {
+        base = parse_expr(p, 1);
+        has_base = true;
+        if expect_punct(p, "|") == false {
+            return bad_here(p);
+        }
+    }
+    }
+    var fields: [MakeField] = vector.new();
+    while p_ok(p) {
+        if at_punct(p, "}") {
+            const _c: Tok = p_next(p);
+            return Expr.Make(%MakeE{ty: name.text, fields: fields, has_base: has_base, base: base, line: pct.line, col: pct.col});
+        }
+        const f: Tok = p_peek(p);
+        if is_name_tok(f) == false {
+            return bad(p, f.line, f.col, "expected a field name in the constructor");
+        }
+        const _f: Tok = p_next(p);
+        if at_punct(p, ":") {
+            const _c2: Tok = p_next(p);
+            const e: Expr = parse_expr(p, 1);
+            vector.push(fields, %MakeField{name: f.text, expr: e});
+        } else {
+            // shorthand: `%T{f}` means `f: f` (D-106)
+            vector.push(fields, %MakeField{name: f.text, expr: Expr.Ref(%Ref{name: f.text, mod: ""})});
+        }
+        if at_punct(p, ",") {
+            const _c3: Tok = p_next(p);
+        } else {
+            if at_punct(p, "}") == false {
+                return bad(p, f.line, f.col, "expected `,` or `}` in the constructor");
+            }
+        }
+    }
+    return bad_here(p);
+}
+
+pub fn p_tdestr(mut p: P, mutable: bool, kw_line: i64, kw_col: i64) TDestrS {
+    const _lp: Tok = p_next(p); // (
+    var names: [Str] = vector.new();
+    var tgo: bool = true;
+    while tgo {
+        if p_ok(p) == false {
+            tgo = false;
+        } else {
+            const nm: Tok = p_peek(p);
+            if is_name_tok(nm) == false {
+                p_fail(p, nm.line, nm.col, "expected a name in the tuple destructuring");
+                tgo = false;
+            } else {
+                const _n: Tok = p_next(p);
+                vector.push(names, nm.text);
+                if at_punct(p, ",") {
+                    const _c: Tok = p_next(p);
+                } else {
+                    tgo = false;
+                }
+            }
+        }
+    }
+    if expect_punct(p, ")") == false {
+        return %TDestrS{names: names, expr: poison(), mutable: mutable, line: kw_line, col: kw_col};
+    }
+    if expect_punct(p, "=") == false {
+        return %TDestrS{names: names, expr: poison(), mutable: mutable, line: kw_line, col: kw_col};
+    }
+    const e: Expr = parse_expr(p, 1);
+    const _s: bool = expect_semi(p);
+    return %TDestrS{names: names, expr: e, mutable: mutable, line: kw_line, col: kw_col};
+}
+
+pub fn p_destr(mut p: P, mutable: bool, kw_line: i64, kw_col: i64) DestrS {
+    const _c: Tok = p_next(p); // {
+    var names: [DName] = vector.new();
+    while p_ok(p) {
+        const f: Tok = p_peek(p);
+        if is_name_tok(f) == false {
+            p_fail(p, f.line, f.col, "expected a field name in the destructuring");
+            return %DestrS{mutable: mutable, names: names, expr: poison()};
+        }
+        const _f: Tok = p_next(p);
+        var target: Str = f.text;
+        if at_punct(p, ":") {
+            const _c2: Tok = p_next(p);
+            const n2: Tok = p_peek(p);
+            if is_name_tok(n2) == false {
+                p_fail(p, n2.line, n2.col, "expected a name after `:` in the destructuring");
+                return %DestrS{mutable: mutable, names: names, expr: poison()};
+            }
+            const _n2: Tok = p_next(p);
+            target = n2.text;
+        }
+        vector.push(names, %DName{field: f.text, name: target});
+        if at_punct(p, ",") {
+            const _c3: Tok = p_next(p);
+            if at_punct(p, "}") {
+                const _c4: Tok = p_next(p);
+                if expect_punct(p, "=") == false {
+                    return %DestrS{mutable: mutable, names: names, expr: poison()};
+                }
+                const e: Expr = parse_expr(p, 1);
+                const _s: bool = expect_semi(p);
+                return %DestrS{mutable: mutable, names: names, expr: e};
+            }
+        } else {
+            if expect_punct(p, "}") == false {
+                return %DestrS{mutable: mutable, names: names, expr: poison()};
+            }
+            if expect_punct(p, "=") == false {
+                return %DestrS{mutable: mutable, names: names, expr: poison()};
+            }
+            const e: Expr = parse_expr(p, 1);
+            const _s: bool = expect_semi(p);
+            return %DestrS{mutable: mutable, names: names, expr: e};
+        }
+    }
+    return %DestrS{mutable: mutable, names: names, expr: poison()};
+}
+
+pub fn p_tok_at(p: P, offset: i64) Tok {
+    const i: i64 = p.pos + offset;
+    if i < vector.len(p.toks) {
+        return vector.get(p.toks, i);
+    }
+    // Lookahead past the eof sentinel reads as eof, never traps.
+    return %Tok{kind: Kind.Eof, text: "", line: 1, col: 1};
+}
+
+pub fn expect_semi(mut p: P) bool {
+    return expect_punct(p, ";");
+}
+
+pub const StmtOut = struct {
+    added: bool,
+    tail: Expr,
+};
+
+pub fn p_stmt_into(mut p: P, stmts: [Stmt], t: Tok) StmtOut {
+    // Parses one statement starting at the peeked t. added=false means
+    // the tokens parsed were a TAIL expression (not `;`-terminated);
+    // the caller consumes `}` and records the tail.
+    if is_kw_tok(t) {
+        if t.text == "const" {
+            const _a: Tok = p_next(p);
+            if at_punct(p, "(") {
+                const td: TDestrS = p_tdestr(p, false, t.line, t.col);
+                vector.push(stmts, Stmt.TDestr(td));
+                return %StmtOut{added: true, tail: poison()};
+            }
+            if at_punct(p, "{") {
+                const d: DestrS = p_destr(p, false, t.line, t.col);
+                vector.push(stmts, Stmt.Destr(d));
+                return %StmtOut{added: true, tail: poison()};
+            }
+            const name: Tok = p_peek(p);
+            if is_name_tok(name) == false {
+                p_fail(p, name.line, name.col, "expected a binding name after `const`");
+                return %StmtOut{added: true, tail: poison()};
+            }
+            const _n: Tok = p_next(p);
+            var has_ty: bool = false;
+            var ty: Ty = poison_ty();
+            if at_punct(p, ":") {
+                const _c: Tok = p_next(p);
+                ty = p_type(p);
+                has_ty = true;
+            }
+            if expect_punct(p, "=") == false {
+                return %StmtOut{added: true, tail: poison()};
+            }
+            const e: Expr = parse_expr(p, 1);
+            const _s: bool = expect_semi(p);
+            vector.push(stmts, Stmt.Const(%ConstS{name: name.text, has_ty: has_ty, ty: ty, expr: e, line: t.line, col: t.col}));
+            return %StmtOut{added: true, tail: poison()};
+        }
+        if t.text == "var" {
+            const _a: Tok = p_next(p);
+            if at_punct(p, "(") {
+                const td: TDestrS = p_tdestr(p, true, t.line, t.col);
+                vector.push(stmts, Stmt.TDestr(td));
+                return %StmtOut{added: true, tail: poison()};
+            }
+            if at_punct(p, "{") {
+                const d: DestrS = p_destr(p, true, t.line, t.col);
+                vector.push(stmts, Stmt.Destr(d));
+                return %StmtOut{added: true, tail: poison()};
+            }
+            const name: Tok = p_peek(p);
+            if is_name_tok(name) == false {
+                p_fail(p, name.line, name.col, "expected a binding name after `var`");
+                return %StmtOut{added: true, tail: poison()};
+            }
+            const _n: Tok = p_next(p);
+            var has_ty: bool = false;
+            var ty: Ty = poison_ty();
+            if at_punct(p, ":") {
+                const _c: Tok = p_next(p);
+                ty = p_type(p);
+                has_ty = true;
+            }
+            if expect_punct(p, "=") == false {
+                return %StmtOut{added: true, tail: poison()};
+            }
+            const e: Expr = parse_expr(p, 1);
+            const _s: bool = expect_semi(p);
+            vector.push(stmts, Stmt.Var(%VarS{name: name.text, has_ty: has_ty, ty: ty, expr: e, line: t.line, col: t.col}));
+            return %StmtOut{added: true, tail: poison()};
+        }
+        if t.text == "return" {
+            const _a: Tok = p_next(p);
+            if at_punct(p, ";") {
+                const _c: Tok = p_next(p);
+                vector.push(stmts, Stmt.Ret(%RetS{has_expr: false, expr: poison(), line: t.line, col: t.col}));
+                return %StmtOut{added: true, tail: poison()};
+            }
+            const e: Expr = parse_expr(p, 1);
+            const _s: bool = expect_semi(p);
+            vector.push(stmts, Stmt.Ret(%RetS{has_expr: true, expr: e, line: t.line, col: t.col}));
+            return %StmtOut{added: true, tail: poison()};
+        }
+        if t.text == "while" {
+            const _a: Tok = p_next(p);
+            const cond: Expr = parse_expr(p, 1);
+            const body: Block = p_block(p);
+            vector.push(stmts, Stmt.While(%WhileS{cond: cond, body: body}));
+            return %StmtOut{added: true, tail: poison()};
+        }
+        if t.text == "if" {
+            const iff: IfE = p_if(p);
+            vector.push(stmts, Stmt.If(%IfS{cond: iff.cond, then: iff.then, has_else: iff.has_else, els: iff.els, line: iff.line, col: iff.col}));
+            return %StmtOut{added: true, tail: poison()};
+        }
+        if t.text == "match" {
+            const e: Expr = parse_expr(p, 1);
+            if at_punct(p, ";") {
+                const _c: Tok = p_next(p);
+                vector.push(stmts, Stmt.Expr(%ExprS{expr: e}));
+                return %StmtOut{added: true, tail: poison()};
+            }
+            return %StmtOut{added: false, tail: e};
+        }
+        if t.text == "true" or t.text == "false" {
+            // a bare bool literal as a statement or block tail (the
+            // seed's statement grammar owns true/false too).
+            const e: Expr = parse_expr(p, 1);
+            if at_punct(p, ";") {
+                const _c: Tok = p_next(p);
+                vector.push(stmts, Stmt.Expr(%ExprS{expr: e}));
+                return %StmtOut{added: true, tail: poison()};
+            }
+            return %StmtOut{added: false, tail: e};
+        }
+        p_fail(p, t.line, t.col, str.concat("`", str.concat(t.text, "` is not a b0 statement")));
+        return %StmtOut{added: true, tail: poison()};
+    }
+    if is_name_tok(t) {
+        const nx: Tok = p_tok_at(p, 1);
+        if is_punct_tok(nx) {
+            if nx.text == "=" {
+                const _a: Tok = p_next(p);
+                const _b: Tok = p_next(p);
+                const e: Expr = parse_expr(p, 1);
+                const _s: bool = expect_semi(p);
+                vector.push(stmts, Stmt.Assign(%AssignS{name: t.text, expr: e, line: t.line, col: t.col}));
+                return %StmtOut{added: true, tail: poison()};
+            }
+            if nx.text == "." {
+                const fld: Tok = p_tok_at(p, 2);
+                const eq: Tok = p_tok_at(p, 3);
+                var is_fa: bool = false;
+                if is_name_tok(fld) {
+                    if is_punct_tok(eq) {
+                        if eq.text == "=" {
+                            is_fa = true;
+                        }
+                    }
+                }
+                if is_fa {
+                    const _a2: Tok = p_next(p);
+                    const _d2: Tok = p_next(p);
+                    const _f2: Tok = p_next(p);
+                    const _e2: Tok = p_next(p);
+                    const e2: Expr = parse_expr(p, 1);
+                    const _s2: bool = expect_semi(p);
+                    vector.push(stmts, Stmt.FAssign(%FAssS{name: t.text, field: fld.text, expr: e2, line: t.line, col: t.col}));
+                    return %StmtOut{added: true, tail: poison()};
+                }
+            }
+        }
+    }
+    const e2: Expr = parse_expr(p, 1);
+    // `v[i] = e;` / `v[i] += e;` (D-120 slice 1): an index expression
+    // in statement position with an assignment follows it.
+    const is_idx: bool = match e2 {
+        Expr.IndexE(ix0) => true,
+        _ => false,
+    };
+    if is_idx {
+        const eqp: Tok = p_peek(p);
+        var op0: Str = "";
+        var is_ass: bool = false;
+        if is_punct_tok(eqp) {
+            if eqp.text == "=" {
+                is_ass = true;
+            }
+            if eqp.text == "+=" {
+                is_ass = true;
+                op0 = "+";
+            }
+        }
+        if is_ass {
+            const _e0: Tok = p_next(p);
+            const ix2: IdxE = match e2 {
+                Expr.IndexE(ixv) => ixv,
+                _ => %IdxE{base: %Ref{name: "", mod: ""}, idx: Expr.Int("0"), line: t.line, col: t.col},
+            };
+            const ixb: Ref = ix2.base;
+            if str.len(ixb.mod) != 0 {
+                p_fail(p, ix2.line, ix2.col, "indexed assignment needs a named base");
+            }
+            const rhs: Expr = parse_expr(p, 1);
+            const _s0: bool = expect_semi(p);
+            vector.push(stmts, Stmt.IdxAssign(%IdxAssS{name: ixb.name, idx: ix2.idx, op: op0, expr: rhs, line: ix2.line, col: ix2.col}));
+            return %StmtOut{added: true, tail: poison()};
+        }
+    }
+    if at_punct(p, ";") {
+        const _c: Tok = p_next(p);
+        vector.push(stmts, Stmt.Expr(%ExprS{expr: e2}));
+        return %StmtOut{added: true, tail: poison()};
+    }
+    return %StmtOut{added: false, tail: e2};
+}
+
+pub fn p_block(mut p: P) Block {
+    if expect_punct(p, "{") == false {
+        return poison_block();
+    }
+    var stmts: [Stmt] = vector.new();
+    while p_ok(p) {
+        if at_punct(p, "}") {
+            const _c: Tok = p_next(p);
+            return %Block{stmts: stmts, has_tail: false, tail: poison()};
+        }
+        const t: Tok = p_peek(p);
+        const out: StmtOut = p_stmt_into(p, stmts, t);
+        if out.added == false {
+            if expect_punct(p, "}") == false {
+                return poison_block();
+            }
+            return %Block{stmts: stmts, has_tail: true, tail: out.tail};
+        }
+    }
+    return poison_block();
+}
+
+pub fn poison_fn() Fn {
+    var empty: [Param] = vector.new();
+    return %Fn{name: "", params: empty, ret: poison_ty(), body: poison_block(), file: "", ns: "", test_name: "", is_pub: false};
+}
+
+pub fn p_fn(mut p: P) Fn {
+    var is_pub: bool = false;
+    if at_kw(p, "pub") {
+        const _a: Tok = p_next(p);
+        is_pub = true;
+    }
+    if expect_kw(p, "fn") == false {
+        return poison_fn();
+    }
+    const name: Tok = p_peek(p);
+    if is_name_tok(name) == false {
+        p_fail(p, name.line, name.col, "expected a function name");
+        return poison_fn();
+    }
+    const _n: Tok = p_next(p);
+    if expect_punct(p, "(") == false {
+        return poison_fn();
+    }
+    var params: [Param] = vector.new();
+    while p_ok(p) {
+        if at_punct(p, ")") {
+            const _c: Tok = p_next(p);
+            var ret: Ty = Ty.UnitV;
+            if at_punct(p, "{") == false {
+                ret = p_type(p);
+            }
+            const body: Block = p_block(p);
+            return %Fn{name: name.text, params: params, ret: ret, body: body, file: "", ns: "", test_name: "", is_pub: is_pub};
+        }
+        var is_mut: bool = false;
+        var is_ct: bool = false;
+        const mt: Tok = p_peek(p);
+        if is_kw_tok(mt) {
+            if mt.text == "comptime" {
+                const _ct: Tok = p_next(p);
+                is_ct = true;
+            }
+        }
+        if is_ct == false {
+            if is_name_tok(mt) {
+                if mt.text == "mut" {
+                    const _m: Tok = p_next(p);
+                    is_mut = true;
+                }
+            }
+        }
+        const pn: Tok = p_peek(p);
+        if is_name_tok(pn) == false {
+            p_fail(p, pn.line, pn.col, "expected a parameter name");
+            return poison_fn();
+        }
+        const _pn: Tok = p_next(p);
+        if expect_punct(p, ":") == false {
+            return poison_fn();
+        }
+        const ty: Ty = p_type(p);
+        if is_ct {
+            var is_type_marker: bool = false;
+            match ty {
+                Ty.Named(nm3) => { if nm3 == "type" { is_type_marker = true; } },
+                _ => {},
+            };
+            if is_type_marker == false {
+                p_fail(p, pn.line, pn.col, "a comptime parameter is declared `comptime NAME: type` (seed v0, D-113)");
+                return poison_fn();
+            }
+        }
+        if is_mut {
+            // Parse-side only: this file may not call emitter helpers
+            // (the dump driver compiles without emit.calq).
+            var named_ok: bool = false;
+            match ty {
+                Ty.Named(n) => { named_ok = true; },
+                _ => {},
+            };
+            if named_ok == false {
+                p_fail(p, pn.line, pn.col, "mut parameters take a record type (seed v0, D-112)");
+                return poison_fn();
+            }
+        }
+        vector.push(params, %Param{name: pn.text, ty: ty, mut: is_mut, is_comptime: is_ct});
+        if at_punct(p, ",") {
+            const _c2: Tok = p_next(p);
+        } else {
+            if at_punct(p, ")") == false {
+                p_fail(p, pn.line, pn.col, "expected `,` or `)` in the parameter list");
+                return poison_fn();
+            }
+        }
+    }
+    return poison_fn();
+}
+
+pub fn poison_td() TypeDecl {
+    var ef: [FieldDecl] = vector.new();
+    var ev: [VariantDecl] = vector.new();
+    return %TypeDecl{name: "", is_union: false, fields: ef, variants: ev};
+}
+
+pub fn p_typedecl(mut p: P) TypeDecl {
+    if at_kw(p, "pub") {
+        const _a: Tok = p_next(p);
+    }
+    if expect_kw(p, "const") == false {
+        return poison_td();
+    }
+    const name: Tok = p_peek(p);
+    if is_name_tok(name) == false {
+        p_fail(p, name.line, name.col, "expected a type name");
+        return poison_td();
+    }
+    const _n: Tok = p_next(p);
+    if expect_punct(p, "=") == false {
+        return poison_td();
+    }
+    if at_kw(p, "struct") {
+        const _s: Tok = p_next(p);
+        if expect_punct(p, "{") == false {
+            return poison_td();
+        }
+        var fields: [FieldDecl] = vector.new();
+        while p_ok(p) {
+            if at_punct(p, "}") {
+                const _c: Tok = p_next(p);
+                const _semi: bool = expect_semi(p);
+                var ev: [VariantDecl] = vector.new();
+                return %TypeDecl{name: name.text, is_union: false, fields: fields, variants: ev};
+            }
+            const f: Tok = p_peek(p);
+            if is_name_tok(f) == false {
+                p_fail(p, f.line, f.col, "expected a field name");
+                return poison_td();
+            }
+            const _f: Tok = p_next(p);
+            if expect_punct(p, ":") == false {
+                return poison_td();
+            }
+            const ty: Ty = p_type(p);
+            var has_default: bool = false;
+            var def: Expr = poison();
+            if at_punct(p, "=") {
+                const _d: Tok = p_next(p);
+                has_default = true;
+                def = p_lit_expr(p);
+            }
+            vector.push(fields, %FieldDecl{name: f.text, ty: ty, has_default: has_default, default: def});
+            if at_punct(p, ",") {
+                const _c2: Tok = p_next(p);
+            } else {
+                if at_punct(p, "}") == false {
+                    p_fail(p, f.line, f.col, "expected `,` or `}` in the struct declaration");
+                    return poison_td();
+                }
+            }
+        }
+        return poison_td();
+    }
+    if at_kw(p, "union") {
+        const _u: Tok = p_next(p);
+        if expect_punct(p, "(") == false {
+            return poison_td();
+        }
+        const e: Tok = p_peek(p);
+        if is_name_tok(e) == false {
+            p_fail(p, e.line, e.col, "expected `enum`");
+            return poison_td();
+        }
+        const _e: Tok = p_next(p);
+        if e.text != "enum" {
+            p_fail(p, e.line, e.col, "expected `union(enum)` (SPEC 3)");
+            return poison_td();
+        }
+        if expect_punct(p, ")") == false {
+            return poison_td();
+        }
+        if expect_punct(p, "{") == false {
+            return poison_td();
+        }
+        var variants: [VariantDecl] = vector.new();
+        while p_ok(p) {
+            if at_punct(p, "}") {
+                const _c: Tok = p_next(p);
+                const _semi: bool = expect_semi(p);
+                var ef: [FieldDecl] = vector.new();
+                return %TypeDecl{name: name.text, is_union: true, fields: ef, variants: variants};
+            }
+            const v: Tok = p_peek(p);
+            if is_name_tok(v) == false {
+                p_fail(p, v.line, v.col, "expected a variant name");
+                return poison_td();
+            }
+            const _v: Tok = p_next(p);
+            var has_payload: bool = false;
+            var ty: Ty = poison_ty();
+            if at_punct(p, ":") {
+                const _c2: Tok = p_next(p);
+                ty = p_type(p);
+                has_payload = true;
+            }
+            vector.push(variants, %VariantDecl{name: v.text, has_payload: has_payload, ty: ty});
+            if at_punct(p, ",") {
+                const _c3: Tok = p_next(p);
+            } else {
+                if at_punct(p, "}") == false {
+                    p_fail(p, v.line, v.col, "expected `,` or `}` in the union declaration");
+                    return poison_td();
+                }
+            }
+        }
+        return poison_td();
+    }
+    const t2: Tok = p_peek(p);
+    p_fail(p, t2.line, t2.col, "type declarations are `struct {...}` or `union(enum) {...}`");
+    return poison_td();
+}
+
+pub fn p_lit_expr(mut p: P) Expr {
+    const d: Tok = p_peek(p);
+    if is_int_tok(d) {
+        const _c: Tok = p_next(p);
+        return Expr.Int(d.text);
+    }
+    if is_str_tok(d) {
+        const _c: Tok = p_next(p);
+        return Expr.Str(d.text);
+    }
+    if is_kw_tok(d) {
+        if d.text == "true" {
+            const _c: Tok = p_next(p);
+            return Expr.Bool(d.text);
+        }
+        if d.text == "false" {
+            const _c: Tok = p_next(p);
+            return Expr.Bool(d.text);
+        }
+    }
+    if is_punct_tok(d) {
+        if d.text == "[" {
+            // Collection-typed defaults (D-112): the literal takes the
+            // field's declared element type at emission.
+            return parse_expr(p, 1);
+        }
+        if d.text == "%" {
+            // Constructor defaults (D-112): %T{...} takes the field's
+            // declared type at emission.
+            return parse_expr(p, 1);
+        }
+    }
+    if is_name_tok(d) {
+        // Qualified defaults (D-112): enum variants like State.Ok.
+        return parse_expr(p, 1);
+    }
+    return bad(p, d.line, d.col, "seed v0 supports literal field defaults only (D-095)");
+}
+
+pub fn p_import(mut p: P) ImpDecl {
+    const kw: Tok = p_next(p);
+    const nm: Tok = p_peek(p);
+    if is_name_tok(nm) == false {
+        p_fail(p, nm.line, nm.col, "expected a unit name after `import`");
+        return %ImpDecl{name: "", line: kw.line, col: kw.col};
+    }
+    const _n: Tok = p_next(p);
+    if expect_punct(p, ";") == false {
+        return %ImpDecl{name: "", line: kw.line, col: kw.col};
+    }
+    return %ImpDecl{name: nm.text, line: kw.line, col: kw.col};
+}
+
+pub fn p_test(mut p: P, idx: i64) Fn {
+    const kw: Tok = p_next(p);
+    const nm: Tok = p_peek(p);
+    if is_str_tok(nm) == false {
+        p_fail(p, nm.line, nm.col, "a test block needs a name string: test \"name\" { ... }");
+        return poison_fn();
+    }
+    const _n: Tok = p_next(p);
+    const body: Block = p_block(p);
+    var b2: Block = body;
+    if body.has_tail == false {
+        b2 = %Block{stmts: body.stmts, has_tail: true, tail: Expr.Int("0")};
+    }
+    var eps: [Param] = vector.new();
+    return %Fn{name: str.concat("__calque_test_", str.fromI64(idx)), params: eps, ret: Ty.I64, body: b2, file: "", ns: "", test_name: nm.text, is_pub: false};
+}
+
+pub fn p_ast(mut p: P) Ast {
+    var fns: [Fn] = vector.new();
+    var types: [TypeDecl] = vector.new();
+    var imports: [ImpDecl] = vector.new();
+    var n_tests: i64 = 0;
+    while p_ok(p) {
+        const t: Tok = p_peek(p);
+        if is_eof_tok(t) {
+            return %Ast{fns: fns, types: types, imports: imports};
+        }
+        if is_kw_tok(t) {
+            if t.text == "import" {
+                vector.push(imports, p_import(p));
+            } else {
+            if t.text == "test" {
+                n_tests = n_tests + 1;
+                vector.push(fns, p_test(p, n_tests));
+            } else {
+                if t.text == "const" {
+                    vector.push(types, p_typedecl(p));
+                } else {
+                    if t.text == "pub" {
+                        const nx: Tok = p_tok_at(p, 1);
+                        if is_kw_tok(nx) {
+                            if nx.text == "const" {
+                                vector.push(types, p_typedecl(p));
+                            } else {
+                                if nx.text == "fn" {
+                                    vector.push(fns, p_fn(p));
+                                } else {
+                                    p_fail(p, nx.line, nx.col, "expected `fn` or `const` after `pub`");
+                                    return %Ast{fns: fns, types: types, imports: imports};
+                                }
+                            }
+                        } else {
+                            p_fail(p, nx.line, nx.col, "expected `fn` or `const` after `pub`");
+                            return %Ast{fns: fns, types: types, imports: imports};
+                        }
+                    } else {
+                        if t.text == "fn" {
+                            vector.push(fns, p_fn(p));
+                        } else {
+                            p_fail(p, t.line, t.col, str.concat("top-level items are fn declarations and struct/union type declarations (got `", str.concat(t.text, "`)")));
+                            return %Ast{fns: fns, types: types, imports: imports};
+                        }
+                    }
+                }
+            }
+            }
+        } else {
+            p_fail(p, t.line, t.col, str.concat("top-level items are fn declarations and struct/union type declarations (got `", str.concat(t.text, "`)")));
+            return %Ast{fns: fns, types: types, imports: imports};
+        }
+    }
+    return %Ast{fns: fns, types: types, imports: imports};
+}
+
+// ---------------------------------------------------------------- AST dump
+// Canonical s-expressions; strings carry length + bytes (the token
+// dump's convention), so every expected line is hand-derivable.
+
+pub fn d_ty(t: Ty) Str {
+    return match t {
+        Ty.I64 => "(ty i64)",
+        Ty.BoolV => "(ty bool)",
+        Ty.StrV => "(ty str)",
+        Ty.UnitV => "(ty unit)",
+        Ty.Named(n) => str.concat("(ty ", str.concat(n, ")")),
+        Ty.Vec(inner) => str.concat("(ty vec ", str.concat(d_ty(inner), ")")),
+        Ty.OptT(inner) => str.concat("(ty opt ", str.concat(d_ty(inner), ")")),
+        Ty.ArrT(a2) => str.concat("(ty arr ", str.concat(str.fromI64(a2.n), str.concat(" ", str.concat(d_ty(a2.ty), ")")))),
+        Ty.Tup(tys) => {
+            var acc: Str = "(ty tup";
+            const nt: i64 = vector.len(tys);
+            var ti: i64 = 0;
+            while ti < nt {
+                acc = str.concat(acc, " ");
+                acc = str.concat(acc, d_ty(vector.get(tys, ti)));
+                ti = ti + 1;
+            }
+            str.concat(acc, ")")
+        },
+        Ty.ResT(rz) => str.concat("(ty res ", str.concat(d_ty(rz.err), str.concat(" ", str.concat(d_ty(rz.ok), ")")))),
+        Ty.FnT(sig) => d_fnsig(sig),
+        Ty.TyBad(b) => d_bad(b),
+    };
+}
+
+pub fn d_fnsig(sig: FnSig) Str {
+    var acc: Str = "(ty fn [";
+    const n: i64 = vector.len(sig.params);
+    var i: i64 = 0;
+    while i < n {
+        if i > 0 {
+            acc = str.concat(acc, " ");
+        }
+        acc = str.concat(acc, d_ty(vector.get(sig.params, i)));
+        i = i + 1;
+    }
+    acc = str.concat(acc, "] ");
+    acc = str.concat(acc, d_ty(sig.ret));
+    return str.concat(acc, ")");
+}
+
+pub fn d_lit(l: PLit) Str {
+    if l.litty == "str" {
+        return str.concat("(lit str ", str.concat(str.fromI64(str.len(l.text)), str.concat(" ", str.concat(l.text, ")"))));
+    }
+    return str.concat("(lit ", str.concat(l.litty, str.concat(" ", str.concat(l.text, ")"))));
+}
+
+pub fn d_pat(pat: Pat) Str {
+    return match pat {
+        Pat.Wild => "(pat _)",
+        Pat.Bind(n) => str.concat("(pat bind ", str.concat(n, ")")),
+        Pat.Lit(l) => str.concat("(pat ", str.concat(d_lit(l), ")")),
+        Pat.Pin(n) => str.concat("(pat pin ", str.concat(n, ")")),
+        Pat.Rec(r) => d_prec(r),
+        Pat.Variant(v) => d_pvar(v),
+        Pat.Dot(v) => str.concat("(pat dot ", str.concat(v.variant, ")")),
+        Pat.PatBad(b) => d_bad(b),
+    };
+}
+
+pub fn d_prec(r: PRec) Str {
+    var acc: Str = str.concat("(pat rec ", r.ty);
+    const n: i64 = vector.len(r.fields);
+    var i: i64 = 0;
+    while i < n {
+        const f: PField = vector.get(r.fields, i);
+        acc = str.concat(acc, " (");
+        acc = str.concat(acc, f.name);
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, d_pat(f.sub));
+        acc = str.concat(acc, ")");
+        i = i + 1;
+    }
+    return str.concat(acc, ")");
+}
+
+pub fn d_pvar(v: PVar) Str {
+    if v.has_payload {
+        var acc: Str = str.concat("(pat variant ", v.ty);
+        acc = str.concat(acc, ".");
+        acc = str.concat(acc, v.variant);
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, d_pat(v.sub));
+        return str.concat(acc, ")");
+    }
+    return str.concat("(pat variant ", str.concat(v.ty, str.concat(".", str.concat(v.variant, ")"))));
+}
+
+pub fn d_if(f: IfE) Str {
+    var acc: Str = str.concat("(if ", dump(f.cond));
+    acc = str.concat(acc, " ");
+    acc = str.concat(acc, d_block(f.then));
+    if f.has_else {
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, d_block(f.els));
+    }
+    return str.concat(acc, ")");
+}
+
+pub fn d_match(m: MatchE) Str {
+    var acc: Str = str.concat("(match ", dump(m.scrut));
+    const n: i64 = vector.len(m.arms);
+    var i: i64 = 0;
+    while i < n {
+        const a: Arm = vector.get(m.arms, i);
+        acc = str.concat(acc, " (arm ");
+        acc = str.concat(acc, d_pat(a.pat));
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, dump(a.body));
+        acc = str.concat(acc, ")");
+        i = i + 1;
+    }
+    return str.concat(acc, ")");
+}
+
+pub fn d_make(m: MakeE) Str {
+    var acc: Str = str.concat("(make ", m.ty);
+    if m.has_base {
+        acc = str.concat(acc, " base ");
+        acc = str.concat(acc, dump(m.base));
+    }
+    const n: i64 = vector.len(m.fields);
+    var i: i64 = 0;
+    while i < n {
+        const f: MakeField = vector.get(m.fields, i);
+        acc = str.concat(acc, " (");
+        acc = str.concat(acc, f.name);
+        acc = str.concat(acc, " = ");
+        acc = str.concat(acc, dump(f.expr));
+        acc = str.concat(acc, ")");
+        i = i + 1;
+    }
+    return str.concat(acc, ")");
+}
+
+pub fn d_block(b: Block) Str {
+    var acc: Str = "(block";
+    const n: i64 = vector.len(b.stmts);
+    var i: i64 = 0;
+    while i < n {
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, d_stmt(vector.get(b.stmts, i)));
+        i = i + 1;
+    }
+    if b.has_tail {
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, dump(b.tail));
+    }
+    return str.concat(acc, ")");
+}
+
+pub fn d_destr(d: DestrS) Str {
+    var acc: Str = "(destr ";
+    if d.mutable {
+        acc = str.concat(acc, "var");
+    } else {
+        acc = str.concat(acc, "const");
+    }
+    acc = str.concat(acc, " (");
+    const n: i64 = vector.len(d.names);
+    var i: i64 = 0;
+    while i < n {
+        const nm: DName = vector.get(d.names, i);
+        if i > 0 {
+            acc = str.concat(acc, " ");
+        }
+        acc = str.concat(acc, nm.field);
+        if nm.field != nm.name {
+            acc = str.concat(acc, ": ");
+            acc = str.concat(acc, nm.name);
+        }
+        i = i + 1;
+    }
+    acc = str.concat(acc, ") ");
+    acc = str.concat(acc, dump(d.expr));
+    return str.concat(acc, ")");
+}
+
+pub fn d_stmt(s: Stmt) Str {
+    return match s {
+        Stmt.Const(c) => d_const(c),
+        Stmt.Var(v) => d_var(v),
+        Stmt.Assign(a) => str.concat("(assign ", str.concat(a.name, str.concat(" ", str.concat(dump(a.expr), ")")))),
+        Stmt.Ret(r) => d_ret(r),
+        Stmt.If(f) => d_if(%IfE{cond: f.cond, then: f.then, has_else: f.has_else, els: f.els, line: f.line, col: f.col}),
+        Stmt.While(w) => str.concat("(while ", str.concat(dump(w.cond), str.concat(" ", str.concat(d_block(w.body), ")")))),
+        Stmt.Destr(d) => d_destr(d),
+        Stmt.TDestr(td) => {
+            var acc: Str = "(tdestr [";
+            const n: i64 = vector.len(td.names);
+            var i: i64 = 0;
+            while i < n {
+                if i > 0 {
+                    acc = str.concat(acc, " ");
+                }
+                acc = str.concat(acc, vector.get(td.names, i));
+                i = i + 1;
+            }
+            str.concat(acc, str.concat("] ", str.concat(dump(td.expr), ")")))
+        },
+        Stmt.Expr(e) => str.concat("(expr ", str.concat(dump(e.expr), ")")),
+        Stmt.FAssign(f) => str.concat("(fassign ", str.concat(f.name, str.concat(".", str.concat(f.field, str.concat(" ", str.concat(dump(f.expr), ")")))))),
+        Stmt.IdxAssign(f2) => str.concat("(idxassign ", str.concat(f2.name, str.concat("[", str.concat(dump(f2.idx), str.concat("] ", str.concat(f2.op, str.concat(" ", str.concat(dump(f2.expr), ")")))))))),
+    };
+}
+
+pub fn d_var(v: VarS) Str {
+    if v.has_ty {
+        return str.concat("(var ", str.concat(v.name, str.concat(" ", str.concat(d_ty(v.ty), str.concat(" ", str.concat(dump(v.expr), ")"))))));
+    }
+    return str.concat("(var ", str.concat(v.name, str.concat(" ", str.concat(dump(v.expr), ")"))));
+}
+
+pub fn d_const(c: ConstS) Str {
+    if c.has_ty {
+        var acc: Str = str.concat("(const ", c.name);
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, d_ty(c.ty));
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, dump(c.expr));
+        return str.concat(acc, ")");
+    }
+    return str.concat("(const ", str.concat(c.name, str.concat(" ", str.concat(dump(c.expr), ")"))));
+}
+
+pub fn d_ret(r: RetS) Str {
+    if r.has_expr {
+        return str.concat("(ret ", str.concat(dump(r.expr), ")"));
+    }
+    return "(ret)";
+}
+
+pub fn d_fn(f: Fn) Str {
+    var acc: Str = str.concat("(fn ", str.concat(f.name, " ("));
+    const n: i64 = vector.len(f.params);
+    var i: i64 = 0;
+    while i < n {
+        const pr: Param = vector.get(f.params, i);
+        if i > 0 {
+            acc = str.concat(acc, " ");
+        }
+        acc = str.concat(acc, "(");
+        acc = str.concat(acc, pr.name);
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, d_ty(pr.ty));
+        acc = str.concat(acc, ")");
+        i = i + 1;
+    }
+    acc = str.concat(acc, ") ");
+    acc = str.concat(acc, d_ty(f.ret));
+    acc = str.concat(acc, " ");
+    acc = str.concat(acc, d_block(f.body));
+    return str.concat(acc, ")");
+}
+
+pub fn d_td(td: TypeDecl) Str {
+    var acc: Str = "";
+    if td.is_union {
+        acc = str.concat("(union ", td.name);
+        const n: i64 = vector.len(td.variants);
+        var i: i64 = 0;
+        while i < n {
+            const v: VariantDecl = vector.get(td.variants, i);
+            acc = str.concat(acc, " (");
+            acc = str.concat(acc, v.name);
+            if v.has_payload {
+                acc = str.concat(acc, " ");
+                acc = str.concat(acc, d_ty(v.ty));
+            }
+            acc = str.concat(acc, ")");
+            i = i + 1;
+        }
+        return str.concat(acc, ")");
+    }
+    acc = str.concat("(struct ", td.name);
+    const n2: i64 = vector.len(td.fields);
+    var j: i64 = 0;
+    while j < n2 {
+        const f: FieldDecl = vector.get(td.fields, j);
+        acc = str.concat(acc, " (");
+        acc = str.concat(acc, f.name);
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, d_ty(f.ty));
+        if f.has_default {
+            acc = str.concat(acc, " = ");
+            acc = str.concat(acc, dump(f.default));
+        }
+        acc = str.concat(acc, ")");
+        j = j + 1;
+    }
+    return str.concat(acc, ")");
+}
+
+pub fn d_ast(a: Ast) Str {
+    var acc: Str = "(ast";
+    const nt: i64 = vector.len(a.types);
+    var i: i64 = 0;
+    while i < nt {
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, d_td(vector.get(a.types, i)));
+        i = i + 1;
+    }
+    const nf: i64 = vector.len(a.fns);
+    var j: i64 = 0;
+    while j < nf {
+        acc = str.concat(acc, " ");
+        acc = str.concat(acc, d_fn(vector.get(a.fns, j)));
+        j = j + 1;
+    }
+    return str.concat(acc, ")");
+}

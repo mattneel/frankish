@@ -504,10 +504,78 @@ fn cache_key(seed: &str, base: &str, files: &[UnitFile]) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// A workspace-root-relative path, resolved regardless of the
+/// process's CWD (tests run from the crate directory, the CLI from
+/// the repository root).
+fn workspace_path(rel: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(rel);
+    if p.is_absolute() {
+        return p.to_path_buf();
+    }
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(rel)
+}
+
+/// One snapshot's unit set, from disk: std/str.calq (namespace
+/// `str`) plus the five compiler units (no namespace, the v0 flat
+/// model) - the same shape as `compiler_sources()`.
+pub fn snapshot_sources(dir: &str) -> Result<Vec<UnitFile>, String> {
+    let mut files = Vec::new();
+    for (rel, ns) in [
+        ("std/str.calq", Some("str")),
+        ("compiler/lex.calq", None),
+        ("compiler/report.calq", None),
+        ("compiler/parse.calq", None),
+        ("compiler/emit.calq", None),
+        ("compiler/compile.calq", None),
+    ] {
+        let rel_path = format!("{dir}/{rel}");
+        let text = std::fs::read_to_string(workspace_path(&rel_path))
+            .map_err(|e| format!("snapshot: cannot read {rel_path}: {e}"))?;
+        files.push(UnitFile {
+            name: rel_path,
+            ns: ns.map(|s| s.to_string()),
+            text,
+        });
+    }
+    Ok(files)
+}
+
+/// The recorded bootstrap chain (D-119/D-123): the FROZEN seed builds
+/// the newest seed-buildable snapshot, and that compiler translates
+/// the CURRENT sources. Used when the current sources have outgrown
+/// the seed's surface (they then cannot be built directly).
+pub fn chain_compiler(snapshot_dir: &str, current: &[UnitFile]) -> Result<String, String> {
+    let snap = snapshot_sources(snapshot_dir)?;
+    let seed = include_str!("../../../tools/calque/bootstrap/seed.lua");
+    let key0 = cache_key(seed, "snapshot-compiler", &snap);
+    let path0 = workspace_target().join(format!("snap-{key0}.mlir"));
+    let artifact0 = match std::fs::read_to_string(&path0) {
+        Ok(cached) => cached,
+        Err(_) => {
+            let a = seed_translate_jit(&snap)?;
+            let _ = std::fs::create_dir_all(path0.parent().unwrap());
+            let _ = std::fs::write(&path0, &a);
+            a
+        }
+    };
+    let outcome = run_artifact_with_input_cached(&artifact0, current)?;
+    if outcome.output.contains("error ") && outcome.output.starts_with("error ") {
+        return Err(format!(
+            "chain: the snapshot compiler rejected the current sources: {}",
+            &outcome.output[..outcome.output.len().min(200)]
+        ));
+    }
+    Ok(outcome.output)
+}
+
 /// The canonical compiler (calq0): the SEED translates the compiler
 /// sources; the result is cached in-process and on disk (target/
-/// calque-artifacts), keyed by the seed and every source. Cold cost is
-/// minutes (the reference interpreter); warm cost is a file read.
+/// calque-artifacts), keyed by the seed and every source. When the
+/// current sources use surface the FROZEN seed cannot parse, the
+/// recorded chain (seed -> newest snapshot -> current) takes over
+/// (D-119's freeze discipline: growth rides calq0 + snapshots).
 pub fn canonical_compiler() -> Result<&'static str, String> {
     static COMPILER: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
     COMPILER
@@ -522,11 +590,27 @@ pub fn canonical_compiler() -> Result<&'static str, String> {
             // The JIT path: seed-translating the compiler set is a
             // pure function and a success path; failures would use
             // seed_translate (the trap marker only the interpreter
-            // surfaces).
-            let artifact = seed_translate_jit(&files)?;
-            let _ = std::fs::create_dir_all(path.parent().unwrap());
-            let _ = std::fs::write(&path, &artifact);
-            Ok(artifact)
+            // surfaces). A seed failure on the CURRENT sources is the
+            // chain's cue: build via the newest seed-buildable snapshot.
+            match seed_translate_jit(&files) {
+                Ok(artifact) => {
+                    let _ = std::fs::create_dir_all(path.parent().unwrap());
+                    let _ = std::fs::write(&path, &artifact);
+                    Ok(artifact)
+                }
+                Err(direct) => {
+                    let chain = chain_compiler(
+                        "tools/calque/bootstrap/snapshots/c3v1",
+                        &files,
+                    )
+                    .map_err(|e| {
+                        format!("{e} (direct seed error: {direct})")
+                    })?;
+                    let _ = std::fs::create_dir_all(path.parent().unwrap());
+                    let _ = std::fs::write(&path, &chain);
+                    Ok(chain)
+                }
+            }
         })
         .as_deref()
         .map_err(|e| e.clone())

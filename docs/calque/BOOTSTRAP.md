@@ -246,9 +246,14 @@ comparison report. The M40 evidence report cites these hashes.
 
 - `tools/calque/bootstrap/` — the seed (Lua source), its frozen
   unit corpus, the driver recipe, and `snapshots/<version>/` =
-  bootstrap-compatible compiler source snapshots, each with a
-  README recording: the b0 cutoff it satisfies, the seed invocation,
-  and the hop it serves.
+  bootstrap-compatible compiler source snapshots (`c2v1` = the D-118
+  state; `c3v1` = the D-122 state, the hop that lets calq0's own
+  sources adopt the indexed surface), each with a README recording:
+  the b0 cutoff it satisfies, the seed invocation, and the hop it
+  serves. Snapshot bytes are pinned by `MANIFEST.sha256` and checked
+  by `scripts/calque-check.sh`; the harness's `canonical_compiler()`
+  falls back to the newest snapshot chain automatically when the
+  frozen seed can no longer parse the current sources.
 - Frozen historical snapshots are clearly separated from the
   canonical compiler (`tools/calque/compiler/`): snapshots are
   inputs to the chain, never the product.

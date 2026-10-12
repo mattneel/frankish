@@ -4,7 +4,7 @@
 //! (L2's no-blessing rule; there is no upstream oracle, MANIFEST
 //! "Conformance").
 
-use calque::{compose_unit_with_input, run_artifact, run_artifact_with_input, run_artifact_with_input_cached, run_test_blocks, seed_translate, seed_translate_cached, seed_translate_jit, UnitFile};
+use calque::{run_artifact, run_artifact_with_input_cached, run_test_blocks, seed_translate, seed_translate_cached, seed_translate_jit, UnitFile};
 
 
 fn unit(name: &str, ns: Option<&str>, text: &str) -> UnitFile {
@@ -2561,6 +2561,47 @@ fn seed_imports() {
     ];
     let err2 = seed_translate(&unk).expect_err("the unknown import is refused");
     assert!(err2.contains("unknown import `nope`"), "{err2}");
+}
+
+#[test]
+fn chain_compiler_agrees_with_the_direct_build() {
+    std::thread::Builder::new()
+        .stack_size(frk_interp::STACK_SIZE)
+        .spawn(chain_compiler_agrees_body)
+        .expect("spawn")
+        .join()
+        .expect("join");
+}
+
+fn chain_compiler_agrees_body() {
+    // D-123: the recorded chain (frozen seed -> c3v1 -> current
+    // sources) must be a WORKING compiler that agrees with the direct
+    // seed build at the only level byte-equality is promised: the
+    // artifacts it produces for the same program. (Seed-built and
+    // calq0-built compilers differ in incidental identifiers; §5's
+    // fixed point is calq0-stability, not seed equality.)
+    let direct = calque::canonical_compiler().expect("direct build");
+    let chained = calque::chain_compiler(
+        "tools/calque/bootstrap/snapshots/c3v1",
+        &calque::compiler_sources(),
+    )
+    .expect("the chain builds");
+    let units = vec![
+        stdlib_str(),
+        unit("probe.calq", None, "pub fn main() i64 { io.print(str.fromI64(6 * 7)); 0 }\n"),
+    ];
+    let via_direct = run_artifact_with_input_cached(direct, &units)
+        .expect("the direct compiler runs")
+        .output;
+    let via_chain = run_artifact_with_input_cached(&chained, &units)
+        .expect("the chain compiler runs")
+        .output;
+    assert_eq!(
+        via_chain,
+        via_direct,
+        "chain and direct compilers disagree on a probe: {}",
+        diff_hint(&via_chain, &via_direct)
+    );
 }
 
 #[test]
