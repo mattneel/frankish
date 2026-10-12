@@ -34,11 +34,33 @@ pub(crate) fn register(registry: &mut HashMap<&'static str, Box<dyn Eval>>) {
     registry.insert("arith.xori", Box::new(XorI));
     registry.insert("arith.extui", Box::new(ExtUI));
     registry.insert("arith.extsi", Box::new(ExtSI));
+    registry.insert("arith.index_cast", Box::new(IndexCast));
     registry.insert("arith.sitofp", Box::new(SiToFp));
     registry.insert("arith.fptosi", Box::new(FpToSi));
     registry.insert("arith.maxsi", Box::new(MaxSI));
     registry.insert("arith.andi", Box::new(AndI));
     registry.insert("arith.ori", Box::new(OrI));
+}
+
+/// `index` <-> integer (D-132): the same bit pattern at the result's
+/// width (index is modeled as 64-bit; see int_width).
+struct IndexCast;
+impl Eval for IndexCast {
+    fn eval<'c, 'a>(
+        &self,
+        _interp: &Interp<'c, 'a>,
+        frame: &mut Frame,
+        op: OperationRef<'c, 'a>,
+    ) -> Result<Step<'c, 'a>, EvalError> {
+        let values = operand_values(frame, op, 0, 1)?;
+        let (bits, _) = values[0].int_parts()?;
+        let width = int_width(
+            op.result(0)
+                .map_err(|_| EvalError::Malformed("index_cast without result".into()))?
+                .r#type(),
+        )?;
+        continue_with_result(frame, op, Value::int(bits, width)?)
+    }
 }
 
 /// Sign-extension (the ExtUI twin): the operand's bit pattern with its
@@ -240,6 +262,12 @@ impl Eval for XorI {
 }
 
 fn int_width(r#type: Type<'_>) -> Result<u32, EvalError> {
+    // `index` is modeled as 64-bit (the grid's index width; D-132 -
+    // Calque's copy intrinsics forced this: index-typed constants and
+    // scf.for bounds previously fell off this function).
+    if format!("{type}", type = r#type) == "index" {
+        return Ok(64);
+    }
     IntegerType::try_from(r#type)
         .map(|t| t.width())
         .map_err(|_| EvalError::Unsupported(format!("non-integer type {type}", type = r#type)))

@@ -3788,3 +3788,19 @@ veto-ledger pattern and most deserve their review.
   FENCED: re-exports, per-item type/const imports, member imports
   from scratch aliases.
 
+- D-132 [calque/services] C2'S SERVICE-PROMOTION AUDIT + THE INTERP'S
+  `index` SUPPORT: Calque-as-specimen promotes GENERIC Frankish
+  services and no Calque-specific host shortcuts exist (goal §4/§117;
+  the Rust boundary is documented in crates/calque/src/lib.rs, and the
+  CLI is a thin product entry over frk-harness, goal §91). The audit,
+  each promotion with its forcing evidence: (1) `arith.extsi` in the
+  reference interpreter - the subwidth probe found it missing (D-117
+  era); (2) `jit_run_text_opt` + the harness JIT/disk caches - the
+  iteration-loop priority (D-121); (3) index-typed `arith.constant`,
+  `arith.index_cast`, and `scf.for` over index bounds in the
+  reference interpreter - Calque's copy intrinsics forced this (the
+  cf-loop workaround is retained, but the service gap is closed).
+  New probe goldens/upstream/scf_for_index pins interp == jit ==
+  jit-rc on a hand-derived 0+1+2+3+4. Full workspace suite green
+  (`make test`). C2's items are complete; the next milestone is C3.
+

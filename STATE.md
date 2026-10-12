@@ -1573,6 +1573,15 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    C2 COMPLETE. SERVICE PROMOTIONS AUDITED (D-132): extsi, the
+    harness JIT/cache services, and the interp's index-typed
+    arith/scf support are the generic services Calque forced - each
+    with evidence, no Calque-specific host shortcuts (goal §4), and
+    the new scf_for_index probe pins interp == jit == jit-rc. Full
+    `make test` green. NEXT MILESTONE: C3 (shared compile-time
+    execution: comptime eval + reification, type construction/
+    reflection/capabilities/cache validity, nested compiler-library
+    execution, target/failure-isolation tests).
     SELECTIVE IMPORTS (D-131): `import A.B;` dotted paths +
     `import A.B.{f, g};` member imports into the bare scope (pub
     checked; collisions diagnosed; zero-match keeps the ordinary
