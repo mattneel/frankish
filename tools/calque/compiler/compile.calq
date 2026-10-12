@@ -92,7 +92,13 @@ pub fn main() i64 {
         var k: i64 = 0;
         while k < nf {
             const f: Fn = vector.get(a.fns, k);
-            vector.push(fns, %Fn{name: f.name, params: f.params, ret: f.ret, body: f.body, file: uname, ns: uns, test_name: f.test_name, is_pub: f.is_pub});
+            // D-128: a module-owned fn keeps its module ns (the
+            // unit's ns applies only when the fn has none).
+            var fns_ns: Str = uns;
+            if str.len(f.ns) > 0 {
+                fns_ns = f.ns;
+            }
+            vector.push(fns, %Fn{name: f.name, params: f.params, ret: f.ret, body: f.body, file: uname, ns: fns_ns, test_name: f.test_name, is_pub: f.is_pub});
             k = k + 1;
         }
         // imports (D-116): register the unit's namespace and the

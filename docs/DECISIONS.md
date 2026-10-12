@@ -3712,3 +3712,26 @@ veto-ledger pattern and most deserve their review.
   artifacts (chain_compiler_agrees_with_the_direct_build), corpus 28
   cases 0 red, grid GREEN.
 
+- D-128 [calque/modules] THE MODULE + COMPANION-CALL SURFACE (D-120
+  item 3, core): `pub module M { ... }` (dotted names) is a
+  compile-time namespace; its naked/`pub struct` is the PRIMARY struct
+  bound to the module name; `Self` resolves to it inside; member fns
+  carry the module's ns (the driver preserves a fn's own ns over the
+  unit's). RECEIVER CALLS: `recv.name(args)` resolves STATICALLY
+  through the receiver's named type and its owning module
+  (`Type.name(recv, args)` stays available); the resolution never
+  searches imported functions; a callable-field/member collision is
+  reported with the `(recv.field)(...)` alternative; a `mut self`
+  receiver rides the ordinary writable-place contract. Two
+  prerequisite fixes: the union-variant-constructor branch gates on
+  `is_union` (a struct name in `Type.name(...)` is a module, not a
+  variant), and D-118's import check exempts modules DEFINED IN THE
+  SAME UNIT (same-file ns scan; cross-unit imports stay enforced -
+  the seed differentials prove it). Gates:
+  goldens/calque/module_counter (receiver + qualified + mut receivers,
+  hand-derived `2|2`), calq0_modules_and_receiver_calls (incl. the
+  missing-associated-fn diagnostic), corpus 29 cases 0 red, grid
+  GREEN, suite 69. FENCED: lexical aliases, selective imports,
+  nested modules, `(value.field)(args)` closures, module-declaration
+  formatter/LSP surfaces.
+

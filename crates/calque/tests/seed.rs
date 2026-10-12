@@ -2573,6 +2573,30 @@ fn seed_imports() {
 }
 
 #[test]
+fn calq0_modules_and_receiver_calls() {
+    // D-128: a module with a primary struct + `Self`; the receiver
+    // spelling `recv.name(args)` and the qualified `M.name(recv, ...)`
+    // agree; `mut self` receivers write through the caller's binding.
+    let case_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../goldens/calque/module_counter/case.calq"
+    );
+    let src = std::fs::read_to_string(case_path).expect("the module case exists");
+    let artifact = calque::compile_source("module_counter.calq", &src).expect("calq0 compiles it");
+    let outcome = run_artifact(&artifact).expect("it runs");
+    assert_eq!(outcome.output, "2\n2\n");
+
+    // A missing associated function is a clean error naming the
+    // alternative spelling.
+    let bad = "pub const B = struct { n: i64 = 0, };\npub fn main() i64 { const b = %B{}; b.missing(); 0 }\n";
+    let err = calque::compile_source("moderr.calq", bad).expect_err("no associated fn");
+    assert!(
+        err.contains("no associated function `missing` for `B`"),
+        "{err}"
+    );
+}
+
+#[test]
 fn chain_compiler_agrees_with_the_direct_build() {
     std::thread::Builder::new()
         .stack_size(frk_interp::STACK_SIZE)

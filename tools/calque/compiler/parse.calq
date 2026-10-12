@@ -81,6 +81,9 @@ pub const P = struct {
     toks: [Tok],
     pos: i64 = 0,
     state: State = State.Ok,
+    // The enclosing `module`'s (possibly dotted) name, "" at top level
+    // (D-128): `Self` and the primary struct resolve against it.
+    cur_mod: Str = "",
 };
 
 pub fn p_new(toks: [Tok]) P {
@@ -1252,6 +1255,13 @@ pub fn p_type_atom(mut p: P) Ty {
             return Ty.Vec(inner);
         }
         const _t: Tok = p_next(p);
+        // `Self` (D-128): the enclosing module's primary struct name.
+        if t.text == "Self" {
+            if str.len(p.cur_mod) > 0 {
+                return Ty.Named(p.cur_mod);
+            }
+            p_fail(p, t.line, t.col, "`Self` needs an enclosing module");
+        }
         return Ty.Named(t.text);
     }
     if at_punct(p, "(") {
@@ -1984,6 +1994,154 @@ pub fn poison_td() TypeDecl {
     return %TypeDecl{name: "", is_union: false, fields: ef, variants: ev};
 }
 
+// `{ field: T = default, ... }` - the struct body shared by named
+// declarations and module primary structs (D-128).
+pub fn p_struct_body(mut p: P) [FieldDecl] {
+    var fields: [FieldDecl] = vector.new();
+    if expect_punct(p, "{") == false {
+        return fields;
+    }
+    while p_ok(p) {
+        if at_punct(p, "}") {
+            const _c: Tok = p_next(p);
+            // The terminating `;` is optional (the module primary
+            // struct's form has none - D-128).
+            if at_punct(p, ";") {
+                const _semi: Tok = p_next(p);
+            }
+            return fields;
+        }
+        const f: Tok = p_peek(p);
+        if is_name_tok(f) == false {
+            p_fail(p, f.line, f.col, "expected a field name");
+            return fields;
+        }
+        const _f: Tok = p_next(p);
+        if expect_punct(p, ":") == false {
+            return fields;
+        }
+        const ty: Ty = p_type(p);
+        var has_default: bool = false;
+        var def: Expr = poison();
+        if at_punct(p, "=") {
+            const _d: Tok = p_next(p);
+            has_default = true;
+            def = p_lit_expr(p);
+        }
+        vector.push(fields, %FieldDecl{name: f.text, ty: ty, has_default: has_default, default: def});
+        if at_punct(p, ",") {
+            const _c2: Tok = p_next(p);
+        } else {
+            if at_punct(p, "}") == false {
+                p_fail(p, f.line, f.col, "expected `,` or `}` in the struct declaration");
+                return fields;
+            }
+        }
+    }
+    return fields;
+}
+
+// `module A.B { items }` (D-128): a compile-time namespace whose fns
+// take the module's name as their ns (D-094 mangling) and whose naked
+// `struct { ... }` is the PRIMARY struct bound to that name. `Self`
+// inside resolves to it. Items: fn / const / struct / primary struct,
+// each optionally `pub`.
+pub fn p_module(mut p: P, fns: [Fn], types: [TypeDecl]) {
+    const kw: Tok = p_next(p);
+    var mname: Str = "";
+    const n0: Tok = p_peek(p);
+    if is_name_tok(n0) == false {
+        p_fail(p, n0.line, n0.col, "expected a module name");
+        return;
+    }
+    const _n0: Tok = p_next(p);
+    mname = n0.text;
+    while at_punct(p, ".") {
+        const _d0: Tok = p_next(p);
+        const n1: Tok = p_peek(p);
+        if is_name_tok(n1) == false {
+            p_fail(p, n1.line, n1.col, "expected a module name after `.`");
+            return;
+        }
+        const _n1: Tok = p_next(p);
+        mname = str.concat(mname, str.concat(".", n1.text));
+    }
+    if expect_punct(p, "{") == false {
+        return;
+    }
+    p.cur_mod = mname;
+    while p_ok(p) {
+        const t: Tok = p_peek(p);
+        if at_punct(p, "}") {
+            const _end: Tok = p_next(p);
+            p.cur_mod = "";
+            return;
+        }
+        if is_eof_tok(t) {
+            p_fail(p, kw.line, kw.col, "unterminated module body");
+            p.cur_mod = "";
+            return;
+        }
+        if is_kw_tok(t) {
+            if t.text == "struct" {
+                const _s2: Tok = p_next(p);
+                const fields: [FieldDecl] = p_struct_body(p);
+                var ev: [VariantDecl] = vector.new();
+                vector.push(types, %TypeDecl{name: mname, is_union: false, fields: fields, variants: ev});
+            } else {
+            if t.text == "const" {
+                vector.push(types, p_typedecl(p));
+            } else {
+                if t.text == "fn" {
+                    var f: Fn = p_fn(p);
+                    f.ns = mname;
+                    vector.push(fns, f);
+                } else {
+                    if t.text == "pub" {
+                        const nx: Tok = p_tok_at(p, 1);
+                        if is_kw_tok(nx) {
+                            if nx.text == "fn" {
+                                var f2: Fn = p_fn(p);
+                                f2.ns = mname;
+                                vector.push(fns, f2);
+                            } else {
+                                if nx.text == "const" {
+                                    vector.push(types, p_typedecl(p));
+                                } else {
+                                    if nx.text == "struct" {
+                                        const _pp2: Tok = p_next(p);
+                                        const _s3: Tok = p_next(p);
+                                        const fields2: [FieldDecl] = p_struct_body(p);
+                                        var ev2: [VariantDecl] = vector.new();
+                                        vector.push(types, %TypeDecl{name: mname, is_union: false, fields: fields2, variants: ev2});
+                                    } else {
+                                        p_fail(p, nx.line, nx.col, "module items are fn and struct declarations");
+                                        p.cur_mod = "";
+                                        return;
+                                    }
+                                }
+                            }
+                        } else {
+                            p_fail(p, nx.line, nx.col, "expected `fn`, `const`, or `struct` after `pub`");
+                            p.cur_mod = "";
+                            return;
+                        }
+                    } else {
+                        p_fail(p, t.line, t.col, str.concat("module items are fn and struct declarations (got `", str.concat(t.text, "`)")));
+                        p.cur_mod = "";
+                        return;
+                    }
+                }
+            }
+            }
+        } else {
+            p_fail(p, t.line, t.col, "module items are fn and struct declarations");
+            p.cur_mod = "";
+            return;
+        }
+    }
+}
+
 pub fn p_typedecl(mut p: P) TypeDecl {
     if at_kw(p, "pub") {
         const _a: Tok = p_next(p);
@@ -2002,45 +2160,9 @@ pub fn p_typedecl(mut p: P) TypeDecl {
     }
     if at_kw(p, "struct") {
         const _s: Tok = p_next(p);
-        if expect_punct(p, "{") == false {
-            return poison_td();
-        }
-        var fields: [FieldDecl] = vector.new();
-        while p_ok(p) {
-            if at_punct(p, "}") {
-                const _c: Tok = p_next(p);
-                const _semi: bool = expect_semi(p);
-                var ev: [VariantDecl] = vector.new();
-                return %TypeDecl{name: name.text, is_union: false, fields: fields, variants: ev};
-            }
-            const f: Tok = p_peek(p);
-            if is_name_tok(f) == false {
-                p_fail(p, f.line, f.col, "expected a field name");
-                return poison_td();
-            }
-            const _f: Tok = p_next(p);
-            if expect_punct(p, ":") == false {
-                return poison_td();
-            }
-            const ty: Ty = p_type(p);
-            var has_default: bool = false;
-            var def: Expr = poison();
-            if at_punct(p, "=") {
-                const _d: Tok = p_next(p);
-                has_default = true;
-                def = p_lit_expr(p);
-            }
-            vector.push(fields, %FieldDecl{name: f.text, ty: ty, has_default: has_default, default: def});
-            if at_punct(p, ",") {
-                const _c2: Tok = p_next(p);
-            } else {
-                if at_punct(p, "}") == false {
-                    p_fail(p, f.line, f.col, "expected `,` or `}` in the struct declaration");
-                    return poison_td();
-                }
-            }
-        }
-        return poison_td();
+        const fields: [FieldDecl] = p_struct_body(p);
+        var ev: [VariantDecl] = vector.new();
+        return %TypeDecl{name: name.text, is_union: false, fields: fields, variants: ev};
     }
     if at_kw(p, "union") {
         const _u: Tok = p_next(p);
@@ -2185,6 +2307,9 @@ pub fn p_ast(mut p: P) Ast {
             if t.text == "import" {
                 vector.push(imports, p_import(p));
             } else {
+            if t.text == "module" {
+                p_module(p, fns, types);
+            } else {
             if t.text == "test" {
                 n_tests = n_tests + 1;
                 vector.push(fns, p_test(p, n_tests));
@@ -2201,12 +2326,17 @@ pub fn p_ast(mut p: P) Ast {
                                 if nx.text == "fn" {
                                     vector.push(fns, p_fn(p));
                                 } else {
-                                    p_fail(p, nx.line, nx.col, "expected `fn` or `const` after `pub`");
-                                    return %Ast{fns: fns, types: types, imports: imports};
+                                    if nx.text == "module" {
+                                        const _pmp: Tok = p_next(p);
+                                        p_module(p, fns, types);
+                                    } else {
+                                        p_fail(p, nx.line, nx.col, "expected `fn`, `const`, or `module` after `pub`");
+                                        return %Ast{fns: fns, types: types, imports: imports};
+                                    }
                                 }
                             }
                         } else {
-                            p_fail(p, nx.line, nx.col, "expected `fn` or `const` after `pub`");
+                            p_fail(p, nx.line, nx.col, "expected `fn`, `const`, or `module` after `pub`");
                             return %Ast{fns: fns, types: types, imports: imports};
                         }
                     } else {
@@ -2218,6 +2348,7 @@ pub fn p_ast(mut p: P) Ast {
                         }
                     }
                 }
+            }
             }
             }
         } else {

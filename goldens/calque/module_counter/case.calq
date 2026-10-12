@@ -1,0 +1,15 @@
+pub module Counter {
+    pub struct { n: i64 = 0, }
+    pub fn get(self: Self) i64 { self.n }
+    pub fn bump(mut self: Self) { self.n = self.n + 1; }
+}
+pub fn main() i64 {
+    var c: Counter = %Counter{};
+    c.bump();
+    c.bump();
+    io.print(str.fromI64(c.get()));
+    io.print("\n");
+    io.print(str.fromI64(Counter.get(c)));
+    io.print("\n");
+    0
+}

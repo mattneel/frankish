@@ -1573,6 +1573,14 @@ rework flag, not a knob.
     emit.calq INVARIANTS). Commits eb2e7a2/0153e81; suite 63.
     REMAINING DEBT (named): the Ty-variant match fan-out (~15-20 sites
     per new variant) - pay it before C3 adds variants.
+    MODULE + RECEIVER-CALL SURFACE (D-128): `pub module M` with a
+    primary struct + `Self`; `recv.name(args)` resolves statically via
+    the type's owning module (qualified `M.name(recv, ...)` kept;
+    collisions reported; mut receivers via the ordinary contract).
+    Corpus 29/29 incl. module_counter; suite 69. NEXT per D-120's
+    order: item 4 (migrate one complete emitter API into its module -
+    a new snapshot c5v1 precedes the usage migration), then aliases/
+    selective imports.
     EMITTER MIGRATION (D-127): 10 `vector.get(e.field, i)` -> `e.xs[i]`
     in emit.calq, carried by the fold; c4v1-vs-current probe equality +
     corpus 28/28 + grid GREEN. NEXT: D-120 item 3 (module +

@@ -2118,6 +2118,20 @@ pub fn check_mod_vis(mut e: Emitter, mod: Str, f: Fn, line: i64, col: i64) bool 
     if mod == e_cur_ns(e) {
         return false;
     }
+    // D-128: a module DEFINED IN THIS UNIT is locally visible - scanned
+    // against the current fn's file, since the merged AST mixes units.
+    const a0: Ast = e_ast(e);
+    const nf0: i64 = vector.len(a0.fns);
+    var i0: i64 = 0;
+    while i0 < nf0 {
+        const f0: Fn = vector.get(a0.fns, i0);
+        if f0.ns == mod {
+            if f0.file == e_file(e) {
+                return false;
+            }
+        }
+        i0 = i0 + 1;
+    }
     if f.is_pub == false {
         const _ = e_fail_at(e, line, col, str.concat("`", str.concat(mod, str.concat(".", str.concat(f.name, "` is not pub")))));
         return true;
@@ -2291,8 +2305,14 @@ pub fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
     }
     if str.len(r.mod) > 0 {
         const td: TypeDecl = find_td(e_ast(e), r.mod);
+        // `Union.Variant(payload)` is the variant-constructor form
+        // (D-101). A STRUCT name in this position is a module's primary
+        // struct, so those calls fall through to the module/receiver
+        // resolution below (D-128).
         if td.name != "" {
-            return emit_variant_make(e, td, Ty.Named(td.name), r.name, c.args, line, col);
+            if td.is_union {
+                return emit_variant_make(e, td, Ty.Named(td.name), r.name, c.args, line, col);
+            }
         }
     }
     if r.mod == "assert" {
@@ -2419,6 +2439,15 @@ pub fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
             return res2;
         }
         // str.fromI64 and other members resolve as namespaced functions.
+    }
+    // D-128: `recv.name(args)` where `recv` is a BINDING is a receiver
+    // call - resolved statically through the receiver's named type and
+    // its owning module (no search over imported functions).
+    if str.len(r.mod) > 0 {
+        const rb0: Binding = lookup(e, r.mod);
+        if rb0.name != "" {
+            return emit_receiver_call(e, r, c.args, line, col);
+        }
     }
     const sym: Str = call_sym(r.name, r.mod);
     const f: Fn = find_fn_ctx(e, r.name, r.mod);
@@ -3147,6 +3176,59 @@ pub fn resolve_generic(mut e: Emitter, f: Fn, args: [Expr], line: i64, col: i64)
         vj = vj + 1;
     }
     return %GRes{f: instf, args: valargs};
+}
+
+// The receiver-call spelling (D-128): `recv.name(args)` resolves to
+// the associated function `Type.name` with `recv` leading the
+// arguments - `Type.name(recv, args)` stays available as the explicit
+// form. The receiver must be a writable place when the first
+// parameter is `mut` (the ordinary argument contract applies).
+pub fn emit_receiver_call(mut e: Emitter, r: Ref, args: [Expr], line: i64, col: i64) Str {
+    const rb: Binding = lookup(e, r.mod);
+    const rty: Ty = tv_res(e, rb.ty);
+    const is_named_r: bool = match rty {
+        Ty.Named(n0) => true,
+        _ => false,
+    };
+    if is_named_r == false {
+        return e_fail_at(e, line, col, "a receiver call needs a record receiver");
+    }
+    const tn: Str = match rty {
+        Ty.Named(n1) => n1,
+        _ => "",
+    };
+    const a0: Ast = e_ast(e);
+    const td0: TypeDecl = find_td(a0, tn);
+    // A callable-field/member collision is reported explicitly.
+    const nf0: i64 = vector.len(td0.fields);
+    var fi0: i64 = 0;
+    while fi0 < nf0 {
+        const fd0: FieldDecl = vector.get(td0.fields, fi0);
+        if fd0.name == r.name {
+            const m1: Str = str.concat("`", str.concat(tn, str.concat(".", r.name)));
+            const m2: Str = str.concat(m1, "` names both a field and an associated function; write `(recv.");
+            const m3: Str = str.concat(m2, str.concat(r.name, ")(...)` for the field"));
+            return e_fail_at(e, line, col, m3);
+        }
+        fi0 = fi0 + 1;
+    }
+    const sym: Str = str.concat(tn, str.concat("__", r.name));
+    const f: Fn = find_fn(a0, sym);
+    if f.name == "" {
+        const nf_m1: Str = str.concat("no associated function `", str.concat(r.name, "` for `"));
+        const nf_m2: Str = str.concat(nf_m1, str.concat(tn, "` - write `"));
+        const nf_m3: Str = str.concat(nf_m2, str.concat(tn, str.concat(".", str.concat(r.name, "(recv, ...)`"))));
+        return e_fail_at(e, line, col, nf_m3);
+    }
+    var args2: [Expr] = vector.new();
+    vector.push(args2, Expr.Ref(%Ref{name: r.mod, mod: ""}));
+    const n2: i64 = vector.len(args);
+    var i2: i64 = 0;
+    while i2 < n2 {
+        vector.push(args2, vector.get(args, i2));
+        i2 = i2 + 1;
+    }
+    return emit_fn_args(e, f, sym, args2, line, col);
 }
 
 pub fn emit_fn_args(mut e: Emitter, f: Fn, sym: Str, args: [Expr], line: i64, col: i64) Str {
