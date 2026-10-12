@@ -190,15 +190,15 @@ pub fn main() i64 {
         vector.push(nsimps, %NsImp{ns: fns_name, mod: im3.name, members: im3.members});
         ii = ii + 1;
     }
-    var e: Emitter = e_init();
-    e_imports_set(e, nsimps);
+    var e: Emitter = %Emitter{};
+    e.imports = nsimps;
     emit_module(e, merged);
-    if e_ok(e) == false {
-        io.print(fail_text(state_fail(e_state(e))));
+    if state_ok(e.state) == false {
+        io.print(fail_text(state_fail(e.state)));
         io.print("\n");
         return 1;
     }
-    const lines: [Str] = e_render(e);
+    const lines: [Str] = e.output;
     const n: i64 = vector.len(lines);
     var m: i64 = 0;
     while m < n {

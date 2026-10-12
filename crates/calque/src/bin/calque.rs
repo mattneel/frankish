@@ -17,7 +17,7 @@ fn main() -> ExitCode {
         let dir = args
             .get(2)
             .cloned()
-            .unwrap_or_else(|| "tools/calque/bootstrap/snapshots/c3v1".to_string());
+            .unwrap_or_else(calque::newest_snapshot);
         return bootstrap(&dir);
     }
     if args.len() < 3 {
@@ -98,11 +98,11 @@ fn main() -> ExitCode {
     }
 }
 
-/// The recorded bootstrap chain (BOOTSTRAP.md §4, D-119): the FROZEN
-/// seed builds the c2v1 snapshot -> artifact0; artifact0 compiles the
-/// CURRENT compiler sources -> artifact1; artifact1 does it again ->
-/// artifact2. Writes the artifacts + sha256s of record under
-/// out/calque/ and reports the fixed point (artifact1 == artifact2).
+/// The recorded bootstrap chain (BOOTSTRAP.md §4, D-126): fold every
+/// snapshot through the selected one to artifact0; artifact0 compiles
+/// the current sources to artifact1, which recompiles them to artifact2.
+/// Writes the artifacts and sha256s under out/calque/ and checks the
+/// fixed point (artifact1 == artifact2).
 fn progress(msg: &str) {
     use std::io::Write;
     eprintln!("bootstrap: {msg} ...");
@@ -112,21 +112,18 @@ fn progress(msg: &str) {
 fn bootstrap(snapshot_dir: &str) -> ExitCode {
     use sha2::{Digest, Sha256};
 
-    let snap = match calque::snapshot_sources(snapshot_dir) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("bootstrap: {e}");
-            return ExitCode::from(2);
-        }
-    };
+    if !calque::sorted_snapshots().iter().any(|dir| dir == snapshot_dir) {
+        eprintln!("bootstrap: not a recorded snapshot: {snapshot_dir}");
+        return ExitCode::from(2);
+    }
 
     let current = calque::compiler_sources();
 
-    progress("stage 1: seed -> snapshot artifact (JIT)");
-    let artifact0 = match calque::seed_translate_cached(&snap) {
+    progress("stage 1: recorded snapshot fold -> artifact0 (JIT)");
+    let artifact0 = match calque::chain_fold_to(snapshot_dir) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("bootstrap: the seed failed on the snapshot: {e}");
+            eprintln!("bootstrap: the snapshot fold failed: {e}");
             return ExitCode::from(1);
         }
     };

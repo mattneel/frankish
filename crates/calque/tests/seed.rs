@@ -3004,3 +3004,23 @@ fn seed_translates_the_compiler_set() {
         Err(e) => println!("SET ERR: {e}"),
     }
 }
+
+#[test]
+fn calq0_comptime_flushes_lifted_closures() {
+    let source = "pub fn answer() i64 {
+    const base: i64 = 40;
+    const add: fn (i64) i64 = fn (n: i64) i64 { base + n };
+    add(2)
+}
+pub fn main() i64 {
+    const value: i64 = comptime { answer() };
+    io.print(str.fromI64(value));
+    io.print(\"\\n\");
+    0
+}
+";
+    let artifact = calque::compile_source("ct_closure.calq", source)
+        .expect("comptime sub-modules include their lifted closure definitions");
+    let outcome = run_artifact(&artifact).expect("the reified result runs");
+    assert_eq!(outcome.output, "42\n");
+}

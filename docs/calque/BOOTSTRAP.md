@@ -102,10 +102,13 @@ bytes are pinned (`CALQUE_SEED_SHA` in `scripts/calque-check.sh`),
 the last seed-buildable compiler source set is preserved as
 `snapshots/c2v1/` (byte-pinned by its `MANIFEST.sha256`), and FROM
 THE FREEZE POINT ON NO SEED EDITS OCCUR. New surface lands in the
-canonical compiler (calq0); the seed builds c2v1; c2v1 (and each
-later snapshot) builds the current sources. `make calque-bootstrap`
-runs and records that chain (artifact0/1/2 + sha256s under
-`out/calque/`).
+canonical compiler (calq0). D-126 makes the route an ordered fold:
+the seed builds c2v1, then each snapshot's compiler builds the next
+snapshot, and the newest builds current sources. `make
+calque-bootstrap` reproduces the fold and records artifact0/1/2 and
+sha256s under `out/calque/`; its artifact0 is the compiler at the
+selected recorded snapshot, not a direct seed translation of later
+syntax (D-141).
 
 ## §2 The artifact
 
@@ -251,9 +254,9 @@ comparison report. The M40 evidence report cites these hashes.
   sources adopt the indexed surface), each with a README recording:
   the b0 cutoff it satisfies, the seed invocation, and the hop it
   serves. Snapshot bytes are pinned by `MANIFEST.sha256` and checked
-  by `scripts/calque-check.sh`; the harness's `canonical_compiler()`
-  falls back to the newest snapshot chain automatically when the
-  frozen seed can no longer parse the current sources.
+  by `scripts/calque-check.sh`; `canonical_compiler()` uses the
+  ordered fold unconditionally. Never feed current sources or a
+  post-seed-subset snapshot directly to the frozen seed.
 - Frozen historical snapshots are clearly separated from the
   canonical compiler (`tools/calque/compiler/`): snapshots are
   inputs to the chain, never the product.
@@ -263,6 +266,14 @@ comparison report. The M40 evidence report cites these hashes.
   compiler genuinely outgrows the previous seed/compiler's subset.
 - Reproduction is network-free after toolchain setup: all inputs
   (seed, snapshots, intrinsics) live in the repo.
+- `calque bootstrap` defaults to the newest recorded snapshot.
+  An explicit SNAPSHOT_DIR selects a recorded repository path; an
+  unrecorded directory is rejected. Artifact0 is the fold's compiler
+  at that snapshot; artifact1 is its compilation of current sources;
+  artifact2 is artifact1's recompile of the same sources. The CLI
+  checks artifact1 == artifact2 and writes all three under
+  `out/calque/`. Selecting an older snapshot does not skip required
+  language hops or promise it can compile newer source syntax.
 
 ## §6 Trust boundaries (reported explicitly; goal §5)
 

@@ -85,3 +85,44 @@ fn cli_test_failure_exits_nonzero() {
     assert!(!out.status.success(), "a failing unit exits non-zero: {stdout}");
     assert!(stdout.contains("FAIL bad math"), "{stdout}");
 }
+
+#[test]
+fn cli_bootstrap_uses_the_recorded_chain() {
+    let dir = std::env::temp_dir().join(format!("calque-cli-bootstrap-{}", std::process::id()));
+    std::fs::create_dir(&dir).expect("isolated bootstrap output directory");
+    let out = Command::new(bin())
+        .arg("bootstrap")
+        .current_dir(&dir)
+        .output()
+        .expect("spawn calque bootstrap");
+    assert!(
+        out.status.success(),
+        "bootstrap failed: {} {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let artifacts = dir.join("out/calque");
+    let artifact1 = std::fs::read_to_string(artifacts.join("artifact1.mlir"))
+        .expect("bootstrap emits the current compiler");
+    let artifact2 = std::fs::read_to_string(artifacts.join("artifact2.mlir"))
+        .expect("bootstrap emits the self-produced compiler");
+    assert_eq!(artifact1, artifact2, "bootstrap reaches its byte-exact fixed point");
+    let units = [
+        calque::UnitFile {
+            name: "str.calq".to_string(),
+            ns: Some("str".to_string()),
+            text: calque::stdlib_source().to_string(),
+        },
+        calque::UnitFile {
+            name: "probe.calq".to_string(),
+            ns: None,
+            text: "pub fn main() i64 { io.print(str.fromI64(6 * 7)); io.print(\"\\n\"); 0 }\n"
+                .to_string(),
+        },
+    ];
+    let program = calque::run_artifact_with_input_cached(&artifact2, &units)
+        .expect("the self-produced compiler compiles the probe");
+    let result = calque::run_artifact(&program.output).expect("the probe runs");
+    assert_eq!(result.output, "42\n");
+    std::fs::remove_dir_all(&dir).expect("remove bootstrap outputs");
+}

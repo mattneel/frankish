@@ -1168,7 +1168,7 @@ pub const PRec = struct {
     fields: [PField],
 };
 
-pub const PVar = struct {
+pub const PatAccess = struct {
     ty: Str,
     variant: Str,
     has_payload: bool,
@@ -1183,9 +1183,9 @@ pub const Pat = union(enum) {
     Lit: PLit,
     Pin: Str,
     Rec: PRec,
-    Variant: PVar,
+    Variant: PatAccess,
     // `.Variant` / `.Variant(pat)`: the scrutinee supplies the union.
-    Dot: PVar,
+    Dot: PatAccess,
     PatBad: BadNode,
 };
 
@@ -1421,7 +1421,7 @@ pub fn p_pattern(mut p: P) Pat {
                 return poison_pat();
             }
         }
-        return Pat.Dot(%PVar{ty: "", variant: vn.text, has_payload: has_sub, sub: dsub, line: vn.line, col: vn.col});
+        return Pat.Dot(%PatAccess{ty: "", variant: vn.text, has_payload: has_sub, sub: dsub, line: vn.line, col: vn.col});
     }
     const t: Tok = p_peek(p);
     if is_name_tok(t) {
@@ -1517,9 +1517,9 @@ pub fn p_pattern(mut p: P) Pat {
                 if expect_punct(p, ")") == false {
                     return bad_pat(p, t.line, t.col, "invalid pattern");
                 }
-                return Pat.Variant(%PVar{ty: t.text, variant: v.text, has_payload: true, sub: sub, line: v.line, col: v.col});
+                return Pat.Variant(%PatAccess{ty: t.text, variant: v.text, has_payload: true, sub: sub, line: v.line, col: v.col});
             }
-            return Pat.Variant(%PVar{ty: t.text, variant: v.text, has_payload: false, sub: poison_pat(), line: v.line, col: v.col});
+            return Pat.Variant(%PatAccess{ty: t.text, variant: v.text, has_payload: false, sub: poison_pat(), line: v.line, col: v.col});
         }
         return Pat.Bind(t.text);
     }
@@ -2609,7 +2609,7 @@ pub fn d_prec(r: PRec) Str {
     return str.concat(acc, ")");
 }
 
-pub fn d_pvar(v: PVar) Str {
+pub fn d_pvar(v: PatAccess) Str {
     if v.has_payload {
         var acc: Str = str.concat("(pat variant ", v.ty);
         acc = str.concat(acc, ".");

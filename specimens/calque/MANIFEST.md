@@ -284,9 +284,15 @@ canonical line format of SPEC §11.
   audited; §23 audit complete with evidence.
 
 ## Status
-M36 (C0) complete; M37 (C1) in flight: the seed translates b0 end to
-end (fib.calq and the exact i64 corner vectors green under
-`cargo test -p calque`), and the user's steering amendment
-(D-095..D-097) is recorded and threaded through SPEC/ACCEPTANCE. No
-compiler exists yet; nothing here is claimed executable beyond what
-`docs/calque/ACCEPTANCE.md` marks with command-backed evidence.
+C0 is complete; C1 shipped (`m37-done`). The C2 implementation
+sequence was closed in D-132; M39/C3 is in progress. The canonical
+compiler exists under `tools/calque/compiler/` and is built through
+the frozen seed and ordered c2v1..c7v1 snapshot chain. The Calque
+corpus contains 36 cases. Current comptime evidence covers i64 and
+Str reification, runtime-dependency refusal, custom assertions,
+expression-position nesting, and lifted closures (D-133..D-140).
+This is not a blanket sign-off of pending steering or acceptance
+rows. Type construction/reflection, aggregate reification,
+capabilities/budgets/cache validity, nested compiler-library use,
+and cross-specimen entry points remain unfinished. `STATE.md`
+contains the cloud-resume order and exercised verification.

@@ -1,47 +1,41 @@
 # STATE — frankish live handoff
 
-Updated: 2026-10-11 (M37/C1 session 2 — seed growth, input channel,
-steering 2, vectors)
-Phase: M35 complete (tag m35-done); M36 complete (tag m36-done — the
-Calque C0 charter). M37/C1 IN FLIGHT — four slabs landed this session:
-the SEED GROWTH (D-095/D-088: records/unions/match in b0 — `%Type{}`
-construction with literal defaults, immutable update, record/variant/
-literal/`^pin` patterns with exhaustiveness and redundancy errors);
-the COMPILER'S INPUT CHANNEL (BOOTSTRAP §2.1 — the driver's
-`__calque_input_count`/`__calque_input` injection + seed passthrough,
-which forced D-098: the bstr literal ASCII fence lifts, byte strings
-have no encoding); STEERING 2 recorded (docs-as-source, packages,
-fuzzing — D-099..D-102, sha-pinned at
-docs/calque/STEERING-DOCS-PACKAGES-FUZZING.md; AC-S19..S30; stage
-mapping in SPEC §13); and VECTOR(T) (F34/D-091 — the 15 per-slot-kind
-intrinsics with growth, and the annotated `vector.new()` surface). The
-first steering amendment (structs/tests/CON/CTF; D-095..D-097) stays
-threaded through SPEC/ACCEPTANCE/MANIFEST; the THIRD steering
-amendment (the built-in language server — D-103, sha-pinned at
-docs/calque/STEERING-LSP.md; AC-S31..S41) is recorded and mapped to C5;
-the FOURTH (diagnostics/lint/agent help — D-104, sha-pinned at
-docs/calque/STEERING-DIAGNOSTICS-LINT-AGENT-HELP.md; AC-S42..S52) maps
-the record schema to C2 and its renderers/catalog/lint/ci/fix to C5 —
-calq0's provisional one-line diagnostic projection is explicitly
-upgradeable, and no second text shape may ship meanwhile; the FIFTH
-(structured concurrency + modern CPUs — D-105, sha-pinned at
-docs/calque/STEERING-CONCURRENCY-MODERN-CPUS.md; AC-S53..S60) FREEZES
-the ownership/transfer/cancellation/memory-model/target-layout
-contracts NOW and supersedes GOAL §21's "new scheduler" clause IN SCOPE
-(a structured local scheduler is core; actor runtimes stay out); the
-SIXTH (vector/array/SIMD syntax — D-108, sha-pinned at
-docs/calque/STEERING-VECTOR-SUGAR.md; AC-S61..S63/S67) makes `[T]`/
-`[N]T`/`vec[N]T`, literals/ranges/spreads/`++`/updates/comprehensions/
-patterns, and SIMD operators with once-broadcast scalars first-class
-surface (C2 collections, C4 SIMD) and supersedes construction
-ceremonies; the SEVENTH (Silat Style — D-109, sha-pinned at
-docs/calque/SILAT_STYLE.md; AC-S64..S67) is the HOUSE STYLE with an
-executed §12 migration phase 1 on this session's own lexer/parser and
-recorded exceptions.
-Tree: green — `cargo test -p calque` 13/13 seed + reference; `make
-test` green on this session's commits; diff 162 cases 0 divergent (8
-runners); grid 157/157 × BOTH strategies × 4 triples + s390x canary
-157/157; `make calque-test` green (29/211 acceptance rows done).
+Updated: 2026-10-12 (M39/C3 — emitter cleanup and cloud handoff,
+D-140/D-141).
+Phase: M35, M36/C0, and M37/C1 shipped (`m35-done`, `m36-done`,
+`m37-done`). The C2 implementation sequence was closed at 8f51612
+(D-132); M39/C3 is IN PROGRESS. This does not declare all C2 steering
+or acceptance rows complete. No `m38-done` or `m39-done` tag exists;
+do not tag a stage while its acceptance obligations remain open.
+
+Canonical compiler: `tools/calque/compiler/`, written in Calque.
+The frozen seed and ordered c2v1..c7v1 snapshot fold build it; the
+seed MUST NOT parse current sources. `make calque-bootstrap` now
+uses that fold (D-141), rather than jumping from c3v1 to current.
+
+This handoff's implementation: Emitter `ast`, `file`, and `ret` are
+scalar fields; mechanical accessors and the empty constructor are
+gone; opaque helper names were replaced; read-only helpers have
+ordinary parameters. LiftS snapshots the enclosing return type by
+value. Ordinary and comptime module emission now share
+`emit_pending`, fixing missing lifted closure definitions (D-140).
+This is NOT a claim that all of modules-access section 6 is done:
+remaining helper ownership/visibility and MatchCtx cells are the
+first cloud task below.
+
+C3 evidence through D-140: the shared evaluation service; explicit
+comptime expressions/blocks; i64 and Str reification; ordinary
+function/closure execution; runtime-local refusal; custom assertions;
+expression-position nesting. Aggregate/type-value reification,
+resource policies, budgets, traces, and the broader query cache are
+still unfinished. The D-139 statement/const nesting defect remains.
+
+Tree: green — final `make test CARGOFLAGS=--offline`; Calque seed
+suite 73 passed, 7 ignored; CLI 4 passed; reference 4 passed.
+`make calque-test` has 0 red: interp 35 green plus the declared tco
+skip, jit/jit-rc 36 each; native x86_64-linux-musl 36/36 in arena
+and rc. Bootstrap and self-host fixed points pass. See the session
+entry for commands, hashes, smoke results, and checks not run.
 
 WORKSTREAM: CALQUE (user-selected 2026-10-11). M36 = C0 → M42 = C6.
 docs/calque/GOAL.md is the acceptance contract (stored verbatim; its
@@ -49,35 +43,62 @@ sha256 is pinned in scripts/calque-check.sh); docs/calque/ACCEPTANCE.md
 is the live evidence matrix; the target family is `make calque-*`.
 
 ## Next action
-1. M37/C1 — the interpreted compiler written in Calque. Slice order:
-   (a) the minimal language-dispatch table in frk-harness (+
-   behavior-preservation tests for every existing specimen), (b) the
-   Calque intrinsics module + the new rt rows (print/eprint/trap), (c)
-   the seed (Lua translator on femto_lua) targeting the D-088 emission
-   rules; (d) calq0 (the compiler core, in b0), (e) the corpus
-   (`goldens/calque/`), (f) the initial self-compilation gate.
-   STATUS: (a)–(c) DONE; (g) DONE, plus the M37 session-2 slabs: the
-   RECORD
-   SURFACE (D-095 — b0 HAS records now; SPEC §5/§5.2 amended), the
-   INPUT CHANNEL (BOOTSTRAP §2.1; D-098), Vector(T) (F34/D-091), and
-   STEERING 2 recorded (D-099..D-102). NEXT: (d) calq0 slice 1 —
-   `tools/calque/compiler/` grows from the LEXER in b0 (tokens as a
-   union carried in a Vector, spans, the b0 token table), driven
-   through the input channel; then slice 2 the parser, slice 3 the
-   emitter; (e) the corpus (`goldens/calque/`) as calq0's
-   differential against the Rust frontend's artifacts; (f) the
-   initial self-compilation gate. SEED GAPS calq0 will hit next
-   (each its own slab): `*` arithmetic (the mul-overflow slice is
-   PENDING — `i * i` does NOT translate yet), byte-level str access
-   for the lexer, Option/Result, `for`. (i) the minimal `calque test`
-   runner + structural assertions are a C2 EXIT item (D-096),
-   (j) CON/CTF/JSON over one codec foundation at C2–C3 (D-097),
-   CTF-vs-ETF at C4, the full test experience at C5; STEERING 2's
-   features land at their stages (D-099..D-102; SPEC §13), and
-   STEERING 3 (the language server — D-103) deepens C5's server
-   obligation (`calque lsp --stdio` + `calque query`, `make
-   calque-lsp`).
-2. QUEUED (preserved; not this workstream's):
+1. **Finish the emitter domain-model migration before new C3
+   features** (`docs/calque-steering-modules-access.md` section 6,
+   D-120/D-140). Work in `tools/calque/compiler/emit.calq` and its
+   actual callers: move remaining owning operations into Emitter,
+   remove residual prefix/accessor boilerplate, audit read-only
+   signatures, and keep helper types private where possible. MatchCtx
+   still represents scalar join state with `has`, `ty`, and `brs`
+   singleton vectors; replace those with an explicit scoped `mut`
+   contract, not silent shared mutation. Scopes, blocks, instances,
+   and pending-definition queues are real collections: preserve them.
+   Names such as LiftS and PatAccess still merit invariant-based
+   names. Keep `%Emitter{}`, `e.current()`, and `e.open_block(...)`;
+   no class hierarchy or speculative protocol layer.
+2. **Fix the D-139 nested-comptime defect.** Expression-position
+   nesting works; a comptime statement or const initializer inside a
+   comptime block does not. Add a consumer-visible regression, repair
+   the parser/sub-emission boundary, preserve positions and untaken
+   branch behavior; do not special-case the repro or weaken the gate.
+3. **Resume C3 type construction/reflection** (GOAL section 9;
+   AC-9.9..9.14). `comptime T: type` exists; value parameters do not:
+   `fn tag(comptime K: i64) i64 { K + 1 }` is refused by the parameter
+   parser. Extend the existing parameter/monomorphization machinery
+   in parse.calq and emit.calq (`resolve_generic`, `subst_ty_list`,
+   `tv_res`, `emit_ref`), with typed constant keys/substitution and
+   the shared evaluator, not a second expression evaluator. Then
+   implement conditional type construction, structured field/
+   variant/signature descriptors, deterministic type identity, and
+   the reflection-based codec obligation.
+4. **Complete the rest of C3**, not just its scalar result arm:
+   aggregates/reification boundaries and sharing/cycle policy;
+   explicit target/arguments/capabilities/limits and failure traces;
+   nested isolation/cancellation/exhaustion; semantic cache validity;
+   nested compiler-library execution and cross-specimen entry points;
+   target-sensitive and failure-isolation tests (AC-11.*, AC-12.*).
+5. **C4 next:** native compiler from canonical source; final
+   reproducible bootstrap/fixed point from clean inputs; required
+   optimizations and cost controls; reproducible measurement/artifact
+   evidence. Preserve the package, fuzzing, concurrency, and CPU
+   amendments rather than treating the original milestone shorthand
+   as their replacement.
+6. **C5 next:** formatter, language server, REPL and shared analysis
+   queries; incremental invalidation and native debug; the applicable
+   target/runtime matrix; clean-install and offline-after-setup
+   workflows. Documentation/help, test experience, diagnostics/lint/
+   fixes, and package publication fixtures stay binding.
+7. **C6 and final acceptance:** demos A-E plus the adopted playbook
+   extensions, with casts/scripts/fixtures/MP4 exports; reference
+   documentation and architecture explanations; audit every
+   acceptance item, defects, and non-goals; final section 23 evidence
+   report. Update this file and the acceptance matrix; complete the
+   goal ONLY with direct current-state evidence.
+
+The acceptance matrix is authoritative for outstanding work.
+Pending M38 rows are not waived by the D-132 sequence-close entry.
+
+### Other workstreams (preserved; not the active Calque workstream)
    - ts-4: generics (monomorphized), sealed-world switch, any/gradual
      boundary as contract ops (frk_contract's second act); the D-079
      static-await-dispatch soundness note comes due; ALSO owed (D-083):
@@ -88,8 +109,52 @@ is the live evidence matrix; the target family is `make calque-*`.
    - the re-entrant rung's consumers: scheme P13 + R7RS 4.2.7 (unfence
      together), re-entrant winds — entry points recorded in D-084.8.
 
+## Cloud resume
+
+Start from this handoff commit on `origin/master`. No archived chat,
+local `/tmp` files, compiler caches, or workstation editor settings
+are required. Read AGENTS.md, this file, DECISIONS.md, the relevant
+Calque SPEC/GOAL/BOOTSTRAP sections and amendments, and the Calque
+MANIFEST before editing.
+
+`make setup` is a doctor, not an installer: resolve its named hints
+using `versions.env`. Required build pins include Rust 1.96.0 and
+LLVM/MLIR 22 (including Polly and libclang). Native Calque grid
+verification needs the pinned Zig 0.16.0; the full workspace gates
+also use the specimen oracles and tools named by setup.
+
+From the repository root:
+
+```sh
+make setup
+make build
+make test CARGOFLAGS=--offline
+make calque-test CARGOFLAGS=--offline
+make calque-bootstrap CARGOFLAGS=--offline
+make calque-selfhost CARGOFLAGS=--offline
+```
+
+The first build may acquire dependencies; the following commands
+exercise the offline-after-setup path. If a version-manager shim
+hangs at setup's Zig check, put the actual pinned Zig binary first
+on PATH; that resolved this workstation's setup timeout. No
+machine-specific paths or overrides belong in the commit.
+
+Resume item 1 under Next action. Every implementation change needs
+its verifier; keep frozen seed/snapshots and integrity pins intact.
+If new syntax is needed in compiler source, land support before
+usage and record the necessary hop. Never edit a historical
+snapshot to make the chain pass.
+Collection receiver methods exist in current sources (D-137), but
+adopting them in the compiler itself requires the c8v1 feature-before-
+usage hop. Field-base indexed writes and nested places remain fenced
+(D-125); bracket rebinding is persistent, unlike the legacy in-place
+vector.set path. Do not change alias semantics merely for spelling.
+
 ## In flight
-Nothing.
+No new C3 feature work is in flight during transfer. The current
+cleanup and bootstrap repair are the handoff commit; the explicit
+cloud queue above retains all unfinished work.
 
 ## For the human
 - RESOLVED (2026-07-03): the Rocq anchor — delegated back ("Atli is
@@ -1241,6 +1306,67 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-10-12 (cloud handoff)
+    Milestone/step: M39/C3 — emitter scalar-state cleanup; restored
+    bootstrap CLI; broader Calque goal remains in progress.
+    Parent revision: 1b6cc56.
+    Green? yes:
+    - make setup: passed with the actual pinned Zig binary on PATH
+      after the local version-manager shim timed out.
+    - make build CARGOFLAGS=--offline: passed.
+    - make test CARGOFLAGS=--offline: full workspace passed; Calque
+      CLI 4/4, reference 4/4, seed 73 passed and 7 ignored.
+    - make calque-test CARGOFLAGS=--offline: charter/pins passed
+      (35/248 rows done); interp 35 green + tco's declared skip,
+      jit 36/36, jit-rc 36/36, 0 red; native x86_64-linux-musl
+      36/36 under each of arena and rc.
+    - make calque-bootstrap CARGOFLAGS=--offline: ordered fold and
+      fixed point passed; artifact1 == artifact2, sha256:
+      4efc4a8572844c22c0ad4ae3d689d910200766648a745953f49d6c1f1732727c
+    - make calque-selfhost CARGOFLAGS=--offline: passed.
+    - actual CLI smoke: mixed Str/i64 nested closure return types
+      followed by nested comptime printed `41|42|ok` and `41`;
+      the persistent-index acceptance case printed `20|99|35|30`.
+      The throwaway source was removed.
+    Did:
+    - Finished the inherited ast/file/ret scalar cutover, removed
+      mechanical accessors and the constructor wrapper, migrated
+      every active caller, renamed opaque helpers, and removed the
+      obsolete return-cell alias workaround. Useful snapshots and
+      lookups now accept ordinary value parameters (D-140).
+    - The stronger smoke exposed omitted closure definitions in
+      comptime sub-modules. Shared emit_pending flushes both closure
+      and instance queues for ordinary and comptime modules.
+      calq0_comptime_flushes_lifted_closures passed.
+    - Reproduced make calque-bootstrap failing at 66:5 on `pub
+      module`: the CLI still jumped from c3v1 directly to current.
+      It now defaults to the latest recorded snapshot and uses the
+      existing ordered fold; cli_bootstrap_uses_the_recorded_chain
+      verifies fixed-point artifacts and executes a probe compiled
+      by the self-produced compiler (D-141).
+    - Reconciled the stale C1 header and specimen status; recorded
+      partial C3 evidence without marking broad requirements done;
+      wrote the cloud startup sequence and complete remaining queue.
+    Next: finish modules-access section 6's remaining emitter
+    ownership/private-helper/MatchCtx-cell migration, before adding
+    value-level comptime parameters or other C3 features.
+    Landmines:
+    - Seed, snapshots, and goal/amendment integrity pins are frozen.
+      Current compiler builds through c7v1; new source syntax needs
+      its supported and recorded hop, never a historical-file edit.
+    - D-139 statement/const nesting remains a real defect. Type
+      construction/reflection, aggregate results, capabilities/
+      budgets/cache validity, traces, compiler-library inception,
+      cross-specimen evaluation, and target/isolation tests remain.
+    - Scope stacks and pending queues are genuinely collections;
+      MatchCtx's scalar-vector cells are not. Field-base persistent
+      writes/nested places remain fenced; legacy vector.set shares
+      mutation and cannot be blindly replaced by bracket rebinding.
+    - Not run here: non-native Calque cross-grid/big-endian canary,
+      ignored long interpreter/compiler equality and scaling legs,
+      clean cloud installation, or C4 native compiler self-hosting.
+      Existing upstream warnings were not expanded into this work.
 
     Session end: 2026-10-11 (thirty-sixth entry)
     Milestone/step: M37/C1 in flight — four slabs landed (seed

@@ -3924,3 +3924,32 @@ veto-ledger pattern and most deserve their review.
   calq0_comptime_evaluates_and_reifies (the custom message surfaces
   in the failure), corpus 36 cases 0 red, grid GREEN, suite 72.
 
+- D-140 [calque/emitter] FINISH THE SCALAR-STATE CUTOVER (D-112,
+  D-120 section 6): the active Emitter stores one `ast`, `file`, and
+  `ret`, not singleton vectors; LiftS captures/restores the return
+  type by value, so the old cell-alias workaround is removed.
+  Mechanical accessors and the `%Emitter{}`-only constructor are
+  deleted; callers use fields directly. TypeVar, Instance,
+  PendingInst, GenCall, ValueTy, MatchCtx, and PatAccess replace the
+  opaque type names; literal/function emission names state their
+  operation. Read-only snapshot, lookup, visibility, and location
+  helpers no longer require `mut`. A stronger smoke found that
+  comptime sub-modules omitted lifted definitions: `emit_pending`
+  now shares the existing closure/instance flush with ordinary
+  module emission, with a captured-closure regression. The c7v1
+  compiler builds these sources; no new syntax or snapshot is needed.
+  Revisit: the remaining owning-module/private-helper migration and
+  MatchCtx scalar cells still belong to section 6; this is not a
+  claim that the entire emitter migration is complete.
+
+- D-141 [calque/bootstrap-cli] THE CLI USES THE ORDERED SNAPSHOT FOLD
+  (D-126), not the obsolete c3v1-to-current shortcut. The handoff
+  smoke reproduced `make calque-bootstrap` failing on `pub module`.
+  Default selection is the newest recorded snapshot; an explicit
+  SNAPSHOT_DIR must name a recorded snapshot. Artifact0 is built by
+  the existing `chain_fold_to`, then compiles current sources to
+  artifact1, which produces artifact2. The byte-exact fixed point
+  and a working self-produced compiler are checked by the CLI
+  regression. The seed and snapshot pins stay unchanged. Revisit:
+  C4's native and clean-input bootstrap obligations remain separate.
+

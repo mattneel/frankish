@@ -89,10 +89,10 @@ calque-test:
 calque-selfhost:
 	$(CARGO) test -p calque $(CARGOFLAGS) --test seed calq0_compiles_itself
 
-# The recorded bootstrap chain (BOOTSTRAP.md §4, D-119): the frozen
-# seed -> c2v1 snapshot -> artifact0 -> current sources -> artifact1
-# -> artifact2 (the fixed point in embryo). Artifacts of record land
-# in out/calque/ (gitignored); sha256s printed.
+# The ordered seed/snapshot fold (BOOTSTRAP.md section 5, D-126/D-141)
+# builds the newest snapshot's artifact0, then current sources produce
+# artifact1 and artifact2 (the byte-exact fixed point). Artifacts of
+# record land in out/calque/ (gitignored); sha256s are printed.
 calque-bootstrap:
 	$(CARGO) run -q -p calque $(CARGOFLAGS) --bin calque -- bootstrap
 
