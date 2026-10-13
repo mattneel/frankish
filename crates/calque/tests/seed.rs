@@ -3421,9 +3421,17 @@ fn calq0_limited_service_emission_and_digits() {
     assert!(artifact.contains("func.call @__calque_eval_i64_limited("), "{artifact}");
     assert_eq!(run_artifact(&artifact).expect("runs").output, "49ok\n");
 
-    let gated = "pub fn main() i64 {\n    const x: i64 = comptime(steps: 100) { 1 + 2 };\n    x\n}\n";
-    let err = calque::compile_source("gated.calq", gated).expect_err("the surface waits for the hop");
-    assert!(err.contains("error 2:20 explicit comptime limits activate with the c8v1 bootstrap hop"), "{err}");
+    // Since D-152 (the c8v1 hop) the surface is live: an ample limit
+    // evaluates, a tight one fails with the exact count, at the block.
+    let ample = "pub fn main() i64 {\n    const x: i64 = comptime(steps: 100) { 1 + 2 };\n    io.print(str.fromI64(x));\n    io.print(\"\\n\");\n    0\n}\n";
+    let artifact = calque::compile_source("ample.calq", ample).expect("an ample explicit limit");
+    assert_eq!(run_artifact(&artifact).expect("runs").output, "3\n");
+    let spin = "fn spin(n: i64) i64 {\n    var i: i64 = n;\n    while i >= 0 {\n        i = i + 1;\n    }\n    i\n}\npub fn main() i64 {\n    const x: i64 = comptime(steps: 5000) { spin(1) };\n    x\n}\n";
+    let err = calque::compile_source("tight.calq", spin).expect_err("the explicit limit cuts the loop off");
+    assert!(err.contains("step budget exhausted after 5000 operations"), "{err}");
+    let zero = "pub fn main() i64 {\n    const x: i64 = comptime(steps: 0) { 1 };\n    x\n}\n";
+    let err = calque::compile_source("zero.calq", zero).expect_err("a zero limit is refused");
+    assert!(err.contains("error 2:36 a comptime step limit is an integer literal of at least 1"), "{err}");
 
     let digits = "pub fn main() i64 {
     const a: [12]i64 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];

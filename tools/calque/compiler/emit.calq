@@ -1064,12 +1064,7 @@ fn emit_tuple_e(mut e: Emitter, items: [Expr], expected: Ty) Str {
 // silently deferred to runtime.
 fn emit_comptime_cx(mut e: Emitter, cx: ComptimeX) Str {
     const bd: Block = cx.body;
-    if cx.steps != 0 {
-        // D-151 phase A: the surface parses; the compiler's own call to
-        // the limited service rides the next recorded hop.
-        return e.fail_at(cx.line, cx.col, "explicit comptime limits activate with the c8v1 bootstrap hop (D-151)");
-    }
-    return emit_comptime_e(e, bd, cx.line, cx.col);
+    return emit_comptime_e(e, bd, cx.steps, cx.line, cx.col);
 }
 
 // A block's value type: its tail inferred with the block's own
@@ -1114,8 +1109,8 @@ fn infer_block_ty(mut e: Emitter, b: Block, line: i64, col: i64) Ty {
     return t;
 }
 
-fn emit_comptime_e(mut e: Emitter, b: Block, line: i64, col: i64) Str {
-    const cv: ComptimeValue = eval_comptime(e, b, "the comptime block", line, col);
+fn emit_comptime_e(mut e: Emitter, b: Block, steps: i64, line: i64, col: i64) Str {
+    const cv: ComptimeValue = eval_comptime(e, b, "the comptime block", steps, line, col);
     if cv.ok == false {
         return "";
     }
@@ -1127,7 +1122,9 @@ fn emit_comptime_e(mut e: Emitter, b: Block, line: i64, col: i64) Str {
 // non-generic, non-main fn, emitted by a fresh emitter that inherits
 // the active type and constant substitutions; the service runs while
 // calq0 compiles. `what` names the evaluated thing in diagnostics.
-fn eval_comptime(mut e: Emitter, b: Block, what: Str, line: i64, col: i64) ComptimeValue {
+// `steps` is the request's explicit step limit (D-151/D-152): 0 asks
+// the service for its default budget.
+fn eval_comptime(mut e: Emitter, b: Block, what: Str, steps: i64, line: i64, col: i64) ComptimeValue {
     const a0: Ast = e.ast;
     var sub: Emitter = %Emitter{};
     sub.ast = a0;
@@ -1191,10 +1188,10 @@ fn eval_comptime(mut e: Emitter, b: Block, what: Str, line: i64, col: i64) Compt
         j = j + 1;
     }
     if is_str {
-        const sv: Str = __calque_eval_s(mod_text, "__comptime_entry", 0);
+        const sv: Str = __calque_eval_s_limited(mod_text, "__comptime_entry", 0, steps);
         return %ComptimeValue{ok: true, ty: Ty.StrV, text: sv};
     }
-    const v: i64 = __calque_eval_i64(mod_text, "__comptime_entry", 0);
+    const v: i64 = __calque_eval_i64_limited(mod_text, "__comptime_entry", 0, steps);
     if is_bool {
         var bt: Str = "false";
         if v != 0 {
@@ -1226,7 +1223,7 @@ fn emit_ct_if(mut e: Emitter, ci: IfE) Str {
 // 1 = then, 0 = else, -1 = failed (recorded).
 fn ct_if_pick(mut e: Emitter, ci: IfE) i64 {
     const no_stmts: [Stmt] = [];
-    const cv: ComptimeValue = eval_comptime(e, %Block{stmts: no_stmts, tail: ci.cond, has_tail: true}, "the `comptime if` condition", ci.line, ci.col);
+    const cv: ComptimeValue = eval_comptime(e, %Block{stmts: no_stmts, tail: ci.cond, has_tail: true}, "the `comptime if` condition", 0, ci.line, ci.col);
     if cv.ok == false {
         return 0 - 1;
     }
@@ -3164,7 +3161,7 @@ fn comptime_arg(mut e: Emitter, prm: Param, a: Expr, line: i64, col: i64) ConstA
         Expr.Str(t) => { cv = %ComptimeValue{ok: true, ty: Ty.StrV, text: t}; },
         _ => {
             const no_stmts: [Stmt] = [];
-            cv = eval_comptime(e, %Block{stmts: no_stmts, tail: a, has_tail: true}, what, line, col);
+            cv = eval_comptime(e, %Block{stmts: no_stmts, tail: a, has_tail: true}, what, 0, line, col);
         },
     };
     if cv.ok == false {
@@ -3780,7 +3777,7 @@ fn elab_type_expr(mut e: Emitter, x: Expr, key: Str, line: i64, col: i64) Ty {
         },
         Expr.If(ife) => {
             const no_stmts: [Stmt] = [];
-            const cv: ComptimeValue = eval_comptime(e, %Block{stmts: no_stmts, tail: ife.cond, has_tail: true}, "the type condition", ife.line, ife.col);
+            const cv: ComptimeValue = eval_comptime(e, %Block{stmts: no_stmts, tail: ife.cond, has_tail: true}, "the type condition", 0, ife.line, ife.col);
             if cv.ok == false {
                 return bad;
             }

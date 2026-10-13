@@ -287,7 +287,7 @@ canonical line format of SPEC §11.
 C0 is complete; C1 shipped (`m37-done`). The C2 implementation
 sequence was closed in D-132; M39/C3 is in progress. The canonical
 compiler exists under `tools/calque/compiler/` and is built through
-the frozen seed and ordered c2v1..c7v1 snapshot chain. The Calque
+the frozen seed and ordered c2v1..c8v1 snapshot chain. The Calque
 corpus contains 36 cases. Current comptime evidence covers i64 and
 Str reification, runtime-dependency refusal, custom assertions,
 expression-position nesting, and lifted closures (D-133..D-140).

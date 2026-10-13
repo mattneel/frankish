@@ -702,17 +702,29 @@ pub fn parse_primary(mut p: P) Expr {
                 if expect_punct(p, ":") == false {
                     return bad_here(p);
                 }
-                const nt: Tok = p_peek(p);
+                // The parse state is last-wins: record a bad limit and keep
+                // parsing the request, so a later expectation cannot mask it.
+                const nt: Tok = p_next(p);
+                var limit_ok: bool = true;
                 if is_int_tok(nt) == false {
-                    return bad(p, nt.line, nt.col, "a comptime step limit is an integer literal (D-151)");
-                }
-                const _nt: Tok = p_next(p);
-                steps = parse_digits(nt.text);
-                if steps < 1 {
-                    return bad(p, nt.line, nt.col, "a comptime step limit must be at least 1 (D-151)");
+                    limit_ok = false;
+                } else {
+                    steps = parse_digits(nt.text);
+                    if steps < 1 {
+                        limit_ok = false;
+                    }
                 }
                 if expect_punct(p, ")") == false {
                     return bad_here(p);
+                }
+                if limit_ok == false {
+                    // Parse the body for recovery, then record the refusal.
+                    var body0: Block = poison_block();
+                    if at_punct(p, "{") {
+                        body0 = p_block(p);
+                    }
+                    p_fail(p, nt.line, nt.col, "a comptime step limit is an integer literal of at least 1 (D-151)");
+                    return Expr.Bad(%BadNode{msg: "a comptime step limit is an integer literal of at least 1 (D-151)", line: nt.line, col: nt.col});
                 }
             }
             if at_punct(p, "{") {

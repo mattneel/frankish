@@ -4210,3 +4210,20 @@ veto-ledger pattern and most deserve their review.
   exhaustion counts, 0 = default, refusal of -5), and
   calq0_limited_service_emission_and_digits (source-level calls of
   both entries, the gated surface, `[12]i64`).
+
+- D-152 [calque/bootstrap] THE c8v1 HOP AND EXPLICIT LIMITS LIVE
+  (D-151 phase B): snapshots/c8v1 records D-151 phase A's sources
+  byte-for-byte (MANIFEST.sha256, pinned in calque-check.sh; built by
+  c7v1's compiler) - the first compiler that can emit the limited
+  service calls. The current sources then USE them: eval_comptime
+  takes the request's `steps` and always calls
+  `__calque_eval_*_limited` (0 for comptime arguments, type
+  conditions, and `comptime if`, i.e. the default budget), and
+  `comptime(steps: N) { ... }` is live. Ordered fold: seed -> c2v1 ->
+  ... -> c7v1 -> c8v1 -> current; the fixed point holds. A bad limit
+  (`steps: 0`, a non-literal) records its refusal at the limit and
+  parses on, so the last-wins parse state cannot mask it. Gates:
+  calq0_limited_service_emission_and_digits (an ample limit
+  evaluates; `steps: 5000` cuts an unbounded loop off with the exact
+  count; the zero refusal), make calque-bootstrap. No historical
+  snapshot was edited; the seed and all pins are unchanged.

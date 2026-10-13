@@ -1,0 +1,624 @@
+// calq0 - the Calque compiler, written in Calque (M37/C1, slice 1: the
+// lexer). This file is b0 source; the SEED (tools/calque/bootstrap)
+// translates it into a kernel-IR artifact, and the artifact lexes
+// Calque source obtained through the compiler input channel
+// (BOOTSTRAP 2.1: __calque_input_count()/__calque_input(i)).
+//
+// Slice 1 driver: `main` lexes input unit 0 and dumps the token
+// stream as:
+//   <kind> <text> <line>:<col>
+// one token per line, then "count <n>". On a lexical error it prints
+//   error <line>:<col> <message>
+// and returns 1 (the BOOTSTRAP 2.2 "input rejected" code; the
+// diagnostics channel moves to io.eprint when the seed grows that
+// row - slice 1 has no stderr surface, so the diagnostic rides
+// stdout, clearly marked). Lexical rules MIRROR the seed's lexer
+// (the working definition of the b0 surface): whitespace, // and
+// /* */ comments, identifiers/keywords, run-of-digits ints, strings
+// with the CLOSED b0 escape set ({n,t,r,\,",0}), the six two-char
+// operators (== != <= >= |> =>), and the one-char punctuation set.
+// Lexical errors are NOT traps: the Scan carries ok/msg/line/col and
+// the loop stops by position (b0 has no `break`/`continue`/`and`/
+// `or` - this file uses early returns and boolean flags only).
+
+pub const Kind = union(enum) {
+    Name,
+    Int,
+    Str,
+    Punct,
+    Kw,
+    Eof,
+};
+
+pub const Tok = struct {
+    kind: Kind,
+    text: Str,
+    line: i64,
+    col: i64,
+};
+
+// The shared success/failure contract (D-109): one explicit state for
+// the lexer and the parser; `Fail` carries structured fields, and
+// RENDERING lives at the presentation boundary (report.calq, the
+// drivers) - nothing formats "error line:col msg" at a failure site.
+pub const Fail = struct {
+    msg: Str,
+    line: i64,
+    col: i64,
+};
+
+pub const State = union(enum) {
+    Ok,
+    Failed: Fail,
+};
+
+pub fn state_ok(s: State) bool {
+    return match s {
+        State.Ok => true,
+        State.Failed(f) => false,
+    };
+}
+
+// The mutable-by-rebuild lexer state; `ok=false` + msg/err carry a
+// lexical error. i == n stops the driver loop.
+pub const Scan = struct {
+    i: i64,
+    line: i64,
+    col: i64,
+    state: State,
+};
+
+pub const Lexed = struct {
+    toks: [Tok],
+    state: State,
+};
+
+pub fn in_set(set: Str, c: Str) bool {
+    var i: i64 = 0;
+    const n: i64 = str.len(set);
+    while i < n {
+        if str.sub(set, i, 1) == c {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+pub fn is_digit(c: Str) bool {
+    return in_set("0123456789", c);
+}
+
+pub fn is_lower(c: Str) bool {
+    return in_set("abcdefghijklmnopqrstuvwxyz", c);
+}
+
+pub fn is_upper(c: Str) bool {
+    return in_set("ABCDEFGHIJKLMNOPQRSTUVWXYZ", c);
+}
+
+pub fn is_start(c: Str) bool {
+    if is_lower(c) {
+        return true;
+    }
+    if is_upper(c) {
+        return true;
+    }
+    return c == "_";
+}
+
+pub fn is_ident(c: Str) bool {
+    if is_start(c) {
+        return true;
+    }
+    return is_digit(c);
+}
+
+pub fn is_kw(s: Str) bool {
+    if s == "and" {
+        return true;
+    }
+    if s == "bool" {
+        return true;
+    }
+    if s == "break" {
+        return true;
+    }
+    if s == "catch" {
+        return true;
+    }
+    if s == "test" {
+        return true;
+    }
+    if s == "import" {
+        return true;
+    }
+    if s == "module" {
+        return true;
+    }
+    if s == "alias" {
+        return true;
+    }
+    if s == "const" {
+        return true;
+    }
+    if s == "continue" {
+        return true;
+    }
+    if s == "defer" {
+        return true;
+    }
+    if s == "else" {
+        return true;
+    }
+    if s == "false" {
+        return true;
+    }
+    if s == "fn" {
+        return true;
+    }
+    if s == "for" {
+        return true;
+    }
+    if s == "i64" {
+        return true;
+    }
+    if s == "usize" {
+        return true;
+    }
+    if s == "if" {
+        return true;
+    }
+    if s == "match" {
+        return true;
+    }
+    if s == "not" {
+        return true;
+    }
+    if s == "or" {
+        return true;
+    }
+    if s == "pub" {
+        return true;
+    }
+    if s == "return" {
+        return true;
+    }
+    if s == "struct" {
+        return true;
+    }
+    if s == "true" {
+        return true;
+    }
+    if s == "try" {
+        return true;
+    }
+    if s == "comptime" {
+        return true;
+    }
+    if s == "union" {
+        return true;
+    }
+    if s == "var" {
+        return true;
+    }
+    if s == "while" {
+        return true;
+    }
+    return false;
+}
+
+pub fn mk_tok(kind: Kind, text: Str, line: i64, col: i64) Tok {
+    return %Tok{kind, text, line, col};
+}
+
+// Moves the scan to (i, line, col), preserving error state.
+// The digit-value table (the single copy: tuple slots, `[N]T`
+// lengths, and any digit run share it).
+pub fn digit_val(c: Str) i64 {
+    if c == "0" {
+        return 0;
+    }
+    if c == "1" {
+        return 1;
+    }
+    if c == "2" {
+        return 2;
+    }
+    if c == "3" {
+        return 3;
+    }
+    if c == "4" {
+        return 4;
+    }
+    if c == "5" {
+        return 5;
+    }
+    if c == "6" {
+        return 6;
+    }
+    if c == "7" {
+        return 7;
+    }
+    if c == "8" {
+        return 8;
+    }
+    if c == "9" {
+        return 9;
+    }
+    return 0 - 1;
+}
+
+// A digits-only i64 (`t.0`-style slots, `[N]T` lengths); -1 if the
+// text is empty or holds a non-digit.
+pub fn parse_digits(s: Str) i64 {
+    const n: i64 = str.len(s);
+    if n == 0 {
+        return 0 - 1;
+    }
+    var acc: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        // str.sub takes (from, LENGTH): one character (D-151 fix; the
+        // old `i + 1` length misread every multi-digit literal).
+        const d: i64 = digit_val(str.sub(s, i, 1));
+        if d < 0 {
+            return 0 - 1;
+        }
+        acc = acc * 10 + d;
+        i = i + 1;
+    }
+    return acc;
+}
+
+pub fn move(st: Scan, i: i64, line: i64, col: i64) Scan {
+    return %Scan{i, line, col, state: st.state};
+}
+
+// Ends the scan at position n with an error (the driver loop stops
+// because i == n).
+pub fn err_at(st: Scan, n: i64, msg: Str, line: i64, col: i64) Scan {
+    return %Scan{i: n, line: st.line, col: st.col, state: State.Failed(%Fail{msg: msg, line: line, col: col})};
+}
+
+// `"""..."""` (C2, D-115): verbatim between the delimiters.
+pub fn lex_multiline_str(src: Str, n: i64, toks: [Tok], st: Scan) Scan {
+    const line: i64 = st.line;
+    const col: i64 = st.col;
+    var j: i64 = st.i + 3;
+    var cl: i64 = col + 3;
+    var ml: i64 = line;
+    var acc: Str = "";
+    var closed: bool = false;
+    var go: bool = true;
+    while go {
+        if j >= n {
+            go = false;
+        } else {
+            if str.sub(src, j, 3) == "\"\"\"" {
+                closed = true;
+                j = j + 3;
+                cl = cl + 3;
+                go = false;
+            } else {
+                const ch: Str = str.sub(src, j, 1);
+                acc = str.concat(acc, ch);
+                if ch == "\n" {
+                    ml = ml + 1;
+                    cl = 1;
+                } else {
+                    cl = cl + 1;
+                }
+                j = j + 1;
+            }
+        }
+    }
+    if closed == false {
+        return err_at(st, n, "unterminated multiline string literal", line, col);
+    }
+    vector.push(toks, mk_tok(Kind.Str, acc, line, col));
+    return move(st, j, ml, cl);
+}
+
+pub fn lex_str(src: Str, n: i64, toks: [Tok], st: Scan) Scan {
+    var j: i64 = st.i + 1;
+    var cl: i64 = st.col + 1;
+    var acc: Str = "";
+    var closed: bool = false;
+    var bad: bool = false;
+    while closed == false {
+        if j >= n {
+            bad = true;
+            closed = true;
+        } else {
+            const b: Str = str.sub(src, j, 1);
+            if b == "\n" {
+                bad = true;
+                closed = true;
+            } else {
+                if b == "\"" {
+                    j = j + 1;
+                    cl = cl + 1;
+                    closed = true;
+                } else {
+                    if b == "\\" {
+                        if j + 1 >= n {
+                            bad = true;
+                            closed = true;
+                        } else {
+                            const e: Str = str.sub(src, j + 1, 1);
+                            if e == "n" {
+                                acc = str.concat(acc, "\n");
+                                j = j + 2;
+                                cl = cl + 2;
+                            } else {
+                                if e == "t" {
+                                    acc = str.concat(acc, "\t");
+                                    j = j + 2;
+                                    cl = cl + 2;
+                                } else {
+                                    if e == "r" {
+                                        acc = str.concat(acc, "\r");
+                                        j = j + 2;
+                                        cl = cl + 2;
+                                    } else {
+                                        if e == "\\" {
+                                            acc = str.concat(acc, "\\");
+                                            j = j + 2;
+                                            cl = cl + 2;
+                                        } else {
+                                            if e == "\"" {
+                                                acc = str.concat(acc, "\"");
+                                                j = j + 2;
+                                                cl = cl + 2;
+                                            } else {
+                                                if e == "0" {
+                                                    acc = str.concat(acc, "\0");
+                                                    j = j + 2;
+                                                    cl = cl + 2;
+                                                } else {
+                                                    return err_at(st, n, "unsupported escape", st.line, cl);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        acc = str.concat(acc, b);
+                        j = j + 1;
+                        cl = cl + 1;
+                    }
+                }
+            }
+        }
+    }
+    if bad {
+        return err_at(st, n, "unterminated string literal", st.line, st.col);
+    }
+    vector.push(toks, mk_tok(Kind.Str, acc, st.line, st.col));
+    return move(st, j, st.line, cl);
+}
+
+pub fn lex_line_comment(src: Str, n: i64, st: Scan) Scan {
+    var j: i64 = st.i + 2;
+    var done: bool = false;
+    while done == false {
+        if j >= n {
+            done = true;
+        } else {
+            if str.sub(src, j, 1) == "\n" {
+                done = true;
+            } else {
+                j = j + 1;
+            }
+        }
+    }
+    // the seed leaves the newline for the whitespace case; col is
+    // untouched (the next step consumes the newline and resets it)
+    return move(st, j, st.line, st.col);
+}
+
+pub fn lex_block_comment(src: Str, n: i64, st: Scan) Scan {
+    var j: i64 = st.i + 2;
+    var ln: i64 = st.line;
+    var cl: i64 = st.col + 2;
+    var closed: bool = false;
+    var bad: bool = false;
+    while closed == false {
+        if j >= n {
+            bad = true;
+            closed = true;
+        } else {
+            if str.sub(src, j, 1) == "*" {
+                if j + 1 < n {
+                    if str.sub(src, j + 1, 1) == "/" {
+                        j = j + 2;
+                        cl = cl + 2;
+                        closed = true;
+                    } else {
+                        j = j + 1;
+                        cl = cl + 1;
+                    }
+                } else {
+                    j = j + 1;
+                    cl = cl + 1;
+                }
+            } else {
+                if str.sub(src, j, 1) == "\n" {
+                    ln = ln + 1;
+                    cl = 1;
+                    j = j + 1;
+                } else {
+                    j = j + 1;
+                    cl = cl + 1;
+                }
+            }
+        }
+    }
+    if bad {
+        return err_at(st, n, "unterminated block comment", ln, cl);
+    }
+    return move(st, j, ln, cl);
+}
+
+pub fn step(src: Str, n: i64, toks: [Tok], st: Scan) Scan {
+    const {i, line, col} = st;
+    const c: Str = str.sub(src, i, 1);
+    if c == "\n" {
+        return move(st, i + 1, line + 1, 1);
+    }
+    if c == " " {
+        return move(st, i + 1, line, col + 1);
+    }
+    if c == "\t" {
+        return move(st, i + 1, line, col + 1);
+    }
+    if c == "\r" {
+        return move(st, i + 1, line, col + 1);
+    }
+    if c == "/" {
+        if i + 1 < n {
+            const d: Str = str.sub(src, i + 1, 1);
+            if d == "/" {
+                return lex_line_comment(src, n, st);
+            }
+            if d == "*" {
+                return lex_block_comment(src, n, st);
+            }
+        }
+    }
+    if c == "\"" {
+        if str.sub(src, i, 3) == "\"\"\"" {
+            return lex_multiline_str(src, n, toks, st);
+        }
+        return lex_str(src, n, toks, st);
+    }
+    if is_start(c) {
+        const start_col: i64 = col;
+        var j: i64 = i;
+        var cl: i64 = col;
+        var go: bool = true;
+        while go {
+            if j >= n {
+                go = false;
+            } else {
+                if is_ident(str.sub(src, j, 1)) {
+                    j = j + 1;
+                    cl = cl + 1;
+                } else {
+                    go = false;
+                }
+            }
+        }
+        const word: Str = str.sub(src, i, j - i);
+        if is_kw(word) {
+            vector.push(toks, mk_tok(Kind.Kw, word, line, start_col));
+        } else {
+            vector.push(toks, mk_tok(Kind.Name, word, line, start_col));
+        }
+        return move(st, j, line, cl);
+    }
+    if is_digit(c) {
+        const start_col2: i64 = col;
+        var j2: i64 = i;
+        var cl2: i64 = col;
+        var digits: Str = "";
+        var go2: bool = true;
+        while go2 {
+            if j2 >= n {
+                go2 = false;
+            } else {
+                const d2: Str = str.sub(src, j2, 1);
+                if is_digit(d2) {
+                    digits = str.concat(digits, d2);
+                    j2 = j2 + 1;
+                    cl2 = cl2 + 1;
+                } else {
+                    if d2 == "_" {
+                        // C2 digit separator (D-115): between digits
+                        // only, stripped from the value.
+                        var nxt: Str = "";
+                        if j2 + 1 < n {
+                            nxt = str.sub(src, j2 + 1, 1);
+                        }
+                        if str.len(digits) == 0 or is_digit(nxt) == false {
+                            return err_at(st, n, "a digit separator `_` needs digits on both sides", line, cl2);
+                        }
+                        j2 = j2 + 1;
+                        cl2 = cl2 + 1;
+                    } else {
+                        go2 = false;
+                    }
+                }
+            }
+        }
+        vector.push(toks, mk_tok(Kind.Int, digits, line, start_col2));
+        return move(st, j2, line, cl2);
+    }
+    var two: Str = c;
+    if i + 1 < n {
+        two = str.concat(c, str.sub(src, i + 1, 1));
+    }
+    if two == "==" {
+        vector.push(toks, mk_tok(Kind.Punct, two, line, col));
+        return move(st, i + 2, line, col + 2);
+    }
+    // `+=` (D-120 slice 1: compound indexed writes) is ONE token, so
+    // expression parsing stops at it.
+    if two == "+=" {
+        vector.push(toks, mk_tok(Kind.Punct, two, line, col));
+        return move(st, i + 2, line, col + 2);
+    }
+    if two == "!=" {
+        vector.push(toks, mk_tok(Kind.Punct, two, line, col));
+        return move(st, i + 2, line, col + 2);
+    }
+    if two == "<=" {
+        vector.push(toks, mk_tok(Kind.Punct, two, line, col));
+        return move(st, i + 2, line, col + 2);
+    }
+    if two == ">=" {
+        vector.push(toks, mk_tok(Kind.Punct, two, line, col));
+        return move(st, i + 2, line, col + 2);
+    }
+    if two == "|>" {
+        vector.push(toks, mk_tok(Kind.Punct, two, line, col));
+        return move(st, i + 2, line, col + 2);
+    }
+    if two == "=>" {
+        vector.push(toks, mk_tok(Kind.Punct, two, line, col));
+        return move(st, i + 2, line, col + 2);
+    }
+    if in_set("(){}[],;:.=<>+-*/%!^|?", c) {
+        vector.push(toks, mk_tok(Kind.Punct, c, line, col));
+        return move(st, i + 1, line, col + 1);
+    }
+    return err_at(st, n, str.concat("unexpected character ", c), line, col);
+}
+
+pub fn lex(src: Str) Lexed {
+    var toks: [Tok] = vector.new();
+    const n: i64 = str.len(src);
+    var st: Scan = %Scan{i: 0, line: 1, col: 1, state: State.Ok};
+    while st.i < n {
+        st = step(src, n, toks, st);
+    }
+    if state_ok(st.state) == false {
+        return %Lexed{toks: toks, state: st.state};
+    }
+    vector.push(toks, mk_tok(Kind.Eof, "", st.line, st.col));
+    return %Lexed{toks: toks, state: State.Ok};
+}
+
+pub fn kind_name(k: Kind) Str {
+    return match k {
+        Kind.Name => "name",
+        Kind.Int => "int",
+        Kind.Str => "str",
+        Kind.Punct => "punct",
+        Kind.Kw => "kw",
+        Kind.Eof => "eof",
+    };
+}
