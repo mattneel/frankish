@@ -427,6 +427,13 @@ pub module Emitter {
             vector.push(types, %TypeDecl{name: td.name, is_union: td.is_union, fields: fields, variants: variants});
             k = k + 1;
         }
+        // Declarations synthesized by the elaboration (D-147) follow.
+        const cur: Ast = self.ast;
+        const ncur: i64 = vector.len(cur.types);
+        while k < ncur {
+            vector.push(types, cur.types[k]);
+            k = k + 1;
+        }
         self.ast = %Ast{fns: fns, types: types, imports: a.imports};
     }
 
@@ -563,6 +570,7 @@ fn ty_ir(t: Ty) Str {
         Ty.ArrT(a2) => "arr",
         Ty.FnT(sig) => "fn",
         Ty.App(ap) => "app",
+        Ty.AnonStruct(fs) => "anon",
         Ty.TyBad(b) => "bad",
     };
 }
@@ -1543,6 +1551,7 @@ fn ir_ty(t: Ty) Str {
         Ty.ArrT(a2) => "arr",
         Ty.FnT(sig) => "fn",
         Ty.App(ap) => "app",
+        Ty.AnonStruct(fs) => "anon",
         Ty.TyBad(b) => "bad",
     };
 }
@@ -3391,6 +3400,7 @@ fn type_key(t: Ty) Str {
             str.concat(acc, str.concat(") ", type_key(sig.ret)))
         },
         Ty.App(ap) => str.concat("<unelaborated ", str.concat(ap.name, ">")),
+        Ty.AnonStruct(fs) => "<anonymous struct>",
         Ty.TyBad(b) => "<bad>",
     };
 }
@@ -3500,7 +3510,7 @@ fn resolve_app(mut e: Emitter, ap: TyApp) Ty {
     e.tvars = sub;
     e.consts = consts;
     const body: Block = f.body;
-    const ty: Ty = elab_type_expr(e, body.tail, ap.line, ap.col);
+    const ty: Ty = elab_type_expr(e, body.tail, key, ap.line, ap.col);
     e.tvars = saved_tvars;
     e.consts = saved_consts;
     e.type_app_stack = outer_stack;
@@ -3515,10 +3525,19 @@ fn resolve_app(mut e: Emitter, ap: TyApp) Ty {
 // condition - evaluated through the shared service with the
 // function's comptime parameters bound, and only the taken branch is
 // elaborated (an untaken branch may name a type that does not exist).
-fn elab_type_expr(mut e: Emitter, x: Expr, line: i64, col: i64) Ty {
+fn elab_type_expr(mut e: Emitter, x: Expr, key: Str, line: i64, col: i64) Ty {
     const bad: Ty = Ty.TyBad(%BadNode{msg: "<type expression>", line: line, col: col});
     match x {
         Expr.TyV(t) => {
+            var anon: bool = false;
+            var afields: [FieldDecl] = [];
+            match t {
+                Ty.AnonStruct(fs) => { anon = true; afields = fs; },
+                _ => {},
+            };
+            if anon {
+                return synth_struct(e, key, afields);
+            }
             return tv_res(e, t);
         },
         Expr.If(ife) => {
@@ -3538,15 +3557,42 @@ fn elab_type_expr(mut e: Emitter, x: Expr, line: i64, col: i64) Ty {
             }
             if cv.text == "true" {
                 const tb: Block = ife.then;
-                return elab_type_expr(e, tb.tail, line, col);
+                return elab_type_expr(e, tb.tail, key, line, col);
             }
             const eb: Block = ife.els;
-            return elab_type_expr(e, eb.tail, line, col);
+            return elab_type_expr(e, eb.tail, key, line, col);
         },
         _ => {},
     };
     e.fail_at(line, col, "a type function's body must be a type expression (D-145)");
     return bad;
+}
+
+// An anonymous `struct { ... }` result (D-147): a NOMINAL declaration
+// named by the application's deterministic key (`Pair(i64)` is
+// `Pair__i64` everywhere), its field types elaborated under the type
+// function's bindings. Defaults are kept as written.
+fn synth_struct(mut e: Emitter, key: Str, fields: [FieldDecl]) Ty {
+    var rf: [FieldDecl] = [];
+    const n: i64 = vector.len(fields);
+    var i: i64 = 0;
+    while i < n {
+        const fd: FieldDecl = fields[i];
+        vector.push(rf, %FieldDecl{name: fd.name, ty: tv_res(e, fd.ty), has_default: fd.has_default, default: fd.default});
+        i = i + 1;
+    }
+    const a: Ast = e.ast;
+    var types: [TypeDecl] = [];
+    const nt: i64 = vector.len(a.types);
+    var k: i64 = 0;
+    while k < nt {
+        vector.push(types, a.types[k]);
+        k = k + 1;
+    }
+    var no_variants: [VariantDecl] = [];
+    vector.push(types, %TypeDecl{name: key, is_union: false, fields: rf, variants: no_variants});
+    e.ast = %Ast{fns: a.fns, types: types, imports: a.imports};
+    return Ty.Named(key);
 }
 
 fn mangle_ty(t: Ty) Str {
@@ -3573,6 +3619,7 @@ fn mangle_ty(t: Ty) Str {
         Ty.ResT(rz) => str.concat("res_", str.concat(mangle_ty(rz.err), str.concat("_", mangle_ty(rz.ok)))),
         Ty.FnT(sig) => "fn",
         Ty.App(ap) => str.concat("app_", ap.name),
+        Ty.AnonStruct(fs) => "anon",
         Ty.TyBad(x) => "t",
     };
 }
@@ -3713,6 +3760,12 @@ fn tv_get(sub: [TypeVar], nm: Str) Ty {
 fn is_tyarg_expr(mut e: Emitter, a: Expr) bool {
     return match a {
         Expr.TyV(t0) => true,
+        // `Pair(i64)` as an argument is a type application (D-147).
+        Expr.Call(c0) => {
+            const cr: Ref = c0.callee;
+            const tf: Fn = find_fn_ctx(e, cr.name, cr.mod);
+            tf.name != "" and is_type_fn(tf)
+        },
         Expr.Ref(r0) => {
             const b0: Binding = e.lookup(r0.name);
             b0.name == "" and str.len(r0.mod) == 0
@@ -3724,6 +3777,10 @@ fn is_tyarg_expr(mut e: Emitter, a: Expr) bool {
 fn tyarg_value(mut e: Emitter, a: Expr, line: i64, col: i64) Ty {
     return match a {
         Expr.TyV(t0) => tv_res(e, t0),
+        Expr.Call(c0) => {
+            const cr: Ref = c0.callee;
+            resolve_app(e, %TyApp{name: cr.name, args: c0.args, line: c0.line, col: c0.col})
+        },
         Expr.Ref(r0) => {
             if r0.name == "Str" {
                 Ty.StrV
@@ -3959,10 +4016,14 @@ fn infer_expr_ty(mut e: Emitter, ex: Expr, line: i64, col: i64) Ty {
         Expr.IndexE(ix2) => infer_index_ty(e, ix2, line, col),
         Expr.ComptimeE(cx3) => infer_block_ty(e, cx3.body, line, col),
         Expr.Make(mk) => {
-            if str.len(mk.ty) > 0 {
-                tv_res(e, Ty.Named(mk.ty))
+            if mk.is_app {
+                resolve_app(e, %TyApp{name: mk.ty, args: mk.app_args, line: mk.line, col: mk.col})
             } else {
-                Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col})
+                if str.len(mk.ty) > 0 {
+                    tv_res(e, Ty.Named(mk.ty))
+                } else {
+                    Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col})
+                }
             }
         },
         _ => Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col}),
@@ -5096,6 +5157,7 @@ fn same_ty(a: Ty, b: Ty) bool {
         Ty.FnT(sig) => same_fnsig(sig, b),
         // Applications are elaborated before comparison (D-145).
         Ty.App(ap) => false,
+        Ty.AnonStruct(fs) => false,
         Ty.TyBad(x) => ty_is_unit(b),
     };
 }
@@ -5402,7 +5464,24 @@ fn mk_field_expr(fields: [MakeField], name: Str) MakeField {
     return %MakeField{name: "", expr: poison()};
 }
 
-fn emit_make(mut e: Emitter, m: MakeE, line: i64, col: i64) Str {
+fn emit_make(mut e: Emitter, m0: MakeE, line: i64, col: i64) Str {
+    // `%F(args){...}` (D-147): construct the application's nominal type.
+    var m: MakeE = m0;
+    if m0.is_app {
+        const at: Ty = resolve_app(e, %TyApp{name: m0.ty, args: m0.app_args, line: line, col: col});
+        if state_ok(e.state) == false {
+            return "";
+        }
+        var an: Str = "";
+        match at {
+            Ty.Named(n0) => { an = n0; },
+            _ => {},
+        };
+        if str.len(an) == 0 {
+            return e.fail_at(line, col, str.concat("`", str.concat(m0.ty, "(...)` does not denote a struct type")));
+        }
+        m = %MakeE{ty: an, fields: m0.fields, has_base: m0.has_base, base: m0.base, line: m0.line, col: m0.col, is_app: false, app_args: m0.app_args};
+    }
     const a: Ast = e.ast;
     const td: TypeDecl = find_td(a, m.ty);
     if td.name == "" {

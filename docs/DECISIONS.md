@@ -4097,3 +4097,29 @@ veto-ledger pattern and most deserve their review.
   reification), the reflection-based codec (AC-9.11: needs comptime
   iteration or a comptime-pruned branch), and identity tests across
   interpreter/cache/serialization paths (AC-9.12 beyond the key).
+
+- D-147 [calque/types] TYPE FUNCTIONS BUILD STRUCTS (goal s9's
+  `Pair(T)` form; AC-9.9's construction arm): inside a type function's
+  body `struct { f: T, ... }` is a type expression (a `Ty.AnonStruct`
+  node that only the type-expression parser produces). Elaboration
+  synthesizes a NOMINAL declaration named by the application's
+  deterministic key - `Pair(i64)` is `Pair__i64` in every position -
+  with field types elaborated under the function's bindings; the
+  identity cache guarantees one declaration per key, and the pre-pass
+  keeps declarations synthesized while signatures elaborate.
+  Surface: `%Pair(i64){first: 1, second: 2}` (MakeE carries the
+  application), `Pair(i64)` as a type ARGUMENT (an expression call to
+  a type function is a type application: `identity(Pair(i64), p)`,
+  `reflect.field_count(Counter(true))`), and `%Pair(T){...}` inside a
+  generic instance. Conditional bodies may choose between struct
+  shapes. Refusals: an application that is not a struct under `%`,
+  and recursion through an application (a cycle - recursive type
+  functions need an indirection/declaration rule not yet designed).
+  Gates: goldens/calque/type_struct (hand-derived
+  `7|ba|wide7|Pair__i64 21 Str`) and
+  calq0_type_functions_build_structs. FINDING (pre-existing, not
+  widened here): calq0 does not check scalar type agreement for
+  annotated initializers or struct-literal fields (`const x: Str = 1`,
+  `%Q{a: "no"}` with `a: i64`); the MLIR verifier rejects the
+  artifact instead of a positioned calq0 diagnostic. Recorded in
+  STATE as a C3/C5 diagnostics obligation.

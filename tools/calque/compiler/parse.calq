@@ -931,6 +931,9 @@ pub const Ty = union(enum) {
     ArrT: ArrTT,
     // `Name(args)` - a type-function application (D-145).
     App: TyApp,
+    // `struct { ... }` inside a type function's body (D-147): an
+    // anonymous record, named by the elaborating application's key.
+    AnonStruct: [FieldDecl],
     // Explicit recovery (D-109): never a valid type; the State holds
     // the real message ("<absent>" marks flag-guarded placeholders).
     TyBad: BadNode,
@@ -1162,6 +1165,10 @@ pub const MakeE = struct {
     base: Expr,
     line: i64, // the `%` token's position
     col: i64,
+    // `%Pair(i64){...}` (D-147): `ty` names a type function applied to
+    // these arguments.
+    is_app: bool,
+    app_args: [Expr],
 };
 
 pub const PLit = struct {
@@ -1463,6 +1470,10 @@ pub fn p_type_body(mut p: P) Block {
 pub fn p_type_expr(mut p: P) Expr {
     const t: Tok = p_peek(p);
     if is_kw_tok(t) {
+        if t.text == "struct" {
+            const _s: Tok = p_next(p);
+            return Expr.TyV(Ty.AnonStruct(p_struct_body(p)));
+        }
         if t.text == "if" {
             const _i: Tok = p_next(p);
             const cond: Expr = parse_expr(p, 1);
@@ -1686,13 +1697,19 @@ pub fn p_make(mut p: P) Expr {
     }
     const _n: Tok = p_next(p);
     const make_ty: Str = alias_expand(p, name.text);
+    var is_app: bool = false;
+    var app_args: [Expr] = [];
+    if at_punct(p, "(") {
+        is_app = true;
+        app_args = p_type_args(p);
+    }
     if expect_punct(p, "{") == false {
         return bad_here(p);
     }
     if at_punct(p, "}") {
         const _c: Tok = p_next(p);
         var no_fields: [MakeField] = vector.new();
-        return Expr.Make(%MakeE{ty: make_ty, fields: no_fields, has_base: false, base: poison(), line: pct.line, col: pct.col});
+        return Expr.Make(%MakeE{ty: make_ty, fields: no_fields, has_base: false, base: poison(), line: pct.line, col: pct.col, is_app: is_app, app_args: app_args});
     }
     var has_base: bool = false;
     var base: Expr = poison();
@@ -1754,7 +1771,7 @@ pub fn p_make(mut p: P) Expr {
     while p_ok(p) {
         if at_punct(p, "}") {
             const _c: Tok = p_next(p);
-            return Expr.Make(%MakeE{ty: make_ty, fields: fields, has_base: has_base, base: base, line: pct.line, col: pct.col});
+            return Expr.Make(%MakeE{ty: make_ty, fields: fields, has_base: has_base, base: base, line: pct.line, col: pct.col, is_app: is_app, app_args: app_args});
         }
         const f: Tok = p_peek(p);
         if is_name_tok(f) == false {
@@ -2682,6 +2699,7 @@ pub fn d_ty(t: Ty) Str {
         Ty.ResT(rz) => str.concat("(ty res ", str.concat(d_ty(rz.err), str.concat(" ", str.concat(d_ty(rz.ok), ")")))),
         Ty.FnT(sig) => d_fnsig(sig),
         Ty.App(ap) => str.concat("(ty app ", str.concat(ap.name, ")")),
+        Ty.AnonStruct(fs) => "(ty anon-struct)",
         Ty.TyBad(b) => d_bad(b),
     };
 }

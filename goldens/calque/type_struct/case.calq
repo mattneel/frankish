@@ -1,0 +1,59 @@
+// D-147: type functions returning anonymous structs (the goal's
+// `Pair(T)`): each distinct application is ONE nominal type, named by
+// its deterministic key, constructible as `%Pair(i64){...}`, usable as
+// a type argument and under reflection.
+fn Pair(comptime T: type) type {
+    struct {
+        first: T,
+        second: T,
+    }
+}
+
+fn Counter(comptime WIDE: bool) type {
+    if WIDE {
+        struct {
+            hits: i64,
+            label: Str,
+        }
+    } else {
+        struct {
+            hits: i64,
+        }
+    }
+}
+
+fn identity(comptime T: type, value: T) T {
+    value
+}
+
+fn sum(p: Pair(i64)) i64 {
+    p.first + p.second
+}
+
+fn swap(comptime T: type, p: Pair(T)) Pair(T) {
+    %Pair(T){first: p.second, second: p.first}
+}
+
+pub fn main() i64 {
+    const p: Pair(i64) = %Pair(i64){first: 3, second: 4};
+    const q: Pair(i64) = identity(Pair(i64), p);
+    const s: Pair(Str) = %Pair(Str){first: "a", second: "b"};
+    const t: Pair(Str) = swap(Str, s);
+    const c: Counter(true) = %Counter(true){hits: 2, label: "wide"};
+    const d: Counter(false) = %Counter(false){hits: 5};
+    io.print(str.fromI64(sum(q)));
+    io.print("|");
+    io.print(str.concat(t.first, t.second));
+    io.print("|");
+    io.print(c.label);
+    io.print(str.fromI64(c.hits + d.hits));
+    io.print("|");
+    io.print(reflect.type_name(Pair(i64)));
+    io.print(" ");
+    io.print(str.fromI64(reflect.field_count(Counter(true))));
+    io.print(str.fromI64(reflect.field_count(Counter(false))));
+    io.print(" ");
+    io.print(reflect.field_type(Pair(Str), 1));
+    io.print("\n");
+    0
+}

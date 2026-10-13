@@ -3262,3 +3262,28 @@ fn calq0_reflection() {
         assert!(err.contains(want), "want {want:?}, got {err}");
     }
 }
+
+// D-147: type functions returning anonymous structs (the goal's
+// `Pair(T)`): one nominal type per application key, constructible,
+// usable as a type argument (including inside generic instances), and
+// visible to reflection; recursion through an application is a cycle.
+#[test]
+fn calq0_type_functions_build_structs() {
+    let source = include_str!("../../../goldens/calque/type_struct/case.calq");
+    let artifact = calque::compile_source("type_struct.calq", source).expect("anonymous structs elaborate");
+    assert!(artifact.contains("@identity__Pair__i64("), "Pair(i64) is one nominal type in instance keys");
+    assert!(artifact.contains("@swap__str("), "the generic instance constructs %Pair(T)");
+    let outcome = run_artifact(&artifact).expect("runs");
+    assert_eq!(outcome.output, "7|ba|wide7|Pair__i64 21 Str\n");
+
+    let cases = [
+        ("fn C(comptime B: bool) type { if B { Str } else { i64 } }\npub fn main() i64 { const x = %C(true){}; 0 }\n",
+         "error 2:31 `C(...)` does not denote a struct type"),
+        ("fn Node(comptime T: type) type { struct { v: T, next: ?Node(T) } }\npub fn main() i64 { const n: Node(i64) = %Node(i64){v: 1, next: .None}; 0 }\n",
+         "error 1:56 type-construction cycle through `Node__i64`"),
+    ];
+    for (src, want) in cases {
+        let err = calque::compile_source("type_struct_neg.calq", src).expect_err(want);
+        assert!(err.contains(want), "want {want:?}, got {err}");
+    }
+}
