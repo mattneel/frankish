@@ -3987,3 +3987,28 @@ veto-ledger pattern and most deserve their review.
   no top-level `pub fn`, no collection cells in MatchCtx); bootstrap
   fixed point holds. Revisit: enforced type visibility (D-118's fence)
   and a scoped private-member check across units.
+
+- D-143 [calque/comptime] NESTED COMPTIME STATEMENTS AND INITIALIZERS
+  (D-139's recorded defect, fixed): two root causes, neither a `;`
+  boundary. (1) The statement parser rejected `comptime` as a
+  statement head (`comptime { ... };` inside a block reported
+  "expected `;`"); it now parses like `match` - an expression
+  statement, or a block's tail. (2) The comptime entry's result type
+  was inferred from the block TAIL in the OUTER emitter, where the
+  block's own locals are unbound (and a nested ComptimeE always
+  inferred i64, so a nested Str result mistyped). infer_block_ty now
+  infers the tail with the block's `const`/`var` bindings in a scratch
+  scope, and a nested ComptimeE infers through its own block. No
+  special case for the repro; the gate is not weakened. Positions:
+  each enclosing comptime keeps its own location in the nested
+  failure text (3:20 -> 4:9 in the regression); the innermost runtime
+  reference is still reported at 0:0 by the pre-existing tail-emission
+  site (a recorded follow-up, not new). Evaluation order: a nested
+  comptime is evaluated when its enclosing sub-module is built - i.e.
+  required comptime is always evaluated, also inside a runtime branch
+  that is never taken; this matches top-level comptime. Gates:
+  goldens/calque/comptime_nested_stmt (const initializer, statement,
+  `var` initializer and compound use; Str and i64 results; hand-
+  derived `41|comptime|46`) and calq0_nested_comptime_statements
+  (reification asserted in the artifact, the inner assertion message
+  surfaces, the runtime local is refused with nested positions).

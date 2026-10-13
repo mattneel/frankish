@@ -1888,6 +1888,17 @@ pub fn p_stmt_into(mut p: P, stmts: [Stmt], t: Tok) StmtOut {
             }
             return %StmtOut{added: false, tail: e};
         }
+        if t.text == "comptime" {
+            // `comptime { ... };` in statement position, or a block's
+            // comptime tail (D-139): an expression like `match`.
+            const ce: Expr = parse_expr(p, 1);
+            if at_punct(p, ";") {
+                const _c: Tok = p_next(p);
+                vector.push(stmts, Stmt.Expr(%ExprS{expr: ce}));
+                return %StmtOut{added: true, tail: poison()};
+            }
+            return %StmtOut{added: false, tail: ce};
+        }
         if t.text == "true" or t.text == "false" {
             // a bare bool literal as a statement or block tail (the
             // seed's statement grammar owns true/false too).

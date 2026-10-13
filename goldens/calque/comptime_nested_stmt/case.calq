@@ -1,0 +1,34 @@
+fn base() i64 {
+    40
+}
+
+fn twice(x: i64) i64 {
+    x * 2
+}
+
+pub fn main() i64 {
+    // D-139: a comptime const initializer and a comptime statement
+    // inside an enclosing comptime block.
+    const x: i64 = comptime {
+        const a: i64 = comptime { base() };
+        comptime { twice(5) };
+        const b: i64 = a + 1;
+        b
+    };
+    const s: Str = comptime {
+        const head: Str = comptime { str.concat("com", "p") };
+        str.concat(head, "time")
+    };
+    const y: i64 = comptime {
+        var acc: i64 = comptime { twice(3) };
+        acc = acc + comptime { base() };
+        acc
+    };
+    io.print(str.fromI64(x));
+    io.print("|");
+    io.print(s);
+    io.print("|");
+    io.print(str.fromI64(y));
+    io.print("\n");
+    0
+}

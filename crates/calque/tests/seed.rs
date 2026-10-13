@@ -3099,3 +3099,46 @@ pub fn main() i64 {
     let mc_body = &emit[mc..mc + emit[mc..].find("};").unwrap()];
     assert!(!mc_body.contains(": ["), "MatchCtx must not hold collection cells: {mc_body}");
 }
+
+// D-143 (D-139's defect): a comptime expression in statement position
+// or as a const/var initializer INSIDE a comptime block. The parser
+// admits `comptime` as a statement head; the entry's result type is
+// inferred with the block's own locals in scope. Failures keep each
+// enclosing comptime's position, and runtime locals stay refused.
+#[test]
+fn calq0_nested_comptime_statements() {
+    let source = include_str!("../../../goldens/calque/comptime_nested_stmt/case.calq");
+    let artifact = calque::compile_source("comptime_nested_stmt.calq", source)
+        .expect("nested comptime statements and initializers compile");
+    assert!(artifact.contains("arith.constant 41 : i64"), "the outer result is reified");
+    assert!(artifact.contains("text = \"comptime\""), "the Str result is reified");
+    let outcome = run_artifact(&artifact).expect("runs");
+    assert_eq!(outcome.output, "41|comptime|46\n");
+
+    let failing = "pub fn main() i64 {
+    const x: i64 = comptime {
+        const a: i64 = comptime {
+            assert.comptime(1 == 2, \"inner boom\");
+            1
+        };
+        a
+    };
+    x
+}
+";
+    let err = calque::compile_source("nested_fail.calq", failing).expect_err("the inner assertion fails");
+    assert!(err.contains("inner boom"), "{err}");
+
+    let runtime = "pub fn main() i64 {
+    const r: i64 = 5;
+    const x: i64 = comptime {
+        comptime { r };
+        1
+    };
+    x
+}
+";
+    let err = calque::compile_source("nested_runtime.calq", runtime).expect_err("a runtime local is refused");
+    assert!(err.contains("error 3:20 the comptime block must be compile-time-computable (error 4:9 the comptime block must be compile-time-computable"), "{err}");
+    assert!(err.contains("unknown name `r`"), "{err}");
+}

@@ -953,6 +953,39 @@ fn emit_comptime_cx(mut e: Emitter, cx: ComptimeX) Str {
     return emit_comptime_e(e, bd, cx.line, cx.col);
 }
 
+// A block's value type: its tail inferred with the block's own
+// `const`/`var` bindings in a scratch scope (types only - nothing is
+// emitted; the scope is popped before returning).
+fn infer_block_ty(mut e: Emitter, b: Block, line: i64, col: i64) Ty {
+    e.push_scope();
+    const n: i64 = vector.len(b.stmts);
+    var i: i64 = 0;
+    while i < n {
+        const st: Stmt = b.stmts[i];
+        match st {
+            Stmt.Const(c) => {
+                var cty: Ty = tv_res(e, c.ty);
+                if c.has_ty == false {
+                    cty = infer_expr_ty(e, c.expr, c.line, c.col);
+                }
+                declare(e, %Binding{name: c.name, is_box: false, ty: cty, id: "", box: ""});
+            },
+            Stmt.Var(d) => {
+                var dty: Ty = tv_res(e, d.ty);
+                if d.has_ty == false {
+                    dty = infer_expr_ty(e, d.expr, d.line, d.col);
+                }
+                declare(e, %Binding{name: d.name, is_box: false, ty: dty, id: "", box: ""});
+            },
+            _ => {},
+        };
+        i = i + 1;
+    }
+    const t: Ty = infer_expr_ty(e, b.tail, line, col);
+    e.pop_scope();
+    return t;
+}
+
 fn emit_comptime_e(mut e: Emitter, b: Block, line: i64, col: i64) Str {
     const a0: Ast = e.ast;
     var sub: Emitter = %Emitter{};
@@ -968,8 +1001,9 @@ fn emit_comptime_e(mut e: Emitter, b: Block, line: i64, col: i64) Str {
         }
         i = i + 1;
     }
-    // The synthetic entry's return type is the block's value type.
-    const bt0: Ty = infer_expr_ty(e, b.tail, line, col);
+    // The synthetic entry's return type is the block's value type,
+    // inferred with the block's own locals in scope (D-139).
+    const bt0: Ty = infer_block_ty(e, b, line, col);
     const eps0: [Param] = vector.new();
     var entry: Fn = %Fn{name: "__comptime_entry", params: eps0, ret: bt0, body: b, file: "", ns: "", test_name: "", is_pub: false};
     emit_fn(sub, entry);
@@ -3057,7 +3091,7 @@ fn infer_expr_ty(mut e: Emitter, ex: Expr, line: i64, col: i64) Ty {
         Expr.Bin(b0) => infer_bin_ty(e, b0, line, col),
         Expr.Tup(es) => infer_tup_lit(e, es, line, col),
         Expr.IndexE(ix2) => infer_index_ty(e, ix2, line, col),
-        Expr.ComptimeE(cx3) => Ty.I64,
+        Expr.ComptimeE(cx3) => infer_block_ty(e, cx3.body, line, col),
         _ => Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col}),
     };
 }
