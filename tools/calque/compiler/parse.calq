@@ -683,13 +683,45 @@ pub fn parse_primary(mut p: P) Expr {
             if at_kw(p, "if") {
                 return Expr.CtIf(p_if(p));
             }
+            var steps: i64 = 0;
+            // `comptime(steps: N)`: only `(steps:` opens a request, so
+            // `comptime (expr)` keeps its expression meaning.
+            var is_req: bool = false;
+            if at_punct(p, "(") {
+                const k1: Tok = p_tok_at(p, 1);
+                const k2: Tok = p_tok_at(p, 2);
+                if is_name_tok(k1) and k1.text == "steps" {
+                    if is_punct_tok(k2) and k2.text == ":" {
+                        is_req = true;
+                    }
+                }
+            }
+            if is_req {
+                const _lp: Tok = p_next(p);
+                const _k: Tok = p_next(p);
+                if expect_punct(p, ":") == false {
+                    return bad_here(p);
+                }
+                const nt: Tok = p_peek(p);
+                if is_int_tok(nt) == false {
+                    return bad(p, nt.line, nt.col, "a comptime step limit is an integer literal (D-151)");
+                }
+                const _nt: Tok = p_next(p);
+                steps = parse_digits(nt.text);
+                if steps < 1 {
+                    return bad(p, nt.line, nt.col, "a comptime step limit must be at least 1 (D-151)");
+                }
+                if expect_punct(p, ")") == false {
+                    return bad_here(p);
+                }
+            }
             if at_punct(p, "{") {
                 const b: Block = p_block(p);
-                return Expr.ComptimeE(%ComptimeX{body: b, line: ck.line, col: ck.col});
+                return Expr.ComptimeE(%ComptimeX{body: b, line: ck.line, col: ck.col, steps: steps});
             }
             const e0: Expr = parse_expr(p, 1);
             var stmts: [Stmt] = vector.new();
-            return Expr.ComptimeE(%ComptimeX{body: %Block{stmts: stmts, tail: e0, has_tail: true}, line: ck.line, col: ck.col});
+            return Expr.ComptimeE(%ComptimeX{body: %Block{stmts: stmts, tail: e0, has_tail: true}, line: ck.line, col: ck.col, steps: steps});
         }
         return bad(p, t.line, t.col, str.concat("unexpected keyword `", str.concat(t.text, "`")));
     }
@@ -1088,6 +1120,9 @@ pub const ComptimeX = struct {
     body: Block,
     line: i64,
     col: i64,
+    // `comptime(steps: N) { ... }` (D-151): an explicit step limit for
+    // this evaluation request; 0 selects the service's default budget.
+    steps: i64,
 };
 
 pub const IdxE = struct {

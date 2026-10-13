@@ -46,3 +46,17 @@ fn a_non_terminating_request_exhausts_the_step_budget() {
 fn a_terminating_request_is_unaffected() {
     assert_eq!(on_big_stack(|| eval_module_i64(SIX_BY_SIX, "square", 0)), Ok(36));
 }
+
+// D-151: an explicit per-request limit replaces the default; 0 selects
+// the default; out-of-range limits are refused before evaluation.
+#[test]
+fn an_explicit_limit_bounds_the_request() {
+    use frk_harness::runner::eval_module_i64_limited;
+    let err = on_big_stack(|| eval_module_i64_limited(SPIN, "spin", 0, 1000)).expect_err("cut off");
+    assert!(err.contains("step budget exhausted after 1000 operations"), "{err}");
+    assert_eq!(on_big_stack(|| eval_module_i64_limited(SIX_BY_SIX, "square", 0, 3)), Ok(36));
+    let tight = on_big_stack(|| eval_module_i64_limited(SIX_BY_SIX, "square", 0, 2)).expect_err("3 ops needed");
+    assert!(tight.contains("step budget exhausted after 2 operations"), "{tight}");
+    let neg = on_big_stack(|| eval_module_i64_limited(SIX_BY_SIX, "square", 0, -5)).expect_err("refused");
+    assert!(neg.contains("a step limit must be between 1 and"), "{neg}");
+}

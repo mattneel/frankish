@@ -259,7 +259,9 @@ pub fn parse_digits(s: Str) i64 {
     var acc: i64 = 0;
     var i: i64 = 0;
     while i < n {
-        const d: i64 = digit_val(str.sub(s, i, i + 1));
+        // str.sub takes (from, LENGTH): one character (D-151 fix; the
+        // old `i + 1` length misread every multi-digit literal).
+        const d: i64 = digit_val(str.sub(s, i, 1));
         if d < 0 {
             return 0 - 1;
         }

@@ -1064,6 +1064,11 @@ fn emit_tuple_e(mut e: Emitter, items: [Expr], expected: Ty) Str {
 // silently deferred to runtime.
 fn emit_comptime_cx(mut e: Emitter, cx: ComptimeX) Str {
     const bd: Block = cx.body;
+    if cx.steps != 0 {
+        // D-151 phase A: the surface parses; the compiler's own call to
+        // the limited service rides the next recorded hop.
+        return e.fail_at(cx.line, cx.col, "explicit comptime limits activate with the c8v1 bootstrap hop (D-151)");
+    }
     return emit_comptime_e(e, bd, cx.line, cx.col);
 }
 
@@ -2738,6 +2743,40 @@ fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
             e.emit(str.concat(rs9, ls9));
             e.set_type(rs9, Ty.StrV);
             return rs9;
+        }
+        if r.name == "__calque_eval_i64_limited" or r.name == "__calque_eval_s_limited" {
+            // The limited service entries (D-151): the same host call
+            // plus an explicit step limit (0 = the default budget).
+            // Emission case first; the compiler's own usage follows the
+            // c8v1 hop (the feature-before-usage discipline).
+            if vector.len(c.args) != 4 {
+                return e.fail_at(line, col, str.concat(r.name, " takes (module, entry, arg, steps)"));
+            }
+            const lv0: Str = emit_expr(e, vector.get(c.args, 0));
+            const lv1: Str = emit_expr(e, vector.get(c.args, 1));
+            const lv2: Str = emit_expr(e, vector.get(c.args, 2));
+            const lv3: Str = emit_expr(e, vector.get(c.args, 3));
+            const lres: Str = e.fresh();
+            var ll: Str = " = func.call @";
+            ll = str.concat(ll, r.name);
+            ll = str.concat(ll, "(");
+            ll = str.concat(ll, lv0);
+            ll = str.concat(ll, ", ");
+            ll = str.concat(ll, lv1);
+            ll = str.concat(ll, ", ");
+            ll = str.concat(ll, lv2);
+            ll = str.concat(ll, ", ");
+            ll = str.concat(ll, lv3);
+            if r.name == "__calque_eval_s_limited" {
+                ll = str.concat(ll, ") : (!frk_bstr.str, !frk_bstr.str, i64, i64) -> !frk_bstr.str");
+                e.emit(str.concat(lres, ll));
+                e.set_type(lres, Ty.StrV);
+            } else {
+                ll = str.concat(ll, ") : (!frk_bstr.str, !frk_bstr.str, i64, i64) -> i64");
+                e.emit(str.concat(lres, ll));
+                e.set_type(lres, Ty.I64);
+            }
+            return lres;
         }
         if r.name == "__calque_input_count" {
             if vector.len(c.args) != 0 {

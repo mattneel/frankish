@@ -4184,3 +4184,29 @@ veto-ledger pattern and most deserve their review.
   the compiler's own source calls - a recorded snapshot hop under the
   feature-before-usage rule), memory budgets, cancellation, and
   capability parameters (AC-11.2/AC-11.10 remain pending).
+
+- D-151 [calque/comptime] EXPLICIT REQUEST LIMITS, PHASE A (goal s11's
+  request contract: "module + entry + args + ... + limits"; AC-11.2
+  partial): the service gains limited entries -
+  eval_module_i64_limited / eval_module_bstr_limited (Rust), bound as
+  the interp builtins and JIT shims `__calque_eval_i64_limited` /
+  `__calque_eval_s_limited` at BOTH engine sites and declared in the
+  intrinsics. A request's `steps` is 0 (the D-150 default budget) or
+  1..=COMPTIME_MAX_STEP_LIMIT (1e9); anything else is refused before
+  evaluation. calq0 gains the emission case for both calls. The
+  surface `comptime(steps: N) { ... }` parses (only `(steps:` opens a
+  request, so `comptime (expr)` keeps its meaning) into
+  ComptimeX.steps, and REFUSES with a positioned diagnostic until the
+  next hop: the compiler's own comptime path must call the limited
+  entry, and the compiler that builds these sources (c7v1's) cannot
+  emit that call - the recorded feature-before-usage discipline
+  (D-134/D-136). FIX (found here, pre-existing): lex.calq's
+  parse_digits read `str.sub(s, i, i + 1)` - str.sub takes a LENGTH -
+  so every multi-digit literal parsed as -1 (`[12]i64` crashed the
+  compiler with a str.sub bounds trap; only single-digit `t.N` /
+  `[N]T` ever worked). Gates: goldens/probe/eval_service_limited
+  (explicit and default limits through interp == jit == jit-rc),
+  eval_budget.rs's an_explicit_limit_bounds_the_request (exact
+  exhaustion counts, 0 = default, refusal of -5), and
+  calq0_limited_service_emission_and_digits (source-level calls of
+  both entries, the gated surface, `[12]i64`).

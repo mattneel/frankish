@@ -3400,3 +3400,38 @@ pub fn main() i64 {
     let artifact = calque::compile_source("nest.calq", nested).expect("bounded nesting evaluates");
     assert_eq!(run_artifact(&artifact).expect("runs").output, "3\n");
 }
+
+// D-151 phase A: the compiler KNOWS the limited service entries (the
+// emission case a later hop's compiler needs before the compiler's
+// own source may call them); `comptime(steps: N)` parses and refuses
+// until that hop; multi-digit literals parse (the parse_digits fix).
+#[test]
+fn calq0_limited_service_emission_and_digits() {
+    let direct = "pub fn main() i64 {
+    const m: Str = \"func.func @inner(%x: i64) -> i64 {\\n  %a = arith.muli %x, %x : i64\\n  return %a : i64\\n}\\n\";
+    const v: i64 = __calque_eval_i64_limited(m, \"inner\", 7, 100);
+    const s: Str = __calque_eval_s_limited(\"func.func @t(%x: i64) -> !frk_bstr.str {\\n  %s = \\\"frk_bstr.lit\\\"() {text = \\\"ok\\\"} : () -> !frk_bstr.str\\n  return %s : !frk_bstr.str\\n}\\n\", \"t\", 0, 0);
+    io.print(str.fromI64(v));
+    io.print(s);
+    io.print(\"\\n\");
+    0
+}
+";
+    let artifact = calque::compile_source("limited.calq", direct).expect("the emission case exists");
+    assert!(artifact.contains("func.call @__calque_eval_i64_limited("), "{artifact}");
+    assert_eq!(run_artifact(&artifact).expect("runs").output, "49ok\n");
+
+    let gated = "pub fn main() i64 {\n    const x: i64 = comptime(steps: 100) { 1 + 2 };\n    x\n}\n";
+    let err = calque::compile_source("gated.calq", gated).expect_err("the surface waits for the hop");
+    assert!(err.contains("error 2:20 explicit comptime limits activate with the c8v1 bootstrap hop"), "{err}");
+
+    let digits = "pub fn main() i64 {
+    const a: [12]i64 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    io.print(str.fromI64(a[11]));
+    io.print(\"\\n\");
+    0
+}
+";
+    let artifact = calque::compile_source("digits.calq", digits).expect("[12]i64 parses");
+    assert_eq!(run_artifact(&artifact).expect("runs").output, "12\n");
+}

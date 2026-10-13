@@ -456,6 +456,8 @@ pub fn jit_run_text_opt(
     unsafe {
         engine.register_symbol("__calque_eval_i64", host_eval_i64 as *mut ());
         engine.register_symbol("__calque_eval_s", host_eval_s as *mut ());
+        engine.register_symbol("__calque_eval_i64_limited", host_eval_i64_limited as *mut ());
+        engine.register_symbol("__calque_eval_s_limited", host_eval_s_limited as *mut ());
     }
     CAPTURE.with(|buffer| buffer.borrow_mut().clear());
     let mut result: i64 = 0;
@@ -493,7 +495,9 @@ impl Runner for JitRunner {
         // engine that can run Calque artifacts.
         unsafe {
             engine.register_symbol("__calque_eval_i64", host_eval_i64 as *mut ());
-        engine.register_symbol("__calque_eval_s", host_eval_s as *mut ());
+            engine.register_symbol("__calque_eval_s", host_eval_s as *mut ());
+            engine.register_symbol("__calque_eval_i64_limited", host_eval_i64_limited as *mut ());
+            engine.register_symbol("__calque_eval_s_limited", host_eval_s_limited as *mut ());
         }
         // Registry-driven JIT resolution (D-062, finished at M21): the
         // frk-abi table is the AUTHORITY on which symbols the JIT must
@@ -670,6 +674,34 @@ pub fn register_protocol_builtins(interp: &mut frk_interp::Interp<'_, '_>) {
         }),
     );
     interp.register_builtin(
+        "__calque_eval_s_limited",
+        Box::new(|args, _out| {
+            let text = std::str::from_utf8(args[0].as_bytes()?)
+                .map_err(|e| frk_interp::EvalError::Unsupported(format!("eval: {e}")))?;
+            let entry = std::str::from_utf8(args[1].as_bytes()?)
+                .map_err(|e| frk_interp::EvalError::Unsupported(format!("eval: {e}")))?;
+            let arg = args[2].as_signed()?;
+            let steps = args[3].as_signed()?;
+            let v = eval_module_bstr_limited(text, entry, arg, steps)
+                .map_err(frk_interp::EvalError::Unsupported)?;
+            Ok(vec![frk_interp::Value::bytes(v)])
+        }),
+    );
+    interp.register_builtin(
+        "__calque_eval_i64_limited",
+        Box::new(|args, _out| {
+            let text = std::str::from_utf8(args[0].as_bytes()?)
+                .map_err(|e| frk_interp::EvalError::Unsupported(format!("eval: {e}")))?;
+            let entry = std::str::from_utf8(args[1].as_bytes()?)
+                .map_err(|e| frk_interp::EvalError::Unsupported(format!("eval: {e}")))?;
+            let arg = args[2].as_signed()?;
+            let steps = args[3].as_signed()?;
+            let v = eval_module_i64_limited(text, entry, arg, steps)
+                .map_err(frk_interp::EvalError::Unsupported)?;
+            Ok(vec![frk_interp::Value::int(v as u64, 64)?])
+        }),
+    );
+    interp.register_builtin(
         "__calque_eval_i64",
         Box::new(|args, _out| {
             let text = std::str::from_utf8(args[0].as_bytes()?)
@@ -794,6 +826,22 @@ fn builtin_for(name: &str) -> Option<frk_interp::Builtin> {
 /// service from inside an evaluation). Both limits fail the request
 /// with a diagnostic instead of hanging or exhausting the host.
 pub const COMPTIME_STEP_BUDGET: u64 = 10_000_000;
+/// The largest explicit per-request step limit (D-151).
+pub const COMPTIME_MAX_STEP_LIMIT: u64 = 1_000_000_000;
+
+/// A request's explicit step limit (D-151): 0 selects the default
+/// budget; otherwise 1..=COMPTIME_MAX_STEP_LIMIT.
+pub fn step_limit(requested: i64) -> Result<u64, String> {
+    if requested == 0 {
+        return Ok(COMPTIME_STEP_BUDGET);
+    }
+    if requested < 0 || requested as u64 > COMPTIME_MAX_STEP_LIMIT {
+        return Err(format!(
+            "eval: a step limit must be between 1 and {COMPTIME_MAX_STEP_LIMIT} (got {requested}) (D-151)"
+        ));
+    }
+    Ok(requested as u64)
+}
 pub const COMPTIME_MAX_NESTING: usize = 16;
 
 thread_local! {
@@ -832,6 +880,18 @@ impl Drop for NestingGuard {
 /// print channel is discarded (isolation slice 1); a failure returns
 /// the service's message.
 pub fn eval_module_i64(module_text: &str, entry: &str, arg: i64) -> Result<i64, String> {
+    eval_module_i64_limited(module_text, entry, arg, 0)
+}
+
+/// [`eval_module_i64`] under an explicit step limit (D-151; 0 = the
+/// default budget).
+pub fn eval_module_i64_limited(
+    module_text: &str,
+    entry: &str,
+    arg: i64,
+    steps: i64,
+) -> Result<i64, String> {
+    let budget = step_limit(steps)?;
     let _nesting = NestingGuard::enter()?;
     let context = frk_core::context();
     frk_dialects::register(&context).map_err(|e| format!("eval: register: {e}"))?;
@@ -846,7 +906,7 @@ pub fn eval_module_i64(module_text: &str, entry: &str, arg: i64) -> Result<i64, 
         frk_interp::Interp::new(&module).map_err(|e| format!("eval: interp: {e}"))?;
     frk_dialects::register_eval(&mut interp);
     register_protocol_builtins(&mut interp);
-    interp.set_step_budget(Some(COMPTIME_STEP_BUDGET));
+    interp.set_step_budget(Some(budget));
     let args = [frk_interp::Value::int(arg as u64, 64).map_err(|e| format!("eval: {e:?}"))?];
     let values = interp
         .eval_function(entry, &args)
@@ -862,6 +922,17 @@ pub fn eval_module_i64(module_text: &str, entry: &str, arg: i64) -> Result<i64, 
 /// with the inner run's bstr result COPIED into the outer world (a
 /// fresh Vec<u8> - the inner interpreter's heap never escapes).
 pub fn eval_module_bstr(module_text: &str, entry: &str, arg: i64) -> Result<Vec<u8>, String> {
+    eval_module_bstr_limited(module_text, entry, arg, 0)
+}
+
+/// [`eval_module_bstr`] under an explicit step limit (D-151).
+pub fn eval_module_bstr_limited(
+    module_text: &str,
+    entry: &str,
+    arg: i64,
+    steps: i64,
+) -> Result<Vec<u8>, String> {
+    let budget = step_limit(steps)?;
     let _nesting = NestingGuard::enter()?;
     let context = frk_core::context();
     frk_dialects::register(&context).map_err(|e| format!("eval: register: {e}"))?;
@@ -873,7 +944,7 @@ pub fn eval_module_bstr(module_text: &str, entry: &str, arg: i64) -> Result<Vec<
         frk_interp::Interp::new(&module).map_err(|e| format!("eval: interp: {e}"))?;
     frk_dialects::register_eval(&mut interp);
     register_protocol_builtins(&mut interp);
-    interp.set_step_budget(Some(COMPTIME_STEP_BUDGET));
+    interp.set_step_budget(Some(budget));
     let args = [frk_interp::Value::int(arg as u64, 64).map_err(|e| format!("eval: {e:?}"))?];
     let values = interp
         .eval_function(entry, &args)
@@ -908,6 +979,31 @@ unsafe extern "C" fn host_eval_s(text: *const u8, entry: *const u8, arg: i64) ->
     let text_s = unsafe { String::from_utf8_lossy(frk_rt::bstr_parts(text)).into_owned() };
     let entry_s = unsafe { String::from_utf8_lossy(frk_rt::bstr_parts(entry)).into_owned() };
     match eval_module_bstr(&text_s, &entry_s, arg) {
+        Ok(bytes) => unsafe { frk_rt::frk_rt_bstr_intern(bytes.as_ptr(), bytes.len() as u64) },
+        Err(msg) => {
+            eprintln!("frk: eval: {msg}");
+            std::process::abort();
+        }
+    }
+}
+
+/// The JIT shims for the limited service entries (D-151).
+unsafe extern "C" fn host_eval_i64_limited(text: *const u8, entry: *const u8, arg: i64, steps: i64) -> i64 {
+    let text_s = unsafe { String::from_utf8_lossy(frk_rt::bstr_parts(text)).into_owned() };
+    let entry_s = unsafe { String::from_utf8_lossy(frk_rt::bstr_parts(entry)).into_owned() };
+    match eval_module_i64_limited(&text_s, &entry_s, arg, steps) {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("frk: eval: {msg}");
+            std::process::abort();
+        }
+    }
+}
+
+unsafe extern "C" fn host_eval_s_limited(text: *const u8, entry: *const u8, arg: i64, steps: i64) -> *mut u8 {
+    let text_s = unsafe { String::from_utf8_lossy(frk_rt::bstr_parts(text)).into_owned() };
+    let entry_s = unsafe { String::from_utf8_lossy(frk_rt::bstr_parts(entry)).into_owned() };
+    match eval_module_bstr_limited(&text_s, &entry_s, arg, steps) {
         Ok(bytes) => unsafe { frk_rt::frk_rt_bstr_intern(bytes.as_ptr(), bytes.len() as u64) },
         Err(msg) => {
             eprintln!("frk: eval: {msg}");
