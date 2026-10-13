@@ -1,0 +1,71 @@
+// D-146: compile-time reflection over fields, variants, and function
+// signatures; descriptors are reified data (counts, names, flags, and
+// canonical type identities), also inside generic instances.
+const Point = struct {
+    x: i64,
+    label: Str,
+    tags: [i64],
+};
+
+const Shape = union(enum) {
+    Dot,
+    Circle: i64,
+    Named: Point,
+};
+
+fn area(s: Shape, scale: i64) ?i64 {
+    const none: ?i64 = .None;
+    none
+}
+
+fn field_list(comptime T: type) Str {
+    const n: i64 = reflect.field_count(T);
+    var out: Str = reflect.type_name(T);
+    out = str.concat(out, "{");
+    if n > 0 {
+        out = str.concat(out, reflect.field_name(T, 0));
+    }
+    if n > 1 {
+        out = str.concat(out, ",");
+        out = str.concat(out, reflect.field_name(T, 1));
+    }
+    str.concat(out, "}")
+}
+
+pub fn main() i64 {
+    io.print(str.fromI64(reflect.field_count(Point)));
+    io.print(" ");
+    io.print(reflect.field_name(Point, 1));
+    io.print(":");
+    io.print(reflect.field_type(Point, 2));
+    io.print("|");
+    io.print(str.fromI64(reflect.variant_count(Shape)));
+    io.print(" ");
+    io.print(reflect.variant_name(Shape, 2));
+    io.print(":");
+    io.print(reflect.variant_type(Shape, 2));
+    if reflect.variant_has_payload(Shape, 0) {
+        io.print(" dot-payload");
+    } else {
+        io.print(" dot-bare");
+    }
+    io.print("|");
+    io.print(str.fromI64(reflect.param_count(area)));
+    io.print(" ");
+    io.print(reflect.param_name(area, 1));
+    io.print(":");
+    io.print(reflect.param_type(area, 0));
+    io.print("->");
+    io.print(reflect.return_type(area));
+    io.print("|");
+    io.print(reflect.kind(Shape));
+    io.print(",");
+    io.print(reflect.kind(Point));
+    io.print("|");
+    io.print(field_list(Point));
+    io.print("|");
+    const n2: i64 = comptime { reflect.field_count(Point) * 10 };
+    io.print(str.fromI64(n2));
+    io.print("\n");
+    0
+}

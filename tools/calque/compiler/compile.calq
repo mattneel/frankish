@@ -21,6 +21,9 @@ pub fn is_reserved_ns(n: Str) bool {
     if n == "res" {
         return true;
     }
+    if n == "reflect" {
+        return true;
+    }
     return false;
 }
 

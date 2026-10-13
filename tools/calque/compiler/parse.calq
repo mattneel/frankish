@@ -929,6 +929,8 @@ pub const Ty = union(enum) {
     Tup: [Ty],
     // `[N]T` - a fixed-length inline array (the vector steering).
     ArrT: ArrTT,
+    // `Name(args)` - a type-function application (D-145).
+    App: TyApp,
     // Explicit recovery (D-109): never a valid type; the State holds
     // the real message ("<absent>" marks flag-guarded placeholders).
     TyBad: BadNode,
@@ -942,6 +944,16 @@ pub const ResTT = struct {
 pub const ArrTT = struct {
     n: i64,
     ty: Ty,
+};
+
+// `Name(args)` in a type position (D-145): an application of a type
+// function, unresolved syntax until the emitter elaborates it. Each
+// argument is a type (`Expr.TyV` or a type name) or a comptime value.
+pub const TyApp = struct {
+    name: Str,
+    args: [Expr],
+    line: i64,
+    col: i64,
 };
 
 pub const Param = struct {
@@ -1367,6 +1379,9 @@ pub fn p_type_atom(mut p: P) Ty {
             return Ty.Vec(inner);
         }
         const _t: Tok = p_next(p);
+        if at_punct(p, "(") {
+            return Ty.App(%TyApp{name: alias_expand(p, t.text), args: p_type_args(p), line: t.line, col: t.col});
+        }
         // `Self` (D-128): the enclosing module's primary struct name.
         if t.text == "Self" {
             if str.len(p.cur_mod) > 0 {
@@ -1387,6 +1402,87 @@ pub fn p_type_atom(mut p: P) Ty {
     }
     p_fail(p, t.line, t.col, str.concat("unsupported type (token `", str.concat(t.text, "`)")));
     return bad_ty(p, t.line, t.col, "invalid type");
+}
+
+// A type application's arguments (D-145): `i64`/`bool`/`usize`/`fn`,
+// `[...]`, `?T`, and tuple types parse as types; anything else as an
+// expression (a type name, or a comptime value).
+pub fn p_type_args(mut p: P) [Expr] {
+    var args: [Expr] = [];
+    const _o: Tok = p_next(p);
+    if at_punct(p, ")") {
+        const _c: Tok = p_next(p);
+        return args;
+    }
+    var more: bool = true;
+    while more {
+        const at: Tok = p_peek(p);
+        var as_type: bool = false;
+        if is_kw_tok(at) {
+            if at.text == "i64" or at.text == "bool" or at.text == "usize" or at.text == "fn" {
+                as_type = true;
+            }
+        }
+        if at_punct(p, "[") or at_punct(p, "?") or at_punct(p, "(") {
+            as_type = true;
+        }
+        if as_type {
+            vector.push(args, Expr.TyV(p_type(p)));
+        } else {
+            vector.push(args, parse_expr(p, 1));
+        }
+        if at_punct(p, ",") {
+            const _c2: Tok = p_next(p);
+        } else {
+            more = false;
+        }
+        if p_ok(p) == false {
+            more = false;
+        }
+    }
+    const _e: bool = expect_punct(p, ")");
+    return args;
+}
+
+// The body of a type function `fn N(...) type { ... }` (D-145): one
+// TYPE EXPRESSION - a type, or `if COND { T } else { U }` whose
+// condition is a comptime value. Parsed as type syntax, never as
+// runtime statements; the emitter elaborates it.
+pub fn p_type_body(mut p: P) Block {
+    if expect_punct(p, "{") == false {
+        return poison_block();
+    }
+    const tx: Expr = p_type_expr(p);
+    if expect_punct(p, "}") == false {
+        return poison_block();
+    }
+    var no_stmts: [Stmt] = [];
+    return %Block{stmts: no_stmts, tail: tx, has_tail: true};
+}
+
+pub fn p_type_expr(mut p: P) Expr {
+    const t: Tok = p_peek(p);
+    if is_kw_tok(t) {
+        if t.text == "if" {
+            const _i: Tok = p_next(p);
+            const cond: Expr = parse_expr(p, 1);
+            const then_b: Block = p_type_body(p);
+            if at_kw(p, "else") == false {
+                p_fail(p, t.line, t.col, "a type-level `if` needs an `else` (D-145)");
+                return poison();
+            }
+            const _el: Tok = p_next(p);
+            var els_b: Block = poison_block();
+            if at_kw(p, "if") {
+                var no_stmts: [Stmt] = [];
+                els_b = %Block{stmts: no_stmts, tail: p_type_expr(p), has_tail: true};
+            } else {
+                els_b = p_type_body(p);
+            }
+            return Expr.If(%IfE{cond: cond, then: then_b, has_else: true, els: els_b, line: t.line, col: t.col});
+        }
+    }
+    return Expr.TyV(p_type(p));
 }
 
 pub fn p_type(mut p: P) Ty {
@@ -2038,6 +2134,7 @@ pub fn p_fn(mut p: P) Fn {
         return poison_fn();
     }
     var params: [Param] = vector.new();
+    var seen_runtime: bool = false;
     while p_ok(p) {
         if at_punct(p, ")") {
             const _c: Tok = p_next(p);
@@ -2045,7 +2142,17 @@ pub fn p_fn(mut p: P) Fn {
             if at_punct(p, "{") == false {
                 ret = p_type(p);
             }
-            const body: Block = p_block(p);
+            var is_type_fn: bool = false;
+            match ret {
+                Ty.Named(rn) => { if rn == "type" { is_type_fn = true; } },
+                _ => {},
+            };
+            var body: Block = poison_block();
+            if is_type_fn {
+                body = p_type_body(p);
+            } else {
+                body = p_block(p);
+            }
             return %Fn{name: name.text, params: params, ret: ret, body: body, file: "", ns: "", test_name: "", is_pub: is_pub};
         }
         var is_mut: bool = false;
@@ -2075,6 +2182,10 @@ pub fn p_fn(mut p: P) Fn {
             return poison_fn();
         }
         const ty: Ty = p_type(p);
+        // `comptime T: type` is a type parameter (D-113); any other
+        // `comptime NAME: T` is a value parameter (D-144). Explicit
+        // comptime arguments are positional, so value parameters lead
+        // the runtime parameters.
         if is_ct {
             var is_type_marker: bool = false;
             match ty {
@@ -2082,9 +2193,13 @@ pub fn p_fn(mut p: P) Fn {
                 _ => {},
             };
             if is_type_marker == false {
-                p_fail(p, pn.line, pn.col, "a comptime parameter is declared `comptime NAME: type` (seed v0, D-113)");
-                return poison_fn();
+                if seen_runtime {
+                    p_fail(p, pn.line, pn.col, "a comptime value parameter must precede the runtime parameters (D-144)");
+                    return poison_fn();
+                }
             }
+        } else {
+            seen_runtime = true;
         }
         if is_mut {
             // Parse-side only: this file may not call emitter helpers
@@ -2566,6 +2681,7 @@ pub fn d_ty(t: Ty) Str {
         },
         Ty.ResT(rz) => str.concat("(ty res ", str.concat(d_ty(rz.err), str.concat(" ", str.concat(d_ty(rz.ok), ")")))),
         Ty.FnT(sig) => d_fnsig(sig),
+        Ty.App(ap) => str.concat("(ty app ", str.concat(ap.name, ")")),
         Ty.TyBad(b) => d_bad(b),
     };
 }

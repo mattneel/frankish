@@ -1,0 +1,68 @@
+// D-145: conditional type construction - type functions whose bodies
+// are type expressions; conditions are comptime values evaluated
+// through the shared service, and only the taken branch elaborates.
+const Point = struct {
+    x: i64,
+    y: i64,
+};
+
+fn Choose(comptime WIDE: bool) type {
+    if WIDE { Str } else { i64 }
+}
+
+fn Slot(comptime N: i64) type {
+    if N > 2 { [i64] } else if N == 2 { (i64, i64) } else { i64 }
+}
+
+fn Same(comptime T: type) type {
+    T
+}
+
+fn Nested(comptime FLAG: bool) type {
+    Choose(FLAG)
+}
+
+fn Pts(comptime T: type, comptime MANY: bool) type {
+    if MANY { [T] } else { T }
+}
+
+fn describe(x: Choose(true)) Choose(true) {
+    str.concat("<", str.concat(x, ">"))
+}
+
+fn sum_slot(s: Slot(3)) i64 {
+    var acc: i64 = 0;
+    var i: i64 = 0;
+    while i < vector.len(s) {
+        acc = acc + s[i];
+        i = i + 1;
+    }
+    acc
+}
+
+fn untaken(comptime B: bool) type {
+    if B { i64 } else { DoesNotExist }
+}
+
+pub fn main() i64 {
+    const narrow: Choose(false) = 40;
+    const pair: Slot(2) = (1, 2);
+    const one: Slot(1) = 7;
+    const same: Same(Point) = %Point{x: 3, y: 4};
+    const nested: Nested(true) = "nest";
+    const pts: Pts(Point, true) = [%Point{x: 1, y: 2}, %Point{x: 5, y: 6}];
+    const fine: untaken(true) = 9;
+    io.print(describe("wide"));
+    io.print("|");
+    io.print(str.fromI64(narrow + pair.0 + pair.1 + one));
+    io.print("|");
+    io.print(str.fromI64(sum_slot([1, 2, 3, 4])));
+    io.print("|");
+    io.print(str.fromI64(same.x * same.y));
+    io.print("|");
+    io.print(nested);
+    io.print("|");
+    io.print(str.fromI64(vector.len(pts) + fine));
+    io.print("\n");
+    0
+}

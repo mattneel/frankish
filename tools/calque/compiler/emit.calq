@@ -49,6 +49,35 @@ const Instance = struct {
 const PendingInst = struct {
     f: Fn,
     sub: [TypeVar],
+    consts: [ConstArg],
+    // How many instantiations led here (D-146's specialization bound).
+    depth: i64,
+};
+
+// A comptime VALUE parameter's binding in one instance (D-144): the
+// parameter, its type (i64, bool, or Str), and the evaluated constant
+// as reified text - decimal digits, `true`/`false`, or the raw bytes.
+const ConstArg = struct {
+    name: Str,
+    ty: Ty,
+    text: Str,
+};
+
+// One elaborated type application (D-145): its deterministic identity
+// key (the function name plus typed argument keys) and the type it
+// denotes. Applications with equal keys denote the identical type.
+const TypeApp = struct {
+    key: Str,
+    ty: Ty,
+};
+
+// The result of one compile-time evaluation (D-144): ok=false after a
+// recorded failure; otherwise the value's type and reified text (the
+// ConstArg encoding).
+const ComptimeValue = struct {
+    ok: bool,
+    ty: Ty,
+    text: Str,
 };
 
 const GenCall = struct {
@@ -87,6 +116,10 @@ pub module Emitter {
         instq: [PendingInst] = [],
         insts: [Instance] = [],
         tvars: [TypeVar] = [],
+        consts: [ConstArg] = [],
+        type_apps: [TypeApp] = [],
+        type_app_stack: [Str] = [],
+        inst_depth: i64 = 0,
         lams: i64 = 0,
         capbar: i64 = 0,
         cur_ns: Str = "",
@@ -283,15 +316,18 @@ pub module Emitter {
 
     pub fn emit_program(mut self: Self, a: Ast) {
         self.ast = a;
+        self.resolve_type_apps();
+        const ra: Ast = self.ast;
         var has_main: bool = false;
         var main_ok: bool = true;
         const nf: i64 = vector.len(a.fns);
         var i: i64 = 0;
         var test_i: i64 = 0;
         while i < nf {
-            const f: Fn = vector.get(a.fns, i);
-            if is_generic_fn(f) {
-                // D-113: instances are emitted by the flush below.
+            const f: Fn = vector.get(ra.fns, i);
+            if is_generic_fn(f) or is_type_fn(f) {
+                // D-113: instances are emitted by the flush below; type
+                // functions (D-145) exist only at compile time.
             } else {
                 var is_test_fn: bool = false;
                 if str.len(f.name) >= 14 {
@@ -341,6 +377,59 @@ pub module Emitter {
         self.flush_pending();
     }
 
+    // Elaborate every type application in non-generic signatures and
+    // in declared field/payload types (D-145), once, before emission:
+    // emission and inference then read concrete types. Generic
+    // signatures elaborate per instance (resolve_generic).
+    fn resolve_type_apps(mut self: Self) {
+        const a: Ast = self.ast;
+        var fns: [Fn] = [];
+        const nf: i64 = vector.len(a.fns);
+        var i: i64 = 0;
+        while i < nf {
+            const f: Fn = a.fns[i];
+            if is_generic_fn(f) or is_type_fn(f) {
+                vector.push(fns, f);
+            } else {
+                var ps: [Param] = [];
+                const np: i64 = vector.len(f.params);
+                var j: i64 = 0;
+                while j < np {
+                    const prm: Param = f.params[j];
+                    vector.push(ps, %Param{name: prm.name, ty: tv_res(self, prm.ty), mut: prm.mut, is_comptime: prm.is_comptime});
+                    j = j + 1;
+                }
+                vector.push(fns, %Fn{name: f.name, params: ps, ret: tv_res(self, f.ret), body: f.body, file: f.file, ns: f.ns, test_name: f.test_name, is_pub: f.is_pub});
+            }
+            i = i + 1;
+        }
+        var types: [TypeDecl] = [];
+        const nt: i64 = vector.len(a.types);
+        var k: i64 = 0;
+        while k < nt {
+            const td: TypeDecl = a.types[k];
+            var fields: [FieldDecl] = [];
+            const nfl: i64 = vector.len(td.fields);
+            var fi: i64 = 0;
+            while fi < nfl {
+                const fd: FieldDecl = td.fields[fi];
+                vector.push(fields, %FieldDecl{name: fd.name, ty: tv_res(self, fd.ty), has_default: fd.has_default, default: fd.default});
+                fi = fi + 1;
+            }
+            var variants: [VariantDecl] = [];
+            const nv: i64 = vector.len(td.variants);
+            var vi: i64 = 0;
+            while vi < nv {
+                const vd: VariantDecl = td.variants[vi];
+                vector.push(variants, %VariantDecl{name: vd.name, has_payload: vd.has_payload, ty: tv_res(self, vd.ty)});
+                vi = vi + 1;
+            }
+            vector.push(types, %TypeDecl{name: td.name, is_union: td.is_union, fields: fields, variants: variants});
+            k = k + 1;
+        }
+        self.ast = %Ast{fns: fns, types: types, imports: a.imports};
+    }
+
     // Flush lifted closures and generic instances in waves: closures first,
     // then instances; repeat while either queue grows. Shared by ordinary
     // modules and comptime sub-modules, preserving the seed's flush order.
@@ -368,9 +457,15 @@ pub module Emitter {
                 while qi < ninst {
                     const qe: PendingInst = vector.get(old_q, qi);
                     const saved: [TypeVar] = self.tvars;
+                    const saved_consts: [ConstArg] = self.consts;
+                    const saved_depth: i64 = self.inst_depth;
                     self.tvars = qe.sub;
+                    self.consts = qe.consts;
+                    self.inst_depth = qe.depth;
                     emit_fn(self, qe.f);
                     self.tvars = saved;
+                    self.consts = saved_consts;
+                    self.inst_depth = saved_depth;
                     qi = qi + 1;
                 }
                 wave = true;
@@ -467,6 +562,7 @@ fn ty_ir(t: Ty) Str {
         Ty.Tup(tys) => "tup",
         Ty.ArrT(a2) => "arr",
         Ty.FnT(sig) => "fn",
+        Ty.App(ap) => "app",
         Ty.TyBad(b) => "bad",
     };
 }
@@ -519,6 +615,16 @@ fn emit_fn_core(mut e: Emitter, f: Fn) {
     }
     head = str.concat(head, " {");
     e.emit_top(head);
+    // An instance's comptime value parameters are ordinary immutable
+    // locals holding their reified constants (D-144).
+    const nconst: i64 = vector.len(e.consts);
+    var ci: i64 = 0;
+    while ci < nconst {
+        const ca: ConstArg = e.consts[ci];
+        const cv: Str = reify_const(e, ca.ty, ca.text);
+        declare(e, %Binding{name: ca.name, is_box: false, ty: ca.ty, id: cv, box: ""});
+        ci = ci + 1;
+    }
     const b: Block = f.body;
     var upto: i64 = vector.len(b.stmts);
     var tail_if: IfE = %IfE{cond: poison(), then: poison_block(), has_else: false, els: poison_block(), line: 0, col: 0};
@@ -958,6 +1064,15 @@ fn emit_comptime_cx(mut e: Emitter, cx: ComptimeX) Str {
 // emitted; the scope is popped before returning).
 fn infer_block_ty(mut e: Emitter, b: Block, line: i64, col: i64) Ty {
     e.push_scope();
+    // The active comptime constants are in scope too (D-144/D-145):
+    // inside a type function they are bound only here.
+    const nconst: i64 = vector.len(e.consts);
+    var ci: i64 = 0;
+    while ci < nconst {
+        const ca: ConstArg = e.consts[ci];
+        declare(e, %Binding{name: ca.name, is_box: false, ty: ca.ty, id: "", box: ""});
+        ci = ci + 1;
+    }
     const n: i64 = vector.len(b.stmts);
     var i: i64 = 0;
     while i < n {
@@ -987,6 +1102,19 @@ fn infer_block_ty(mut e: Emitter, b: Block, line: i64, col: i64) Ty {
 }
 
 fn emit_comptime_e(mut e: Emitter, b: Block, line: i64, col: i64) Str {
+    const cv: ComptimeValue = eval_comptime(e, b, "the comptime block", line, col);
+    if cv.ok == false {
+        return "";
+    }
+    return reify_const(e, cv.ty, cv.text);
+}
+
+// One compile-time evaluation through the shared service (D-133/
+// D-144): the block becomes `__comptime_entry` in a sub-module of every
+// non-generic, non-main fn, emitted by a fresh emitter that inherits
+// the active type and constant substitutions; the service runs while
+// calq0 compiles. `what` names the evaluated thing in diagnostics.
+fn eval_comptime(mut e: Emitter, b: Block, what: Str, line: i64, col: i64) ComptimeValue {
     const a0: Ast = e.ast;
     var sub: Emitter = %Emitter{};
     sub.ast = a0;
@@ -994,8 +1122,11 @@ fn emit_comptime_e(mut e: Emitter, b: Block, line: i64, col: i64) Str {
     var i: i64 = 0;
     while i < nf {
         const f: Fn = vector.get(a0.fns, i);
+        // A fn whose signature still holds an unelaborated type
+        // application depends on the elaboration in progress (D-145):
+        // it is not callable from this evaluation yet.
         if f.name != "main" {
-            if is_generic_fn(f) == false {
+            if is_generic_fn(f) == false and is_type_fn(f) == false and fn_has_app(f) == false {
                 emit_fn(sub, f);
             }
         }
@@ -1004,13 +1135,48 @@ fn emit_comptime_e(mut e: Emitter, b: Block, line: i64, col: i64) Str {
     // The synthetic entry's return type is the block's value type,
     // inferred with the block's own locals in scope (D-139).
     const bt0: Ty = infer_block_ty(e, b, line, col);
+    var is_bool: bool = false;
+    var is_str: bool = false;
+    var supported: bool = false;
+    match bt0 {
+        Ty.I64 => { supported = true; },
+        Ty.BoolV => { supported = true; is_bool = true; },
+        Ty.StrV => { supported = true; is_str = true; },
+        _ => {},
+    };
+    // An uninferable tail (e.g. a runtime local) is reported by the
+    // sub-emission below, which names the real cause.
+    if ty_is_unknown(bt0) {
+        supported = true;
+    }
+    if supported == false {
+        e.fail_at(line, col, str.concat(what, " must produce i64, bool, or Str (aggregate reification is not implemented)"));
+        return %ComptimeValue{ok: false, ty: Ty.UnitV, text: ""};
+    }
+    // A bool result crosses the service as 1/0.
+    var body: Block = b;
+    var entry_ty: Ty = bt0;
+    if ty_is_unknown(bt0) {
+        entry_ty = Ty.I64;
+    }
+    if is_bool {
+        const no_stmts: [Stmt] = [];
+        const one: Block = %Block{stmts: no_stmts, tail: Expr.Int("1"), has_tail: true};
+        const zero: Block = %Block{stmts: no_stmts, tail: Expr.Int("0"), has_tail: true};
+        const pick: Expr = Expr.If(%IfE{cond: b.tail, then: one, has_else: true, els: zero, line: line, col: col});
+        body = %Block{stmts: b.stmts, tail: pick, has_tail: true};
+        entry_ty = Ty.I64;
+    }
+    sub.tvars = e.tvars;
+    sub.consts = e.consts;
     const eps0: [Param] = vector.new();
-    var entry: Fn = %Fn{name: "__comptime_entry", params: eps0, ret: bt0, body: b, file: "", ns: "", test_name: "", is_pub: false};
+    var entry: Fn = %Fn{name: "__comptime_entry", params: eps0, ret: entry_ty, body: body, file: "", ns: "", test_name: "", is_pub: false};
     emit_fn(sub, entry);
     sub.flush_pending();
     if state_ok(sub.state) == false {
         const submsg: Str = fail_text(state_fail(sub.state));
-        return e.fail_at(line, col, str.concat("the comptime block must be compile-time-computable (", str.concat(submsg, ")")));
+        e.fail_at(line, col, str.concat(what, str.concat(" must be compile-time-computable (", str.concat(submsg, ")"))));
+        return %ComptimeValue{ok: false, ty: Ty.UnitV, text: ""};
     }
     // The sub-module's text (calq0 builds the bstr at its own runtime).
     const lines: [Str] = sub.output;
@@ -1024,28 +1190,37 @@ fn emit_comptime_e(mut e: Emitter, b: Block, line: i64, col: i64) Str {
         mod_text = str.concat(mod_text, vector.get(lines, j));
         j = j + 1;
     }
-    // The service call runs while calq0 compiles. A STRING result
-    // reifies as a bstr literal; an i64 result's digits land in a
-    // constant line.
-    const bt: Ty = bt0;
-    const is_str: bool = match bt {
-        Ty.StrV => true,
-        _ => false,
-    };
     if is_str {
         const sv: Str = __calque_eval_s(mod_text, "__comptime_entry", 0);
-        const es: Str = escape_bstr(sv);
-        const res2: Str = e.fresh();
-        var l2: Str = " = \"frk_bstr.lit\"() {text = \"";
-        l2 = str.concat(l2, es);
-        l2 = str.concat(l2, "\"} : () -> !frk_bstr.str");
-        e.emit(str.concat(res2, l2));
-        e.set_type(res2, Ty.StrV);
-        return res2;
+        return %ComptimeValue{ok: true, ty: Ty.StrV, text: sv};
     }
     const v: i64 = __calque_eval_i64(mod_text, "__comptime_entry", 0);
-    const dg: Str = str.fromI64(v);
-    return int_const(e, dg);
+    if is_bool {
+        var bt: Str = "false";
+        if v != 0 {
+            bt = "true";
+        }
+        return %ComptimeValue{ok: true, ty: Ty.BoolV, text: bt};
+    }
+    return %ComptimeValue{ok: true, ty: Ty.I64, text: str.fromI64(v)};
+}
+
+// Materialize an evaluated constant (D-135/D-136/D-144): i64 digits as
+// an arith constant, a bool as i1, a Str through the seed's closed
+// escape set into a bstr literal.
+fn reify_const(mut e: Emitter, ty: Ty, text: Str) Str {
+    const kind: i64 = match ty {
+        Ty.BoolV => 1,
+        Ty.StrV => 2,
+        _ => 0,
+    };
+    if kind == 1 {
+        return bool_const(e, text);
+    }
+    if kind == 2 {
+        return str_lit(e, text);
+    }
+    return int_const(e, text);
 }
 
 fn emit_index_e(mut e: Emitter, ix: IdxE) Str {
@@ -1367,6 +1542,7 @@ fn ir_ty(t: Ty) Str {
         Ty.Tup(tys) => "tup",
         Ty.ArrT(a2) => "arr",
         Ty.FnT(sig) => "fn",
+        Ty.App(ap) => "app",
         Ty.TyBad(b) => "bad",
     };
 }
@@ -2154,6 +2330,9 @@ fn is_reserved_mod(m: Str) bool {
     if m == "res" {
         return true;
     }
+    if m == "reflect" {
+        return true;
+    }
     return false;
 }
 
@@ -2474,6 +2653,13 @@ fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
             }
         }
     }
+    if r.mod == "reflect" {
+        const rv: ComptimeValue = reflect_query(e, r.name, c.args, line, col);
+        if rv.ok == false {
+            return "";
+        }
+        return reify_const(e, rv.ty, rv.text);
+    }
     if r.mod == "assert" {
         if r.name == "equal" {
             // `assert.equal(a, b)` (C2, F33): compare by the operands'
@@ -2666,6 +2852,9 @@ fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
             return "";
         }
     }
+    if is_type_fn(f) {
+        return e.fail_at(line, col, str.concat("`", str.concat(f.name, "` is a type function; apply it in a type position (D-145)")));
+    }
     if is_generic_fn(f) {
         const g: GenCall = resolve_generic(e, f, c.args, line, col);
         return emit_fn_args(e, g.f, sym_of(g.f), g.args, line, col);
@@ -2686,6 +2875,678 @@ fn is_generic_fn(f: Fn) bool {
         i = i + 1;
     }
     return false;
+}
+
+fn fn_has_app(f: Fn) bool {
+    if ty_has_app(f.ret) {
+        return true;
+    }
+    const np: i64 = vector.len(f.params);
+    var i: i64 = 0;
+    while i < np {
+        const prm: Param = f.params[i];
+        if ty_has_app(prm.ty) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn ty_has_app(t: Ty) bool {
+    return match t {
+        Ty.App(ap) => true,
+        Ty.Vec(inner) => ty_has_app(inner),
+        Ty.OptT(inner) => ty_has_app(inner),
+        Ty.ArrT(a2) => ty_has_app(a2.ty),
+        Ty.ResT(rz) => ty_has_app(rz.err) or ty_has_app(rz.ok),
+        Ty.Tup(tys) => {
+            var found: bool = false;
+            const n: i64 = vector.len(tys);
+            var i: i64 = 0;
+            while i < n {
+                if ty_has_app(tys[i]) {
+                    found = true;
+                }
+                i = i + 1;
+            }
+            found
+        },
+        Ty.FnT(sig) => {
+            var found: bool = ty_has_app(sig.ret);
+            const n: i64 = vector.len(sig.params);
+            var i: i64 = 0;
+            while i < n {
+                if ty_has_app(sig.params[i]) {
+                    found = true;
+                }
+                i = i + 1;
+            }
+            found
+        },
+        _ => false,
+    };
+}
+
+// The bound on instantiation chains and nested type applications.
+fn specialization_bound() i64 {
+    return 64;
+}
+
+// An instance's signature type: substituted, then any type
+// application elaborated under the instance's own bindings (D-145).
+fn inst_ty(mut e: Emitter, t: Ty, sub: [TypeVar], consts: [ConstArg]) Ty {
+    const t1: Ty = subst_ty_list(t, sub);
+    const saved_tvars: [TypeVar] = e.tvars;
+    const saved_consts: [ConstArg] = e.consts;
+    e.tvars = sub;
+    e.consts = consts;
+    const t2: Ty = tv_res(e, t1);
+    e.tvars = saved_tvars;
+    e.consts = saved_consts;
+    return t2;
+}
+
+// `comptime T: type` declares a type parameter; any other comptime
+// parameter is a value parameter (D-144).
+fn is_type_param(prm: Param) bool {
+    if prm.is_comptime == false {
+        return false;
+    }
+    const pt: Ty = prm.ty;
+    return match pt {
+        Ty.Named(nm) => nm == "type",
+        _ => false,
+    };
+}
+
+// Evaluate one comptime value argument (D-144). Literals are their
+// own constants; any other expression runs through eval_comptime -
+// the same service as `comptime { ... }`, never a second evaluator.
+fn comptime_arg(mut e: Emitter, prm: Param, a: Expr, line: i64, col: i64) ConstArg {
+    const want: Ty = tv_res(e, prm.ty);
+    var allowed: bool = false;
+    match want {
+        Ty.I64 => { allowed = true; },
+        Ty.BoolV => { allowed = true; },
+        Ty.StrV => { allowed = true; },
+        _ => {},
+    };
+    const what: Str = str.concat("the comptime argument for `", str.concat(prm.name, "`"));
+    if allowed == false {
+        e.fail_at(line, col, str.concat("comptime value parameter `", str.concat(prm.name, "` must be i64, bool, or Str")));
+        return %ConstArg{name: prm.name, ty: want, text: ""};
+    }
+    var cv: ComptimeValue = %ComptimeValue{ok: false, ty: Ty.UnitV, text: ""};
+    match a {
+        Expr.Int(t) => { cv = %ComptimeValue{ok: true, ty: Ty.I64, text: t}; },
+        Expr.Bool(t) => { cv = %ComptimeValue{ok: true, ty: Ty.BoolV, text: t}; },
+        Expr.Str(t) => { cv = %ComptimeValue{ok: true, ty: Ty.StrV, text: t}; },
+        _ => {
+            const no_stmts: [Stmt] = [];
+            cv = eval_comptime(e, %Block{stmts: no_stmts, tail: a, has_tail: true}, what, line, col);
+        },
+    };
+    if cv.ok == false {
+        return %ConstArg{name: prm.name, ty: want, text: ""};
+    }
+    if text_mangleable(cv.text) == false {
+        e.fail_at(line, col, str.concat(what, " holds a byte outside printable ASCII and \\n \\t \\r \\0 (its instance key would not be exact)"));
+        return %ConstArg{name: prm.name, ty: want, text: ""};
+    }
+    if same_ty(cv.ty, want) == false {
+        var msg: Str = str.concat(what, " is ");
+        msg = str.concat(msg, const_ty_name(cv.ty));
+        msg = str.concat(msg, ", expected ");
+        msg = str.concat(msg, const_ty_name(want));
+        e.fail_at(line, col, msg);
+        return %ConstArg{name: prm.name, ty: want, text: ""};
+    }
+    return %ConstArg{name: prm.name, ty: want, text: cv.text};
+}
+
+// A typed constant's instance-key segment (D-144): `ci41` / `cim3`
+// (i64, `m` for a leading minus), `cb1` / `cb0`, `cs` + the text with
+// every non-alphanumeric byte as `_XX` hex. Keys are deterministic
+// functions of the constant's type and value.
+fn mangle_const(ca: ConstArg) Str {
+    const ct: Ty = ca.ty;
+    const kind: i64 = match ct {
+        Ty.BoolV => 1,
+        Ty.StrV => 2,
+        _ => 0,
+    };
+    if kind == 1 {
+        if ca.text == "true" {
+            return "cb1";
+        }
+        return "cb0";
+    }
+    if kind == 2 {
+        return str.concat("cs", mangle_text(ca.text));
+    }
+    if str.len(ca.text) > 0 {
+        if str.sub(ca.text, 0, 1) == "-" {
+            return str.concat("cim", str.sub(ca.text, 1, str.len(ca.text) - 1));
+        }
+    }
+    return str.concat("ci", ca.text);
+}
+
+fn const_ty_name(t: Ty) Str {
+    return match t {
+        Ty.StrV => "Str",
+        _ => mangle_ty(t),
+    };
+}
+
+fn text_mangleable(s: Str) bool {
+    const n: i64 = str.len(s);
+    var i: i64 = 0;
+    while i < n {
+        if byte_code(str.sub(s, i, 1)) < 0 {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The byte's code for the mangling set (printable ASCII plus the
+// closed escapes), or -1.
+fn byte_code(c: Str) i64 {
+    // Printable ASCII from 0x20 (space) through 0x7E.
+    const printable: Str = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+    const pi: i64 = char_index(printable, c);
+    if pi >= 0 {
+        return pi + 32;
+    }
+    if c == "\n" {
+        return 10;
+    }
+    if c == "\t" {
+        return 9;
+    }
+    if c == "\r" {
+        return 13;
+    }
+    if c == "\0" {
+        return 0;
+    }
+    return 0 - 1;
+}
+
+fn mangle_text(s: Str) Str {
+    const alnum: Str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    var out: Str = "";
+    const n: i64 = str.len(s);
+    var i: i64 = 0;
+    while i < n {
+        const c: Str = str.sub(s, i, 1);
+        if char_index(alnum, c) >= 0 {
+            out = str.concat(out, c);
+        } else {
+            // comptime_arg admits only bytes with a code here.
+            out = str.concat(out, str.concat("_", hex2(byte_code(c))));
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+fn char_index(set: Str, c: Str) i64 {
+    const n: i64 = str.len(set);
+    var i: i64 = 0;
+    while i < n {
+        if str.sub(set, i, 1) == c {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn hex2(v: i64) Str {
+    const digits: Str = "0123456789ABCDEF";
+    var hi: i64 = 0;
+    var lo: i64 = v;
+    while lo >= 16 {
+        lo = lo - 16;
+        hi = hi + 1;
+    }
+    return str.concat(str.sub(digits, hi, 1), str.sub(digits, lo, 1));
+}
+
+// ------------------------------------------------------- reflection
+// Compile-time reflection (D-146, goal s9): queries over a type's
+// fields and variants and a fn's signature, answered by the Calque
+// elaborator from the AST's declarations under the ACTIVE
+// substitution (so a generic instance reflects over its own T) and
+// reified as constants. The descriptors are data - counts, names,
+// payload flags, and canonical type identities (type_key) - never
+// host pointers. Indices are comptime values.
+
+fn reflect_result_ty(q: Str) Ty {
+    if q == "field_count" or q == "variant_count" or q == "param_count" {
+        return Ty.I64;
+    }
+    if q == "variant_has_payload" {
+        return Ty.BoolV;
+    }
+    return Ty.StrV;
+}
+
+fn ct_val(ty: Ty, text: Str) ComptimeValue {
+    return %ComptimeValue{ok: true, ty: ty, text: text};
+}
+
+fn ct_fail(mut e: Emitter, line: i64, col: i64, msg: Str) ComptimeValue {
+    e.fail_at(line, col, msg);
+    return %ComptimeValue{ok: false, ty: Ty.UnitV, text: ""};
+}
+
+fn reflect_query(mut e: Emitter, q: Str, args: [Expr], line: i64, col: i64) ComptimeValue {
+    const na: i64 = vector.len(args);
+    const is_fn_q: bool = q == "param_count" or q == "param_name" or q == "param_type" or q == "return_type";
+    var want: i64 = 1;
+    if q == "field_name" or q == "field_type" or q == "variant_name" or q == "variant_has_payload" or q == "variant_type" or q == "param_name" or q == "param_type" {
+        want = 2;
+    }
+    const known: bool = is_fn_q or q == "type_name" or q == "kind" or q == "field_count" or q == "field_name" or q == "field_type" or q == "variant_count" or q == "variant_name" or q == "variant_has_payload" or q == "variant_type";
+    if known == false {
+        return ct_fail(e, line, col, str.concat("unknown reflection query `reflect.", str.concat(q, "` (type_name, kind, field_count, field_name, field_type, variant_count, variant_name, variant_has_payload, variant_type, param_count, param_name, param_type, return_type)")));
+    }
+    if na != want {
+        return ct_fail(e, line, col, str.concat("reflect.", str.concat(q, str.concat(" takes ", str.concat(str.fromI64(want), " argument(s)")))));
+    }
+    var idx: i64 = 0;
+    if want == 2 {
+        const ip: Param = %Param{name: "index", ty: Ty.I64, mut: false, is_comptime: true};
+        const ia: ConstArg = comptime_arg(e, ip, args[1], line, col);
+        if state_ok(e.state) == false {
+            return %ComptimeValue{ok: false, ty: Ty.UnitV, text: ""};
+        }
+        idx = parse_signed(ia.text);
+    }
+    if is_fn_q {
+        return reflect_fn(e, q, args[0], idx, line, col);
+    }
+    const a0: Expr = args[0];
+    if is_tyarg_expr(e, a0) == false {
+        return ct_fail(e, line, col, str.concat("reflect.", str.concat(q, " takes a type")));
+    }
+    const t: Ty = tv_res(e, tyarg_value(e, a0, line, col));
+    if q == "type_name" {
+        return ct_val(Ty.StrV, type_key(t));
+    }
+    if q == "kind" {
+        return ct_val(Ty.StrV, type_kind(e, t));
+    }
+    if q == "field_count" or q == "field_name" or q == "field_type" {
+        return reflect_fields(e, q, t, idx, line, col);
+    }
+    return reflect_variants(e, q, t, idx, line, col);
+}
+
+fn parse_signed(text: Str) i64 {
+    if str.len(text) > 0 {
+        if str.sub(text, 0, 1) == "-" {
+            return 0 - parse_digits(str.sub(text, 1, str.len(text) - 1));
+        }
+    }
+    return parse_digits(text);
+}
+
+fn index_fail(mut e: Emitter, what: Str, idx: i64, owner: Str, n: i64, line: i64, col: i64) ComptimeValue {
+    var msg: Str = str.concat(what, " index ");
+    msg = str.concat(msg, str.fromI64(idx));
+    msg = str.concat(msg, " is out of range for `");
+    msg = str.concat(msg, owner);
+    msg = str.concat(msg, "` (");
+    msg = str.concat(msg, str.fromI64(n));
+    msg = str.concat(msg, ")");
+    return ct_fail(e, line, col, msg);
+}
+
+fn type_kind(mut e: Emitter, t: Ty) Str {
+    var nm: Str = "";
+    match t {
+        Ty.Named(n0) => { nm = n0; },
+        _ => {},
+    };
+    if str.len(nm) > 0 {
+        const td: TypeDecl = find_td(e.ast, nm);
+        if td.name == "" {
+            return "unknown";
+        }
+        if td.is_union {
+            return "union";
+        }
+        return "struct";
+    }
+    return match t {
+        Ty.I64 => "i64",
+        Ty.BoolV => "bool",
+        Ty.StrV => "Str",
+        Ty.UnitV => "unit",
+        Ty.Vec(inner) => "vector",
+        Ty.ArrT(a2) => "array",
+        Ty.Tup(tys) => "tuple",
+        Ty.OptT(inner) => "union",
+        Ty.ResT(rz) => "union",
+        Ty.FnT(sig) => "fn",
+        _ => "unknown",
+    };
+}
+
+fn reflect_fields(mut e: Emitter, q: Str, t: Ty, idx: i64, line: i64, col: i64) ComptimeValue {
+    var tup_n: i64 = 0 - 1;
+    var tup_tys: [Ty] = [];
+    match t {
+        Ty.Tup(tys) => { tup_n = vector.len(tys); tup_tys = tys; },
+        _ => {},
+    };
+    if tup_n >= 0 {
+        if q == "field_count" {
+            return ct_val(Ty.I64, str.fromI64(tup_n));
+        }
+        if idx < 0 or idx >= tup_n {
+            return index_fail(e, "field", idx, type_key(t), tup_n, line, col);
+        }
+        if q == "field_name" {
+            return ct_val(Ty.StrV, str.fromI64(idx));
+        }
+        return ct_val(Ty.StrV, type_key(tup_tys[idx]));
+    }
+    var td: TypeDecl = %TypeDecl{name: "", is_union: false, fields: [], variants: []};
+    match t {
+        Ty.Named(nm) => { td = find_td(e.ast, nm); },
+        _ => {},
+    };
+    if td.name == "" or td.is_union {
+        return ct_fail(e, line, col, str.concat("reflect.", str.concat(q, str.concat(" needs a struct or tuple type, got `", str.concat(type_key(t), "`")))));
+    }
+    const nf: i64 = vector.len(td.fields);
+    if q == "field_count" {
+        return ct_val(Ty.I64, str.fromI64(nf));
+    }
+    if idx < 0 or idx >= nf {
+        return index_fail(e, "field", idx, td.name, nf, line, col);
+    }
+    const fd: FieldDecl = td.fields[idx];
+    if q == "field_name" {
+        return ct_val(Ty.StrV, fd.name);
+    }
+    return ct_val(Ty.StrV, type_key(tv_res(e, fd.ty)));
+}
+
+fn reflect_variants(mut e: Emitter, q: Str, t: Ty, idx: i64, line: i64, col: i64) ComptimeValue {
+    var td: TypeDecl = %TypeDecl{name: "", is_union: false, fields: [], variants: []};
+    if is_opt_t(t) or is_res_t(t) {
+        td = synth_td(t);
+    } else {
+        match t {
+            Ty.Named(nm) => { td = find_td(e.ast, nm); },
+            _ => {},
+        };
+    }
+    if td.name == "" or td.is_union == false {
+        return ct_fail(e, line, col, str.concat("reflect.", str.concat(q, str.concat(" needs a union type, got `", str.concat(type_key(t), "`")))));
+    }
+    const nv: i64 = vector.len(td.variants);
+    if q == "variant_count" {
+        return ct_val(Ty.I64, str.fromI64(nv));
+    }
+    if idx < 0 or idx >= nv {
+        return index_fail(e, "variant", idx, type_key(t), nv, line, col);
+    }
+    const vd: VariantDecl = td.variants[idx];
+    if q == "variant_name" {
+        return ct_val(Ty.StrV, vd.name);
+    }
+    if q == "variant_has_payload" {
+        if vd.has_payload {
+            return ct_val(Ty.BoolV, "true");
+        }
+        return ct_val(Ty.BoolV, "false");
+    }
+    if vd.has_payload == false {
+        return ct_fail(e, line, col, str.concat("variant `", str.concat(vd.name, "` has no payload")));
+    }
+    return ct_val(Ty.StrV, type_key(tv_res(e, vd.ty)));
+}
+
+fn reflect_fn(mut e: Emitter, q: Str, a0: Expr, idx: i64, line: i64, col: i64) ComptimeValue {
+    var nm: Str = "";
+    var md: Str = "";
+    match a0 {
+        Expr.Ref(r) => { nm = r.name; md = r.mod; },
+        _ => {},
+    };
+    if str.len(nm) == 0 {
+        return ct_fail(e, line, col, str.concat("reflect.", str.concat(q, " takes a function name")));
+    }
+    const f: Fn = find_fn_ctx(e, nm, md);
+    if f.name == "" {
+        return ct_fail(e, line, col, str.concat("unknown function `", str.concat(nm, "`")));
+    }
+    if is_generic_fn(f) or is_type_fn(f) {
+        return ct_fail(e, line, col, str.concat("reflect.", str.concat(q, str.concat(" needs a concrete signature; `", str.concat(nm, "` has comptime parameters")))));
+    }
+    const np: i64 = vector.len(f.params);
+    if q == "param_count" {
+        return ct_val(Ty.I64, str.fromI64(np));
+    }
+    if q == "return_type" {
+        return ct_val(Ty.StrV, type_key(tv_res(e, f.ret)));
+    }
+    if idx < 0 or idx >= np {
+        return index_fail(e, "parameter", idx, nm, np, line, col);
+    }
+    const prm: Param = f.params[idx];
+    if q == "param_name" {
+        return ct_val(Ty.StrV, prm.name);
+    }
+    return ct_val(Ty.StrV, type_key(tv_res(e, prm.ty)));
+}
+
+// The canonical, deterministic identity of a type (D-146, AC-9.12):
+// a pure function of the elaborated type - the same text from the
+// interpreter, the compiler, a cache key, or a serialized descriptor.
+fn type_key(t: Ty) Str {
+    return match t {
+        Ty.I64 => "i64",
+        Ty.BoolV => "bool",
+        Ty.StrV => "Str",
+        Ty.UnitV => "()",
+        Ty.Named(nm) => nm,
+        Ty.Vec(inner) => str.concat("[", str.concat(type_key(inner), "]")),
+        Ty.OptT(inner) => str.concat("?", type_key(inner)),
+        Ty.ResT(rz) => str.concat(type_key(rz.err), str.concat("!", type_key(rz.ok))),
+        Ty.ArrT(a2) => str.concat("[", str.concat(str.fromI64(a2.n), str.concat("]", type_key(a2.ty)))),
+        Ty.Tup(tys) => {
+            var acc: Str = "(";
+            const n: i64 = vector.len(tys);
+            var i: i64 = 0;
+            while i < n {
+                if i > 0 {
+                    acc = str.concat(acc, ", ");
+                }
+                acc = str.concat(acc, type_key(tys[i]));
+                i = i + 1;
+            }
+            str.concat(acc, ")")
+        },
+        Ty.FnT(sig) => {
+            var acc: Str = "fn (";
+            const n: i64 = vector.len(sig.params);
+            var i: i64 = 0;
+            while i < n {
+                if i > 0 {
+                    acc = str.concat(acc, ", ");
+                }
+                acc = str.concat(acc, type_key(sig.params[i]));
+                i = i + 1;
+            }
+            str.concat(acc, str.concat(") ", type_key(sig.ret)))
+        },
+        Ty.App(ap) => str.concat("<unelaborated ", str.concat(ap.name, ">")),
+        Ty.TyBad(b) => "<bad>",
+    };
+}
+
+// A type function: `fn N(comptime ...) type { TYPE-EXPR }` (D-145).
+fn is_type_fn(f: Fn) bool {
+    const rt: Ty = f.ret;
+    return match rt {
+        Ty.Named(nm) => nm == "type",
+        _ => false,
+    };
+}
+
+// Elaborate one type application (D-145, goal s9): bind the type
+// function's comptime parameters from the arguments (types through
+// the type-argument rule, values through comptime_arg and the shared
+// service), then elaborate its type expression under exactly those
+// bindings. The result is cached by the deterministic key, so equal
+// applications denote one type; a key already being elaborated is a
+// type-construction cycle.
+fn resolve_app(mut e: Emitter, ap: TyApp) Ty {
+    const f: Fn = find_fn_ctx(e, ap.name, "");
+    const bad: Ty = Ty.TyBad(%BadNode{msg: "<type application>", line: ap.line, col: ap.col});
+    if f.name == "" {
+        e.fail_at(ap.line, ap.col, str.concat("unknown type function `", str.concat(ap.name, "`")));
+        return bad;
+    }
+    if is_type_fn(f) == false {
+        e.fail_at(ap.line, ap.col, str.concat("`", str.concat(ap.name, "` is not a type function (it must return `type`)")));
+        return bad;
+    }
+    const np: i64 = vector.len(f.params);
+    const na: i64 = vector.len(ap.args);
+    if np != na {
+        var msg: Str = str.concat("type function `", ap.name);
+        msg = str.concat(msg, "` takes ");
+        msg = str.concat(msg, str.fromI64(np));
+        msg = str.concat(msg, " argument(s), got ");
+        msg = str.concat(msg, str.fromI64(na));
+        e.fail_at(ap.line, ap.col, msg);
+        return bad;
+    }
+    var sub: [TypeVar] = [];
+    var consts: [ConstArg] = [];
+    var key: Str = ap.name;
+    var i: i64 = 0;
+    while i < np {
+        const prm: Param = f.params[i];
+        const arg: Expr = ap.args[i];
+        if prm.is_comptime == false {
+            e.fail_at(ap.line, ap.col, str.concat("type function parameters are comptime; `", str.concat(prm.name, "` is not")));
+            return bad;
+        }
+        if is_type_param(prm) {
+            if is_tyarg_expr(e, arg) == false {
+                e.fail_at(ap.line, ap.col, str.concat("the argument for type parameter `", str.concat(prm.name, "` must be a type")));
+                return bad;
+            }
+            const t0: Ty = tyarg_value(e, arg, ap.line, ap.col);
+            const rt0: Ty = tv_res(e, t0);
+            vector.push(sub, %TypeVar{name: prm.name, ty: rt0});
+            key = str.concat(key, str.concat("__", mangle_ty(rt0)));
+        } else {
+            const ca: ConstArg = comptime_arg(e, prm, arg, ap.line, ap.col);
+            if state_ok(e.state) == false {
+                return bad;
+            }
+            vector.push(consts, ca);
+            key = str.concat(key, str.concat("__", mangle_const(ca)));
+        }
+        i = i + 1;
+    }
+    const nc: i64 = vector.len(e.type_apps);
+    var ci: i64 = 0;
+    while ci < nc {
+        const done: TypeApp = e.type_apps[ci];
+        if done.key == key {
+            return done.ty;
+        }
+        ci = ci + 1;
+    }
+    if vector.len(e.type_app_stack) >= specialization_bound() {
+        var dmsg: Str = "type construction depth exceeds ";
+        dmsg = str.concat(dmsg, str.fromI64(specialization_bound()));
+        dmsg = str.concat(dmsg, " at `");
+        dmsg = str.concat(dmsg, key);
+        dmsg = str.concat(dmsg, "` (unbounded type construction?)");
+        e.fail_at(ap.line, ap.col, dmsg);
+        return bad;
+    }
+    if name_bound(e.type_app_stack, key) {
+        e.fail_at(ap.line, ap.col, str.concat("type-construction cycle through `", str.concat(key, "`")));
+        return bad;
+    }
+    const outer_stack: [Str] = e.type_app_stack;
+    var stack: [Str] = [];
+    const ns0: i64 = vector.len(outer_stack);
+    var si: i64 = 0;
+    while si < ns0 {
+        vector.push(stack, outer_stack[si]);
+        si = si + 1;
+    }
+    vector.push(stack, key);
+    const saved_tvars: [TypeVar] = e.tvars;
+    const saved_consts: [ConstArg] = e.consts;
+    e.type_app_stack = stack;
+    e.tvars = sub;
+    e.consts = consts;
+    const body: Block = f.body;
+    const ty: Ty = elab_type_expr(e, body.tail, ap.line, ap.col);
+    e.tvars = saved_tvars;
+    e.consts = saved_consts;
+    e.type_app_stack = outer_stack;
+    if state_ok(e.state) == false {
+        return bad;
+    }
+    vector.push(e.type_apps, %TypeApp{key: key, ty: ty});
+    return ty;
+}
+
+// A type function's body (D-145): a type, or `if` over a comptime
+// condition - evaluated through the shared service with the
+// function's comptime parameters bound, and only the taken branch is
+// elaborated (an untaken branch may name a type that does not exist).
+fn elab_type_expr(mut e: Emitter, x: Expr, line: i64, col: i64) Ty {
+    const bad: Ty = Ty.TyBad(%BadNode{msg: "<type expression>", line: line, col: col});
+    match x {
+        Expr.TyV(t) => {
+            return tv_res(e, t);
+        },
+        Expr.If(ife) => {
+            const no_stmts: [Stmt] = [];
+            const cv: ComptimeValue = eval_comptime(e, %Block{stmts: no_stmts, tail: ife.cond, has_tail: true}, "the type condition", ife.line, ife.col);
+            if cv.ok == false {
+                return bad;
+            }
+            const cty: Ty = cv.ty;
+            const is_b: bool = match cty {
+                Ty.BoolV => true,
+                _ => false,
+            };
+            if is_b == false {
+                e.fail_at(ife.line, ife.col, "a type-level `if` condition must be a comptime bool");
+                return bad;
+            }
+            if cv.text == "true" {
+                const tb: Block = ife.then;
+                return elab_type_expr(e, tb.tail, line, col);
+            }
+            const eb: Block = ife.els;
+            return elab_type_expr(e, eb.tail, line, col);
+        },
+        _ => {},
+    };
+    e.fail_at(line, col, "a type function's body must be a type expression (D-145)");
+    return bad;
 }
 
 fn mangle_ty(t: Ty) Str {
@@ -2711,6 +3572,7 @@ fn mangle_ty(t: Ty) Str {
         Ty.OptT(inner) => str.concat("opt_", mangle_ty(inner)),
         Ty.ResT(rz) => str.concat("res_", str.concat(mangle_ty(rz.err), str.concat("_", mangle_ty(rz.ok)))),
         Ty.FnT(sig) => "fn",
+        Ty.App(ap) => str.concat("app_", ap.name),
         Ty.TyBad(x) => "t",
     };
 }
@@ -2769,7 +3631,7 @@ fn sig_subst(sig: FnSig, sub: [TypeVar]) FnSig {
 
 // The funnels: AST types read during emission resolve through the
 // ACTIVE substitution (an instance's tvars).
-fn tv_res(e: Emitter, t: Ty) Ty {
+fn tv_res(mut e: Emitter, t: Ty) Ty {
     return match t {
         Ty.Named(nm) => tv_lookup(e, nm),
         Ty.Vec(inner) => Ty.Vec(tv_res(e, inner)),
@@ -2787,6 +3649,7 @@ fn tv_res(e: Emitter, t: Ty) Ty {
         Ty.OptT(inner) => Ty.OptT(tv_res(e, inner)),
         Ty.ResT(rz) => Ty.ResT(%ResTT{err: tv_res(e, rz.err), ok: tv_res(e, rz.ok)}),
         Ty.FnT(sig) => Ty.FnT(sig_res(e, sig)),
+        Ty.App(ap) => resolve_app(e, ap),
         _ => t,
     };
 }
@@ -2804,7 +3667,7 @@ fn tv_lookup(e: Emitter, nm: Str) Ty {
     return Ty.Named(nm);
 }
 
-fn sig_res(e: Emitter, sig: FnSig) FnSig {
+fn sig_res(mut e: Emitter, sig: FnSig) FnSig {
     var ps: [Ty] = vector.new();
     const n: i64 = vector.len(sig.params);
     var i: i64 = 0;
@@ -2947,6 +3810,9 @@ fn infer_call_ty(mut e: Emitter, c0: Call, line: i64, col: i64) Ty {
     }
     if r0.mod == "io" {
         return Ty.UnitV;
+    }
+    if r0.mod == "reflect" {
+        return reflect_result_ty(r0.name);
     }
     if r0.mod == "assert" {
         return Ty.UnitV;
@@ -3092,6 +3958,13 @@ fn infer_expr_ty(mut e: Emitter, ex: Expr, line: i64, col: i64) Ty {
         Expr.Tup(es) => infer_tup_lit(e, es, line, col),
         Expr.IndexE(ix2) => infer_index_ty(e, ix2, line, col),
         Expr.ComptimeE(cx3) => infer_block_ty(e, cx3.body, line, col),
+        Expr.Make(mk) => {
+            if str.len(mk.ty) > 0 {
+                tv_res(e, Ty.Named(mk.ty))
+            } else {
+                Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col})
+            }
+        },
         _ => Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col}),
     };
 }
@@ -3272,24 +4145,40 @@ fn resolve_generic(mut e: Emitter, f: Fn, args: [Expr], line: i64, col: i64) Gen
     var i: i64 = 0;
     while i < np {
         const prm: Param = vector.get(f.params, i);
-        if prm.is_comptime {
+        if is_type_param(prm) {
             vector.push(names, prm.name);
         }
         i = i + 1;
     }
     var sub: [TypeVar] = vector.new();
+    var consts: [ConstArg] = [];
     var ai: i64 = 0;
     i = 0;
     while i < np {
         const prm: Param = vector.get(f.params, i);
         if prm.is_comptime {
             const na: i64 = vector.len(args);
-            if ai < na {
-                if is_tyarg_expr(e, vector.get(args, ai)) {
-                    const t0: Ty = tyarg_value(e, vector.get(args, ai), line, col);
-                    vector.push(sub, %TypeVar{name: prm.name, ty: t0});
-                    ai = ai + 1;
+            if is_type_param(prm) {
+                if ai < na {
+                    if is_tyarg_expr(e, vector.get(args, ai)) {
+                        const t0: Ty = tyarg_value(e, vector.get(args, ai), line, col);
+                        vector.push(sub, %TypeVar{name: prm.name, ty: t0});
+                        ai = ai + 1;
+                    }
                 }
+            } else {
+                // D-144: a comptime VALUE parameter's argument is always
+                // explicit and evaluated now, through the shared service.
+                if ai >= na {
+                    e.fail_at(line, col, str.concat("missing the comptime argument for `", str.concat(prm.name, "`")));
+                    return %GenCall{f: f, args: args};
+                }
+                const ca: ConstArg = comptime_arg(e, prm, vector.get(args, ai), line, col);
+                if state_ok(e.state) == false {
+                    return %GenCall{f: f, args: args};
+                }
+                vector.push(consts, ca);
+                ai = ai + 1;
             }
         }
         i = i + 1;
@@ -3326,7 +4215,7 @@ fn resolve_generic(mut e: Emitter, f: Fn, args: [Expr], line: i64, col: i64) Gen
     i = 0;
     while i < np {
         const prm2: Param = vector.get(f.params, i);
-        if prm2.is_comptime {
+        if is_type_param(prm2) {
             if ty_is_unknown(tv_get(sub, prm2.name)) {
                 var bmsg: Str = "cannot infer `";
                 bmsg = str.concat(bmsg, prm2.name);
@@ -3350,6 +4239,12 @@ fn resolve_generic(mut e: Emitter, f: Fn, args: [Expr], line: i64, col: i64) Gen
         key = str.concat(key, str.concat("__", mangle_ty(sv.ty)));
         si = si + 1;
     }
+    var ki: i64 = 0;
+    const nk: i64 = vector.len(consts);
+    while ki < nk {
+        key = str.concat(key, str.concat("__", mangle_const(consts[ki])));
+        ki = ki + 1;
+    }
     var found2: bool = false;
     var instf: Fn = f;
     const ni: i64 = vector.len(e.insts);
@@ -3363,18 +4258,30 @@ fn resolve_generic(mut e: Emitter, f: Fn, args: [Expr], line: i64, col: i64) Gen
         ii = ii + 1;
     }
     if found2 == false {
+        // Infinite specialization (goal s9): an instance chain deeper
+        // than the bound is refused instead of instantiating forever
+        // (a runtime `if` does not prune instantiation).
+        if e.inst_depth + 1 > specialization_bound() {
+            var dmsg: Str = "specialization depth exceeds ";
+            dmsg = str.concat(dmsg, str.fromI64(specialization_bound()));
+            dmsg = str.concat(dmsg, " at `");
+            dmsg = str.concat(dmsg, key);
+            dmsg = str.concat(dmsg, "` (infinite specialization?)");
+            e.fail_at(line, col, dmsg);
+            return %GenCall{f: f, args: args};
+        }
         var vps: [Param] = vector.new();
         var pi: i64 = 0;
         while pi < np {
             const prm3: Param = vector.get(f.params, pi);
             if prm3.is_comptime == false {
-                vector.push(vps, %Param{name: prm3.name, ty: subst_ty_list(prm3.ty, sub), mut: prm3.mut, is_comptime: false});
+                vector.push(vps, %Param{name: prm3.name, ty: inst_ty(e, prm3.ty, sub, consts), mut: prm3.mut, is_comptime: false});
             }
             pi = pi + 1;
         }
-        instf = %Fn{name: key, params: vps, ret: subst_ty_list(f.ret, sub), body: f.body, file: f.file, ns: "", test_name: "", is_pub: false};
+        instf = %Fn{name: key, params: vps, ret: inst_ty(e, f.ret, sub, consts), body: f.body, file: f.file, ns: "", test_name: "", is_pub: false};
         vector.push(e.insts, %Instance{key: key, f: instf});
-        vector.push(e.instq, %PendingInst{f: instf, sub: sub});
+        vector.push(e.instq, %PendingInst{f: instf, sub: sub, consts: consts, depth: e.inst_depth + 1});
     }
     var valargs: [Expr] = vector.new();
     const na3: i64 = vector.len(args);
@@ -4187,6 +5094,8 @@ fn same_ty(a: Ty, b: Ty) bool {
         Ty.Tup(tys) => same_tup(tys, b),
         Ty.ArrT(a2) => same_arr(a2, b),
         Ty.FnT(sig) => same_fnsig(sig, b),
+        // Applications are elaborated before comparison (D-145).
+        Ty.App(ap) => false,
         Ty.TyBad(x) => ty_is_unit(b),
     };
 }

@@ -1,0 +1,52 @@
+// D-144: comptime VALUE parameters - each distinct constant is its own
+// instance; arguments are literals, comptime-evaluable calls, or an
+// enclosing instance's own comptime parameter.
+fn tag(comptime K: i64) i64 {
+    K + 1
+}
+
+fn scale(comptime N: i64, x: i64) i64 {
+    x * N
+}
+
+fn pick(comptime WIDE: bool, x: i64) i64 {
+    if WIDE {
+        x * 1000
+    } else {
+        x
+    }
+}
+
+fn greet(comptime NAME: Str) Str {
+    str.concat("hi ", NAME)
+}
+
+fn sq(x: i64) i64 {
+    x * x
+}
+
+fn chain(comptime K: i64) i64 {
+    tag(K) + scale(K, 2)
+}
+
+fn folded(comptime K: i64) i64 {
+    comptime { K * 10 }
+}
+
+pub fn main() i64 {
+    io.print(str.fromI64(tag(41)));
+    io.print("|");
+    io.print(str.fromI64(scale(3, 5) + scale(3, 1)));
+    io.print("|");
+    io.print(str.fromI64(pick(true, 7) + pick(false, 7)));
+    io.print("|");
+    io.print(greet("calque"));
+    io.print("|");
+    io.print(str.fromI64(tag(sq(4))));
+    io.print("|");
+    io.print(str.fromI64(chain(5)));
+    io.print("|");
+    io.print(str.fromI64(folded(4)));
+    io.print("\n");
+    0
+}

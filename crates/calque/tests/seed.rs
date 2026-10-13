@@ -3142,3 +3142,123 @@ fn calq0_nested_comptime_statements() {
     assert!(err.contains("error 3:20 the comptime block must be compile-time-computable (error 4:9 the comptime block must be compile-time-computable"), "{err}");
     assert!(err.contains("unknown name `r`"), "{err}");
 }
+
+// D-144: comptime VALUE parameters. Each distinct typed constant is
+// its own instance (typed keys in the symbol), arguments are literals
+// or evaluated through the shared service, and the refusals are
+// positioned.
+#[test]
+fn calq0_comptime_value_parameters() {
+    let source = include_str!("../../../goldens/calque/comptime_values/case.calq");
+    let artifact = calque::compile_source("comptime_values.calq", source)
+        .expect("comptime value parameters compile");
+    for sym in ["@tag__ci41", "@tag__ci16", "@scale__ci3", "@pick__cb1", "@pick__cb0", "@greet__cscalque", "@chain__ci5", "@folded__ci4"] {
+        assert!(artifact.contains(&format!("func.func {sym}(")), "missing instance {sym}");
+    }
+    let outcome = run_artifact(&artifact).expect("runs");
+    assert_eq!(outcome.output, "42|18|7007|hi calque|17|16|40\n");
+
+    // Str constants mangle exactly: distinct texts never share a key.
+    let strs = "fn g(comptime S: Str) i64 { str.len(S) }
+pub fn main() i64 { io.print(str.fromI64(g(\"a b_c\") + g(\"a_b c\"))); io.print(\"\\n\"); 0 }
+";
+    let artifact = calque::compile_source("ct_strs.calq", strs).expect("compiles");
+    assert!(artifact.contains("@g__csa_20b_5Fc("), "{artifact}");
+    assert!(artifact.contains("@g__csa_5Fb_20c("), "{artifact}");
+
+    let cases = [
+        (
+            "fn tag(comptime K: i64) i64 { K + 1 }\npub fn main() i64 { const r: i64 = 3; tag(r) }\n",
+            "error 2:42 the comptime argument for `K` must be compile-time-computable",
+        ),
+        (
+            "fn tag(comptime K: i64) i64 { K + 1 }\npub fn main() i64 { tag(\"x\") }\n",
+            "error 2:24 the comptime argument for `K` is Str, expected i64",
+        ),
+        (
+            "fn tag(x: i64, comptime K: i64) i64 { K + x }\npub fn main() i64 { tag(1, 2) }\n",
+            "error 1:25 a comptime value parameter must precede the runtime parameters",
+        ),
+        (
+            "fn tag(comptime K: i64) i64 { K + 1 }\npub fn main() i64 { tag() }\n",
+            "error 2:24 missing the comptime argument for `K`",
+        ),
+        (
+            "const P = struct { x: i64 };\npub fn main() i64 { const p: P = comptime { %P{x: 1} }; 0 }\n",
+            "error 2:34 the comptime block must produce i64, bool, or Str (aggregate reification is not implemented)",
+        ),
+    ];
+    for (src, want) in cases {
+        let err = calque::compile_source("ct_neg.calq", src).expect_err(want);
+        assert!(err.contains(want), "want {want:?}, got {err}");
+    }
+}
+
+// D-145: conditional type construction. Type functions elaborate in
+// the Calque emitter; conditions run through the shared service; only
+// the taken branch elaborates; equal applications share one identity;
+// cycles, unbounded construction, and misuse are refused.
+#[test]
+fn calq0_conditional_type_construction() {
+    let source = include_str!("../../../goldens/calque/cond_type/case.calq");
+    let artifact = calque::compile_source("cond_type.calq", source)
+        .expect("type functions elaborate");
+    assert!(!artifact.contains("@Choose"), "type functions are compile-time only");
+    assert!(artifact.contains("func.func @describe(%env: !frk_closure.envref, %x: !frk_bstr.str) -> !frk_bstr.str"), "Choose(true) elaborated to Str in the signature");
+    let outcome = run_artifact(&artifact).expect("runs");
+    assert_eq!(outcome.output, "<wide>|50|10|12|nest|11\n");
+
+    let cases = [
+        ("fn Loop(comptime N: i64) type { Loop(N) }\npub fn main() i64 { const x: Loop(1) = 1; x }\n",
+         "error 1:33 type-construction cycle through `Loop__ci1`"),
+        ("fn Inf(comptime N: i64) type { Inf(N + 1) }\npub fn main() i64 { const x: Inf(0) = 1; x }\n",
+         "type construction depth exceeds 64 at `Inf__ci64`"),
+        ("fn notty(x: i64) i64 { x }\npub fn main() i64 { const x: notty(1) = 1; x }\n",
+         "error 2:30 `notty` is not a type function (it must return `type`)"),
+        ("fn C(comptime B: bool) type { if B { i64 } else { Str } }\npub fn main() i64 { const x: C(true, 1) = 1; x }\n",
+         "error 2:30 type function `C` takes 1 argument(s), got 2"),
+        ("fn C(comptime B: bool) type { if B { i64 } else { Str } }\npub fn main() i64 { const r: bool = true; const x: C(r) = 1; x }\n",
+         "error 2:52 the comptime argument for `B` must be compile-time-computable"),
+        ("fn C(comptime B: bool) type { if B { i64 } else { Str } }\npub fn main() i64 { const x: i64 = C(true); x }\n",
+         "error 2:37 `C` is a type function; apply it in a type position"),
+        ("fn C(comptime N: i64) type { if N { i64 } else { Str } }\npub fn main() i64 { const x: C(1) = 1; x }\n",
+         "error 1:30 a type-level `if` condition must be a comptime bool"),
+        ("fn grow(comptime N: i64) i64 { grow(N + 1) }\npub fn main() i64 { grow(0) }\n",
+         "specialization depth exceeds 64 at `grow__ci64`"),
+    ];
+    for (src, want) in cases {
+        let err = calque::compile_source("ct_type_neg.calq", src).expect_err(want);
+        assert!(err.contains(want), "want {want:?}, got {err}");
+    }
+}
+
+// D-146: compile-time reflection - fields, variants, signatures, and
+// canonical type identities as reified data, also inside generic
+// instances and comptime blocks; out-of-range and misapplied queries
+// are positioned refusals.
+#[test]
+fn calq0_reflection() {
+    let source = include_str!("../../../goldens/calque/reflect/case.calq");
+    let artifact = calque::compile_source("reflect.calq", source).expect("reflection compiles");
+    assert!(artifact.contains("@field_list__Point("), "the generic instance reflects over its T");
+    assert!(!artifact.contains("reflect"), "no runtime reflection calls remain");
+    let outcome = run_artifact(&artifact).expect("runs");
+    assert_eq!(outcome.output, "3 label:[i64]|3 Named:Point dot-bare|2 scale:Shape->?i64|union,struct|Point{x,label}|30\n");
+
+    let cases = [
+        ("const P = struct { x: i64 };\npub fn main() i64 { io.print(reflect.field_name(P, 3)); 0 }\n",
+         "error 2:48 field index 3 is out of range for `P` (1)"),
+        ("const P = struct { x: i64 };\npub fn main() i64 { reflect.variant_count(P) }\n",
+         "error 2:42 reflect.variant_count needs a union type, got `P`"),
+        ("pub fn main() i64 { reflect.frobnicate(i64) }\n",
+         "error 1:39 unknown reflection query `reflect.frobnicate`"),
+        ("fn id(comptime T: type, v: T) T { v }\npub fn main() i64 { reflect.param_count(id) }\n",
+         "error 2:40 reflect.param_count needs a concrete signature; `id` has comptime parameters"),
+        ("const P = struct { x: i64 };\npub fn main() i64 { const r: i64 = 0; io.print(reflect.field_name(P, r)); 0 }\n",
+         "error 2:66 the comptime argument for `index` must be compile-time-computable"),
+    ];
+    for (src, want) in cases {
+        let err = calque::compile_source("reflect_neg.calq", src).expect_err(want);
+        assert!(err.contains(want), "want {want:?}, got {err}");
+    }
+}

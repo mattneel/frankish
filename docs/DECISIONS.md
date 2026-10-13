@@ -4012,3 +4012,88 @@ veto-ledger pattern and most deserve their review.
   derived `41|comptime|46`) and calq0_nested_comptime_statements
   (reification asserted in the artifact, the inner assertion message
   surfaces, the runtime local is refused with nested positions).
+
+- D-144 [calque/comptime] COMPTIME VALUE PARAMETERS (goal s9 "constant
+  parameters", AC-9.9's second arm): `comptime NAME: T` with T in
+  {i64, bool, Str} is a value parameter (`comptime T: type` stays the
+  type parameter). Explicit comptime arguments are positional, so
+  value parameters must precede the runtime parameters (a positioned
+  parse refusal). Each argument is a literal or is EVALUATED through
+  eval_comptime - the one evaluation path also behind `comptime { }`
+  (no second evaluator) - and must have exactly the parameter's type.
+  TYPED CONSTANT KEYS: an instance's symbol appends `ci<digits>` /
+  `cim<digits>` (i64, leading minus), `cb1`/`cb0`, or `cs` + the text
+  with every non-alphanumeric byte as `_XX` hex (bytes outside
+  printable ASCII and the closed escapes are refused, so keys are
+  exact). SUBSTITUTION: PendingInst carries the instance's ConstArgs;
+  while an instance (and its lifted closures) emits, each is an
+  ordinary immutable local holding its reified constant, and comptime
+  sub-modules inherit the active type and constant substitutions, so
+  `comptime { K * 10 }` inside an instance works. Bool results cross
+  the service as 1/0 and reify as i1. Aggregate comptime results now
+  refuse explicitly ("aggregate reification is not implemented")
+  instead of building a malformed sub-module (struct literals infer
+  their named type). Gates: goldens/calque/comptime_values (literal,
+  evaluated, bool, Str, chained, and comptime-folded arguments; hand-
+  derived `42|18|7007|hi calque|17|16|40`) and
+  calq0_comptime_value_parameters (instance symbols, exact Str keys,
+  five positioned refusals). FENCED: value parameters of aggregate or
+  float types; inferred (non-explicit) value arguments.
+
+- D-145 [calque/types] CONDITIONAL TYPE CONSTRUCTION (goal s9; the
+  type-function arm of AC-9.9): `fn N(comptime ...) type { TYPE-EXPR }`
+  is a TYPE FUNCTION. Its body is parsed as type syntax - a type, or
+  `if COND { T } else { U }` (else-if chains) - never as runtime
+  statements, keeping unresolved syntax, type values, and runtime
+  values separate (goal s9 phases). `N(args)` in any type position is
+  a new `Ty.App` node (unelaborated syntax). The Calque emitter
+  elaborates it in tv_res, the substitution funnel: arguments bind the
+  comptime parameters (types by the type-argument rule, values via
+  comptime_arg and the shared service), the condition is evaluated
+  through the SAME service with those bindings, and only the taken
+  branch elaborates (an untaken branch may name a nonexistent type).
+  IDENTITY: results are cached by the deterministic key (name + typed
+  argument keys), so equal applications denote one type. SCHEDULING:
+  non-generic signatures and declared field/payload types elaborate
+  once before emission; generic signatures per instance (inst_ty);
+  while elaboration is in progress, functions whose signatures still
+  contain applications are excluded from evaluation sub-modules - the
+  dependency edge is explicit, not order-dependent luck. Type
+  functions never reach artifacts; using one in expression position,
+  a non-type function, arity mismatch, a runtime-dependent or non-bool
+  condition, cycles (`type-construction cycle through K`), and
+  unbounded construction (depth 64) are positioned refusals. Gates:
+  goldens/calque/cond_type (Str/i64/vector/tuple/struct results,
+  nested and parameterized functions, the untaken-branch case; hand-
+  derived `<wide>|50|10|12|nest|11`) and
+  calq0_conditional_type_construction. FENCED: anonymous `struct {}`
+  bodies (the goal's `Pair(T)` example: needs synthesized nominal
+  declarations with deterministic names and construction syntax),
+  type functions in module-qualified position, applications as
+  expression-call arguments, tuple types as expression-call
+  arguments (pre-existing surface limit).
+
+- D-146 [calque/reflection] COMPILE-TIME REFLECTION + THE
+  SPECIALIZATION BOUND (goal s9; AC-9.10 first arm, AC-9.12 identity
+  text): the reserved `reflect` namespace answers type_name, kind,
+  field_count/field_name/field_type, variant_count/variant_name/
+  variant_has_payload/variant_type, and param_count/param_name/
+  param_type/return_type. Queries are elaborated by the Calque emitter
+  from the AST's declarations under the ACTIVE substitution (a generic
+  instance reflects over its own T) and reified as constants - the
+  descriptors are data (counts, names, flags, canonical type keys),
+  never host pointers or runtime lookups (the artifact contains no
+  reflection calls). Indices are comptime values (shared service).
+  type_key is the canonical identity text: a pure function of the
+  elaborated type (`i64`, `Str`, `[T]`, `?T`, `E!T`, `(A, B)`, `[N]T`,
+  `fn (A) R`, nominal names). SPECIALIZATION BOUND (goal s9 "detect
+  infinite specialization"): instance chains deeper than 64 are
+  refused (`specialization depth exceeds 64 at grow__ci64`); a runtime
+  `if` does not prune instantiation, so recursion over a comptime
+  value needs a comptime-pruned branch (not yet in the language).
+  Gates: goldens/calque/reflect (hand-derived) and calq0_reflection
+  (generic-instance reflection, no runtime reflection, five
+  refusals). PENDING: record-valued descriptor lists (await aggregate
+  reification), the reflection-based codec (AC-9.11: needs comptime
+  iteration or a comptime-pruned branch), and identity tests across
+  interpreter/cache/serialization paths (AC-9.12 beyond the key).
