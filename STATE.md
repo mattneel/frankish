@@ -40,11 +40,8 @@ This handoff's implementation (each a commit with its verifier):
   recorded c8v1 hop; lex.calq's multi-digit literal bug fixed.
 
 Tree: green — see the session entry for the exact gate results.
-NOT PUSHED: `git push` to github.com/mattneel/frankish returned 403
-(the Claude GitHub App has no access to this repository for the
-org). Every commit is local on `claude/charming-gauss-zid6uh`; the
-human must restore access (or push the branch) before another
-session can resume from origin.
+Pushed to origin `claude/charming-gauss-zid6uh` after GitHub access
+was restored (earlier pushes this session returned 403).
 
 WORKSTREAM: CALQUE (user-selected 2026-10-11). M36 = C0 → M42 = C6.
 docs/calque/GOAL.md is the acceptance contract (stored verbatim; its
@@ -160,8 +157,7 @@ them, so compiler source may now adopt them (no further hop needed). Field-base 
 vector.set path. Do not change alias semantics merely for spelling.
 
 ## In flight
-Nothing uncommitted. The branch is ahead of origin by this session's
-commits because the push was refused (403; see the header).
+Nothing uncommitted; the branch is pushed.
 
 ## For the human
 - RESOLVED (2026-07-03): the Rocq anchor — delegated back ("Atli is
@@ -1344,8 +1340,9 @@ rework flag, not a knob.
     initializers / struct-literal fields (Next action 1a).
     Next: Next action item 1.
     Landmines:
-    - NOT PUSHED: origin returned 403 for every push; the commits
-      exist only on this container's branch.
+    - Pushes returned 403 until GitHub access was restored; the
+      branch was then pushed. If a 403 recurs, the Claude GitHub App
+      lacks access to the repo.
     - Seed, c2v1..c8v1, and all goal/amendment pins are frozen;
       c8v1 is new and pinned - never edit it.
     - The parser's failure state is last-wins: a refusal followed by
