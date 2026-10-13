@@ -1,7 +1,8 @@
 # STATE — frankish live handoff
 
-Updated: 2026-10-12 (M39/C3 — emitter cleanup and cloud handoff,
-D-140/D-141).
+Updated: 2026-10-13 (M39/C3 — emitter section-6 migration, D-139 fix,
+C3 type construction/reflection/codec, service budgets and the c8v1
+hop; D-142..D-152).
 Phase: M35, M36/C0, and M37/C1 shipped (`m35-done`, `m36-done`,
 `m37-done`). The C2 implementation sequence was closed at 8f51612
 (D-132); M39/C3 is IN PROGRESS. This does not declare all C2 steering
@@ -9,33 +10,41 @@ or acceptance rows complete. No `m38-done` or `m39-done` tag exists;
 do not tag a stage while its acceptance obligations remain open.
 
 Canonical compiler: `tools/calque/compiler/`, written in Calque.
-The frozen seed and ordered c2v1..c7v1 snapshot fold build it; the
-seed MUST NOT parse current sources. `make calque-bootstrap` now
-uses that fold (D-141), rather than jumping from c3v1 to current.
+The frozen seed and ordered c2v1..c8v1 snapshot fold build it; the
+seed MUST NOT parse current sources. `make calque-bootstrap` uses
+that fold (D-141). c8v1 (D-152) is the newest hop: its compiler knows
+the limited evaluation-service calls AND D-137's collection receiver
+methods, so compiler source may now adopt either.
 
-This handoff's implementation: Emitter `ast`, `file`, and `ret` are
-scalar fields; mechanical accessors and the empty constructor are
-gone; opaque helper names were replaced; read-only helpers have
-ordinary parameters. LiftS snapshots the enclosing return type by
-value. Ordinary and comptime module emission now share
-`emit_pending`, fixing missing lifted closure definitions (D-140).
-This is NOT a claim that all of modules-access section 6 is done:
-remaining helper ownership/visibility and MatchCtx cells are the
-first cloud task below.
+This handoff's implementation (each a commit with its verifier):
+- D-142: modules-access section 6 finished for the emitter - owning
+  operations are `module Emitter` members (`e.emit(...)`,
+  `e.fresh()`, `e.fail_at(...)`, `e.suspend()`/`e.resume(...)`,
+  `e.emit_program(ast)`), every other emitter fn/type unit-private,
+  MatchCtx's singleton cells replaced by scalar fields under an
+  explicit `mut c: MatchCtx`, LiftS -> SuspendedFn, PatAccess ->
+  VariantPat.
+- D-143: D-139's nested-comptime statement/const defect fixed.
+- D-144..D-147: comptime VALUE parameters with typed instance keys;
+  type functions (`fn N(...) type { if C { T } else { U } }`, also
+  `struct { ... }` bodies = the goal's `Pair(T)`) elaborated with a
+  deterministic identity cache and cycle/depth refusals; `reflect.*`
+  over fields/variants/signatures; the specialization bound.
+- D-148/D-149: `comptime if` (only the taken branch elaborates),
+  `reflect.field`/`reflect.with`, and a reflection-driven codec with
+  property round trips; two pre-existing bugs fixed (type-name args
+  inside instances; eager sub-module inclusion recursing unboundedly).
+- D-150..D-152: a generic interpreter step budget; the service's
+  default budget and nesting bound; explicit `comptime(steps: N)`
+  limits through new limited service entries, live after the
+  recorded c8v1 hop; lex.calq's multi-digit literal bug fixed.
 
-C3 evidence through D-140: the shared evaluation service; explicit
-comptime expressions/blocks; i64 and Str reification; ordinary
-function/closure execution; runtime-local refusal; custom assertions;
-expression-position nesting. Aggregate/type-value reification,
-resource policies, budgets, traces, and the broader query cache are
-still unfinished. The D-139 statement/const nesting defect remains.
-
-Tree: green — final `make test CARGOFLAGS=--offline`; Calque seed
-suite 73 passed, 7 ignored; CLI 4 passed; reference 4 passed.
-`make calque-test` has 0 red: interp 35 green plus the declared tco
-skip, jit/jit-rc 36 each; native x86_64-linux-musl 36/36 in arena
-and rc. Bootstrap and self-host fixed points pass. See the session
-entry for commands, hashes, smoke results, and checks not run.
+Tree: green — see the session entry for the exact gate results.
+NOT PUSHED: `git push` to github.com/mattneel/frankish returned 403
+(the Claude GitHub App has no access to this repository for the
+org). Every commit is local on `claude/charming-gauss-zid6uh`; the
+human must restore access (or push the branch) before another
+session can resume from origin.
 
 WORKSTREAM: CALQUE (user-selected 2026-10-11). M36 = C0 → M42 = C6.
 docs/calque/GOAL.md is the acceptance contract (stored verbatim; its
@@ -43,52 +52,42 @@ sha256 is pinned in scripts/calque-check.sh); docs/calque/ACCEPTANCE.md
 is the live evidence matrix; the target family is `make calque-*`.
 
 ## Next action
-1. **Finish the emitter domain-model migration before new C3
-   features** (`docs/calque-steering-modules-access.md` section 6,
-   D-120/D-140). Work in `tools/calque/compiler/emit.calq` and its
-   actual callers: move remaining owning operations into Emitter,
-   remove residual prefix/accessor boilerplate, audit read-only
-   signatures, and keep helper types private where possible. MatchCtx
-   still represents scalar join state with `has`, `ty`, and `brs`
-   singleton vectors; replace those with an explicit scoped `mut`
-   contract, not silent shared mutation. Scopes, blocks, instances,
-   and pending-definition queues are real collections: preserve them.
-   Names such as LiftS and PatAccess still merit invariant-based
-   names. Keep `%Emitter{}`, `e.current()`, and `e.open_block(...)`;
-   no class hierarchy or speculative protocol layer.
-2. **Fix the D-139 nested-comptime defect.** Expression-position
-   nesting works; a comptime statement or const initializer inside a
-   comptime block does not. Add a consumer-visible regression, repair
-   the parser/sub-emission boundary, preserve positions and untaken
-   branch behavior; do not special-case the repro or weaken the gate.
-3. **Resume C3 type construction/reflection** (GOAL section 9;
-   AC-9.9..9.14). `comptime T: type` exists; value parameters do not:
-   `fn tag(comptime K: i64) i64 { K + 1 }` is refused by the parameter
-   parser. Extend the existing parameter/monomorphization machinery
-   in parse.calq and emit.calq (`resolve_generic`, `subst_ty_list`,
-   `tv_res`, `emit_ref`), with typed constant keys/substitution and
-   the shared evaluator, not a second expression evaluator. Then
-   implement conditional type construction, structured field/
-   variant/signature descriptors, deterministic type identity, and
-   the reflection-based codec obligation.
-4. **Complete the rest of C3**, not just its scalar result arm:
-   aggregates/reification boundaries and sharing/cycle policy;
-   explicit target/arguments/capabilities/limits and failure traces;
-   nested isolation/cancellation/exhaustion; semantic cache validity;
-   nested compiler-library execution and cross-specimen entry points;
-   target-sensitive and failure-isolation tests (AC-11.*, AC-12.*).
-5. **C4 next:** native compiler from canonical source; final
+1. **Close C3's type-system gaps found this session.** (a) calq0 does
+   not check scalar agreement for annotated initializers and struct-
+   literal fields (`const x: Str = 1`, `%Q{a: "no"}` with `a: i64`):
+   the MLIR verifier rejects the artifact instead of a positioned
+   calq0 diagnostic (D-147 finding) - add the check in
+   emit_const/emit_var/emit_make with negative tests, mindful of the
+   seed differentials. (b) Recursive type functions (`Node(T)` with
+   `?Node(T)`) are refused as cycles; design the indirection rule.
+   (c) Tuple types are not accepted as expression-call arguments.
+2. **Finish the reflection/codec obligations** (AC-9.10..9.12):
+   record-valued descriptor lists (needs aggregate reification), the
+   codec as a std module covering nested structs/unions/vectors and
+   joining the CON/CTF family (D-095..D-097), and cross-path identity
+   tests (interpreter/compiler/cache/serialization) for type_key and
+   instance keys.
+3. **Complete the rest of C3**: aggregate reification and the
+   sharing/cycle policy (AC-11.8); the request contract's remaining
+   parts - target, arguments, capabilities, memory budgets,
+   cancellation, failure traces (AC-11.2/11.3/11.10); semantic cache
+   validity (AC-11.11); nested compiler-library execution and
+   cross-specimen entry points (AC-12.*); target-sensitive and
+   failure-isolation tests. Note the positional rule: comptime value
+   parameters precede runtime parameters (D-144); an `else if` after
+   `comptime if` is a runtime `if` (D-148).
+4. **C4 next:** native compiler from canonical source; final
    reproducible bootstrap/fixed point from clean inputs; required
    optimizations and cost controls; reproducible measurement/artifact
    evidence. Preserve the package, fuzzing, concurrency, and CPU
    amendments rather than treating the original milestone shorthand
    as their replacement.
-6. **C5 next:** formatter, language server, REPL and shared analysis
+5. **C5 next:** formatter, language server, REPL and shared analysis
    queries; incremental invalidation and native debug; the applicable
    target/runtime matrix; clean-install and offline-after-setup
    workflows. Documentation/help, test experience, diagnostics/lint/
    fixes, and package publication fixtures stay binding.
-7. **C6 and final acceptance:** demos A-E plus the adopted playbook
+6. **C6 and final acceptance:** demos A-E plus the adopted playbook
    extensions, with casts/scripts/fixtures/MP4 exports; reference
    documentation and architecture explanations; audit every
    acceptance item, defects, and non-goals; final section 23 evidence
@@ -140,21 +139,29 @@ hangs at setup's Zig check, put the actual pinned Zig binary first
 on PATH; that resolved this workstation's setup timeout. No
 machine-specific paths or overrides belong in the commit.
 
+On a fresh Ubuntu 24.04 cloud container (2026-10-13) setup needed:
+apt.llvm.org's llvm-toolchain-noble-22 (llvm-22-dev, libmlir-22-dev,
+mlir-22-tools, libpolly-22-dev, libclang-22-dev, clang-22),
+libzstd-dev (the melior-macro link), qemu-user, lua5.1, ocaml, the
+loanword-ts `npm install`, Zig 0.16.0 and wasmtime from their release
+tarballs, and chibi-scheme. `make setup` does NOT check chibi-scheme,
+yet the corpus's scheme oracle requires it (without it
+goldens_agree_across_default_runners fails on 43 scheme cases) - a
+setup-doctor gap worth closing.
+
 Resume item 1 under Next action. Every implementation change needs
 its verifier; keep frozen seed/snapshots and integrity pins intact.
 If new syntax is needed in compiler source, land support before
 usage and record the necessary hop. Never edit a historical
 snapshot to make the chain pass.
-Collection receiver methods exist in current sources (D-137), but
-adopting them in the compiler itself requires the c8v1 feature-before-
-usage hop. Field-base indexed writes and nested places remain fenced
+Collection receiver methods exist (D-137) and the c8v1 compiler knows
+them, so compiler source may now adopt them (no further hop needed). Field-base indexed writes and nested places remain fenced
 (D-125); bracket rebinding is persistent, unlike the legacy in-place
 vector.set path. Do not change alias semantics merely for spelling.
 
 ## In flight
-No new C3 feature work is in flight during transfer. The current
-cleanup and bootstrap repair are the handoff commit; the explicit
-cloud queue above retains all unfinished work.
+Nothing uncommitted. The branch is ahead of origin by this session's
+commits because the push was refused (403; see the header).
 
 ## For the human
 - RESOLVED (2026-07-03): the Rocq anchor — delegated back ("Atli is
@@ -1306,6 +1313,50 @@ rework flag, not a knob.
     Landmines: <anything the next agent must not step on>
 
 ## Session log
+
+    Session end: 2026-10-13 (cloud session)
+    Milestone/step: M39/C3 - emitter section 6 finished; D-139 fixed;
+    C3 type construction, reflection, codec, and service limits.
+    Parent revision: f77a5fd. Commits: c6de7bd (D-142), 7b643d7
+    (D-143), 3399dd5 (D-144..D-146), e82735e (D-147), 9fa89e8
+    (D-148..D-150), 5294c73 (D-151), 9a1521a (D-152), then this
+    handoff. Each code commit was gated separately (all below).
+    Green? yes, on the final tree:
+    - make setup: all present (after the installs listed under Cloud
+      resume).
+    - make test CARGOFLAGS="--offline --no-fail-fast": 342 passed,
+      0 failed, 7 ignored; Calque seed suite 83 passed, 7 ignored.
+    - make calque-test: charter/pins ok (35/248 rows done); interp
+      41 green + tco's declared skip, jit 42/42, jit-rc 42/42, 0 red;
+      native grid GREEN under arena and rc.
+    - make calque-bootstrap: fold through c8v1; artifact1 == artifact2
+      = d89345439c2e8560d1e66e1166cd58942bcc4094f75f8f32d6a96fb9d17e99c6.
+    - make calque-selfhost: passed.
+    Did: see the header list (D-142..D-152). New goldens, all hand-
+    derived (none blessed): calque/comptime_nested_stmt,
+    comptime_values, cond_type, reflect, type_struct, codec;
+    probe/eval_service_limited. New tests: eight calq0_* seed tests
+    and crates/frk-harness/tests/eval_budget.rs.
+    Found and fixed pre-existing defects: parse_digits' length bug
+    (multi-digit literals), type-name args inside instances (D-113),
+    eager evaluation-module inclusion (unbounded recursion).
+    Found, NOT fixed (recorded): no scalar type check for annotated
+    initializers / struct-literal fields (Next action 1a).
+    Next: Next action item 1.
+    Landmines:
+    - NOT PUSHED: origin returned 403 for every push; the commits
+      exist only on this container's branch.
+    - Seed, c2v1..c8v1, and all goal/amendment pins are frozen;
+      c8v1 is new and pinned - never edit it.
+    - The parser's failure state is last-wins: a refusal followed by
+      more parsing can be masked (D-152 works around it locally).
+    - Evaluation requests nest at most 16 deep and default to 10M
+      interpreted operations; deep comptime-driven recursion needs
+      `comptime(steps: N)` or must stay within the bounds.
+    - The D-150 calq0 budget test exhausts the 10M default (about a
+      minute in a debug build) - it is slow by design.
+    - Not run: the non-native cross grid / big-endian canary, the
+      ignored long interpreter-equality legs, C4 native self-hosting.
 
     Session end: 2026-10-12 (cloud handoff)
     Milestone/step: M39/C3 — emitter scalar-state cleanup; restored
