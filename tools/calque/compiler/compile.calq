@@ -192,7 +192,7 @@ pub fn main() i64 {
     }
     var e: Emitter = %Emitter{};
     e.imports = nsimps;
-    emit_module(e, merged);
+    e.emit_program(merged);
     if state_ok(e.state) == false {
         io.print(fail_text(state_fail(e.state)));
         io.print("\n");

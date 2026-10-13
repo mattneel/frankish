@@ -3024,3 +3024,78 @@ pub fn main() i64 {
     let outcome = run_artifact(&artifact).expect("the reified result runs");
     assert_eq!(outcome.output, "42\n");
 }
+
+// D-142 (modules-access section 6): the emitter's owning operations
+// live in `module Emitter`, its helpers are unit-private, and the
+// match join state is scalar fields updated through an explicit
+// `mut c: MatchCtx`. Behavior: nested value-joining matches, a match
+// whose arms all return (no join block), and the arm-type mismatch
+// diagnostic all flow through the migrated join state.
+#[test]
+fn calq0_emitter_domain_model() {
+    let source = "pub fn pick(x: i64) i64 {
+    match x {
+        0 => { return 7; },
+        _ => { return x * 2; },
+    };
+}
+pub fn label(x: i64, y: i64) Str {
+    const inner: Str = match y {
+        0 => \"zero\",
+        _ => \"some\",
+    };
+    match x {
+        1 => str.concat(\"one-\", inner),
+        2 => match y {
+            0 => \"two-zero\",
+            _ => str.concat(\"two-\", inner),
+        },
+        _ => \"other\",
+    }
+}
+pub fn main() i64 {
+    io.print(label(1, 0));
+    io.print(\"|\");
+    io.print(label(2, 5));
+    io.print(\"|\");
+    io.print(label(2, 0));
+    io.print(\"|\");
+    io.print(str.fromI64(pick(0) + pick(4)));
+    io.print(\"\\n\");
+    0
+}
+";
+    let artifact = calque::compile_source("emitter_model.calq", source)
+        .expect("nested matches compile through the scalar join state");
+    let outcome = run_artifact(&artifact).expect("runs");
+    assert_eq!(outcome.output, "one-zero|two-some|two-zero|15\n");
+
+    let mismatch = "pub fn main() i64 {
+    const x: i64 = 1;
+    const v: i64 = match x {
+        1 => 2,
+        _ => \"no\",
+    };
+    v
+}
+";
+    let err = calque::compile_source("arm_mismatch.calq", mismatch)
+        .expect_err("arms of different types are refused");
+    assert!(err.contains("match arms produce different types"), "{err}");
+
+    // The source contract: no top-level `pub fn` outside the module
+    // (the unit's public API is the Emitter module), and MatchCtx
+    // carries no collection-typed cells.
+    let emit = include_str!("../../../tools/calque/compiler/emit.calq");
+    let module_start = emit.find("pub module Emitter {").expect("the Emitter module");
+    let module_end = module_start + emit[module_start..].find("\n}\n").expect("module end");
+    for (i, line) in emit.lines().enumerate() {
+        if line.starts_with("pub fn ") {
+            panic!("emit.calq:{}: top-level helper is pub: {line}", i + 1);
+        }
+    }
+    assert!(emit[module_start..module_end].contains("pub fn emit_program(mut self: Self, a: Ast)"));
+    let mc = emit.find("const MatchCtx = struct {").expect("MatchCtx");
+    let mc_body = &emit[mc..mc + emit[mc..].find("};").unwrap()];
+    assert!(!mc_body.contains(": ["), "MatchCtx must not hold collection cells: {mc_body}");
+}

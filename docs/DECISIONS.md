@@ -3953,3 +3953,37 @@ veto-ledger pattern and most deserve their review.
   regression. The seed and snapshot pins stay unchanged. Revisit:
   C4's native and clean-input bootstrap obligations remain separate.
 
+
+- D-142 [calque/emitter] THE OWNING-MODULE MIGRATION (modules-access
+  section 6, D-120/D-140's revisit): the emitter's state-owning
+  operations are members of `module Emitter`, called with receiver
+  syntax - `e.emit(line)`, `e.emit_top(line)`, `e.terminate(line)`,
+  `e.place_label(l)`, `e.fresh()`, `e.fresh_label()`, `e.fail(b)`,
+  `e.fail_at(line, col, msg)`, `e.push_scope()`/`e.pop_scope()`/
+  `e.truncate_scopes(d)`, `e.lookup(name)`/`e.capture(name, b)`,
+  `e.type_of(id)`/`e.set_type(id, ty)`, and the closure-lift trio
+  `e.suspend()`/`e.prepare_lift(d)`/`e.resume(saved)`; the old
+  `e_`/`scope_`/`lift_`/`v` prefixes and the `is_terminated` getter
+  are gone (the field is read directly). The driver's one entry is
+  `e.emit_program(ast)` (compile.calq migrated); `flush_pending` is
+  the member shared by ordinary and comptime emission. VISIBILITY:
+  `Emitter`, `Blk`, `NsImp`, `current`, `open_block`, and
+  `emit_program` are the unit's public contract; every other emitter
+  fn, member, and helper type is unit-private (no `pub`). Type
+  visibility itself stays flat-merged (D-118's fence), so the private
+  types are a declared contract, not yet an enforced one. NAMES:
+  `LiftS` -> `SuspendedFn` (fields named after the Emitter fields they
+  hold), `PatAccess` -> `VariantPat`. MATCHCTX: the join state is
+  `branches: i64`, `has_value: bool`, `value_ty: Ty` with defaults,
+  built as `%MatchCtx{label, arg}`, and arm emission takes an explicit
+  `mut c: MatchCtx` - the singleton `has`/`ty`/`brs` vectors mutated
+  behind an ordinary parameter are retired with the `mt_new`
+  constructor. `capture` now pushes through `self.caps`, not a local
+  alias of the field. Scopes, blocks, value types, and the pending
+  queues remain collections (their real cardinality). The c7v1
+  compiler builds these sources; no new syntax or snapshot hop.
+  Gate: calq0_emitter_domain_model (nested value-joining matches, an
+  all-returning match, the arm-type diagnostic, and a source audit:
+  no top-level `pub fn`, no collection cells in MatchCtx); bootstrap
+  fixed point holds. Revisit: enforced type visibility (D-118's fence)
+  and a scoped private-member check across units.
