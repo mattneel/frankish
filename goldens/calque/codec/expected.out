@@ -1,0 +1,5 @@
+id=42;name=6:ada;=x;admin=t;karma=-7;
+id=42;name=6:ada;=x;admin=t;karma=-7;
+none
+x=3;y=-4;
+roundtrip 60/60

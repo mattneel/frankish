@@ -788,6 +788,43 @@ fn builtin_for(name: &str) -> Option<frk_interp::Builtin> {
     })
 }
 
+/// The evaluation service's resource contract (D-150, goal §11): every
+/// request runs under a deterministic step budget, and requests nest at
+/// most `COMPTIME_MAX_NESTING` deep (a nested `comptime` re-enters the
+/// service from inside an evaluation). Both limits fail the request
+/// with a diagnostic instead of hanging or exhausting the host.
+pub const COMPTIME_STEP_BUDGET: u64 = 10_000_000;
+pub const COMPTIME_MAX_NESTING: usize = 16;
+
+thread_local! {
+    static EVAL_NESTING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// One evaluation request's frame: enforces the nesting bound and
+/// restores the caller's depth on every exit path (including errors).
+struct NestingGuard;
+
+impl NestingGuard {
+    fn enter() -> Result<Self, String> {
+        EVAL_NESTING.with(|depth| {
+            let now = depth.get();
+            if now >= COMPTIME_MAX_NESTING {
+                return Err(format!(
+                    "eval: nesting exceeds {COMPTIME_MAX_NESTING} compile-time evaluations (D-150)"
+                ));
+            }
+            depth.set(now + 1);
+            Ok(NestingGuard)
+        })
+    }
+}
+
+impl Drop for NestingGuard {
+    fn drop(&mut self) {
+        EVAL_NESTING.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
 /// The shared compile-time evaluation service (D-133, goal §11): a
 /// verified kernel-IR module text, an entry, and one i64 argument run
 /// under a FRESH reference interpreter - the same per-op semantics as
@@ -795,6 +832,7 @@ fn builtin_for(name: &str) -> Option<frk_interp::Builtin> {
 /// print channel is discarded (isolation slice 1); a failure returns
 /// the service's message.
 pub fn eval_module_i64(module_text: &str, entry: &str, arg: i64) -> Result<i64, String> {
+    let _nesting = NestingGuard::enter()?;
     let context = frk_core::context();
     frk_dialects::register(&context).map_err(|e| format!("eval: register: {e}"))?;
     // The intrinsics compose first (their declarations satisfy the
@@ -808,6 +846,7 @@ pub fn eval_module_i64(module_text: &str, entry: &str, arg: i64) -> Result<i64, 
         frk_interp::Interp::new(&module).map_err(|e| format!("eval: interp: {e}"))?;
     frk_dialects::register_eval(&mut interp);
     register_protocol_builtins(&mut interp);
+    interp.set_step_budget(Some(COMPTIME_STEP_BUDGET));
     let args = [frk_interp::Value::int(arg as u64, 64).map_err(|e| format!("eval: {e:?}"))?];
     let values = interp
         .eval_function(entry, &args)
@@ -823,6 +862,7 @@ pub fn eval_module_i64(module_text: &str, entry: &str, arg: i64) -> Result<i64, 
 /// with the inner run's bstr result COPIED into the outer world (a
 /// fresh Vec<u8> - the inner interpreter's heap never escapes).
 pub fn eval_module_bstr(module_text: &str, entry: &str, arg: i64) -> Result<Vec<u8>, String> {
+    let _nesting = NestingGuard::enter()?;
     let context = frk_core::context();
     frk_dialects::register(&context).map_err(|e| format!("eval: register: {e}"))?;
     let full = format!("{}\n{}\n", crate::calque::intrinsics_source(), module_text);
@@ -833,6 +873,7 @@ pub fn eval_module_bstr(module_text: &str, entry: &str, arg: i64) -> Result<Vec<
         frk_interp::Interp::new(&module).map_err(|e| format!("eval: interp: {e}"))?;
     frk_dialects::register_eval(&mut interp);
     register_protocol_builtins(&mut interp);
+    interp.set_step_budget(Some(COMPTIME_STEP_BUDGET));
     let args = [frk_interp::Value::int(arg as u64, 64).map_err(|e| format!("eval: {e:?}"))?];
     let values = interp
         .eval_function(entry, &args)

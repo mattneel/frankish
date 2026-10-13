@@ -1,0 +1,215 @@
+// AC-9.11 (D-149): a generic codec driven by reflection. `encode`
+// walks T's fields through a comptime index; `comptime if` prunes the
+// recursion and the per-kind branches, so each instance only
+// elaborates the code for its own field types. `decode` rebuilds a
+// value with `reflect.with`, starting from a seed value.
+// Format: `name=payload;` per field; i64 as digits, bool as t/f, Str
+// length-prefixed (`len:bytes`), so no escaping is needed.
+const User = struct {
+    id: i64,
+    name: Str,
+    admin: bool,
+    karma: i64,
+};
+
+const Point = struct {
+    x: i64,
+    y: i64,
+};
+
+fn enc_value(comptime F: type, v: F) Str {
+    comptime if reflect.kind(F) == "i64" {
+        str.fromI64(v)
+    } else {
+        comptime if reflect.kind(F) == "bool" {
+            if v { "t" } else { "f" }
+        } else {
+            str.concat(str.fromI64(str.len(v)), str.concat(":", v))
+        }
+    }
+}
+
+fn enc_from(comptime T: type, comptime I: i64, v: T) Str {
+    comptime if I == reflect.field_count(T) {
+        ""
+    } else {
+        var out: Str = reflect.field_name(T, I);
+        out = str.concat(out, "=");
+        out = str.concat(out, enc_value(reflect.field(v, I)));
+        out = str.concat(out, ";");
+        str.concat(out, enc_from(T, I + 1, v))
+    }
+}
+
+fn encode(comptime T: type, v: T) Str {
+    enc_from(T, 0, v)
+}
+
+// --- decoding: a cursor over the text; `pos` < 0 marks failure.
+fn digit(c: Str) i64 {
+    const ds: Str = "0123456789";
+    var i: i64 = 0;
+    while i < 10 {
+        if str.sub(ds, i, 1) == c {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// The end of the run of digits (an optional leading `-`) at pos.
+fn int_end(s: Str, pos: i64) i64 {
+    var i: i64 = pos;
+    if i < str.len(s) {
+        if str.sub(s, i, 1) == "-" {
+            i = i + 1;
+        }
+    }
+    while i < str.len(s) {
+        if digit(str.sub(s, i, 1)) < 0 {
+            return i;
+        }
+        i = i + 1;
+    }
+    return i;
+}
+
+fn int_at(s: Str, from: i64, to: i64) i64 {
+    var neg: bool = false;
+    var i: i64 = from;
+    if str.sub(s, i, 1) == "-" {
+        neg = true;
+        i = i + 1;
+    }
+    var acc: i64 = 0;
+    while i < to {
+        acc = acc * 10 + digit(str.sub(s, i, 1));
+        i = i + 1;
+    }
+    if neg {
+        return 0 - acc;
+    }
+    acc
+}
+
+// After `name=`: the payload's end (exclusive), or -1; `like` only
+// selects the field's type.
+fn payload_end(comptime F: type, like: F, s: Str, pos: i64) i64 {
+    comptime if reflect.kind(F) == "bool" {
+        if pos < str.len(s) { pos + 1 } else { 0 - 1 }
+    } else {
+        comptime if reflect.kind(F) == "i64" {
+            const e: i64 = int_end(s, pos);
+            if e > pos { e } else { 0 - 1 }
+        } else {
+            const colon: i64 = int_end(s, pos);
+            if colon >= str.len(s) or colon == pos {
+                0 - 1
+            } else {
+                colon + 1 + int_at(s, pos, colon)
+            }
+        }
+    }
+}
+
+fn dec_value(comptime F: type, like: F, s: Str, from: i64, to: i64) F {
+    comptime if reflect.kind(F) == "bool" {
+        str.sub(s, from, 1) == "t"
+    } else {
+        comptime if reflect.kind(F) == "i64" {
+            int_at(s, from, to)
+        } else {
+            const colon: i64 = int_end(s, from);
+            str.sub(s, colon + 1, to - colon - 1)
+        }
+    }
+}
+
+fn dec_from(comptime T: type, comptime I: i64, s: Str, pos: i64, acc: T) ?T {
+    comptime if I == reflect.field_count(T) {
+        if pos == str.len(s) {
+            const done: ?T = .Some(acc);
+            done
+        } else {
+            const extra: ?T = .None;
+            extra
+        }
+    } else {
+        const head: Str = str.concat(reflect.field_name(T, I), "=");
+        const hl: i64 = str.len(head);
+        var fail: bool = pos + hl > str.len(s);
+        if fail == false {
+            fail = str.sub(s, pos, hl) != head;
+        }
+        var stop: i64 = 0 - 1;
+        if fail == false {
+            stop = payload_end(reflect.field(acc, I), s, pos + hl);
+            fail = stop < 0 or stop >= str.len(s);
+        }
+        if fail == false {
+            fail = str.sub(s, stop, 1) != ";";
+        }
+        if fail {
+            const bad: ?T = .None;
+            bad
+        } else {
+            const v = dec_value(reflect.field(acc, I), s, pos + hl, stop);
+            dec_from(T, I + 1, s, stop + 1, reflect.with(acc, I, v))
+        }
+    }
+}
+
+fn decode(comptime T: type, s: Str, seed: T) ?T {
+    dec_from(T, 0, s, 0, seed)
+}
+
+fn show(r: ?User) Str {
+    match r {
+        .Some(u) => encode(User, u),
+        .None => "none",
+    }
+}
+
+pub fn main() i64 {
+    const u: User = %User{id: 42, name: "ada;=x", admin: true, karma: 0 - 7};
+    const blank: User = %User{id: 0, name: "", admin: false, karma: 0};
+    const text: Str = encode(User, u);
+    io.print(text);
+    io.print("\n");
+    io.print(show(decode(User, text, blank)));
+    io.print("\n");
+    io.print(show(decode(User, "id=1;name=3:ab;admin=t;karma=1;", blank)));
+    io.print("\n");
+    const p: Point = %Point{x: 3, y: 0 - 4};
+    io.print(encode(Point, p));
+    io.print("\n");
+    // Property sweep: 60 deterministic values, including names made of
+    // the format's own delimiters; each must round-trip exactly.
+    const palette: Str = "a;=:9-b";
+    var ok: i64 = 0;
+    var i: i64 = 0;
+    while i < 60 {
+        var nm: Str = "";
+        var k: i64 = 0;
+        while k < i % 9 {
+            nm = str.concat(nm, str.sub(palette, (i + k * 3) % 7, 1));
+            k = k + 1;
+        }
+        const v: User = %User{id: i * 37 - 500, name: nm, admin: i % 3 == 0, karma: 0 - i * i};
+        const once: Str = encode(User, v);
+        const decoded: ?User = decode(User, once, blank);
+        match decoded {
+            .Some(back) => {
+                if encode(User, back) == once {
+                    ok = ok + 1;
+                }
+            },
+            .None => {},
+        };
+        i = i + 1;
+    }
+    io.print(str.concat("roundtrip ", str.concat(str.fromI64(ok), "/60")));
+    io.print("\n");
+    0
+}

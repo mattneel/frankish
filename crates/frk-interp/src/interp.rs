@@ -121,6 +121,12 @@ pub struct Interp<'c, 'a> {
     ctl_handlers: std::cell::RefCell<Vec<(String, Value, i64, bool)>>,
     /// One-shot resumer markers: marker id → consumed (D-069).
     ctl_markers: std::cell::RefCell<std::collections::HashMap<i64, bool>>,
+    /// Operations executed so far, and the optional ceiling (D-150):
+    /// a deterministic budget - the same program exhausts it at the
+    /// same operation on every host - for callers such as the
+    /// compile-time evaluation service that must not run unboundedly.
+    steps: Cell<u64>,
+    step_budget: Cell<Option<u64>>,
 }
 
 impl<'c, 'a> Interp<'c, 'a> {
@@ -154,7 +160,20 @@ impl<'c, 'a> Interp<'c, 'a> {
             globals: std::cell::RefCell::new(HashMap::new()),
             ctl_handlers: std::cell::RefCell::new(Vec::new()),
             ctl_markers: std::cell::RefCell::new(std::collections::HashMap::new()),
+            steps: Cell::new(0),
+            step_budget: Cell::new(None),
         })
+    }
+
+    /// Bound this interpreter to `budget` executed operations (D-150);
+    /// exceeding it traps deterministically. `None` lifts the bound.
+    pub fn set_step_budget(&self, budget: Option<u64>) {
+        self.step_budget.set(budget);
+    }
+
+    /// Operations executed so far by this interpreter.
+    pub fn steps(&self) -> u64 {
+        self.steps.get()
     }
 
     /// Installs an effect handler over the prompt `token` (D-069).
@@ -505,6 +524,15 @@ impl<'c, 'a> Interp<'c, 'a> {
             if name == "func.call" {
                 if let Some(step) = self.tail_shape(frame, op)? {
                     return Ok(step);
+                }
+            }
+            let taken = self.steps.get() + 1;
+            self.steps.set(taken);
+            if let Some(budget) = self.step_budget.get() {
+                if taken > budget {
+                    return Err(EvalError::Trap(format!(
+                        "step budget exhausted after {budget} operations (D-150)"
+                    )));
                 }
             }
             let evaluator = self

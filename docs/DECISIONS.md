@@ -4123,3 +4123,64 @@ veto-ledger pattern and most deserve their review.
   `%Q{a: "no"}` with `a: i64`); the MLIR verifier rejects the
   artifact instead of a positioned calq0 diagnostic. Recorded in
   STATE as a C3/C5 diagnostics obligation.
+
+- D-148 [calque/comptime] `comptime if`, FIELD ACCESS BY COMPTIME
+  INDEX, AND DEPENDENCY-DRIVEN EVALUATION MODULES: (1) `comptime if C
+  { A } else { B }` (expression or statement) evaluates C through the
+  shared service and elaborates ONLY the taken branch - the untaken
+  one is never emitted or type-checked, so recursion over a comptime
+  index terminates and per-kind code may be ill-typed for other
+  instances. A runtime `if` still never prunes instantiation (D-146's
+  bound catches that). An `else if` chain continues as a RUNTIME `if`
+  inside the taken else-block; write `else { comptime if ... }` for a
+  comptime chain. (2) `reflect.field(v, I)` reads field I and
+  `reflect.with(v, I, x)` is the persistent update `%T{..v, f: x}`;
+  both resolve the field statically (no runtime lookup). (3) FIX
+  (pre-existing D-113 gap): a type NAME passed as a type argument now
+  resolves through the active substitution, so `f(T, ...)` inside an
+  instance passes the instance's T (it previously bound T := T).
+  (4) FIX (found by the codec): evaluation sub-modules no longer
+  include every non-generic fn eagerly - an included fn that itself
+  instantiated comptime-driven code spawned evaluations without bound
+  (the compiler hit the 1024-frame ceiling). include_callees emits the
+  entry, then exactly the top-level fns its text references, to a
+  fixed point (`@symbol` references; fns whose signatures still hold
+  unelaborated applications stay excluded). Gate:
+  calq0_comptime_if_and_field_access (recursion stops at the field
+  count - no instance past it; persistent updates; an ill-typed
+  untaken branch; four refusals).
+
+- D-149 [calque/codec] THE REFLECTION-DRIVEN CODEC (AC-9.11's
+  equivalent-library arm): goldens/calque/codec encodes any flat
+  struct of i64/bool/Str fields as `name=payload;` (Str length-
+  prefixed, so delimiters in values need no escaping) by walking the
+  fields with a comptime index, and decodes into `?T` by rebuilding a
+  seed value with `reflect.with`; malformed input decodes to `.None`.
+  Evidence: exact round trip of a value whose name contains the
+  format's delimiters, a malformed-input refusal, and a 60-value
+  deterministic property sweep (`roundtrip 60/60`); per-instance
+  symbols prove each field's code is specialized. PENDING (AC-9.11
+  stays pending): the codec lives in the corpus, not yet a std module;
+  nested structs, unions, and vectors are not encoded; CON/CTF
+  (D-095..D-097) are the eventual codec family this must join.
+
+- D-150 [frankish/eval-service] THE EVALUATION SERVICE'S RESOURCE
+  CONTRACT, SLICE 1 (goal s11 budgets; AC-11.3/AC-11.10 partial): a
+  GENERIC capability promoted into Frankish, not a Calque shortcut.
+  frk_interp::Interp counts executed operations and accepts an
+  optional ceiling (`set_step_budget`); exceeding it traps with
+  `step budget exhausted after N operations (D-150)` - deterministic,
+  the same operation on every host. The service
+  (eval_module_i64/eval_module_bstr) runs every request under
+  COMPTIME_STEP_BUDGET (10M operations) and bounds request NESTING at
+  COMPTIME_MAX_NESTING (16) with a guard that restores the caller's
+  depth on every exit path, errors included. Before this, a
+  non-terminating `comptime { }` hung the compiler. Gates:
+  crates/frk-harness/tests/eval_budget.rs (service boundary: the
+  exhaustion text, determinism across two runs, a terminating request
+  unaffected) and calq0_comptime_budget_and_nesting (the Calque
+  diagnostic; nested evaluation within the bound). PENDING: explicit
+  per-request limits in the Calque surface (new service builtins that
+  the compiler's own source calls - a recorded snapshot hop under the
+  feature-before-usage rule), memory budgets, cancellation, and
+  capability parameters (AC-11.2/AC-11.10 remain pending).

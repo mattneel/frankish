@@ -3287,3 +3287,116 @@ fn calq0_type_functions_build_structs() {
         assert!(err.contains(want), "want {want:?}, got {err}");
     }
 }
+
+// D-148: `comptime if` prunes elaboration (recursion over a comptime
+// index terminates; an untaken branch may be ill-typed for this
+// instance), `reflect.field`/`reflect.with` access fields by comptime
+// index, a type name passed inside an instance resolves through the
+// active substitution, and evaluation sub-modules include only the
+// fns they reference.
+#[test]
+fn calq0_comptime_if_and_field_access() {
+    let source = "const Point = struct {
+    x: i64,
+    y: i64,
+};
+fn cnt(comptime T: type, comptime I: i64) i64 {
+    comptime if I == reflect.field_count(T) {
+        0
+    } else {
+        1 + cnt(T, I + 1)
+    }
+}
+fn fill(comptime T: type, comptime I: i64, acc: T) T {
+    comptime if I == reflect.field_count(T) {
+        acc
+    } else {
+        fill(T, I + 1, reflect.with(acc, I, reflect.field(acc, I) * 10))
+    }
+}
+fn pick(comptime B: bool) i64 {
+    comptime if B { 1 } else { str.len(42) }
+}
+pub fn main() i64 {
+    const p: Point = fill(Point, 0, %Point{x: 3, y: 4});
+    io.print(str.fromI64(cnt(Point, 0)));
+    io.print(\"|\");
+    io.print(str.fromI64(p.x + p.y));
+    io.print(\"|\");
+    io.print(str.fromI64(pick(true)));
+    io.print(\"\\n\");
+    0
+}
+";
+    let artifact = calque::compile_source("ct_if.calq", source).expect("comptime if prunes");
+    assert!(artifact.contains("@cnt__Point__ci2("), "the recursion stops at the field count");
+    assert!(!artifact.contains("@cnt__Point__ci3("), "and does not instantiate past it");
+    let outcome = run_artifact(&artifact).expect("runs");
+    assert_eq!(outcome.output, "2|70|1\n");
+
+    let cases = [
+        ("pub fn main() i64 { comptime if 1 { 1 } else { 2 } }\n",
+         "error 1:30 a `comptime if` condition must be a bool"),
+        ("pub fn main() i64 { const r: bool = true; comptime if r { 1 } else { 2 } }\n",
+         "error 1:52 the `comptime if` condition must be compile-time-computable"),
+        ("const P = struct { x: i64 };\npub fn main() i64 { const p: P = %P{x: 1}; reflect.field(p, 2) }\n",
+         "error 2:57 field index 2 is out of range for `P` (1)"),
+        ("pub fn main() i64 { const v: i64 = 3; reflect.field(v, 0) }\n",
+         "error 1:52 reflect.field needs a struct value, got `i64`"),
+    ];
+    for (src, want) in cases {
+        let err = calque::compile_source("ct_if_neg.calq", src).expect_err(want);
+        assert!(err.contains(want), "want {want:?}, got {err}");
+    }
+}
+
+// D-149 (AC-9.11): the reflection-driven codec round-trips, refuses a
+// malformed input, and survives a 60-value property sweep whose names
+// are built from the format's own delimiters.
+#[test]
+fn calq0_reflection_codec_round_trips() {
+    let source = include_str!("../../../goldens/calque/codec/case.calq");
+    let artifact = calque::compile_source("codec.calq", source).expect("the codec compiles");
+    for sym in ["@enc_from__User__ci0(", "@enc_from__User__ci4(", "@dec_from__User__ci4(", "@enc_value__str("] {
+        assert!(artifact.contains(sym), "missing instance {sym}");
+    }
+    let outcome = run_artifact(&artifact).expect("runs");
+    assert_eq!(
+        outcome.output,
+        "id=42;name=6:ada;=x;admin=t;karma=-7;\nid=42;name=6:ada;=x;admin=t;karma=-7;\nnone\nx=3;y=-4;\nroundtrip 60/60\n"
+    );
+}
+
+// D-150: the evaluation service's resource contract - a deterministic
+// step budget turns a non-terminating comptime block into a
+// diagnostic (not a hung compiler), and nested evaluations stay
+// within the nesting bound.
+#[test]
+fn calq0_comptime_budget_and_nesting() {
+    let spin = "fn spin(n: i64) i64 {
+    var i: i64 = n;
+    while i >= 0 {
+        i = i + 1;
+    }
+    i
+}
+pub fn main() i64 {
+    const x: i64 = comptime { spin(1) };
+    x
+}
+";
+    let err = calque::compile_source("spin.calq", spin).expect_err("an unbounded comptime loop is cut off");
+    assert!(err.contains("step budget exhausted after 10000000 operations"), "{err}");
+
+    let nested = "fn d(comptime K: i64) i64 {
+    comptime if K == 0 { 0 } else { comptime { d(K - 1) } + 1 }
+}
+pub fn main() i64 {
+    io.print(str.fromI64(d(3)));
+    io.print(\"\\n\");
+    0
+}
+";
+    let artifact = calque::compile_source("nest.calq", nested).expect("bounded nesting evaluates");
+    assert_eq!(run_artifact(&artifact).expect("runs").output, "3\n");
+}

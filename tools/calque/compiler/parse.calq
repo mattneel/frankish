@@ -47,6 +47,9 @@ pub const Expr = union(enum) {
     // `comptime { ... }` / `comptime e` (D-134): the block must be
     // compile-time-computable; its value reifies as a constant.
     ComptimeE: ComptimeX,
+    // `comptime if C { A } else { B }` (D-148): C is evaluated at
+    // compile time and ONLY the taken branch is elaborated.
+    CtIf: IfE,
     // `try e` (SPEC 6.5): on Err the enclosing function returns Err(x).
     TryE: TryX,
     CatchE: CatchX,
@@ -677,6 +680,9 @@ pub fn parse_primary(mut p: P) Expr {
         }
         if t.text == "comptime" {
             const ck: Tok = p_next(p);
+            if at_kw(p, "if") {
+                return Expr.CtIf(p_if(p));
+            }
             if at_punct(p, "{") {
                 const b: Block = p_block(p);
                 return Expr.ComptimeE(%ComptimeX{body: b, line: ck.line, col: ck.col});
@@ -827,6 +833,7 @@ pub fn dump(e: Expr) Str {
         Expr.TyV(tx) => str.concat("(tyv ", str.concat(d_ty(tx), ")")),
         Expr.IndexE(ix2) => d_index(ix2),
         Expr.ComptimeE(cx) => d_comptime(cx),
+        Expr.CtIf(ci) => str.concat("(comptime-if ", str.concat(dump(ci.cond), ")")),
         Expr.Tup(es) => {
             var acc: Str = "(tup";
             const n: i64 = vector.len(es);
@@ -2009,6 +2016,18 @@ pub fn p_stmt_into(mut p: P, stmts: [Stmt], t: Tok) StmtOut {
                 const _c: Tok = p_next(p);
                 vector.push(stmts, Stmt.Expr(%ExprS{expr: ce}));
                 return %StmtOut{added: true, tail: poison()};
+            }
+            // `comptime if ... { } else { }` followed by more statements
+            // is a statement, like a plain `if` (D-148).
+            const is_ctif: bool = match ce {
+                Expr.CtIf(ci0) => true,
+                _ => false,
+            };
+            if is_ctif {
+                if at_punct(p, "}") == false {
+                    vector.push(stmts, Stmt.Expr(%ExprS{expr: ce}));
+                    return %StmtOut{added: true, tail: poison()};
+                }
             }
             return %StmtOut{added: false, tail: ce};
         }

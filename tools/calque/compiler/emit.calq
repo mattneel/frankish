@@ -1126,20 +1126,6 @@ fn eval_comptime(mut e: Emitter, b: Block, what: Str, line: i64, col: i64) Compt
     const a0: Ast = e.ast;
     var sub: Emitter = %Emitter{};
     sub.ast = a0;
-    const nf: i64 = vector.len(a0.fns);
-    var i: i64 = 0;
-    while i < nf {
-        const f: Fn = vector.get(a0.fns, i);
-        // A fn whose signature still holds an unelaborated type
-        // application depends on the elaboration in progress (D-145):
-        // it is not callable from this evaluation yet.
-        if f.name != "main" {
-            if is_generic_fn(f) == false and is_type_fn(f) == false and fn_has_app(f) == false {
-                emit_fn(sub, f);
-            }
-        }
-        i = i + 1;
-    }
     // The synthetic entry's return type is the block's value type,
     // inferred with the block's own locals in scope (D-139).
     const bt0: Ty = infer_block_ty(e, b, line, col);
@@ -1181,6 +1167,7 @@ fn eval_comptime(mut e: Emitter, b: Block, what: Str, line: i64, col: i64) Compt
     var entry: Fn = %Fn{name: "__comptime_entry", params: eps0, ret: entry_ty, body: body, file: "", ns: "", test_name: "", is_pub: false};
     emit_fn(sub, entry);
     sub.flush_pending();
+    include_callees(sub);
     if state_ok(sub.state) == false {
         const submsg: Str = fail_text(state_fail(sub.state));
         e.fail_at(line, col, str.concat(what, str.concat(" must be compile-time-computable (", str.concat(submsg, ")"))));
@@ -1211,6 +1198,148 @@ fn eval_comptime(mut e: Emitter, b: Block, what: Str, line: i64, col: i64) Compt
         return %ComptimeValue{ok: true, ty: Ty.BoolV, text: bt};
     }
     return %ComptimeValue{ok: true, ty: Ty.I64, text: str.fromI64(v)};
+}
+
+// `comptime if C { A } else { B }` (D-148): C is evaluated through the
+// shared service; only the taken branch is emitted - the untaken one
+// is never elaborated, so it may be ill-typed for this instance (the
+// pruning that recursion over a comptime index needs). Without
+// `else`, a false condition emits nothing.
+fn emit_ct_if(mut e: Emitter, ci: IfE) Str {
+    const pick: i64 = ct_if_pick(e, ci);
+    if pick == 1 {
+        return emit_value_block(e, ci.then);
+    }
+    if pick == 0 {
+        if ci.has_else {
+            return emit_value_block(e, ci.els);
+        }
+    }
+    return "";
+}
+
+// 1 = then, 0 = else, -1 = failed (recorded).
+fn ct_if_pick(mut e: Emitter, ci: IfE) i64 {
+    const no_stmts: [Stmt] = [];
+    const cv: ComptimeValue = eval_comptime(e, %Block{stmts: no_stmts, tail: ci.cond, has_tail: true}, "the `comptime if` condition", ci.line, ci.col);
+    if cv.ok == false {
+        return 0 - 1;
+    }
+    const cty: Ty = cv.ty;
+    const is_b: bool = match cty {
+        Ty.BoolV => true,
+        _ => false,
+    };
+    if is_b == false {
+        e.fail_at(ci.line, ci.col, "a `comptime if` condition must be a bool");
+        return 0 - 1;
+    }
+    if cv.text == "true" {
+        return 1;
+    }
+    return 0;
+}
+
+// Dependency-driven sub-module contents (D-148): after the entry, only
+// the top-level fns its emitted text references are emitted, then the
+// fns THEY reference, to a fixed point. (Eagerly emitting every fn made
+// each evaluation build every other fn's comptime work - unbounded
+// when such a fn itself instantiates comptime-driven code.) A fn whose
+// signature still holds an unelaborated type application depends on
+// the elaboration in progress (D-145) and is not includable yet.
+fn include_callees(mut sub: Emitter) {
+    var done: [Str] = [];
+    var scanned: i64 = 0;
+    var go: bool = true;
+    while go {
+        go = false;
+        const out: [Str] = sub.output;
+        const nl: i64 = vector.len(out);
+        var want: [Str] = [];
+        var li: i64 = scanned;
+        while li < nl {
+            const syms: [Str] = line_symbols(out[li]);
+            const ns: i64 = vector.len(syms);
+            var si: i64 = 0;
+            while si < ns {
+                vector.push(want, syms[si]);
+                si = si + 1;
+            }
+            li = li + 1;
+        }
+        scanned = nl;
+        const a: Ast = sub.ast;
+        const nw: i64 = vector.len(want);
+        var wi: i64 = 0;
+        while wi < nw {
+            const sym: Str = want[wi];
+            if name_bound(done, sym) == false {
+                vector.push(done, sym);
+                const f: Fn = fn_by_sym(a, sym);
+                if f.name != "" and f.name != "main" {
+                    if is_generic_fn(f) == false and is_type_fn(f) == false and fn_has_app(f) == false {
+                        const saved_tvars: [TypeVar] = sub.tvars;
+                        const saved_consts: [ConstArg] = sub.consts;
+                        var no_tvars: [TypeVar] = [];
+                        var no_consts: [ConstArg] = [];
+                        sub.tvars = no_tvars;
+                        sub.consts = no_consts;
+                        emit_fn(sub, f);
+                        sub.flush_pending();
+                        sub.tvars = saved_tvars;
+                        sub.consts = saved_consts;
+                        go = true;
+                    }
+                }
+            }
+            wi = wi + 1;
+        }
+    }
+}
+
+// Every `@symbol` in one emitted line.
+fn line_symbols(line: Str) [Str] {
+    var acc: [Str] = [];
+    const n: i64 = str.len(line);
+    var i: i64 = 0;
+    while i < n {
+        if str.sub(line, i, 1) == "@" {
+            var j: i64 = i + 1;
+            var scan: bool = true;
+            while scan {
+                if j >= n {
+                    scan = false;
+                } else {
+                    const c: Str = str.sub(line, j, 1);
+                    if c == "_" or char_index("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", c) >= 0 {
+                        j = j + 1;
+                    } else {
+                        scan = false;
+                    }
+                }
+            }
+            if j > i + 1 {
+                vector.push(acc, str.sub(line, i + 1, j - i - 1));
+            }
+            i = j;
+        } else {
+            i = i + 1;
+        }
+    }
+    return acc;
+}
+
+fn fn_by_sym(a: Ast, sym: Str) Fn {
+    const n: i64 = vector.len(a.fns);
+    var i: i64 = 0;
+    while i < n {
+        const f: Fn = a.fns[i];
+        if sym_of(f) == sym {
+            return f;
+        }
+        i = i + 1;
+    }
+    return poison_fn();
 }
 
 // Materialize an evaluated constant (D-135/D-136/D-144): i64 digits as
@@ -2663,6 +2792,9 @@ fn emit_call(mut e: Emitter, c: Call, line: i64, col: i64) Str {
         }
     }
     if r.mod == "reflect" {
+        if r.name == "field" or r.name == "with" {
+            return emit_reflect_access(e, r.name, c.args, line, col);
+        }
         const rv: ComptimeValue = reflect_query(e, r.name, c.args, line, col);
         if rv.ok == false {
             return "";
@@ -3134,6 +3266,73 @@ fn hex2(v: i64) Str {
 // reified as constants. The descriptors are data - counts, names,
 // payload flags, and canonical type identities (type_key) - never
 // host pointers. Indices are comptime values.
+
+// Value access by comptime index (D-148): `reflect.field(v, I)` reads
+// field I of the struct value v; `reflect.with(v, I, x)` is v with
+// field I replaced - the same persistent update as `%T{..v, f: x}`.
+// Both resolve the field statically; nothing is looked up at runtime.
+fn reflect_access_field(mut e: Emitter, q: Str, args: [Expr], line: i64, col: i64) FieldDecl {
+    const none: FieldDecl = %FieldDecl{name: "", ty: Ty.UnitV, has_default: false, default: poison()};
+    var want: i64 = 2;
+    if q == "with" {
+        want = 3;
+    }
+    if vector.len(args) != want {
+        e.fail_at(line, col, str.concat("reflect.", str.concat(q, str.concat(" takes ", str.concat(str.fromI64(want), " arguments")))));
+        return none;
+    }
+    const vt: Ty = infer_expr_ty(e, args[0], line, col);
+    var tn: Str = "";
+    match vt {
+        Ty.Named(n0) => { tn = n0; },
+        _ => {},
+    };
+    const td: TypeDecl = find_td(e.ast, tn);
+    if td.name == "" or td.is_union {
+        e.fail_at(line, col, str.concat("reflect.", str.concat(q, str.concat(" needs a struct value, got `", str.concat(type_key(vt), "`")))));
+        return none;
+    }
+    const ip: Param = %Param{name: "index", ty: Ty.I64, mut: false, is_comptime: true};
+    const ia: ConstArg = comptime_arg(e, ip, args[1], line, col);
+    if state_ok(e.state) == false {
+        return none;
+    }
+    const idx: i64 = parse_signed(ia.text);
+    const nf: i64 = vector.len(td.fields);
+    if idx < 0 or idx >= nf {
+        index_fail(e, "field", idx, td.name, nf, line, col);
+        return none;
+    }
+    return td.fields[idx];
+}
+
+fn reflect_access_ty(mut e: Emitter, q: Str, args: [Expr], line: i64, col: i64) Ty {
+    const fd: FieldDecl = reflect_access_field(e, q, args, line, col);
+    if str.len(fd.name) == 0 {
+        return Ty.TyBad(%BadNode{msg: "<unknown>", line: line, col: col});
+    }
+    if q == "with" {
+        return infer_expr_ty(e, args[0], line, col);
+    }
+    return tv_res(e, fd.ty);
+}
+
+fn emit_reflect_access(mut e: Emitter, q: Str, args: [Expr], line: i64, col: i64) Str {
+    const fd: FieldDecl = reflect_access_field(e, q, args, line, col);
+    if str.len(fd.name) == 0 {
+        return "";
+    }
+    const vt: Ty = infer_expr_ty(e, args[0], line, col);
+    const tn: Str = named_of(vt);
+    if q == "field" {
+        const recv: Str = emit_expr(e, args[0]);
+        return emit_field_access(e, recv, tn, fd.name, line, col);
+    }
+    var mfs: [MakeField] = [];
+    vector.push(mfs, %MakeField{name: fd.name, expr: args[2]});
+    var no_args: [Expr] = [];
+    return emit_make(e, %MakeE{ty: tn, fields: mfs, has_base: true, base: args[0], line: line, col: col, is_app: false, app_args: no_args}, line, col);
+}
 
 fn reflect_result_ty(q: Str) Ty {
     if q == "field_count" or q == "variant_count" or q == "param_count" {
@@ -3781,11 +3980,13 @@ fn tyarg_value(mut e: Emitter, a: Expr, line: i64, col: i64) Ty {
             const cr: Ref = c0.callee;
             resolve_app(e, %TyApp{name: cr.name, args: c0.args, line: c0.line, col: c0.col})
         },
+        // A type name resolves through the ACTIVE substitution (D-148):
+        // inside an instance, `f(T, ...)` passes the instance's T.
         Expr.Ref(r0) => {
             if r0.name == "Str" {
                 Ty.StrV
             } else {
-                Ty.Named(r0.name)
+                tv_res(e, Ty.Named(r0.name))
             }
         },
         _ => {
@@ -3869,6 +4070,9 @@ fn infer_call_ty(mut e: Emitter, c0: Call, line: i64, col: i64) Ty {
         return Ty.UnitV;
     }
     if r0.mod == "reflect" {
+        if r0.name == "field" or r0.name == "with" {
+            return reflect_access_ty(e, r0.name, c0.args, line, col);
+        }
         return reflect_result_ty(r0.name);
     }
     if r0.mod == "assert" {
@@ -4015,6 +4219,18 @@ fn infer_expr_ty(mut e: Emitter, ex: Expr, line: i64, col: i64) Ty {
         Expr.Tup(es) => infer_tup_lit(e, es, line, col),
         Expr.IndexE(ix2) => infer_index_ty(e, ix2, line, col),
         Expr.ComptimeE(cx3) => infer_block_ty(e, cx3.body, line, col),
+        Expr.CtIf(ci3) => {
+            const pick: i64 = ct_if_pick(e, ci3);
+            if pick == 1 {
+                infer_block_ty(e, ci3.then, line, col)
+            } else {
+                if pick == 0 and ci3.has_else {
+                    infer_block_ty(e, ci3.els, line, col)
+                } else {
+                    Ty.UnitV
+                }
+            }
+        },
         Expr.Make(mk) => {
             if mk.is_app {
                 resolve_app(e, %TyApp{name: mk.ty, args: mk.app_args, line: mk.line, col: mk.col})
@@ -4579,6 +4795,7 @@ fn emit_expr(mut e: Emitter, ex: Expr) Str {
         Expr.Tup(es) => emit_tuple_e(e, es, Ty.UnitV),
         Expr.IndexE(ix2) => emit_index_e(e, ix2),
         Expr.ComptimeE(cx2) => emit_comptime_cx(e, cx2),
+        Expr.CtIf(ci2) => emit_ct_if(e, ci2),
         Expr.Bad(b) => e.fail(b),
         Expr.Match(m) => emit_match(e, m),
         Expr.Make(m) => emit_make(e, m, m.line, m.col),
